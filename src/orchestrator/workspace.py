@@ -579,7 +579,15 @@ class WorkspaceMixin:
                     "reserved": True,
                     "materialized": True,
                     "operation_id": repair["id"],
+                    "preserved_progress": (repair.get("stage_dossier") or {}).get(
+                        "preserved_progress"
+                    ),
                 }
+                if (
+                    origin["preserved_progress"]
+                    and origin["preserved_progress"]["subject"] != repair["stage_subject"]
+                ):
+                    origin["preserved_progress"] = None
             else:
                 raise ValueError("repair operation target kind is invalid")
             if (task.branch_name or "").removeprefix("refs/heads/") != branch.removeprefix("refs/heads/"):
@@ -687,6 +695,24 @@ class WorkspaceMixin:
         tracking = f"refs/remotes/origin/{branch}"
         await self.git.afetch_origin(workspace, repository_url=repository_url)
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
+        progress = origin.get("preserved_progress")
+        if progress:
+            preserved = await self.git.als_remote_ref(workspace, progress["ref"])
+            from src.git.manager import RemoteRefState
+
+            if (
+                preserved.state is not RemoteRefState.PRESENT
+                or preserved.oid != progress["sha"]
+                or progress["sha"] != origin["base_sha"]
+                or await self.git.ais_ancestor(
+                    workspace, progress["base_sha"], progress["sha"], strict=True
+                ) is not True
+                or await self.git.ais_ancestor(
+                    workspace, head, progress["sha"], strict=True
+                ) is not True
+            ):
+                raise GitError("preserved repair tip or canonical branch lineage changed")
+            return progress["sha"]
         if not is_valid_git_oid(head) or await self.git.ais_ancestor(
             workspace, origin["base_sha"], head, strict=True
         ) is not True:
@@ -1660,6 +1686,24 @@ class WorkspaceMixin:
             self.db, owner, workspace=workspace, task_id=session.task_id,
             session_instance_token=session.instance_token
         )
+
+    async def aconfirm_integration_pool_published_repair_handoff(
+        self, owner: dict, reservation_id: str, *, remote_head_reader
+    ) -> bool:
+        """Prove a qualified candidate repair without advancing its canonical ref."""
+        from src.integration.published_repair_handoff import confirm_published_pool_repair_handoff
+
+        try:
+            return await confirm_published_pool_repair_handoff(
+                self.db, self.git, self._git_mutex, owner, reservation_id,
+                remote_head_reader=remote_head_reader,
+            )
+        except Exception:
+            logger.warning(
+                "Could not prove published candidate repair handoff %s", reservation_id,
+                exc_info=True,
+            )
+            return False
 
     async def arecover_completed_integration_pool_claim(self, task, session) -> bool:
         """Release one terminal pool holder only after proving its writer is gone.

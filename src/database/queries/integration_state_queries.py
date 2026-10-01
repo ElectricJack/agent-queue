@@ -192,6 +192,7 @@ class IntegrationStateQueriesMixin:
                 integration_repair_operations,
                 integration_repair_stages.c.starting_sha.label("stage_starting_sha"),
                 integration_repair_stages.c.current_subject.label("stage_subject"),
+                integration_repair_stages.c.dossier.label("stage_dossier"),
                 integration_repair_stages.c.writer_kind.label("writer_kind"),
                 integration_repair_stages.c.retained_workspace_id.label(
                     "retained_workspace_id"

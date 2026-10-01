@@ -1724,7 +1724,10 @@ class Orchestrator(
             )
 
         self.integration_scheduler = IntegrationScheduler(self.db)
-        self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
+        self.integration_outbox = IntegrationOutbox(
+            self.db, accept_integration_event,
+            before_dispatch=self.integration_scheduler.maintain_lease,
+        )
         github_clients = {}
 
         def github_client(binding):
@@ -1850,6 +1853,7 @@ class Orchestrator(
         )
         from src.integration.development import DevelopmentIntegration
         from src.integration.github_review_poll import GitHubReviewPoller
+        from src.integration.green_continuation import GreenPromotionReconciler
         from src.integration.owner_recovery import owner_recovery_for
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
@@ -1879,9 +1883,7 @@ class Orchestrator(
             self.integration_scheduler,
             RepairService(
                 self.db,
-                owner_recovery=(
-                    owner_recovery if self.config.integration.owner_recovery_sweep else None
-                ),
+                owner_recovery=owner_recovery,
             ),
             self.integration_outbox,
             candidate_ci_handler=candidate_ci.handle,
@@ -1900,6 +1902,9 @@ class Orchestrator(
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
             repair_dispatch_handler=self._dispatch_pending_integration_repairs,
+            green_promotion_handler=GreenPromotionReconciler(
+                self.db, promotion=self.root_promotion_service
+            ).tick,
         )
         self.integration_service.start()
 

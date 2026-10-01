@@ -379,6 +379,7 @@ areas:
       - tests/test_integration_finished_owners.py
       - tests/test_integration_transfer_commands.py
       - tests/test_integration_workspace_handoff.py
+      - tests/test_integration_published_repair_handoff.py
       - tests/test_integration_identity_rebind.py
       - tests/test_integration_delegate_release.py
       - tests/test_integration_eject.py
@@ -392,6 +393,7 @@ areas:
       - tests/test_integration_parent_completion.py
       - tests/test_integration_root_pull_requests.py
       - tests/test_integration_repair.py
+      - tests/test_integration_repair_rollover.py
       - tests/test_integration_review_evidence.py
       - tests/test_integration_legacy_*.py
       - tests/test_parent_ci_publication.py

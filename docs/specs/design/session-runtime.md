@@ -371,8 +371,9 @@ injection is submitted, then the new nudge is typed into the emptied composer.
 When the text still cannot be moved, `NotSubmitted` carries `composer_dirty=True`,
 the reconciler logs it at **WARNING** with the session name and task id, and emits
 `session.nudge_unsubmitted` — the event behind the dashboard's "message stuck" and
-the `sessions.stuck_composer` doctor check, whose `--fix` presses the same Enter an
-operator would send by hand.
+the `sessions.stuck_composer` doctor check. Its `--fix` presses the same Enter an
+operator would send by hand. For AQ text the composer shows collapsed or windowed, it
+clears the text instead (see below).
 
 **Recognising an empty composer.** The guard accepts only layouts it knows: a bare
 prompt with nothing after it, Claude's prompt between its two borders, or Codex's
@@ -398,6 +399,52 @@ join, breaking at word boundaries. Marker and identity checks therefore compare 
 with all whitespace removed: every visible character, in order, must match. A
 row-by-row match read an 80-column stall reminder as never typed (so it sat in the
 composer, unsubmitted) and, after Enter, a wrapped one as submitted.
+
+**Text the composer cannot show verbatim.** Measured on Claude Code 2.1.286 in an
+80x24 pool pane (2026-10-01, `clear-lantern-82`), Claude shows some input in a form
+AQ cannot check. A typed burst longer than 800 characters collapses to
+`[Pasted text #N]`, or to `[Pasted text #N +M lines]` where M is the number of
+newlines. N counts pastes for the life of the Claude process. Input taller than the
+composer's row window (seven rows at 24 lines) shows only its last rows, with `❯`
+drawn on the first visible one. Neither can be confirmed as the exact AQ injection,
+so neither is ever submitted. Neither is a draft either, so neither may block
+delivery. The provider classifies the composer against its durable record:
+
+- *exact*: the injection verbatim. It is submitted by the resubmit check.
+- *collapsed*: exactly one placeholder and nothing else. It is attributed by the
+  placeholder AQ recorded when it saw its own text collapse. A record without one
+  (written before this rule, or by a daemon that died first) is attributed only when
+  its text would collapse (over 800 characters) and its newline count equals M.
+- *windowed*: a proper suffix of the injection that ends with its marker.
+- *unknown*: anything else (a human draft, edited AQ text, a placeholder AQ cannot
+  attribute). No key is sent and the record is kept.
+
+A collapsed or windowed AQ injection is **cleared, never submitted**. The clear uses
+the harness's `composer_clear_keys` and runs only while the pane is out of copy mode,
+has no attached client, and has had no dashboard input for 2 s. Keys go one batch per
+visible row, and the composer is re-read after each batch. Every screen in between
+must still show a contiguous piece of the injection; otherwise the clear stops and
+leaves the rest. Claude's `C-u` kills one visual row or one newline and does nothing
+on an empty composer, so repeating it converges. Ctrl-C and Escape are never used:
+Ctrl-C interrupts a turn and arms exit on an empty composer, and Escape interrupts a
+turn and opens rewind when pressed twice.
+
+Clearing removes only text the agent never saw. The message behind it stays pending
+and is redelivered, delivery is acknowledged only by a confirmed submit, and nothing
+is handled twice. The clear runs in three places:
+
+1. Right after AQ typed the text. The composer was verified empty under the session
+   lock a moment before, so any placeholder now showing is AQ's own. AQ records it
+   durably before clearing, so a daemon restart mid-clear still attributes it
+   exactly.
+2. When a later nudge finds a stale record, from an earlier pass or a previous daemon
+   process. The new nudge is then typed into the emptied composer.
+3. From `aq doctor --check sessions.stuck_composer --fix`.
+
+Without clear keys the text stays, is reported `unreadable`, and nudges defer as
+before. The provider never shortens or rewrites the text it is given. A caller's
+terminal notification is one short line that points at a durable body
+(supervisor-agent §6.1).
 
 **Kill:** pane pid → descendants (`pgrep -P` + process group) → SIGTERM, 2 s grace
 (100 ms orphans Claude), SIGKILL survivors → `kill-session`. Every kill checks
@@ -490,6 +537,14 @@ digest to task activity alone, and the reconciler never calls them.
   never silently abandoned in the composer (observed live 2026-09-02, task
   `stark-journey-63`: one manual `tmux send-keys Enter` cleared a nudge that had been
   stuck for hours while the log said "will retry" at info level).
+- **AQ text the composer cannot show verbatim** (observed live 2026-10-01, task
+  `clear-lantern-82`). A multi-line task-comment notification was typed into a Claude
+  pool worker. It showed as `[Pasted text #1 +6 lines]` when over 800 characters, or
+  as its last seven rows when shorter, so it was never confirmed. Every later nudge
+  deferred on "input is unknown", including a supervisor's deploy-ready notice with a
+  stage deadline pending, until a supervisor pressed Ctrl-C by hand. Notifications are
+  now one-line pointers, and AQ clears its own collapsed or windowed text (never
+  submitting it) as §5.1 "Text the composer cannot show verbatim" describes.
 - **Nudging a busy agent** can interleave with its typing. Nudges are debounced, locked
   per-session, and policy (when to deliver vs. queue) belongs to [supervisor-agent](supervisor-agent.md);
   the provider only guarantees inject-and-confirm or a typed failure.

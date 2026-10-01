@@ -363,6 +363,18 @@ after consumption may allocate the next request. The next sweep takes one fresh 
 snapshot; missed intervals never create a backlog of historical sweeps. Startup reconciles pending
 requests and outbox delivery, and zero-candidate sweeps use the same consumption protocol.
 
+Schedule maintenance and outbox acceptance run on a bounded control pass, independently of
+one nonoverlapping remote reconciliation pass. Remote Git/forge sources must not hold up
+lease heartbeats or green-candidate continuations. Each source and item observes the current
+clock; lease renewal samples it after locking the exact authority, including the prepared
+root intent's owner and fence. Outbox acceptance refreshes that project's lease before
+handing the event to its consumer. It does not acquire another owner's lease.
+
+Outbox pages advance a keyset cursor even when consumers decline. Retries use acceptance
+completion time, with bounded exponential delay. An event with no enabled consumer remains
+unacknowledged and discoverable after activation; it is never deleted or treated as accepted.
+Slow-source and lease-headroom refusal diagnostics include elapsed time and exact authority.
+
 There is no batch-size cap. A snapshot contains every compatible eligible root PR at that instant.
 
 One integration owns the project until promotion or explicit human disposition. The
@@ -544,6 +556,33 @@ evidence, attempts, and absolute deadline; like awaiting promotion, it may finis
 deadline. It cannot revive an expired stage or adopt a changed head using old green evidence.
 Active repairs and candidate rebuilds retain their existing deadline and fresh-CI requirements.
 
+That close leaves the branch `reserved` to the finished delegate, while promotion requires the
+batch collector's fence; the green fact that triggered the first promotion attempt has already
+been spent waiting on the attached writer, and re-observing the same evidence dedups to it. The
+continuation is therefore a server mechanism, not a second CI fact. `RepairService.
+return_green_delegate_branch` moves exactly that reservation to the collector: the current
+revision is green and names the batch's tested SHA and evidence, the active stage is
+`awaiting_completion` with matching current and successful subjects and conclusive exact evidence,
+the stage's writer is a `COMPLETED`, unassigned `integration_repair` delegate of this operation
+and branch, and the owner row is that task's `repair` reservation with no session or workspace and
+no live ref mutation. Anything else (attached, assigned or unfinished writer, changed head, other
+evidence, human-gated or stale batch) is refused unchanged. The handoff records
+`dossier.green_handoffs` provenance and, in the same transaction, enqueues a fresh
+`integration.candidate_green` continuation whose identity is the promotion fingerprint (candidate,
+evidence, branch-owner fence, project-lease fence) and generation. Candidate build (the
+`continue-closed-root-repair` rule) and root promotion both call it; promotion does so without a
+continuation, so a supervisor redrive reloads authority itself. The integration service also runs a
+bounded reconciler every tick, before outbox dispatch: for each exact-green `testing` batch with no
+root intent it attempts the handoff, else re-emits a continuation only when the durable snapshot is
+promotable now with no attestation or main intent still reconciling, a green fact for the revision
+has been delivered (the CI publisher owns the first wakeup) and is past a grace period, and the
+fingerprint's backoff (60 s doubling) and cap (six continuations) allow it. Only the close
+pipeline's finished `reserved` self-transfer is handed off, never the transient `released` row
+inside it. A restart, a duplicated event or an expired
+stage therefore converges on one promotion; nothing rebuilds, re-runs CI or files a repair worker
+for an already-green exact candidate. Every `wait` names its blocker (attached writer, short lease,
+unpublished candidate) in the command's `error` text; the reason is not a contract result field.
+
 A pull-model (pool) writer proves the same handoff differently, because stopping it is not
 available: the session is the worker loop itself and survives the close it is running inside.
 Its proof is the claim protocol plus the checkout — the task-hold the close is about to release,
@@ -567,6 +606,34 @@ close-time release only because a verifier that is still `attached` to a *live* 
 ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A re-queued verifier
 is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
 task, so it has no claim for the proof to read.
+
+Qualified candidate conflict repairs have one additional publication proof, evaluated only by
+`integration_resolve_candidate_member` during acceptance of its server-owned pushed reservation.
+The canonical integration ref still names the partial candidate until the collector's
+`repair_handoff` mutation, so it cannot prove publication of the repair checkout. Instead:
+
+- Revalidate the exact pushed `qualified` reservation, its applied publication mutation, and its
+  current task, pool claim epoch, session instance, agent/workspace locks, repository and repair
+  owner fence. The active operation episode, stage, unchanged deadline, candidate revision,
+  conflicted member, frozen manifest and source/partial lineage must still match. Acceptance
+  verifies the reserved repair commit lineage and tree before requesting this proof.
+- Under the slot base repository's Git mutex (or the standalone checkout's mutex), freshly read
+  the exact server-reserved `refs/heads/aq/integration-repairs/<reservation-id>` from the bound
+  repository. It must name the reserved resolved SHA. The checkout must be clean at that exact
+  SHA and tree, on the owned canonical branch or already detached. Detach that immutable HEAD;
+  do not reset, clean, salvage, or change any branch ref.
+- Revalidate the same authority snapshot under the hierarchy and row locks while the Git mutex
+  is still held, then CAS only that owner's `handoff_pending` attachment to `released`, retaining
+  the confirmed workspace. Preserve the claim, session, workspace and agent locks for ordinary
+  claim release. Consume the proof through the existing fenced collector transfer, leased
+  canonical ref mutation, repair acceptance and candidate CI continuation.
+
+Dirty or different checkouts, stale/missing private refs, unpublished reservations, successor
+claims/sessions/fences, changed manifests or expired stages retain ownership. A retry after
+detachment repeats the exact publication and authority checks; a durable release or collector
+transfer is consumed by the existing idempotent acceptance protocol. No deadline is reset.
+Ordinary worker, verifier, close-time and stopped-writer handoffs retain their existing
+canonical pushed-tip proof; a qualified push is never general authority to release a workspace.
 
 Rows already stranded by an earlier close are a recovery question, not a doctor one.
 `integration.stranded_fences` names them, and stops there: a database snapshot showing no
@@ -626,6 +693,20 @@ The retained exception applies only while the primary is still attached. A prima
 successfully is already stopped, detached, and holding a `reserved` reservation in its own `repair`
 role, so the debug stage transfers from it without further evidence, exactly as it would from a
 collector or verifier.
+
+For a root batch whose superseded delegate has stopped before completing its handoff,
+dispatch invokes guarded owner recovery directly, independent of the optional quiet-owner
+sweep. It never stops or steals a live or unconfirmed writer. Recovery preserves clean-ahead
+commits or a deterministic snapshot of dirty work at `aq/preserved/<owner-row-id>` before
+detaching and releasing the old fence, claim, and workspace. A dirty workspace remains disabled.
+The recovery audit is the durable handoff evidence across crashes and duplicate dispatches.
+Before admitting the successor, prove the exact preserved ref/SHA against the frozen batch
+manifest, revision, and first-parent repair lineage. Persist that tip, the completed member
+ancestry, repair commit range, and old writer/stop/fence evidence in its dossier, and prepare
+its checkout at that exact tip. A changed ref or lineage remains an explicit blocker.
+The unpublished tip does not replace the accepted candidate subject or any CI evidence;
+resolution and publication still require the authenticated successor fence and exact frozen
+CI gates. Recovery changes no stage deadline, attempts, policy, or human escalation gate.
 
 ### 9.3 Human escalation
 
@@ -715,6 +796,15 @@ outcomes:
 | `integration_reconcile_promotion` | Reconcile a durable intent against remote ancestry and finalize its receipt | `applied`, `not_applied`, `invariant_error` |
 | `integration_promote_main` | Expected-base fast-forward with exact-SHA green attestation | `promoted`, `already_promoted`, `base_moved`, `ci_missing`, `non_fast_forward` |
 | `integration_release` | Reconcile cleanup, release lease, and emit a deduplicated due event when needed | `released`, `cleanup_pending`, `not_owner`, `invariant_error` |
+
+The root subject commands run as the train playbook's or a daemon service's principal. A live,
+elevated, named supervisor session (the integration operator of `operator_or_supervisor`) may also
+re-drive `integration_build_candidate`, `integration_ci_evidence`,
+`integration_repair_close_current`, `integration_promote_main`, `integration_release` and
+`integration_cleanup`, directly or through a manual `aq playbook run`, which executes as that
+session. Each takes subject identities only and re-derives authority, evidence and fences from
+durable state, so the redrive cannot supply CI or skip a guard. Worker sessions, stopped or
+foreign supervisors, and the sealing, scheduling and parent-writer commands stay refused.
 
 Domain identity, not playbook activation identity, defines mutation idempotency. A child promotion
 key is `(source_task_id, reviewed_head_sha, target_repository, target_branch)`, and root operations

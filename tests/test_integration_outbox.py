@@ -363,7 +363,7 @@ async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
 
     restarted = _runtime(db, tmp_path / "compiled")
     await restarted.refresh()
-    outbox = IntegrationOutbox(db, restarted.accept_integration_event)
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
     assert await outbox.dispatch_due(NOW) == 1
     await _wait_for_accepted(db, "event-1")
     await _wait_for_pending_resolution(db, "event-1")
@@ -380,7 +380,7 @@ async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_pa
     await _enqueue(db)
     first_runtime = _runtime(db, tmp_path / "compiled")
     await first_runtime.refresh()
-    first_outbox = IntegrationOutbox(db, first_runtime.accept_integration_event)
+    first_outbox = IntegrationOutbox(db, first_runtime.accept_integration_event, clock=lambda: NOW)
 
     class SimulatedProcessCrash(BaseException):
         pass
@@ -396,7 +396,7 @@ async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_pa
 
     restarted = _runtime(db, tmp_path / "compiled")
     await restarted.refresh()
-    outbox = IntegrationOutbox(db, restarted.accept_integration_event)
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
     await outbox.dispatch_due(NOW)
     await outbox.dispatch_due(NOW)
     await _wait_for_accepted(db, "event-1")
@@ -442,7 +442,7 @@ async def test_zero_matching_activations_keeps_event_for_retry(db):
     await _enqueue(db)
     runtime = _runtime(db, "/tmp/no-integration-artifacts")
     await runtime.refresh()
-    outbox = IntegrationOutbox(db, runtime.accept_integration_event)
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
 
     assert await outbox.dispatch_due(NOW) == 0
 
@@ -471,7 +471,7 @@ async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_pa
         return await original(**kwargs)
 
     db.retain_integration_event = crash_on_second_destination
-    outbox = IntegrationOutbox(db, runtime.accept_integration_event)
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
     assert await outbox.dispatch_due(NOW) == 0
     assert len(await _pending_rows(db)) == 1
 
@@ -674,7 +674,7 @@ async def test_scoped_destinations_dispatch_only_their_pinned_activation(db, tmp
     runtime = _runtime(db, compiled)
     await runtime.refresh()
 
-    assert await IntegrationOutbox(db, runtime.accept_integration_event).dispatch_due(NOW) == 1
+    assert await IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW).dispatch_due(NOW) == 1
     await _wait_for_accepted(db, "event-1", count=1)
     await _wait_for_pending_resolution(db, "event-1", count=1)
     await runtime.shutdown()
@@ -1468,6 +1468,7 @@ async def test_retry_delay_is_exponential_and_bounded(db):
         unavailable,
         retry_base_seconds=2,
         retry_max_seconds=5,
+        clock=lambda: now,
     )
     for now, expected in ((NOW, NOW + 2), (NOW + 2, NOW + 6), (NOW + 6, NOW + 11)):
         assert await outbox.dispatch_due(now) == 0
@@ -1485,6 +1486,40 @@ async def test_dispatch_page_is_bounded(db):
         accepted.append(event_id)
         return True
 
-    outbox = IntegrationOutbox(db, accept, page_size=2)
+    outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
     assert await outbox.dispatch_due(NOW) == 2
     assert len(accepted) == 2
+
+
+async def test_slow_declines_retry_from_completion_and_page_other_projects(db, caplog):
+    await db.create_project(Project(id="q", name="other project"))
+    now = [NOW]
+    async with db.immediate() as conn:
+        for event_id, project_id in (("a", "p"), ("b", "p"), ("c", "q")):
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id, project_id=project_id,
+                event_type="integration.no_consumer", payload={}, available_at=NOW,
+            )
+    seen = []
+
+    async def decline(_event_type, _payload, event_id):
+        seen.append(event_id)
+        now[0] += 180
+        return False
+
+    outbox = IntegrationOutbox(db, decline, page_size=1, clock=lambda: now[0])
+    for _ in range(3):
+        assert await outbox.dispatch_due(now[0]) == 0
+    assert seen == ["a", "b", "c"]
+    rows = {row["id"]: row for row in await _outbox_rows(db)}
+    assert rows["a"]["available_at"] == NOW + 181
+    assert rows["c"]["available_at"] == NOW + 541
+    assert all(row["delivered_at"] is None for row in rows.values())
+    assert all(row["attempts"] == 1 for row in rows.values())
+    assert "elapsed=180.000s" in caplog.text
+    # Retry keys moved beyond the frozen scan boundary. Wrap, retaining every
+    # historical event and allowing a later activation to accept them.
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    assert await outbox.dispatch_due(now[0]) == 1
+    rows = {row["id"]: row for row in await _outbox_rows(db)}
+    assert rows["a"]["delivered_at"] == now[0]

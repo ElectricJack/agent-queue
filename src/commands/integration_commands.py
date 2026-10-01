@@ -29,6 +29,31 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
 
 
+#: Root-train subject commands an elevated live supervisor may re-drive.
+#: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
+_SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
+    "integration_build_candidate",
+    "integration_ci_evidence",
+    "integration_cleanup",
+    "integration_promote_main",
+    "integration_release",
+    "integration_repair_close_current",
+})
+
+
+def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
+    """Surface a service refusal's ``reason`` as the envelope ``error``.
+
+    The reason is not a contract result field, so the reviewed playbooks'
+    command fingerprints do not change; adapters carry it as the summary.
+    """
+    reason = payload.pop("reason", None)
+    result = {"success": success, **payload}
+    if reason and not success:
+        result["error"] = reason
+    return result
+
+
 class IntegrationCommandsMixin:
     """Implemented integration command handlers are registered incrementally."""
 
@@ -349,7 +374,16 @@ class IntegrationCommandsMixin:
     ) -> bool:
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.SESSION:
-            return bool(allow_session_read and principal.project_id == project_id)
+            if allow_session_read and principal.project_id == project_id:
+                return True
+            # Supervisor recovery: a live, elevated, named supervisor may
+            # re-drive the root train's own guarded subject commands (the
+            # same ones its playbook calls).  Each re-derives authority, CI
+            # evidence and fences server-side; a worker session never passes.
+            if capability not in _SUPERVISOR_REDRIVE_CAPABILITIES or not principal.elevated:
+                return False
+            _operator, refusal = await integration_operator(getattr(self, "db", None), project_id)
+            return refusal is None
         if principal.kind is PrincipalKind.PLAYBOOK:
             return bool(
                 not principal.unresolved
@@ -1275,6 +1309,7 @@ class IntegrationCommandsMixin:
                 if inspect.isawaitable(app_client):
                     app_client = await app_client
         branch_ownership = None
+        confirm_published_repair = None
         if repair_session is not None:
             callback_name = (
                 "aconfirm_integration_pool_owner_handoff"
@@ -1285,6 +1320,15 @@ class IntegrationCommandsMixin:
                 self.db,
                 confirm_handoff=getattr(self.orchestrator, callback_name, None),
             )
+            if repair_session.lifecycle == "pool" and app_client is not None:
+                callback = getattr(
+                    self.orchestrator, "aconfirm_integration_pool_published_repair_handoff", None
+                )
+                if callback is not None:
+                    async def confirm_published_repair(owner, reservation_id):
+                        return await callback(
+                            owner, reservation_id, remote_head_reader=app_client.exact_head_ref
+                        )
         return CandidateService(
             self.db,
             data_dir=self.config.data_dir,
@@ -1293,6 +1337,7 @@ class IntegrationCommandsMixin:
             forge_provider=app_client,
             repair_service=self._integration_repair_service(),
             branch_ownership=branch_ownership,
+            confirm_published_repair=confirm_published_repair,
         )
 
     def _integration_release_service(self):
@@ -1376,10 +1421,9 @@ class IntegrationCommandsMixin:
             )
         except RootPromotionInvariantError as exc:
             return _failure("runtime_error", str(exc))
-        return {
-            "success": result.outcome in {"promoted", "already_promoted"},
-            **result.model_dump(mode="json"),
-        }
+        return _with_reason(
+            result.outcome in {"promoted", "already_promoted"}, result.model_dump(mode="json")
+        )
 
     async def _cmd_integration_cleanup(self, args: dict) -> dict:
         from pydantic import ValidationError
@@ -1523,10 +1567,9 @@ class IntegrationCommandsMixin:
             and result.revision != request.expected_revision
         ):
             return _failure("stale_revision", "candidate revision changed during build")
-        return {
-            "success": result.outcome in {"empty", "built", "already_built"},
-            **result.model_dump(mode="json"),
-        }
+        return _with_reason(
+            result.outcome in {"empty", "built", "already_built"}, result.model_dump(mode="json")
+        )
 
     async def _cmd_integration_repair_close_current(self, args: dict) -> dict:
         """Resolve a closed root writer only while its adopted revision is current."""
@@ -1759,6 +1802,7 @@ class IntegrationCommandsMixin:
         if service is not None:
             return service
         from src.integration.repair import RepairService
+        from src.integration.owner_recovery import owner_recovery_for
 
         return RepairService(
             self.db,
@@ -1770,6 +1814,7 @@ class IntegrationCommandsMixin:
                 "aconfirm_integration_owner_stopped_for_repair",
                 None,
             ),
+            owner_recovery=owner_recovery_for(self.orchestrator),
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:

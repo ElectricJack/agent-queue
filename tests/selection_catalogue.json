@@ -519,6 +519,7 @@
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
         "tests/test_integration_ownership.py",
+        "tests/test_integration_published_repair_handoff.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
         "tests/test_integration_workspace_handoff.py"
@@ -534,6 +535,7 @@
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
+        "tests/test_integration_repair_rollover.py",
         "tests/test_integration_review_evidence.py",
         "tests/test_integration_root_pull_requests.py",
         "tests/test_parent_ci_publication.py",
@@ -1303,7 +1305,7 @@
       ]
     }
   },
-  "digest": "sha256:cc982543b4593b611d4693da9f4c5b39bf07e3ae1ed0a6fa1ecd65dcaeb71009",
+  "digest": "sha256:1c729c6b2ae3ce8763a16388f8ffc25ddae983ee99eafda754ac33cb679474ad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5409,6 +5411,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
@@ -5418,8 +5422,10 @@
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.epic_pr",
+        "src.integration.green_continuation",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.release",
@@ -5427,6 +5433,9 @@
         "src.integration.review_evidence",
         "src.integration.scheduler",
         "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -7165,8 +7174,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
         "src.database",
         "src.database.adapters.postgresql",
         "src.database.tables",
@@ -7176,13 +7187,20 @@
         "src.integration.attestation",
         "src.integration.candidates",
         "src.integration.ci",
+        "src.integration.green_continuation",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.release",
         "src.integration.repair",
         "src.integration.scheduler",
+        "src.integration.service",
         "src.models",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
+        "src.playbooks.runtime",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -7262,6 +7280,7 @@
         "src.commands.project_commands",
         "src.commands.supervisor_authority",
         "src.database.tables",
+        "src.integration.main_promotion",
         "src.integration.owner_recovery",
         "src.models",
         "src.profiles.capabilities"
@@ -7419,6 +7438,29 @@
       ],
       "summary": "The default branch's protection, classified for the App (App-mode spec §8.2-8.3)."
     },
+    "tests/test_integration_published_repair_handoff.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_app",
+        "src.integration",
+        "src.integration.candidate_ci",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.published_repair_handoff",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
+    },
     "tests/test_integration_repair.py": {
       "areas": [
         "integration-promotion"
@@ -7451,6 +7493,26 @@
         "parametrize"
       ],
       "summary": "Durable bounded repair stages and execution delegates."
+    },
+    "tests/test_integration_repair_rollover.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.service",
+        "src.models",
+        "src.orchestrator.core"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Natural deadline/drain/restart handoff with real PostgreSQL and Git origins."
     },
     "tests/test_integration_resume_metadata.py": {
       "areas": [
@@ -7514,7 +7576,11 @@
       "imports": [
         "src.commands.principal",
         "src.database",
+        "src.database.queries.integration_schedule_queries",
         "src.database.tables",
+        "src.integration",
+        "src.integration.candidates",
+        "src.integration.main_promotion",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models",
@@ -8308,6 +8374,7 @@
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.commands.task_comment_commands",
         "src.config",
         "src.database",
         "src.database.tables",
@@ -13568,6 +13635,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.task_comment_commands",
         "src.sessions",
         "src.sessions.provider",
         "src.sessions.tmux"

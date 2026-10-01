@@ -249,8 +249,15 @@ to a concrete session and picks one of three paths:
    is the recipient's only way to reach the body. It is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
-   own mailboxes (the `message_inbox` mailbox fence). A task comment is the
-   exception: its bounded body is typed in directly. A nudge to a
+   own mailboxes (the `message_inbox` mailbox fence). A task comment has no
+   exception: its notification is the same one-line pointer. Its rendered body (a
+   six-line header plus up to 8 KB) used to be typed in directly, and Claude Code
+   never shows that verbatim: over 800 characters it collapses to
+   `[Pasted text #N +M lines]`, and on an 80x24 pool pane anything taller than about
+   seven rows shows only its last rows. AQ cannot confirm such text, so it sat
+   unsubmitted and every later nudge to that worker deferred behind it (2026-10-01,
+   `clear-lantern-82`; session-runtime §5.1 "Text the composer cannot show
+   verbatim"). A nudge to a
    sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is

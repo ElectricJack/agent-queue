@@ -15,8 +15,12 @@ tmux server.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import textwrap
+import time
 
 import pytest
 
@@ -557,7 +561,426 @@ class TestHarnessWrappedInput:
         assert await provider.pending_submit_detail(handle()) == {
             "marker": _marker_for(MESSAGE),
             "observable": False,
+            "clearable": False,
         }
         assert await provider.resubmit_pending(handle()) is False
         assert composer.submitted == []
         assert composer.mutations == []
+
+
+# ---------------------------------------------------------------------------
+# AQ text the composer cannot show verbatim (clear-lantern-82, 2026-10-01)
+# ---------------------------------------------------------------------------
+
+
+class ClaudeComposer:
+    """Claude Code 2.1.286's composer as probed in an 80x24 tmux pane.
+
+    Measured on a private socket, never submitting:
+
+    - a typed burst over 800 characters becomes ``[Pasted text #N +M lines]``,
+      where ``N`` counts this process's pastes and ``M`` is the newline count;
+    - input taller than ``window`` rows shows only its last rows, with ``❯``
+      drawn on the first visible one;
+    - ``C-u`` kills the last visual row, or the newline under an empty last
+      row, and does nothing on an empty composer;
+    - Enter submits, expanding a placeholder to the text behind it.
+
+    Rows are hard-wrapped where Claude breaks at words; every provider check
+    ignores whitespace, so the difference cannot matter here.
+    """
+
+    BORDER = "─" * 80
+
+    def __init__(self, *, width=80, height=24, window=7, clear_keys=("C-u",)):
+        self.width = width
+        self.height = height
+        self.window = window
+        self.chunks: list[tuple[str, str, str]] = []  # (kind, shown, content)
+        self.pastes = 0
+        self.attached = 0
+        self.in_mode = 0
+        self.submitted: list[str] = []
+        self.mutations: list[tuple] = []
+        self.buffer = ""
+        self.on_key = None
+        self.environment = {
+            "AQ_READY_PREFIX": "❯ ",
+            "AQ_SKIP_ESCAPE": "1",
+            "AQ_CLEAR_KEYS": ",".join(clear_keys),
+        }
+
+    # -- the composer --------------------------------------------------------
+
+    def type(self, text: str) -> None:
+        if len(text) > 800:
+            self.pastes += 1
+            lines = text.count("\n")
+            token = f"[Pasted text #{self.pastes}" + (f" +{lines} lines" if lines else "") + "]"
+            self.chunks.append(("paste", token, text))
+        elif self.chunks and self.chunks[-1][0] == "text":
+            joined = self.chunks[-1][1] + text
+            self.chunks[-1] = ("text", joined, joined)
+        else:
+            self.chunks.append(("text", text, text))
+
+    @property
+    def draft(self) -> str:
+        return "".join(shown for _, shown, _ in self.chunks)
+
+    def rows(self) -> list[str]:
+        span = self.width - 2
+        rows: list[str] = []
+        for line in self.draft.split("\n"):
+            rows.extend([line[i : i + span] for i in range(0, len(line), span)] or [""])
+        return rows
+
+    def kill_row(self) -> None:
+        if not self.chunks:
+            return
+        kind, text, _ = self.chunks.pop()
+        if kind == "paste":
+            return
+        if text.endswith("\n"):
+            text = text[:-1]
+        else:
+            span = self.width - 2
+            text = text[: -(len(text.rsplit("\n", 1)[-1]) % span or span)]
+        if text:
+            self.chunks.append(("text", text, text))
+
+    def screen(self) -> list[str]:
+        rows = self.rows()[-self.window :]
+        body = ["❯\N{NO-BREAK SPACE}" + rows[0]] + ["  " + row for row in rows[1:]]
+        lines = ["older output", self.BORDER, *body, self.BORDER, "  ⏵⏵ bypass permissions on"]
+        return [""] * (self.height - len(lines)) + lines
+
+    # -- the tmux boundary ---------------------------------------------------
+
+    async def tmux(self, *args, stdin=None, **kwargs):
+        command = args[0]
+        if command == "show-environment":
+            return f"{args[-1]}={self.environment.get(args[-1], '')}\n"
+        if command == "set-environment":
+            if "-u" in args:
+                self.environment.pop(args[-1], None)
+            else:
+                self.environment[args[-2]] = args[-1]
+            return ""
+        if command == "display-message":
+            rows = self.rows()[-self.window :]
+            values = {
+                "cursor_x": 2 + (len(rows[-1]) if self.chunks else 0),
+                "cursor_y": self.height - 3,
+                "pane_width": self.width,
+                "pane_height": self.height,
+                "window_height": self.height,
+                "cursor_flag": 1,
+                "pane_in_mode": self.in_mode,
+                "session_attached": self.attached,
+            }
+            result = args[-1]
+            for key, value in values.items():
+                result = result.replace("#{" + key + "}", str(value))
+            return result + "\n"
+        if command == "capture-pane":
+            return "\n".join(self.screen()) + "\n"
+        self.mutations.append(args)
+        if command == "send-keys" and "-l" in args:
+            self.type(args[-1])
+        elif command == "send-keys" and args[-1] == "Enter":
+            if self.chunks:
+                self.submitted.append("".join(content for _, _, content in self.chunks))
+            self.chunks = []
+        elif command == "send-keys" and args[-1] == "C-u":
+            self.kill_row()
+        elif command == "load-buffer":
+            self.buffer = stdin.decode()
+        elif command == "paste-buffer":
+            self.type(self.buffer)
+        if command == "send-keys" and self.on_key is not None:
+            self.on_key(args[-1])
+        return ""
+
+    def sent_keys(self) -> list[str]:
+        return [args[-1] for args in self.mutations if args[0] == "send-keys" and "-l" not in args]
+
+
+def comment_notification(body: str) -> str:
+    """The task-comment wake-up exactly as the daemon used to type it."""
+    from src.commands.task_comment_commands import TaskCommentCommandsMixin
+
+    task = type("T", (), {"id": "repair-repair-batch-integration-batch-a15aca37ba71d0ed81b96d73a8f624b7-1"})
+    return TaskCommentCommandsMixin._render_comment_notification(
+        task,
+        {
+            "id": "comment-9e376b24deac4d7282cf41a4df640c99",
+            "author_kind": "supervisor",
+            "author_id": "0b4a47c1-377f-4d41-bfa7-0cd0d7c10674",
+            "created_at": 1790840212.3479939,
+            "body": body,
+        },
+    )
+
+
+HOLD = "Handled wait52a18fd2 expiry after fresh state and CI inspection. Preserve the claim. "
+#: 928 characters on 7 lines: collapsed to ``[Pasted text #1 +6 lines]`` (the
+#: 07:37Z incident on p-standard-high-claude--agent-queue--37a7f8cc).
+COLLAPSED_COMMENT = comment_notification((HOLD * 9)[:691].strip())
+#: Under 800 characters but ~14 rows at 80 columns: Claude shows its last 7
+#: (the 07:11Z incident, msg-5ba6aa4e).
+WINDOWED_COMMENT = comment_notification((HOLD * 6)[:480].strip())
+DEPLOY_READY = "Handle `aq message status msg-f3d2ec0095a8492e99ac1ad8dbb2abb3 --json`."
+
+
+@pytest.fixture
+def fast_composer(fast_polls, monkeypatch):
+    monkeypatch.setattr(tmux_module, "_LANDED_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(tmux_module, "_CLEAR_SETTLE_SECONDS", 0.0)
+
+
+def test_the_fixtures_reproduce_both_live_shapes():
+    collapsed = ClaudeComposer()
+    collapsed.type(COLLAPSED_COMMENT)
+    assert collapsed.draft == "[Pasted text #1 +6 lines]"
+    assert len(COLLAPSED_COMMENT) > 800 and COLLAPSED_COMMENT.count("\n") == 6
+
+    windowed = ClaudeComposer()
+    windowed.type(WINDOWED_COMMENT)
+    shown = "\n".join(windowed.screen())
+    assert len(WINDOWED_COMMENT) <= 800 and len(windowed.rows()) > windowed.window
+    assert "[Task comment]" not in shown and _marker_for(WINDOWED_COMMENT) in shown.replace("\n  ", "")
+
+
+class TestTextTheComposerCannotShowVerbatim:
+    """The composer is the interlock for every later nudge, so AQ text left
+    there unconfirmed blocked the supervisor's deploy-ready notice for twenty
+    minutes.  AQ's own collapsed or windowed text is cleared -- never
+    submitted, never acknowledged -- and anything AQ cannot attribute is left
+    exactly as it is."""
+
+    @pytest.mark.parametrize(
+        "text", [COLLAPSED_COMMENT, WINDOWED_COMMENT], ids=["collapsed", "windowed"]
+    )
+    async def test_fresh_injection_is_cleared_and_never_submitted(self, fast_composer, text):
+        composer = ClaudeComposer()
+        provider = provider_for(composer)
+
+        with pytest.raises(NotSubmitted) as caught:
+            await provider.nudge(handle(), text)
+
+        assert caught.value.composer_dirty is False
+        assert composer.chunks == [] and composer.submitted == []
+        assert set(composer.sent_keys()) == {"C-u"}, "only the clear key; never Enter, Escape or C-c"
+        assert "AQ_PENDING_SUBMIT" not in composer.environment
+        assert provider._unsubmitted == {}
+
+    async def test_the_next_wake_is_delivered_into_the_emptied_composer(self, fast_composer):
+        composer = ClaudeComposer()
+        provider = provider_for(composer)
+        with pytest.raises(NotSubmitted):
+            await provider.nudge(handle(), WINDOWED_COMMENT)
+
+        await provider.nudge(handle(), DEPLOY_READY)
+
+        assert composer.submitted == [DEPLOY_READY]
+
+    @pytest.mark.parametrize(
+        "text", [COLLAPSED_COMMENT, WINDOWED_COMMENT], ids=["collapsed", "windowed"]
+    )
+    async def test_stranded_injection_is_recovered_after_a_daemon_restart(
+        self, fast_composer, text
+    ):
+        """No clear key at first (this box's vault harness): the text stays
+        and is reported dirty, and the durable record carries what AQ saw.
+        Once the key exists, a restarted daemon's next wake clears it and is
+        delivered -- the stranded notification is never submitted."""
+        composer = ClaudeComposer(clear_keys=())
+        with pytest.raises(NotSubmitted) as caught:
+            await provider_for(composer).nudge(handle(), text)
+        assert caught.value.composer_dirty is True
+        stranded = composer.draft
+        record = tmux_module._PendingSubmit.decode(composer.environment["AQ_PENDING_SUBMIT"])
+        assert record.text == text
+        if text is COLLAPSED_COMMENT:
+            assert record.placeholder == "[Pasted text #1 +6 lines]" == stranded
+
+        composer.environment["AQ_CLEAR_KEYS"] = "C-u"
+        restarted = provider_for(composer)
+        assert await restarted.pending_submit_detail(handle()) == {
+            "marker": _marker_for(text),
+            "observable": False,
+            "clearable": True,
+        }
+        keys = composer.sent_keys()
+        restarted._last_input_at[handle().name] = time.monotonic()  # a human is typing
+        with pytest.raises(NudgeDeferred):
+            await restarted.nudge(handle(), DEPLOY_READY)
+        assert await restarted.clear_pending(handle()) is False
+        assert composer.draft == stranded and composer.sent_keys() == keys
+        restarted._last_input_at.clear()
+
+        await restarted.nudge(handle(), DEPLOY_READY)
+
+        assert composer.submitted == [DEPLOY_READY]
+        assert "AQ_PENDING_SUBMIT" not in composer.environment
+        assert await restarted.pending_submit_detail(handle()) is None
+
+    async def test_a_record_from_before_placeholders_were_recorded_is_attributed(
+        self, fast_composer
+    ):
+        """The live 07:37Z record, as the old daemon encoded it: no placeholder
+        field.  Its 928 characters must have collapsed, and its six newlines
+        match ``+6 lines``."""
+        composer = ClaudeComposer()
+        composer.type(COLLAPSED_COMMENT)
+        legacy = {
+            "v": 1,
+            "instance_token": handle().instance_token,
+            "marker": _marker_for(COLLAPSED_COMMENT),
+            "text": COLLAPSED_COMMENT,
+            "text_sha256": hashlib.sha256(COLLAPSED_COMMENT.encode()).hexdigest(),
+        }
+        composer.environment["AQ_PENDING_SUBMIT"] = base64.urlsafe_b64encode(
+            json.dumps(legacy).encode()
+        ).decode()
+
+        await provider_for(composer).nudge(handle(), DEPLOY_READY)
+
+        assert composer.submitted == [DEPLOY_READY]
+        assert composer.sent_keys() == ["C-u", "Enter"]
+
+    async def test_the_doctor_fix_clears_without_pressing_enter(self, fast_composer):
+        composer = ClaudeComposer(clear_keys=())
+        provider = provider_for(composer)
+        with pytest.raises(NotSubmitted):
+            await provider.nudge(handle(), COLLAPSED_COMMENT)
+        composer.environment["AQ_CLEAR_KEYS"] = "C-u"
+
+        assert await provider.resubmit_pending(handle()) is False  # never Enter on it
+        assert await provider.clear_pending(handle()) is True
+        assert await provider.clear_pending(handle()) is False  # nothing left to clear
+
+        assert composer.chunks == [] and composer.submitted == []
+        assert "Enter" not in composer.sent_keys()
+
+
+def _stranded(composer, text, *, placeholder=""):
+    """AQ's durable record for *text*, as a previous daemon left it."""
+    record = tmux_module._PendingSubmit(
+        instance_token=handle().instance_token,
+        marker=_marker_for(text),
+        text=text,
+        placeholder=placeholder,
+    )
+    composer.environment["AQ_PENDING_SUBMIT"] = record.encode()
+
+
+def _ours_then(edit):
+    def arrange(composer):
+        composer.type(COLLAPSED_COMMENT)
+        _stranded(composer, COLLAPSED_COMMENT, placeholder=composer.draft)
+        edit(composer)
+
+    return arrange
+
+
+def _human_paste_after_ours(composer):
+    """The operator cleared AQ's paste and pasted a draft of the same shape."""
+    _ours_then(lambda c: (c.kill_row(), c.type(COLLAPSED_COMMENT.upper())))(composer)
+
+
+def _legacy_line_mismatch(composer):
+    composer.type(COLLAPSED_COMMENT + "\none more line")
+    _stranded(composer, COLLAPSED_COMMENT)
+
+
+def _legacy_short_text(composer):
+    """Seven short AQ lines could never have collapsed: the paste is a human's."""
+    composer.type(COLLAPSED_COMMENT.upper())
+    _stranded(composer, "\n".join(["a short AQ line"] * 7))
+
+
+def _windowed_with_human_suffix(composer):
+    composer.type(WINDOWED_COMMENT + " -- and please also rerun the e2e smoke")
+    _stranded(composer, WINDOWED_COMMENT)
+
+
+def _placeholder_then_human_text(composer):
+    _ours_then(lambda c: c.type(" and my own note"))(composer)
+
+
+def _attached(composer):
+    _ours_then(lambda c: setattr(c, "attached", 1))(composer)
+
+
+def _copy_mode(composer):
+    _ours_then(lambda c: setattr(c, "in_mode", 1))(composer)
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        _human_paste_after_ours,
+        _legacy_line_mismatch,
+        _legacy_short_text,
+        _windowed_with_human_suffix,
+        _placeholder_then_human_text,
+        _attached,
+        _copy_mode,
+    ],
+    ids=[
+        "human-paste-different-id",
+        "legacy-line-count-mismatch",
+        "legacy-text-too-short-to-collapse",
+        "windowed-with-human-suffix",
+        "placeholder-plus-human-text",
+        "attached-client",
+        "copy-mode",
+    ],
+)
+async def test_input_aq_cannot_attribute_is_never_touched(fast_composer, arrange):
+    composer = ClaudeComposer()
+    arrange(composer)
+    before = composer.draft
+    restarted = provider_for(composer)
+
+    with pytest.raises(NudgeDeferred):
+        await restarted.nudge(handle(), DEPLOY_READY)
+    assert await restarted.clear_pending(handle()) is False
+
+    assert composer.draft == before
+    assert composer.sent_keys() == [] and composer.submitted == []
+    assert "AQ_PENDING_SUBMIT" in composer.environment, "keep the evidence for a later pass"
+
+
+@pytest.mark.parametrize(
+    ("attaches", "on_press"),
+    [(True, 1), (False, 7)],
+    ids=["client-attaches-mid-batch", "text-arrives-between-reads"],
+)
+async def test_a_clear_stops_when_someone_else_starts_typing(fast_composer, attaches, on_press):
+    """A client attaching stops the clear before its next key, and every
+    screen the clear reads must still be a piece of AQ's text.  (Dashboard
+    input shares the nudge lock, so it can only land between reads.)"""
+    composer = ClaudeComposer(clear_keys=())
+    with pytest.raises(NotSubmitted):
+        await provider_for(composer).nudge(handle(), WINDOWED_COMMENT)
+    composer.environment["AQ_CLEAR_KEYS"] = "C-u"
+    presses = []
+
+    def human_types(key):
+        presses.append(key)
+        if len(presses) == on_press:
+            composer.attached = int(attaches)
+            composer.type(" wait, keep this")
+
+    composer.on_key = human_types
+
+    with pytest.raises(NudgeDeferred):
+        await provider_for(composer).nudge(handle(), DEPLOY_READY)
+
+    assert composer.draft.endswith(" wait, keep this")
+    assert composer.sent_keys() == ["C-u"] * on_press
+    assert composer.submitted == []
+    assert "AQ_PENDING_SUBMIT" in composer.environment

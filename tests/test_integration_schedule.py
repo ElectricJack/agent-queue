@@ -501,3 +501,73 @@ async def test_schedule_command_denies_sessions_and_scopes_playbooks(
     assert allowed == {"success": True, **_due_result()}
     scheduler.mark_due.assert_awaited_once_with("p", 10.0, "manual")
     await handler.db.close()
+
+
+def test_lease_renewal_horizon_covers_every_lease_claim():
+    from src.database.queries.integration_schedule_queries import (
+        INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS,
+        INTEGRATION_LEASE_RENEW_WITHIN_SECONDS,
+        INTEGRATION_LEASE_SECONDS,
+    )
+    from src.integration import candidates, main_promotion
+
+    assert main_promotion._CLAIM_SECONDS <= INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS
+    assert candidates._MUTATION_CLAIM_SECONDS <= INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS
+    assert INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS < INTEGRATION_LEASE_RENEW_WITHIN_SECONDS
+    assert INTEGRATION_LEASE_RENEW_WITHIN_SECONDS < INTEGRATION_LEASE_SECONDS
+
+
+@pytest.mark.parametrize("remaining", (300.0, 201.0, 199.0, 182.0, 160.0, 117.0, 87.0, 1.0))
+async def test_tick_leaves_promotion_claim_headroom_on_the_batch_lease(db, remaining):
+    from src.database.queries.integration_schedule_queries import (
+        INTEGRATION_LEASE_RENEW_WITHIN_SECONDS,
+    )
+    from src.integration.main_promotion import _CLAIM_SECONDS
+
+    scheduler = IntegrationScheduler(db, clock=lambda: 20.0)
+    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
+    first = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="live-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id=first["request_id"],
+                trigger=first["trigger"],
+                source_manifest_digest="manifest",
+                base_sha="a" * 40,
+                lifecycle="testing",
+                current_revision=0,
+                integration_branch="refs/heads/aq/integration/live",
+                cleanup_state="pending",
+                policy_snapshot={},
+                artifact_snapshot={},
+                created_at=10.0,
+                updated_at=10.0,
+            )
+        )
+        await conn.execute(
+            insert(project_integration_leases).values(
+                project_id="p",
+                repository_id="repo",
+                batch_id="live-batch",
+                owner_id="sealer-live-batch",
+                fence_token=1,
+                heartbeat_at=10.0,
+                expires_at=20.0 + remaining,
+            )
+        )
+
+    await scheduler.mark_due(project_id="p", now=20.0, trigger="manual")
+
+    async with db._engine.connect() as conn:
+        lease = (
+            (await conn.execute(select(project_integration_leases))).mappings().one()
+        )
+    left = float(lease["expires_at"]) - 20.0
+    # A promotion prepared right after any tick never sees the lease inside its claim.
+    assert left >= INTEGRATION_LEASE_RENEW_WITHIN_SECONDS - 1.0
+    assert left > _CLAIM_SECONDS
+    assert lease["owner_id"] == "sealer-live-batch"
+    assert lease["fence_token"] == 1

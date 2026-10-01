@@ -2300,7 +2300,7 @@ a fence, then accepted into the next revision.
 | `member_ordinal` | INTEGER | NOT NULL, `>= 0` | Member resolved |
 | `operation_id` | TEXT | NOT NULL | With `stage_ordinal` REFERENCES `integration_repair_stages` ON DELETE RESTRICT |
 | `operation_episode_id` | TEXT | NOT NULL | Repair operation episode |
-| `stage_ordinal` | INTEGER | NOT NULL | 0 or 1 |
+| `stage_ordinal` | INTEGER | NOT NULL, `>= 0` | Repair stage that reserved the resolution; any retained successor stage |
 | `stage_deadline_at` | REAL | NOT NULL | Stage deadline the resolution must land by |
 | `project_id` | TEXT | NOT NULL | Project |
 | `repair_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Delegate task |
@@ -2349,7 +2349,7 @@ log is replayed before any new mutation is attempted.
 | `desired_sha` | TEXT | NOT NULL | Sha to write |
 | `operation_id` | TEXT | NOT NULL | Owning operation |
 | `operation_episode_id` | TEXT | NOT NULL | Operation episode |
-| `operation_stage` | INTEGER | NOT NULL | 0 or 1 |
+| `operation_stage` | INTEGER | NOT NULL, `>= 0` | Active repair stage the mutation was reserved under; any retained successor stage |
 | `lease_owner_id` | TEXT | NOT NULL | Project lease owner |
 | `lease_fence_token` | INTEGER | NOT NULL, `>= 0` | Lease fence |
 | `branch_owner_id` | TEXT | NOT NULL | Branch owner |
@@ -2457,7 +2457,7 @@ policy, writer and deadline.
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
 | `operation_id` | TEXT | PK (with `ordinal`) | Operation |
-| `ordinal` | INTEGER | PK | 0 or 1 |
+| `ordinal` | INTEGER | PK, `>= 0` | Stage; exhausted stages are retained and successors take the next ordinal |
 | `policy` | JSON | NOT NULL | Stage policy |
 | `intelligence_class` | TEXT | nullable | Class the repair delegate runs at |
 | `profile_id` | TEXT | nullable | Delegate profile |

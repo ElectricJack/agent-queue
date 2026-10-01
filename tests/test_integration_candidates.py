@@ -1016,6 +1016,43 @@ async def test_same_owner_concurrent_builds_never_duplicate_external_mutation(db
     assert len(forge.calls) == 1
 
 
+async def test_concurrent_store_initializers_never_share_a_git_init_directory(tmp_path):
+    """Builders that both find the retained store missing must not ``git init``
+    one directory: the two inits race on its config lock and one fails."""
+    from types import SimpleNamespace
+
+    from src.integration.candidates import CandidateService
+
+    real = GitManager()
+    initialized: list[str] = []
+    both_arrived = asyncio.Event()
+
+    class GatedGit:
+        async def arun_git_result(self, args, **kwargs):
+            if args[:2] == ["init", "--bare"]:
+                initialized.append(args[-1])
+                if len(initialized) == 2:
+                    both_arrived.set()
+                await asyncio.wait_for(both_arrived.wait(), timeout=5)
+            return await real.arun_git_result(args, **kwargs)
+
+    services = [
+        CandidateService(
+            SimpleNamespace(), data_dir=tmp_path / "data", git_manager=GatedGit(),
+            clock=lambda: 100.0,
+        )
+        for _ in range(2)
+    ]
+    repository = SimpleNamespace(id="repo")
+
+    stores = await asyncio.gather(*(service._ensure_store(repository) for service in services))
+
+    assert len(set(initialized)) == 2
+    assert stores[0] == stores[1]
+    assert (stores[0] / "HEAD").is_file()
+    assert list(stores[0].parent.iterdir()) == [stores[0]]
+
+
 async def test_stage_change_before_conflict_cas_cannot_mark_new_stage_repairing(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
@@ -3062,11 +3099,69 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert _git(origin, "rev-parse", f"{rebuilt.head_sha}^{{tree}}") == members[0][2]
 
 
-@pytest.mark.parametrize("migration_repair", [None, "rename", "in_place", "edited"])
+async def _retain_predecessors_and_activate_stage(db, operation_id, task_id, ordinal):
+    """Move the stage-0 delegate to successor *ordinal*, retaining expired history.
+
+    The live shape after continuous repair (a00000000048): exhausted stages
+    stay as expired rows without a writer, and the successor stage carries the
+    delegate (docs/superpowers/specs/2026-10-01-later-repair-stage-constraints-design.md).
+    """
+    async with db.immediate() as conn:
+        first = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(state="expired", repair_task_id=None, writer_kind=None)
+        )
+        for later in range(1, ordinal + 1):
+            current = later == ordinal
+            await conn.execute(
+                insert(integration_repair_stages).values(
+                    **{
+                        key: first[key]
+                        for key in (
+                            "policy", "intelligence_class", "starting_sha", "trigger_id",
+                            "current_subject", "started_at", "deadline_at",
+                        )
+                    },
+                    operation_id=operation_id,
+                    ordinal=later,
+                    repair_task_id=task_id if current else None,
+                    writer_kind="repair_delegate" if current else None,
+                    deadline_event_id=f"successor-deadline-{operation_id}-{later}",
+                    attempts=0,
+                    state="active" if current else "expired",
+                )
+            )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == operation_id)
+            .values(active_stage=ordinal)
+        )
+
+
+@pytest.mark.parametrize(
+    ("migration_repair", "stage"),
+    [(None, 0), ("rename", 0), ("in_place", 0), ("edited", 0), (None, 2)],
+)
 async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(
-    command_handler_factory, tmp_path, migration_repair
+    command_handler_factory, tmp_path, migration_repair, stage
 ):
-    """The public command derives authority, accepts once, then resumes later members."""
+    """The public command derives authority, accepts once, then resumes later members.
+
+    Stage 2 is the successor shape that the two-stage resolution and mutation
+    checks refused before a00000000050.
+    """
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
@@ -3148,6 +3243,10 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     conflict = await service.build("batch")
     assert conflict.outcome == "conflict"
     repair_task_id = "repair-repair-batch-batch-0"
+    if stage:
+        await _retain_predecessors_and_activate_stage(
+            db, "repair-batch-batch", repair_task_id, stage
+        )
     repair_task = await db.get_task(repair_task_id)
     assert "## Candidate member conflict" in repair_task.description
     assert "Batch: batch" in repair_task.description
@@ -3307,7 +3406,78 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     assert resolution["repair_task_id"] == repair_task_id
     assert resolution["repair_session_id"] == session_id
     assert resolution["repair_session_instance_token"] == "instance-1"
+    assert resolution["stage_ordinal"] == stage
+    async with db._engine.connect() as conn:
+        repair_mutations = (
+            await conn.execute(
+                select(
+                    integration_candidate_ref_mutations.c.purpose,
+                    integration_candidate_ref_mutations.c.operation_stage,
+                    integration_candidate_ref_mutations.c.state,
+                )
+                .where(
+                    integration_candidate_ref_mutations.c.resolution_id == resolution["id"]
+                )
+                .order_by(integration_candidate_ref_mutations.c.created_at)
+            )
+        ).all()
+        stages = (
+            await conn.execute(
+                select(integration_repair_stages.c.ordinal, integration_repair_stages.c.state)
+                .where(integration_repair_stages.c.operation_id == "repair-batch-batch")
+                .order_by(integration_repair_stages.c.ordinal)
+            )
+        ).all()
+    assert {purpose for purpose, _stage, _state in repair_mutations} >= {"repair_resolution"}
+    assert all(row_stage == stage for _purpose, row_stage, _state in repair_mutations)
+    assert all(state == "applied" for _purpose, _stage, state in repair_mutations)
+    # Predecessor history is retained, never rewritten by the accepted repair.
+    assert [ordinal for ordinal, _state in stages] == list(range(stage + 1))
+    assert all(state == "expired" for ordinal, state in stages if ordinal < stage)
     await db.close()
+
+
+@pytest.mark.parametrize(
+    ("override", "sqlstate", "constraint"),
+    (
+        ({"operation_stage": -1}, "23514", "ck_integration_candidate_ref_mutations_stage"),
+        ({"batch_id": "absent-batch"}, "23503", "fk_integration_candidate_ref_mutations_revision"),
+    ),
+    ids=("negative-stage", "missing-revision"),
+)
+async def test_candidate_mutation_reservation_names_the_refusing_constraint(
+    db, tmp_path, override, sqlstate, constraint
+):
+    """A refused mutation row is a typed constraint error, never a reported race."""
+    from src.integration.candidates import (
+        CandidateConstraintError,
+        CandidateService,
+        CandidateStaleAuthority,
+    )
+
+    service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    identity = {
+        "batch_id": "batch", "revision": 0, "member_ordinal": None, "resolution_id": None,
+        "purpose": "candidate_partial", "repository_id": "repo", "branch": "refs/heads/b",
+        "target_branch": "refs/heads/b", "expected_old_sha": "a" * 40, "desired_sha": "b" * 40,
+        "operation_id": "op", "operation_episode_id": "batch", "operation_stage": 2,
+        "lease_owner_id": "lease", "lease_fence_token": 1, "branch_owner_id": "op",
+        "branch_owner_role": "collector", "branch_fence_token": 1,
+    } | override
+
+    with pytest.raises(CandidateConstraintError) as refused:
+        async with db.immediate() as conn:
+            await service._reserve_mutation_on(
+                conn, mutation_id="mutation", identity=identity, nonce="nonce", now=1.0
+            )
+
+    assert isinstance(refused.value, CandidateStaleAuthority)
+    assert (refused.value.sqlstate, refused.value.constraint) == (sqlstate, constraint)
+    assert constraint in str(refused.value) and "raced" not in str(refused.value)
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(
+            select(func.count()).select_from(integration_candidate_ref_mutations)
+        ) == 0
 
 
 async def test_nonempty_build_requires_authenticated_repository_dependencies(db, tmp_path):

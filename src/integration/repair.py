@@ -29,6 +29,7 @@ from src.database.tables import (
     integration_repair_stages,
     messages,
     playbook_artifacts,
+    project_integration_leases,
     projects,
     sessions,
     task_delivery_receipts,
@@ -36,7 +37,11 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid
+from src.integration.green_continuation import (
+    enqueue_green_continuation_on,
+    promotion_fingerprint,
+)
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -1180,6 +1185,57 @@ class RepairService:
                 repair_task_id=repair_task_id,
                 writer_kind="repair_delegate",
             )
+        # The deadline retires authority, not the writer's unpublished work.
+        # Use the existing provider-backed recovery after drain has stopped
+        # this exact predecessor. A live/unknown writer remains busy. This
+        # targeted handoff is independent of the optional general quiet sweep.
+        if (
+            operation["target_kind"] == "batch"
+            and stage > 0
+            and await self._is_primary_writer(
+                owner, operation_id, ordinal=stage - 1,
+                states=frozenset({"attached", "handoff_pending"}),
+            )
+        ):
+            if self._owner_recovery is None:
+                return self._dispatch_value(
+                    "busy", operation_id, stage, repair_task_id=repair_task_id,
+                    writer_kind="repair_delegate",
+                )
+            recovered = await self._owner_recovery.recover(
+                owner["id"], principal="repair_stage_rollover"
+            )
+            if recovered.outcome not in {"released", "preserved_and_released"}:
+                return self._dispatch_value(
+                    "busy", operation_id, stage, repair_task_id=repair_task_id,
+                    writer_kind="repair_delegate",
+                )
+            owner = await self._ownership.get_owner(target)
+            if owner is None:
+                return self._dispatch_value("stale", operation_id, stage)
+
+        from src.integration.repair_progress import batch_recovery_progress
+
+        progress = None
+        if owner["handoff_state"] != "attached" or owner["owner_id"] != repair_task_id:
+            try:
+                progress = await batch_recovery_progress(
+                    self.db, self._owner_recovery, operation, repair_stage, target
+                )
+            except GitError as exc:
+                async with self.db.immediate() as conn:
+                    context = await self._dispatch_context_on(conn, operation_id, stage)
+                    if context is not None and context[1]["repair_task_id"] == repair_task_id:
+                        dossier = dict(context[1]["dossier"] or {})
+                        dossier["preserved_progress_blocker"] = str(exc)
+                        await conn.execute(update(integration_repair_stages).where(
+                            integration_repair_stages.c.operation_id == operation_id,
+                            integration_repair_stages.c.ordinal == stage,
+                        ).values(dossier=dossier))
+                return self._dispatch_value(
+                    "human_required", operation_id, stage, repair_task_id=repair_task_id,
+                    writer_kind="repair_delegate",
+                )
         if (
             owner["owner_id"] == repair_task_id
             and owner["owner_role"] == "repair"
@@ -1337,6 +1393,31 @@ class RepairService:
                     writer_kind="repair_delegate",
                 )
             ready = []
+            if progress is not None and reserved:
+                current_stage = context[1]
+                if (
+                    current_stage["current_subject"] != progress["subject"]
+                    or (current_stage["dossier"] or {}).get("manifest") != progress["manifest"]
+                ):
+                    return self._dispatch_value("human_required", operation_id, stage)
+                dossier = dict(current_stage["dossier"] or {})
+                dossier.pop("preserved_progress_blocker", None)
+                dossier.update(
+                    preserved_progress=progress,
+                    branch_sha=progress["sha"],
+                    starting_sha=progress["sha"],
+                    repair_commits=progress["repair_commits"],
+                )
+                await conn.execute(update(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == stage,
+                ).values(starting_sha=progress["sha"], dossier=dossier))
+                await conn.execute(update(tasks).where(tasks.c.id == repair_task_id).values(
+                    description=await self._delegate_description_on(
+                        conn, operation, dict(current_stage)
+                        | {"starting_sha": progress["sha"], "dossier": dossier},
+                    ),
+                ))
             if reserved and task["status"] == TaskStatus.PAUSED.value:
                 transition = await self.db._apply_transition(
                     conn,
@@ -1780,6 +1861,224 @@ class RepairService:
             await self.db._notify_settled(transition.settled)
             await self.db._notify_ready(transition.ready)
         return True
+
+    async def return_green_delegate_branch(
+        self, batch_id: str, *, emit_continuation: bool = True, now: float | None = None
+    ) -> Fence | None:
+        """Return a closed writer's branch to the collector of its exact green candidate.
+
+        CI can turn the candidate green while its repair delegate is still
+        attached; promotion then waits for the collector fence.  The guarded
+        delegate close finishes that writer on the unchanged candidate and
+        leaves its own detached reservation.  This is the only continuation:
+        it moves that reservation to the batch collector, records the handoff
+        in the stage dossier and, when asked, enqueues a fresh green
+        continuation bound to the new fence.  It never touches an attached,
+        assigned or unfinished writer, a changed head, or other evidence.
+        """
+        observed_at = self.clock() if now is None else now
+        async with self.db.immediate() as conn:
+            # Same canonical order as CI and promotion: project lock first.
+            project_id = (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if project_id is None:
+                return None
+            await self.db.lock_hierarchy_project(conn, project_id)
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == batch_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            operation = (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.batch_id == batch_id,
+                        integration_repair_operations.c.episode_id == batch_id,
+                    )
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if batch is None or operation is None or batch["project_id"] != project_id:
+                return None
+            return await self.return_green_delegate_branch_on(
+                conn,
+                batch=dict(batch),
+                operation=dict(operation),
+                emit_continuation=emit_continuation,
+                now=observed_at,
+            )
+
+    async def return_green_delegate_branch_on(
+        self,
+        conn,
+        *,
+        batch: dict[str, Any],
+        operation: dict[str, Any],
+        emit_continuation: bool,
+        now: float,
+    ) -> Fence | None:
+        """Hand off under the caller's project lock; ``None`` when not exactly eligible."""
+        if (
+            operation["target_kind"] != "batch"
+            or operation["batch_id"] != batch["id"]
+            or operation["episode_id"] != batch["id"]
+            or operation["state"] not in {"active", "escalated"}
+            or batch["lifecycle"] != "testing"
+            or not batch["integration_branch"]
+        ):
+            return None
+        revision = (
+            await conn.execute(
+                select(integration_candidate_revisions)
+                .where(
+                    integration_candidate_revisions.c.batch_id == batch["id"],
+                    integration_candidate_revisions.c.revision == batch["current_revision"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation["id"],
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if revision is None or stage is None:
+            return None
+        subject = self._batch_subject(revision)
+        if (
+            revision["state"] != "green"
+            or not revision["ci_evidence_id"]
+            or revision["ci_evidence_id"] != batch["ci_evidence_id"]
+            or revision["head_sha"] != batch["tested_candidate_sha"]
+            or stage["state"] != "awaiting_completion"
+            or stage["writer_kind"] != "repair_delegate"
+            or not stage["repair_task_id"]
+            or stage["current_subject"] != subject
+            or stage["success_subject"] != subject
+            or stage["success_evidence_id"] != revision["ci_evidence_id"]
+        ):
+            return None
+        evidence = (
+            await conn.execute(
+                select(integration_check_evidence).where(
+                    integration_check_evidence.c.id == stage["success_evidence_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            not self._evidence_matches(operation, stage, evidence)
+            or evidence["conclusion"] != "success"
+            or evidence["classification"] != "conclusive"
+        ):
+            return None
+        task = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == stage["repair_task_id"]).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            task is None
+            or task["status"] != TaskStatus.COMPLETED.value
+            or task["assigned_agent_id"] is not None
+            or task["project_id"] != batch["project_id"]
+            or task["repo_id"] != batch["repository_id"]
+            or str(task["branch_name"] or "").removeprefix("refs/heads/")
+            != batch["integration_branch"].removeprefix("refs/heads/")
+            or task["created_by_kind"] != "integration_repair"
+            or task["created_by_id"] != operation["id"]
+        ):
+            return None
+        target = BranchKey(
+            repository_id=batch["repository_id"], branch=batch["integration_branch"]
+        )
+        owner = await self._ownership._locked_row(conn, target)
+        # Only the close pipeline's finished self-transfer: ``released`` is the
+        # instant inside that transfer, and taking it would fail the close's
+        # own handoff proof.  A crash-orphaned ``released`` row is claimed by
+        # the collector's ordinary acquire instead.
+        if (
+            owner is None
+            or owner["owner_id"] != task["id"]
+            or owner["owner_role"] != "repair"
+            or owner["handoff_state"] != "reserved"
+            or owner["session_id"] is not None
+            or owner["workspace_id"] is not None
+        ):
+            return None
+        try:
+            fence = await self._ownership.transfer_detached_on(
+                conn,
+                Fence(target=target, owner_id=owner["owner_id"], token=int(owner["fence_token"])),
+                operation["id"],
+                "collector",
+            )
+        except (BranchBusy, StaleFence):
+            return None
+        dossier = dict(stage["dossier"] or {})
+        handoffs = list(dossier.get("green_handoffs", []))
+        handoffs.append(
+            {
+                "task_id": task["id"],
+                "from_fence": int(owner["fence_token"]),
+                "to_owner_id": fence.owner_id,
+                "to_fence": fence.token,
+                "candidate_sha": revision["head_sha"],
+                "revision": int(revision["revision"]),
+                "evidence_id": revision["ci_evidence_id"],
+                "at": now,
+            }
+        )
+        dossier["green_handoffs"] = handoffs
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+            )
+            .values(dossier=dossier)
+        )
+        if emit_continuation:
+            lease = (
+                await conn.execute(
+                    select(project_integration_leases).where(
+                        project_integration_leases.c.project_id == batch["project_id"]
+                    )
+                )
+            ).mappings().one_or_none()
+            collector = await self._ownership._locked_row(conn, target)
+            await enqueue_green_continuation_on(
+                conn,
+                project_id=batch["project_id"],
+                operation_id=operation["id"],
+                batch_id=batch["id"],
+                revision=int(revision["revision"]),
+                head_sha=revision["head_sha"],
+                fingerprint=promotion_fingerprint(
+                    operation_id=operation["id"],
+                    batch_id=batch["id"],
+                    revision=int(revision["revision"]),
+                    head_sha=revision["head_sha"],
+                    evidence_id=revision["ci_evidence_id"],
+                    owner=collector,
+                    lease=dict(lease) if lease is not None else None,
+                ),
+                generation=0,
+                now=now,
+            )
+        return fence
 
     async def adopt_batch_repair_on(
         self,
@@ -2976,9 +3275,25 @@ class RepairService:
             f"Starting SHA: {repair_stage['starting_sha']}\n"
             f"Dossier: {repair_stage['dossier']}"
         )
+        progress = (repair_stage["dossier"] or {}).get("preserved_progress")
+        if progress:
+            description += (
+                "\n\nResume the preserved unpublished progress at "
+                f"{progress['ref']} ({progress['sha']}). The workspace starts at this exact tip. "
+                f"Frozen members already present as ancestors: {progress['completed_member_ordinals']}. "
+                "Keep those merges and finish only the remaining work. The original partial head "
+                "still anchors the complete repair commit range and candidate submission. "
+                "Preservation is not candidate acceptance: exact candidate CI and publication "
+                "still use the frozen subject, manifest, and current delegate fence."
+            )
         if not conflict:
             return description
         if conflict.get("members"):
+            merge_start = (
+                "Continue at the preserved tip and merge every frozen source head still absent in "
+                if progress
+                else "Start at the partial head and merge EVERY remaining frozen source head in "
+            )
             manifest = "\n".join(
                 f"- {member['ordinal']}: {member['task_id']}, base {member['source_base_sha']}, "
                 f"head {member['reviewed_head_sha']}"
@@ -2987,8 +3302,7 @@ class RepairService:
             return (
                 f"{description}\n\n## Complete batch conflict repair\n\n"
                 f"Batch: {conflict['batch_id']}\nRevision: {conflict['revision']}\n"
-                f"Partial head: {conflict['partial_head_sha']}\n\n{manifest}\n\n"
-                "Start at the partial head and merge EVERY remaining frozen source head in "
+                f"Partial head: {conflict['partial_head_sha']}\n\n{manifest}\n\n{merge_start}"
                 "manifest order in this workspace. Resolve all conflicts together, preserving "
                 "the intended features. Retain every source head as an ancestor of the final "
                 "head. You may edit any necessary repair file, including earlier features and "
@@ -3003,6 +3317,10 @@ class RepairService:
                 "under its fence. Do not push the integration branch or main yourself. "
                 "Candidate CI must pass on the exact resulting SHA before promotion."
             )
+        member_start = (
+            "Continue from the exact preserved tip above. "
+            if progress else "Start from the exact partial head above. "
+        )
         return (
             f"{description}\n\n"
             "## Candidate member conflict\n\n"
@@ -3012,7 +3330,7 @@ class RepairService:
             f"Partial head: {conflict['partial_head_sha']}\n"
             f"Member source base: {conflict['source_base_sha']}\n"
             f"Member reviewed head: {conflict['source_head_sha']}\n\n"
-            "Start from the exact partial head above. Resolve only this member's conflict, "
+            f"{member_start}Resolve only this member's conflict, "
             "commit the repair as a linear non-merge range, and do not push the integration "
             "branch yourself. Record `git rev-parse HEAD`, `git rev-parse HEAD^{tree}`, and "
             "each commit from `git rev-list --reverse PARTIAL_HEAD..HEAD`, then run:\n\n"
@@ -3244,6 +3562,11 @@ class RepairService:
         )
         primary_budget = dict(primary_dossier.get("budget", {}))
         debug_dossier = dict(primary_dossier)
+        progress = debug_dossier.get("preserved_progress")
+        if progress and progress["subject"] != primary["current_subject"]:
+            history = list(debug_dossier.get("preserved_progress_history", []))
+            history.append(debug_dossier.pop("preserved_progress"))
+            debug_dossier["preserved_progress_history"] = history
         debug_dossier["starting_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["branch_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["budget"] = {
