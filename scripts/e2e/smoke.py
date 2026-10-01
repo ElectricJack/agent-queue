@@ -989,6 +989,8 @@ def s4_formulas(state: dict) -> str:
     for _ in range(2):
         _close_next_child(container)
 
+    # Exercise the CLI list surface once; session readiness polling uses the API.
+    aq("session", "list")
     progress = aq("task", "progress", "--task-id", container)
     check(progress["done"] == 2, f"container progress not settled: {progress}")
 
@@ -1566,6 +1568,9 @@ def s10_workspace_file_git_note(state: dict) -> str:
             "note", "read", "--project-id", PROJECT, "--title", note_title, check_ok=False
         )
         check(missing_note.get("_error") is not None, "deleted note remained readable")
+        # This removal is a CLI acceptance check; finally only cleans fixtures.
+        aq("project", "remove-workspace", "--workspace-id", workspace_id,
+           "--project-id", PROJECT)
     finally:
         api("delete_note", {"project_id": PROJECT, "title": note_title})
         if workspace_id:
