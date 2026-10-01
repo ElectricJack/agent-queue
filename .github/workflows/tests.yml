@@ -245,9 +245,14 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    # The test permits 540s for setup, scenarios and cleanup. Include cold
-    # dependency installation and action/container cleanup in the job budget.
-    timeout-minutes: 10
+    # Include setup and post-job cleanup around the real daemon scenarios.
+    # A passing graphs group consumed 261 seconds before its cleanup steps.
+    # Without a main-branch cache, a branch's first run installs cold: 25s to
+    # 7m30s on hosted runners. Run 36829390463 spent 5m06s installing and was
+    # cancelled at ten minutes while its failover group finished S16a. Leave
+    # room for that install after the group's 600-second pytest limit, so a
+    # hung group fails with diagnostics instead of a job-cap cancellation.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

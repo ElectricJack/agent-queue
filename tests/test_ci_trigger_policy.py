@@ -279,11 +279,11 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert e2e['if'] == jobs['test']['if']
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
-    # A passing smoke test must have time to finish before action cleanup.
-    # Reserve a minute beyond the local test deadline for runner overhead,
-    # while retaining the same bounded job cap as the suite arms.
+    # The cap covers a cold dependency install (up to 7m30s observed on
+    # hosted runners) on top of the group's own pytest limit, so pytest's
+    # timeout, with its diagnostics, fires before the job is cancelled.
     job_timeout_seconds = int(e2e['timeout-minutes']) * 60
-    assert E2E_TEST_TIMEOUT_SECONDS + 60 <= job_timeout_seconds <= 600
+    assert job_timeout_seconds - E2E_TEST_TIMEOUT_SECONDS >= 450
     run = e2e['steps'][-1]['run']
     assert run == (
         "pytest 'tests/test_e2e_cli_stateful.py::"
