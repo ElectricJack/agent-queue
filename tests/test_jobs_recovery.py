@@ -47,6 +47,53 @@ async def test_completion_adopted_with_flag_off_and_result_rebuilt(db, tmp_path)
     assert (await db.get_job(job["id"]))["result"] == adopted["result"]
 
 
+@pytest.mark.parametrize("exit_code,expected_state", [(0, "succeeded"), (7, "failed")])
+async def test_completion_written_during_process_observation_is_adopted(
+    db, tmp_path, monkeypatch, exit_code, expected_state
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    directory = job_directory(tmp_path / "data", job["id"])
+    identity = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", identity)
+
+    async def finish_before_liveness_returns(nonce):
+        assert nonce == job["runner_nonce"]
+        atomic_json(directory / "completion.json", {**identity, "exit_code": exit_code})
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_before_liveness_returns)
+    await svc.reconcile(job)
+
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == expected_state
+    assert adopted["result"]["exit_code"] == exit_code
+    assert not await db.workspace_has_job_pin("w")
+    assert read_json(directory / "result.json") == adopted["result"]
+
+
+@pytest.mark.parametrize("field", ["job_id", "nonce"])
+async def test_late_completion_with_foreign_identity_cannot_pass(db, tmp_path, monkeypatch, field):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    directory = job_directory(tmp_path / "data", job["id"])
+    identity = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", identity)
+
+    async def finish_before_liveness_returns(_):
+        atomic_json(directory / "completion.json", {**identity, "exit_code": 0, field: "foreign"})
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_before_liveness_returns)
+    await svc.reconcile(job)
+
+    observed = await db.get_job(job["id"])
+    assert observed["state"] == "lost"
+    assert observed["result"]["exit_code"] is None
+
+
 async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
     svc = service(db, tmp_path)
     job = await db.submit_job(values())

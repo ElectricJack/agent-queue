@@ -394,7 +394,11 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
       if (projectId) body.project_id = projectId;
       if (opts?.showAll) body.show_all = true;
       const { data } = await listTasks({ body, throwOnError: true });
-      return (data as ListTasksResponse).tasks ?? [];
+      const response = data as ListTasksResponse;
+      return {
+        ...response,
+        tasks: response.tasks ?? [],
+      };
     },
     refetchInterval: 60_000,
   });
