@@ -204,10 +204,15 @@ parallel, with a five-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
-| `claims` | S1–S3, S6–S7, S19 |
+| `claims` | S1–S4, S6–S7, S19 |
 | `cli` | S5, S8–S9, S12, S17 |
-| `graphs` | S10, S16b, S18 |
-| `failover` | S4, S11, S13–S15, S16a |
+| `graphs` | S10–S11, S13–S14, S16b, S18 |
+| `failover` | S15, S16a |
+
+The formula, message, plugin and graph/vault scenarios share the lighter claims
+and graphs runners. Keeping them out of the failover group leaves time for
+managed development validation and provider outage assertions within the same
+five-minute job cap. Check names and complete scenario coverage stay stable.
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
 with `-m integration -s`. It creates and cleans up its own database, daemon,

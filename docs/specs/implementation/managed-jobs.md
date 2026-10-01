@@ -40,8 +40,11 @@ resources.jobs_cleanup --fix` retries reconciliation without guessing a PID.
 The runner takes an instance lock, writes fsync-renamed launch intent and started
 receipts, executes argv with null stdin, pumps stdout/stderr and enforces its
 own run deadline. It reaps marked descendants before writing `completion.json`.
-Adoption checks boot id, process start ticks and nonce. Daemon loss does not own
-execution lifetime, and disabling new admission still reconciles existing jobs.
+Adoption checks boot id, process start ticks and nonce. After observing that the
+runner has stopped, it rereads the completion receipt before declaring execution
+lost: the runner may finish between the initial receipt read and process scan.
+Daemon loss does not own execution lifetime, and disabling new admission still
+reconciles existing jobs.
 
 `output.head` keeps the first 1 MiB and `output.tail` is a bounded 63 MiB byte
 ring. The fsync-renamed manifest records logical offsets and physical-block

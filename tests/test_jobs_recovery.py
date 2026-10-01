@@ -3,14 +3,17 @@
 import time
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import update
+
+from src.commands.job_commands import JobCommandsMixin
 from src.config import AppConfig
 from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.policy import next_admission
 from src.jobs.service import JobService
-from src.commands.job_commands import JobCommandsMixin
-from tests.test_jobs_queries import values, db as jobs_db
+from tests.test_jobs_queries import db as jobs_db
+from tests.test_jobs_queries import values
 
 db = jobs_db
 
@@ -42,6 +45,32 @@ async def test_completion_adopted_with_flag_off_and_result_rebuilt(db, tmp_path)
     atomic_json(directory / "completion.json", {**completion, "exit_code": 1})
     await svc.reconcile(adopted)
     assert (await db.get_job(job["id"]))["result"] == adopted["result"]
+
+
+@pytest.mark.parametrize("exit_code, expected_state", [(0, "succeeded"), (1, "failed")])
+async def test_completion_written_during_process_scan_is_adopted(
+    db, tmp_path, monkeypatch, exit_code, expected_state
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    directory = job_directory(tmp_path / "data", job["id"])
+    intent = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", intent)
+
+    async def finish_during_scan(nonce):
+        assert nonce == job["runner_nonce"]
+        # The first receipt read precedes the runner's completion and exit.
+        atomic_json(directory / "completion.json", {**intent, "exit_code": exit_code})
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_during_scan)
+    await svc.reconcile(job)
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == expected_state
+    assert adopted["result"]["exit_code"] == exit_code
+    assert not await db.workspace_has_job_pin("w")
+    assert read_json(directory / "result.json") == adopted["result"]
 
 
 async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
@@ -174,6 +203,7 @@ async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, t
 async def test_service_launch_and_adoption_preserve_canonical_result(db, tmp_path, monkeypatch):
     import asyncio
     import sys
+
     from src.jobs.policy import Preset
 
     svc = service(db, tmp_path)
