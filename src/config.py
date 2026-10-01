@@ -545,6 +545,9 @@ class SchedulingConfig:
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
     affinity_wait_seconds: int = 120  # max seconds to wait for a busy affinity agent
+    cycle_interval_seconds: float = 5.0
+    min_cycle_interval_seconds: float = 1.0
+    config_poll_interval_seconds: float = 30.0
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -552,6 +555,17 @@ class SchedulingConfig:
             errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
         if self.affinity_wait_seconds < 0:
             errors.append(ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0"))
+        for key in ("cycle_interval_seconds", "min_cycle_interval_seconds",
+                    "config_poll_interval_seconds"):
+            value = getattr(self, key)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(ConfigError("scheduling", key, "must be finite and > 0"))
+        if (isinstance(self.min_cycle_interval_seconds, (int, float))
+                and isinstance(self.cycle_interval_seconds, (int, float))
+                and self.min_cycle_interval_seconds > self.cycle_interval_seconds):
+            errors.append(ConfigError("scheduling", "min_cycle_interval_seconds",
+                                      "must be <= cycle_interval_seconds"))
         return errors
 
 
@@ -4582,6 +4596,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             rolling_window_hours=s.get("rolling_window_hours", 24),
             min_task_guarantee=s.get("min_task_guarantee", True),
             affinity_wait_seconds=s.get("affinity_wait_seconds", 120),
+            cycle_interval_seconds=s.get("cycle_interval_seconds", 5.0),
+            min_cycle_interval_seconds=s.get("min_cycle_interval_seconds", 1.0),
+            config_poll_interval_seconds=s.get("config_poll_interval_seconds", 30.0),
         )
 
     if "pause_retry" in raw:

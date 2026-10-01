@@ -612,3 +612,41 @@ def test_stuck_timeout_construction_paths_agree(tmp_path, agents):
     assert load_config(str(path)).agents_config.stuck_timeout_seconds == (
         agents.get("stuck_timeout_seconds", 0) if agents else 0
     )
+
+
+@pytest.mark.parametrize("field", ["cycle_interval_seconds", "min_cycle_interval_seconds",
+                                    "config_poll_interval_seconds"])
+@pytest.mark.parametrize("value", [0, -1, True, float("inf"), float("nan"), "fast"])
+def test_scheduler_cadence_rejects_invalid_values(field, value):
+    from src.config import SchedulingConfig
+
+    config = SchedulingConfig(**{field: value})
+    assert any(error.field == field for error in config.validate())
+
+
+def test_scheduler_minimum_cannot_exceed_periodic_interval():
+    from src.config import SchedulingConfig
+
+    assert SchedulingConfig(cycle_interval_seconds=0.5).validate()
+    assert not SchedulingConfig(cycle_interval_seconds=0.5, min_cycle_interval_seconds=0.25).validate()
+
+
+def test_scheduler_cadence_loads_and_hot_reloads(tmp_path):
+    import yaml
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"messaging_platform": "none",
+                                  "database": {"url": "postgresql://test:test@localhost:5534/aq_cfg_test"},
+                                  "scheduling": {"cycle_interval_seconds": 2,
+                                                "min_cycle_interval_seconds": 0.25,
+                                                "config_poll_interval_seconds": 0.5}}))
+    fresh = load_config(str(path))
+    from src.config import AppConfig
+    original = AppConfig()
+    original._config_path = str(path)
+    reloaded = original.reload_non_critical()
+    assert fresh.scheduling == reloaded.scheduling
+    assert reloaded.scheduling.cycle_interval_seconds == 2
+    assert reloaded.scheduling.min_cycle_interval_seconds == 0.25
+    assert reloaded.scheduling.config_poll_interval_seconds == 0.5

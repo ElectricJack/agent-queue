@@ -75,33 +75,60 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-CI covers all 19 scenarios in four parallel `e2e-cli` jobs: `claims` (S1–S3,
-S6–S7, S11, S14, S19), `cli` (S5, S8–S9, S13, S17), `graphs` (S10, S12, S16b),
-and `failover` (S4, S15, S18, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
-outage through public commands and covers recovery/undo/all-down. Both retain
-the original assertions; select `S16` to run the full serial transcript. Each job
-owns a fresh disposable world. The scenario step has an eleven-minute deadline,
-a minute above the group's own 600-second pytest limit, and a cache-miss
-dependency install has a separate twelve-minute deadline. The 26-minute job
-budget is their sum plus setup and post-job cleanup. The graph group's scenarios
-alone took 261 seconds on a hosted runner; a five-minute total cancelled that
-passing run during cleanup. Run 36830122857 spent 439 seconds installing from a
-slow PyPI and a shared ten-minute total then cancelled the passing `cli` group,
-so neither phase can spend the other's time. Within the test, setup runs first,
-then the smoke with whatever setup left unused, with 90 seconds held back for
-fallback cleanup. Every scenario assertion is retained.
-To reproduce one
-group locally through the same acceptance test:
+CI covers all 19 scenarios as **20 individually reported pytest items** in four
+parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
+S17), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S15, S16a).
+S16a covers outage detection/rerouting; S16b prepares a separate outage through
+public commands and covers recovery/undo/all-down. Select `S16` in the shell
+runner to run the original full serial transcript.
+
+Each shard uses one module-scoped disposable world. S1–S3 explicitly share state;
+selecting S2 or S3 alone prepares its missing predecessors. Other item boundaries
+remove tasks (including terminal rows) and sessions and restore swarm/provider/
+playbook switches. Failed cleanup prevents further use of that world, and fixture
+teardown always destroys its owned resources. No daemon is shared across workers.
+
+Each item has its own 540-second pytest limit. The scenario step has an
+eleven-minute deadline and a cache-miss dependency install has a separate
+twelve-minute deadline; the 26-minute job budget is their sum plus setup and
+post-job cleanup. The original hosted graph scenarios consumed 261 seconds; a
+five-minute total cancelled that passing run during cleanup. Run 36830122857
+spent 439 seconds installing from a slow PyPI and a shared ten-minute total then
+cancelled the passing `cli` group, so neither phase can spend the other's time.
+To reproduce a shard or selected scenario:
+
 
 ```bash
-aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[claims]' -m integration -s
+# One shard, matching CI:
+aq test tests/test_e2e_cli_stateful.py -k claims -m integration -s
+# One scenario, with independent setup and teardown:
+aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_scenario[graphs-S16b]' -m integration -s
+# Four parallel shards; loadgroup preserves fixture reuse:
+aq test tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -s
 ```
 
-Omit the node selector (`::…[claims]`) to run all four groups. The shell
-script still runs all scenarios serially when no IDs are supplied.
-Fixture registration/cleanup and background state inspection use the same
-daemon command handlers through the public API. Mutations and explicit CLI assertions retain
-real CLI subprocesses; polling does not pay their startup cost repeatedly.
+Pytest uses a one-second periodic scheduler backstop, a half-second config
+watcher, one-second graph sweeps and quarter-second condition polls.
+`AQ_E2E_CYCLE_SECONDS` and `AQ_E2E_CONFIG_POLL_SECONDS` override the test launcher;
+operator and tmux cadence use the production scheduling configuration defaults. Negative provider assertions
+observe two **completed** scheduler cycles rather than assume elapsed time implies
+scheduling. `src.main` daemons started manually retain the original 12-second
+observation window.
+
+Pytest preloads the full CLI once in a private Unix-socket launcher and forks a
+separate CLI process for each ordinary command. Click parsing, command routing,
+REST, per-invocation environment, output formatting and process exit codes all run.
+Claim/graph races, waits, plugin startup probes, help and version use fresh
+interpreters. This optimization is POSIX-only and opt-in through
+`AQ_E2E_CLI_SOCKET`; the standalone shell runner continues to launch fresh
+interpreters. Fixture registration, cleanup and polling use the public command API.
+
+`TIMING` JSON rows report lifecycle, CLI call counts/durations, condition waits and
+provider recovery. Set `AQ_E2E_TIMINGS_DIR` to keep per-shard JSONL files outside
+the disposable home; CI uploads these with JUnit results. Condition durations
+include their predicate cost and may overlap CLI time. The
+[measurement and lifecycle audit](../reports/2026-09-30-e2e-shared-fixtures.md)
+records comparable before/after results and the remaining startup coverage.
 
 A clean run:
 
@@ -682,7 +709,7 @@ The real daemon/PostgreSQL run is explicitly marked `integration`, so a normal
 
 ```bash
 POSTGRES_TEST_DSN=<admin-dsn> aq test \
-  tests/test_e2e_cli_stateful.py -m integration -q
+  tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -q
 ```
 
 The test chooses a unique database, port and temporary home, uses fake

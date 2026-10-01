@@ -83,26 +83,79 @@ async def _report_long_scheduler_cycle(task: asyncio.Task, *, interval: float = 
         logger.warning("Scheduler cycle still running; await chain: %s", " -> ".join(chain))
 
 
-async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Event) -> None:
-    """Keep periodic reconciliation alive after a single degraded cycle."""
-    while not shutdown_event.is_set():
-        cycle = asyncio.create_task(orch.run_one_cycle(), name="aq-scheduler-cycle")
-        reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle))
-        try:
-            await cycle
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Orchestrator cycle failed; retrying on the next interval")
-        finally:
-            reporter.cancel()
-            await asyncio.gather(reporter, return_exceptions=True)
-        if shutdown_event.is_set():
-            break
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
+SCHEDULER_WAKE_EVENTS = (
+    "task.created", "task.routed", "task.route_overridden", "task.updated",
+    "task.ready", "task.completed", "task.failed", "task.closed", "task.paused",
+    "task.deleted", "task.unblocked", "task.rerouted", "gate.resolved", "gate.expired",
+    "provider.state_changed", "provider.allocation_changed", "pool.bounds_rescoped",
+    "session.started", "session.exited", "session.killed", "session.drain_acked",
+    "config.reloaded",
+)
+
+
+async def _scheduler_wake_or_shutdown(wake: asyncio.Event, shutdown: asyncio.Event) -> None:
+    tasks = [asyncio.create_task(wake.wait()), asyncio.create_task(shutdown.wait())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _run_scheduler_cycles(
+    orch: Orchestrator, shutdown_event: asyncio.Event, *, interval: float | None = None,
+) -> None:
+    """Reconcile periodically and after relevant events, with bounded burst cadence.
+
+    Wakeups only request a normal cycle. Persisted readiness, provider backoff and
+    capacity remain authoritative; the periodic backstop covers missing events.
+    """
+    wake = asyncio.Event()
+    bus = getattr(orch, "bus", None)
+    unsubscribes = [bus.subscribe(event, lambda _data: wake.set())
+                    for event in SCHEDULER_WAKE_EVENTS] if bus is not None else []
+    loop = asyncio.get_running_loop()
+    try:
+        while not shutdown_event.is_set():
+            wake.clear()
+            started = loop.time()
+            failed = False
+            cycle = asyncio.create_task(orch.run_one_cycle(), name="aq-scheduler-cycle")
+            reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle))
+            try:
+                await cycle
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                failed = True
+                logger.exception("Orchestrator cycle failed; retrying on the next interval")
+            finally:
+                reporter.cancel()
+                await asyncio.gather(reporter, return_exceptions=True)
+            if shutdown_event.is_set():
+                break
+            scheduling = getattr(getattr(orch, "config", None), "scheduling", None)
+            periodic = interval if interval is not None else getattr(
+                scheduling, "cycle_interval_seconds", 5.0,
+            )
+            minimum = min(periodic, getattr(scheduling, "min_cycle_interval_seconds", 1.0))
+            try:
+                if failed:
+                    # A burst must not turn a degraded cycle into a retry spin.
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=periodic)
+                else:
+                    await asyncio.wait_for(
+                        _scheduler_wake_or_shutdown(wake, shutdown_event), timeout=periodic,
+                    )
+                    remaining = minimum - (loop.time() - started)
+                    if remaining > 0 and not shutdown_event.is_set():
+                        await asyncio.wait_for(shutdown_event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        for unsubscribe in unsubscribes:
+            unsubscribe()
 
 
 def _freeze_startup_heap() -> None:
