@@ -1317,7 +1317,7 @@
       ]
     }
   },
-  "digest": "sha256:a567a04cf97c387db8fb473e1fa138fb14a3702875fef99665b57cc428fb7108",
+  "digest": "sha256:035ea17831df279cde35360bb2b698b08905506ffe60b623dc4761b4b25bdf56",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1477,8 +1477,10 @@
       ],
       "default_arm": false,
       "imports": [
+        "src",
         "src.commands.handler",
-        "src.task_graph.formulas"
+        "src.task_graph.formulas",
+        "src.task_names"
       ],
       "markers": [
         "perf"
@@ -6006,6 +6008,7 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.git.identity",
         "src.git.manager",
         "src.intelligence_classes",
@@ -12300,6 +12303,8 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.development",
@@ -13163,9 +13168,13 @@
         "src.config",
         "src.database",
         "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
+        "src.database.tables",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A restart between task close's terminal transition and its completion"
     },
     "tests/test_task_close_summary_enforcement.py": {
