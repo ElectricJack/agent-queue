@@ -147,6 +147,7 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
         case.db, SimpleNamespace(mark_due=AsyncMock()), repair,
         SimpleNamespace(dispatch_due=AsyncMock()),
         repair_dispatch_handler=dispatch_due,
+        clock=lambda: 130.0,
     )
     # Natural persisted deadline pass and reservation retry, with no CI event.
     await service.tick(130.0)
