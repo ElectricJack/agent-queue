@@ -65,6 +65,13 @@ _frontier_child = tasks.alias("frontier_child")
 #: Task statuses a pool claim can end in that no further close changes.
 SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
 
+#: ``task_metadata`` key of the identity ``{completion_id, session_id,
+#: claim_epoch}`` that the terminal transition accepting an ``aq task close``
+#: records in its own transaction (smart-cascade).  Unlike
+#: ``close_session_id``, which the close writes before it is accepted and a
+#: refused close leaves behind, it exists only once that close committed.
+ACCEPTED_CLOSE_KEY = "accepted_close"
+
 
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
@@ -1356,12 +1363,13 @@ class ClaimQueryMixin:
         * the close was recorded after this session's attempt on the task
           began: a completion record, or a ``code``/``noop`` delivery receipt
           (the restart can lose the first; delivery writes the second).
-          Before either exists -- the restart lost the record and delivery
-          has not run (bold-impact-53) -- the ``close_session_id`` task
-          metadata ``_cmd_task_close`` writes ahead of the pipeline counts
-          when it names this session and this is the session's only attempt
-          on the task: the metadata has no timestamp, so a second claim of
-          the same task could not tell its own close from the first one's;
+          Before either exists -- the record was never saved and delivery
+          has not run (bold-impact-53) -- the close's accepted-close marker
+          (``ACCEPTED_CLOSE_KEY``) counts when it names this session and its
+          last claim epoch, because the transition that accepted the close
+          wrote it in the same transaction.  ``close_session_id`` never
+          counts: it is written before the close is accepted, so it outlives
+          a refused close and proves nothing about who ended the claim;
         * no running integration operation owns the task in any seat
           (``live_integration_owner``) -- such a seat can still hand work back.
 
@@ -1401,14 +1409,14 @@ class ClaimQueryMixin:
             or task["claim_epoch"] != session["last_claim_epoch"]
         ):
             return None
-        attempt_started, attempt_count = (
+        attempt_started = (
             await conn.execute(
-                select(func.max(task_session_attempts.c.started_at), func.count()).where(
+                select(func.max(task_session_attempts.c.started_at)).where(
                     task_session_attempts.c.session_id == session_id,
                     task_session_attempts.c.task_id == task_id,
                 )
             )
-        ).one()
+        ).scalar_one_or_none()
         if attempt_started is None:
             return None
         evidence = None
@@ -1448,26 +1456,30 @@ class ClaimQueryMixin:
                     "id": receipt["id"],
                     "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
                 }
-        if evidence is None and attempt_count == 1:
-            meta = dict(
-                (
-                    await conn.execute(
-                        select(task_metadata.c.key, task_metadata.c.value).where(
-                            task_metadata.c.task_id == task_id,
-                            task_metadata.c.key.in_(("close_session_id", "outcome")),
-                        )
+        if evidence is None:
+            marker = (
+                await conn.execute(
+                    select(task_metadata.c.value).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == ACCEPTED_CLOSE_KEY,
                     )
-                ).all()
-            )
-            closer = meta.get("close_session_id")
-            if closer is not None and json.loads(closer) == session_id:
-                outcome = json.loads(meta["outcome"]) if "outcome" in meta else None
+                )
+            ).scalar_one_or_none()
+            try:
+                accepted = json.loads(marker) if marker is not None else None
+            except ValueError:
+                accepted = None
+            if (
+                isinstance(accepted, dict)
+                and accepted.get("session_id") == session_id
+                and accepted.get("claim_epoch") == session["last_claim_epoch"]
+            ):
                 evidence = {
-                    "kind": "close_metadata",
-                    "id": session_id,
+                    "kind": "accepted_close",
+                    "id": accepted.get("completion_id"),
                     "detail": (
-                        f"a close by session {session_id} recorded in task metadata "
-                        f"(outcome {outcome})"
+                        f"accepted close {accepted.get('completion_id')} by session "
+                        f"{session_id} (claim epoch {accepted['claim_epoch']})"
                     ),
                 }
         if evidence is None:

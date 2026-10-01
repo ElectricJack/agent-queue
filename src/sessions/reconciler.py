@@ -568,11 +568,11 @@ class SessionReconciler:
           is recorded, and that no running integration operation owns the task.
 
         No completion of the task may still be running in this daemon.
-        ``complete_session_task`` commits the terminal transition and then runs
-        the branch handoff under the task's control lock, after the close
-        metadata is written and before the completion record is: an ack after
-        an ambiguous (timed-out) close must not stop the worker mid-handoff.
-        After a restart nothing holds the lock.
+        ``complete_session_task`` commits the terminal transition, and with it
+        the accepted-close marker the proof can rest on, and then runs the
+        branch handoff under the task's control lock before the completion
+        record is saved: an ack after an ambiguous (timed-out) close must not
+        stop the worker mid-handoff.  After a restart nothing holds the lock.
 
         The teardown is the one ``_stop_retired_delegate_writer`` uses: a
         confirmed stop first; an attached owner keeps the claim, checkout and

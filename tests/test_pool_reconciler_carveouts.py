@@ -13,6 +13,7 @@ from sqlalchemy import insert
 from src.commands.claim_commands import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
+from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     integration_branch_owners,
     integration_parent_episodes,
@@ -833,6 +834,14 @@ async def _code_receipt(db, *, task_id="t1"):
         ))
 
 
+async def _accepted_close(db, session_id, *, claim_epoch=1, task_id="t1"):
+    """The identity the transition accepting a close records in its transaction."""
+    await db.set_task_meta(task_id, ACCEPTED_CLOSE_KEY, {
+        "completion_id": f"completion-{task_id}", "session_id": session_id,
+        "claim_epoch": claim_epoch,
+    })
+
+
 class TestSettledClaimDrain:
     @pytest.fixture
     async def bound(self, db, provider):
@@ -876,8 +885,10 @@ class TestSettledClaimDrain:
         # sound-orbit: the restart lost the completion record; delivery wrote a receipt.
         (TaskStatus.COMPLETED, "delivery_receipt"),
         (TaskStatus.FAILED, "completion_record"),
-        # bold-impact-53: no record and no receipt yet; only the close metadata survived.
-        (TaskStatus.COMPLETED, "close_metadata"),
+        # bold-impact-53's wait: no record and no receipt yet, but the transition
+        # that accepted this session's close recorded its identity.
+        (TaskStatus.COMPLETED, "accepted_close"),
+        (TaskStatus.FAILED, "accepted_close"),
     ])
     async def test_acked_worker_of_a_settled_task_is_stopped(
         self, db, reconciler, provider, orch, bound, status, evidence
@@ -888,7 +899,7 @@ class TestSettledClaimDrain:
         elif evidence == "delivery_receipt":
             await _code_receipt(db)
         else:
-            await db.set_task_meta("t1", "close_session_id", bound)
+            await _accepted_close(db, bound)
         completions = await db.get_task_completions("t1")
 
         live, now = await observe(reconciler)
@@ -922,7 +933,7 @@ class TestSettledClaimDrain:
 
     @pytest.mark.parametrize("shape", [
         "active", "blocked", "no_evidence", "earlier_close", "requeued_epoch", "live_seat",
-        "closed_elsewhere", "reclaimed_close_metadata",
+        "closed_elsewhere", "earlier_claim_accepted", "unaccepted_close_metadata",
     ])
     async def test_an_open_or_unsettled_task_keeps_waiting(
         self, db, reconciler, provider, bound, shape
@@ -944,16 +955,23 @@ class TestSettledClaimDrain:
             attempt_start = (await db.get_session(bound)).started_at
             await _completion(db, completed_at=attempt_start - 100)
         elif shape == "closed_elsewhere":
-            # Close metadata only speaks for the session it names.
+            # An accepted close speaks only for the session it names.
             await self._close_committed(db)
-            await db.set_task_meta("t1", "close_session_id", "another-session")
-        elif shape == "reclaimed_close_metadata":
-            # The session let go of the task and claimed it again: its
-            # untimestamped close metadata may be the first claim's.
-            await db.update_session(bound, task_id=None)
-            await db.update_session(bound, task_id="t1")
+            await _accepted_close(db, "another-session")
+        elif shape == "earlier_claim_accepted":
+            # This session's close of an earlier claim on the task says
+            # nothing about the claim it holds now.
             await self._close_committed(db)
+            await _accepted_close(db, bound, claim_epoch=0)
+        elif shape == "unaccepted_close_metadata":
+            # ``task close`` writes its metadata before the close is accepted:
+            # a refused close leaves it, and an unrelated failure then ended
+            # the task.  Only the accepted-close marker proves this session's
+            # close committed.
             await db.set_task_meta("t1", "close_session_id", bound)
+            await db.set_task_meta("t1", "outcome", "pass")
+            status = TaskStatus.FAILED
+            await self._close_committed(db, status)
         elif shape == "requeued_epoch":
             await self._close_committed(db)
             await db.update_task("t1", claim_epoch=2)
@@ -989,11 +1007,11 @@ class TestSettledClaimDrain:
     ):
         """The worker acked after its close timed out client-side; the pipeline runs on.
 
-        The close metadata and the terminal transition are already committed,
+        The terminal transition and its accepted-close marker are committed,
         so only the task's control lock says the handoff has not finished.
         """
-        await db.set_task_meta("t1", "close_session_id", bound)
         await self._close_committed(db)
+        await _accepted_close(db, bound)
 
         async with orch._task_control_lock("t1"):
             live, now = await observe(reconciler)

@@ -136,12 +136,13 @@ keeps the displaced-claim release from detaching it. When the agent's own ack is
 teardown. The proof has three parts: the task is `COMPLETED` or `FAILED` with no holder, under
 this session's own claim epoch; a completion record or a `code`/`noop` delivery receipt was written
 after this session's attempt began; and no running integration operation owns the task in any seat.
-When the restart lost the completion record before delivery wrote a receipt, the close metadata
-counts instead: `aq task close` writes `close_session_id` before its pipeline runs, and it proves
-the close when it names this session and this is the session's only attempt on the task. The
-metadata has no timestamp, so a session that claimed the same task twice waits for a record or
-receipt. The reconciler also waits while a completion of the task still holds its control lock in
-this daemon, so an ack after a timed-out close never stops the worker mid-handoff.
+Before the record is saved or delivery writes a receipt, the accepted-close marker counts instead.
+The terminal transition that accepts a close writes `accepted_close` (`{completion_id, session_id,
+claim_epoch}`) in its own transaction, and the marker proves the close when it names this session
+and its last claim epoch. `close_session_id` never counts: `aq task close` writes it before the
+close is accepted, so it outlives a refused close. The reconciler also waits while a completion of
+the task still holds its control lock in this daemon, so an ack after a timed-out close never stops
+the worker mid-handoff.
 The task's status and completion stay as they are. The owner keeps the stopped session's binding,
 and owner recovery releases it after preserving unpushed work.
 
