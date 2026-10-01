@@ -7,7 +7,7 @@ import { holdKindLabel, providerName, stateLabel } from "../metrics/providerAvai
 import { useListNav } from "../../shell/hotkeys/useListNav";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useTaskListRows } from "./useTaskListRows";
-import { activityWindowLabel } from "./taskFilters";
+import { activityWindowLabel, taskStatusLabel } from "./taskFilters";
 import { ActivityCell, ModelsCell } from "./TaskActivityCells";
 import { absoluteTime } from "./activityFormat";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
@@ -15,8 +15,8 @@ import { InlinePriority, InlineStatus, RowActions } from "./TaskRowActions";
 import { useTaskSelection } from "./useTaskSelection";
 
 export default function CommandCenterTasks() {
-  const { projectId, filters } = useTaskWorkspace();
-  const { rows: filtered, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
+  const { projectId, filters, setStatus, clearFilters } = useTaskWorkspace();
+  const { rows: filtered, statusCounts, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
   const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
   // Below 768 px the rows are touch cards (mobile dashboard §3 gap 6): the
@@ -60,21 +60,43 @@ export default function CommandCenterTasks() {
   const padBottom = items.length
     ? virtualizer.getTotalSize() - (items[items.length - 1]!.end - scrollMargin)
     : 0;
+  const hasFilters = !!(filters.query || filters.status || filters.window || filters.held || filters.showCompleted);
   const emptyMessage = inWindow
     ? "No work recorded in this time range."
-    : filters.held ? "No held tasks match these filters." : "No tasks match these filters.";
+    : filters.held ? "No held tasks match these filters." : hasFilters ? "No tasks match these filters." : "No active tasks yet.";
+  const emptyState = <div className="p-6 text-center">
+    <p className="text-sm font-medium text-gray-200">{emptyMessage}</p>
+    <p className="mt-1 text-xs text-gray-400">{hasFilters ? "Try a broader search or clear your filters." : "Add a task to start work, or show completed tasks to review past work."}</p>
+    {hasFilters && <button type="button" data-primary-control onClick={clearFilters}
+      className="mt-3 rounded-md border border-gray-600 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800">Clear filters</button>}
+  </div>;
 
   // From 768 px the table keeps its 620 px minimum and scrolls sideways inside
   // this region when the rail and a pane leave it less (a landscape phone:
   // 844 px less the rail); the page itself never does. Cards never need to.
   return (
-    <div role="region" aria-label="Task list" ref={scrollRef} className="h-full min-h-0 overflow-auto p-3 md:p-4"
+    <div role="region" aria-label="Task list" aria-busy={isLoading} ref={scrollRef} className="h-full min-h-0 overflow-auto p-3 md:p-4"
       data-allow-overflow-x={compact ? undefined : ""}
       onClick={(event) => {
         const target = event.target as HTMLElement;
         if (!target.closest('[data-task-row], button, input, select, textarea, a, [role="dialog"]')) clearTask();
       }}>
-      <p className="mb-3 text-xs text-gray-500">{filtered.length} {filtered.length === 1 ? "task" : "tasks"}</p>
+      {!isLoading && !error && <div role="group" aria-label="Filter by task status"
+        title="Counts match your search, time range and provider filters. Waiting input is a task status, not a count of approvals."
+        className="mb-4 grid grid-cols-4 gap-1.5 md:gap-3">
+        {([
+          ["IN_PROGRESS", "text-blue-300"], ["BLOCKED", "text-orange-300"],
+          ["WAITING_INPUT", "text-cyan-300"], ["FAILED", "text-red-300"],
+        ] as const).map(([status, tone]) => <button key={status} type="button" data-primary-control
+          aria-pressed={filters.status === status}
+          aria-label={`${taskStatusLabel(status)}: ${statusCounts[status] ?? 0} ${statusCounts[status] === 1 ? "task" : "tasks"}`}
+          onClick={() => setStatus(filters.status === status ? "" : status)}
+          className={`focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 min-w-0 rounded-lg border px-1 py-2 text-left transition-colors md:px-3 ${filters.status === status ? "border-indigo-400 bg-indigo-500/15" : "border-gray-800 bg-gray-900/60 hover:border-gray-600 hover:bg-gray-900"}`}>
+          <span className={`block text-lg font-semibold tabular-nums ${tone}`}>{statusCounts[status] ?? 0}</span>
+          <span className="block text-[11px] leading-4 text-gray-300 md:text-xs">{taskStatusLabel(status)}</span>
+        </button>)}
+      </div>}
+      {!isLoading && !error && <p className="mb-3 text-xs text-gray-400">{filtered.length} {filtered.length === 1 ? "task" : "tasks"}</p>}
       {inWindow && (
         <p role="status" className="mb-3 rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100">
           <span className="font-medium">{activityWindowLabel(filters.window)}</span>
@@ -96,8 +118,8 @@ export default function CommandCenterTasks() {
       {error && <p role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">Could not load tasks. Check the backend connection and try again.</p>}
       {compact ? (
         <>
-          {isLoading && <p className="p-4 text-gray-500">Loading tasks…</p>}
-          {!isLoading && !error && filtered.length === 0 && <p className="p-8 text-center text-gray-500">{emptyMessage}</p>}
+          {isLoading && <p role="status" className="p-4 text-gray-400">Loading tasks…</p>}
+          {!isLoading && !error && filtered.length === 0 && emptyState}
           <div ref={cardsRef} role="list" aria-label="Tasks" className="relative"
             style={{ height: virtualizer.getTotalSize() }}>
             {items.map((item) => {
@@ -143,8 +165,8 @@ export default function CommandCenterTasks() {
           </tr>
         </thead>
         <tbody ref={bodyRef} className="divide-y divide-gray-800">
-          {isLoading && <tr><td colSpan={columns} className="p-4 text-gray-500">Loading tasks…</td></tr>}
-          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns} className="p-8 text-center text-gray-500">{emptyMessage}</td></tr>}
+          {isLoading && <tr><td colSpan={columns} className="p-4 text-gray-400"><span role="status">Loading tasks…</span></td></tr>}
+          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns}>{emptyState}</td></tr>}
           {padTop > 0 && <tr aria-hidden="true"><td colSpan={columns} style={{ height: padTop, padding: 0, border: 0 }} /></tr>}
           {items.map((item) => {
             const task = filtered[item.index]!;
