@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,6 +10,7 @@ import pytest
 import yaml
 from sqlalchemy import event
 
+from src import task_names
 from src.commands.handler import CommandHandler
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from tests.perf.test_hierarchy_statements import PLAN_NODES, PROJECT_ID, _graph, count_statements, db, seed_scale  # noqa: F401
@@ -67,7 +69,9 @@ async def test_formula_cook_budget(handler, db):  # noqa: F811
     assert c["n"] <= budget and elapsed <= 4.0
 
 
-async def test_formula_cook_overhead_over_plain_create_task_graph(handler, db):  # noqa: F811
+async def test_formula_cook_overhead_over_plain_create_task_graph(
+    handler, db, monkeypatch  # noqa: F811
+):
     """``formula_cook`` does everything ``create_task_graph`` does, plus provenance.
 
     Both paths resolve/parse/validate the same 200-node document and then
@@ -84,7 +88,14 @@ async def test_formula_cook_overhead_over_plain_create_task_graph(handler, db): 
     `validate_graph` work is in-memory over the already-loaded registry and
     adds no statements). Budget is the measured gap exactly (+3) — any
     slack beyond that would mask a real regression.
+
+    Each container's id comes from ``fresh_root_id``, which draws one of 896
+    adjective-noun names and spends one more identity probe whenever the draw
+    is already taken. An unseeded cook that drew the plain graph's root name
+    counted 444 against 440 + 3 (CI run 36854621694), so the draws are seeded:
+    both mints are fixed and distinct, and the gap is the provenance writes alone.
     """
+    monkeypatch.setattr(task_names, "random", random.Random(0))
     await seed_scale(db)
     async with count_statements(db) as c_plain:
         plain = await handler._cmd_create_task_graph(
