@@ -60,6 +60,7 @@ aq doctor --check git.stale_branches
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
+| A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
@@ -701,6 +702,46 @@ The latched `next_due_at` in the past is not part of the fault. A periodic
 sweep also waits for the approval-armed settling window, so with no new
 approval `next_due_at` stays at the missed boundary, and the sweep runs as soon
 as an approval arms the window. `aq integration flush` bypasses that window.
+
+## A green batch never promotes
+
+Under the continuous repair policy a batch's stage-zero repair writer is
+dispatched as soon as its candidate is built, so it is usually still
+attached to the integration branch when CI turns that candidate green.
+Promotion needs the batch collector's fence, so the first
+`integration.candidate_green` run ends on `wait`. Its `error` names the
+holder, for example `integration branch is held by repair repair-…-0
+(attached, fence 2, attached to session …)`. That is expected.
+
+When the writer closes on the unchanged candidate, the branch goes back to
+the collector. This happens through `continue-closed-root-repair`, or within
+a few seconds through the integration service's green-continuation pass, and
+a fresh continuation promotes the batch. A restart, a duplicated event or a
+long-expired stage deadline converges on the same single promotion. Nothing
+re-runs CI, rebuilds the candidate or files a new repair task. The daemon
+log line `green root batch <id> promotion continuation <outcome>: <reason>`
+is written when a batch's state changes:
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `blocked` | The snapshot is not promotable. The reason names the writer still attached, a short or foreign lease, or an unpublished candidate. | Wait for that holder. An attached writer is never taken over. |
+| `handed_off` / `continued` | A continuation was enqueued. | Nothing. |
+| `pending` / `backoff` | A continuation was just delivered; retries double from 60 s. | Nothing. |
+| `exhausted` | Six continuations for the same authority did not promote. | Read the promotion refusal, then re-drive it as below. |
+
+A live supervisor can re-drive the batch. `integration_promote_main` and a
+manual `aq playbook run` of the root train execute as the supervisor session.
+They reload every authority and finish a closed writer's handoff themselves,
+and they never accept CI evidence from the caller:
+
+```bash
+aq playbook run --playbook-id agent-queue-root-train \
+  --event '{"type": "integration.candidate_green", "event_id": "<unique id>", \
+            "project_id": "<project>", "operation_id": "<operation>", \
+            "batch_id": "<batch>", "revision": <n>, "head_sha": "<tested sha>"}'
+```
+
+Worker sessions still get `unauthorized`.
 
 ## A completed root has no pull request
 

@@ -37,6 +37,7 @@ class IntegrationService:
         review_handler: DrainHandler | None = None,
         root_pull_request_handler: DrainHandler | None = None,
         repair_dispatch_handler: DrainHandler | None = None,
+        green_promotion_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -63,6 +64,7 @@ class IntegrationService:
         self._review_handler = review_handler
         self._root_pull_request_handler = root_pull_request_handler
         self._repair_dispatch_handler = repair_dispatch_handler
+        self._green_promotion_handler = green_promotion_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -118,6 +120,13 @@ class IntegrationService:
             reconcile = getattr(self._repair, "reconcile_delegate_reservations", None)
             if callable(reconcile):
                 await self._source("repair reservations", reconcile, now)
+            # After CI and the repair ladder: an exact green candidate whose
+            # promotion wakeup was spent while a writer held the branch gets
+            # its bounded continuation before this tick's outbox dispatch.
+            if self._green_promotion_handler is not None:
+                await self._source(
+                    "green promotion continuation", self._green_promotion_handler, now
+                )
             if self._parent_ci_handler is not None:
                 await self._source("parent CI", self._parent_ci_handler, now)
             await self._source("integration intent", self._tick_intents, now)

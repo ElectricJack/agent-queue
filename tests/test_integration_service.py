@@ -57,6 +57,27 @@ async def test_tick_retries_repair_reservations_after_owner_recovery(db):
     assert calls == [("recovery", 100.0), ("reservation", 100.0)]
 
 
+async def test_tick_runs_green_continuation_before_outbox_dispatch(db):
+    """A continuation enqueued this tick is delivered by the same tick."""
+    calls = []
+
+    async def reserved(now):
+        calls.append(("reservation", now))
+
+    async def green(now):
+        calls.append(("green", now))
+
+    async def dispatch(now):
+        calls.append(("outbox", now))
+
+    service = IntegrationService(
+        db, SimpleNamespace(), SimpleNamespace(reconcile_delegate_reservations=reserved),
+        SimpleNamespace(dispatch_due=dispatch), green_promotion_handler=green,
+    )
+    await service.tick(100.0)
+    assert calls == [("reservation", 100.0), ("green", 100.0), ("outbox", 100.0)]
+
+
 async def test_due_schedule_keyset_pages_every_row_once_past_two_hundred(db):
     count = 205
     async with db.immediate() as conn:
