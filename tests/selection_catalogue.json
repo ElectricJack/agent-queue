@@ -534,6 +534,7 @@
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
+        "tests/test_integration_repair_rollover.py",
         "tests/test_integration_review_evidence.py",
         "tests/test_integration_root_pull_requests.py",
         "tests/test_parent_ci_publication.py",
@@ -1303,7 +1304,7 @@
       ]
     }
   },
-  "digest": "sha256:24b0fd0661e1bd4d836e2733b98fb9b57625b7e33424fe45312c7a16a83fd54e",
+  "digest": "sha256:06afdb7365e09afa88e31f3728cfdf0709b0d29bf4c5884e81eaf6dd2a6ad178",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7458,6 +7459,26 @@
         "parametrize"
       ],
       "summary": "Durable bounded repair stages and execution delegates."
+    },
+    "tests/test_integration_repair_rollover.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.service",
+        "src.models",
+        "src.orchestrator.core"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Natural deadline/drain/restart handoff with real PostgreSQL and Git origins."
     },
     "tests/test_integration_resume_metadata.py": {
       "areas": [

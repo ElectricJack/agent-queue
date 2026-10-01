@@ -630,6 +630,20 @@ successfully is already stopped, detached, and holding a `reserved` reservation 
 role, so the debug stage transfers from it without further evidence, exactly as it would from a
 collector or verifier.
 
+For a root batch whose superseded delegate has stopped before completing its handoff,
+dispatch invokes guarded owner recovery directly, independent of the optional quiet-owner
+sweep. It never stops or steals a live or unconfirmed writer. Recovery preserves clean-ahead
+commits or a deterministic snapshot of dirty work at `aq/preserved/<owner-row-id>` before
+detaching and releasing the old fence, claim, and workspace. A dirty workspace remains disabled.
+The recovery audit is the durable handoff evidence across crashes and duplicate dispatches.
+Before admitting the successor, prove the exact preserved ref/SHA against the frozen batch
+manifest, revision, and first-parent repair lineage. Persist that tip, the completed member
+ancestry, repair commit range, and old writer/stop/fence evidence in its dossier, and prepare
+its checkout at that exact tip. A changed ref or lineage remains an explicit blocker.
+The unpublished tip does not replace the accepted candidate subject or any CI evidence;
+resolution and publication still require the authenticated successor fence and exact frozen
+CI gates. Recovery changes no stage deadline, attempts, policy, or human escalation gate.
+
 ### 9.3 Human escalation
 
 If the debug budget is exhausted, the integration enters a human-blocked state. The branch,
