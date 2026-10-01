@@ -1786,8 +1786,12 @@ def s15_development_delivery(state: dict) -> str:
                  "--reason", "unlabelled legacy generation", check_ok=False)
     check("provenance migration" in str(refused.get("_error")),
           f"adoption invented legacy completion identity: {refused}")
-    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
-    api("pause_task", {"task_id": task_id})
+    # Reopen outside the claim frontier, then hold the fixture before adoption.
+    # A READY interval can let workspace preparation replace its branch name.
+    aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
+    paused = api_checked("pause_task", {"task_id": task_id})
+    check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
+    aq("task", "set", task_id, "--branch", "fixture-feature")
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--target-ref", feature_ref, "--head-sha", head,
                  "--reason", "operator creates an exact completion generation")
