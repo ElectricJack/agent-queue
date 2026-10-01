@@ -208,13 +208,16 @@ class SessionLens:
         #: Latest refused nudge per session id, cleared by the next success.
         #: Doctor reads it to say *why* a live idle worker still has mail.
         self._nudge_failures: dict[str, dict] = {}
+        #: Supervisor addresses already reported as aliased or undeliverable,
+        #: so a pending row logs once per daemon, not once per delivery pass.
+        self._reported_addresses: set[tuple[str, str | None]] = set()
 
     # -- SessionManagerProto ------------------------------------------------
 
     async def activity(self, *, kind: str, target_id: str, project_id: str | None) -> Activity:
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None or handle is None:
-            return self._absent_signal(kind=kind, target_id=target_id)
+            return await self._absent_signal(kind=kind, target_id=target_id, project_id=project_id)
 
         provider = self._providers.create(row.provider)
         try:
@@ -223,7 +226,7 @@ class SessionLens:
             logger.debug("is_running failed for %s", row.name, exc_info=True)
             running = False
         if not running:
-            return self._absent_signal(kind=kind, target_id=target_id)
+            return await self._absent_signal(kind=kind, target_id=target_id, project_id=project_id)
 
         activity = await self._transcript_activity(row)
         if activity is not None:
@@ -284,6 +287,11 @@ class SessionLens:
         raise_start_error: bool = False,
     ) -> bool:
         """Wake on demand; explicit terminal callers may request safe launch errors."""
+        if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+            address = await self._supervisor_address(target_id, project_id)
+            if address is None:
+                return False
+            target_id = address
         # All message, button and reconciler wakes share this lock. Key it by
         # runtime name so aliases cannot launch a second copy of the supervisor.
         name = _resolve_runtime_session_name(kind, target_id)
@@ -334,6 +342,16 @@ class SessionLens:
             logger.debug(
                 "supervisor address %r missing project id; refusing to start",
                 target_id,
+            )
+            return False
+        if not is_global and await self._db.get_project(derived_project) is None:
+            # Validate before spawning: the launch precedes the sessions row,
+            # so a missing project would start a harness, fail
+            # ``sessions_project_id_fkey`` and repeat on every wake.
+            self._report_address(
+                target_id, project_id,
+                "supervisor %r: project %r does not exist; refusing to start a session",
+                target_id, derived_project,
             )
             return False
 
@@ -716,13 +734,69 @@ class SessionLens:
 
     # -- internals ----------------------------------------------------------
 
-    @staticmethod
-    def _absent_signal(*, kind: str, target_id: str) -> Activity:
+    async def _absent_signal(
+        self, *, kind: str, target_id: str, project_id: str | None
+    ) -> Activity:
         """ "absent" for tasks and plain session names; "sleeping" only for
-        supervisor-named sessions (wake-able by design)."""
-        if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+        supervisor addresses that resolve to a supervisor (wake-able by
+        design). An undeliverable supervisor address is "absent": nothing may
+        be spawned for it, and the delivery engine parks its stale rows."""
+        if (
+            kind == "session"
+            and target_id.startswith(_SUPERVISOR_NAME_PREFIX)
+            and await self._supervisor_address(target_id, project_id) is not None
+        ):
             return "sleeping"
         return "absent"
+
+    async def _supervisor_address(self, target_id: str, project_id: str | None) -> str | None:
+        """The supervisor address *target_id* reaches, or None if undeliverable.
+
+        The suffix of ``supervisor-<pid>`` is authoritative whenever it names
+        a project, even against a different caller ``project_id`` (CHAT-1).
+        ``supervisor-global`` is the global supervisor, which has no project
+        by design. A suffix naming no project (agents wrote ``supervisor-aq``
+        for ``agent-queue``) resolves to the supervisor of *project_id* — the
+        message's own project, validated when it was sent — when that project
+        exists; the recipient is fenced to that same project. Without such a
+        project there is no supervisor to wake and none may be spawned.
+        """
+        suffix = target_id[len(_SUPERVISOR_NAME_PREFIX) :]
+        if suffix == _GLOBAL_SUPERVISOR_SUFFIX:
+            return target_id
+        if suffix and await self._db.get_project(suffix) is not None:
+            return target_id
+        if project_id and project_id != suffix and await self._db.get_project(project_id):
+            address = _SUPERVISOR_NAME_PREFIX + project_id
+            if suffix:
+                self._report_address(
+                    target_id, project_id,
+                    "supervisor address %r names no project; delivering to %r, "
+                    "the supervisor of the message's project",
+                    target_id, address, level=logging.INFO,
+                )
+            return address
+        self._report_address(
+            target_id, project_id,
+            "supervisor address %r names no project and message project %r names "
+            "no supervisor; not starting a session. Its messages park to their "
+            "sender once stale; re-send to supervisor-<project-id> or supervisor-global",
+            target_id, project_id,
+        )
+        return None
+
+    def _report_address(
+        self, target_id: str, project_id: str | None, msg: str, *args,
+        level: int = logging.WARNING,
+    ) -> None:
+        """Log an aliased or undeliverable supervisor address once per daemon."""
+        key = (target_id, project_id)
+        if key in self._reported_addresses:
+            return
+        if len(self._reported_addresses) >= 256:
+            self._reported_addresses.pop()
+        self._reported_addresses.add(key)
+        logger.log(level, msg, *args)
 
     async def _resolve(
         self, *, kind: str, target_id: str, project_id: str | None
@@ -767,6 +841,13 @@ class SessionLens:
             if row is None:
                 runtime_name = _resolve_runtime_session_name(kind, target_id)
                 row = await self._db.get_session_by_name(runtime_name)
+            if row is None and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+                # Only an address with no session of its own can be an alias.
+                address = await self._supervisor_address(target_id, project_id)
+                if address is not None and address != target_id:
+                    row = await self._db.get_session_by_name(
+                        _resolve_runtime_session_name(kind, address)
+                    )
         else:
             return None, None
 

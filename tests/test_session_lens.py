@@ -990,3 +990,226 @@ async def test_disabled_global_supervisor_does_not_cold_start(lens, db):
         kind="session", target_id="supervisor-global", project_id=None
     )
     assert await db.list_sessions(name="n-supervisor--global") == []
+
+
+# ---------------------------------------------------------------------------
+# Supervisor address validation (prime-cascade-83)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingTokenStore:
+    def __init__(self):
+        self.mints: list[dict] = []
+        self.revoked: list[str] = []
+
+    async def mint(self, *, session_id, task_id, project_id, elevated, session_instance_token=None):
+        self.mints.append({"session_id": session_id, "project_id": project_id, "elevated": elevated})
+        return "tok-" + session_id
+
+    async def revoke_session(self, session_id):
+        self.revoked.append(session_id)
+
+
+@pytest.fixture
+def token_store():
+    return _RecordingTokenStore()
+
+
+@pytest.fixture
+def scoped_lens(db, providers, spec_builder, harness_registry, config, profiles_loader, token_store):
+    return SessionLens(
+        db=db,
+        providers=providers,
+        spec_builder=spec_builder,
+        harness_registry=harness_registry,
+        config=config,
+        profiles_loader=profiles_loader,
+        epoch=TEST_EPOCH,
+        token_store=token_store,
+    )
+
+
+def _delivery_engine(db, lens):
+    from src.config import MessagesConfig
+    from src.messages.delivery import MessageDeliveryEngine
+
+    return MessageDeliveryEngine(db, lens, MessagesConfig())
+
+
+class TestSupervisorAddressValidation:
+    """A ``supervisor-<suffix>`` naming no project must never reach a launch.
+
+    The launch precedes the ``sessions`` insert, so a cold start for a missing
+    project spawned a harness, failed ``sessions_project_id_fkey``, killed it,
+    and repeated on every delivery pass (the live ``supervisor-aq`` loop).
+    """
+
+    @pytest.mark.parametrize("project_id", [None, "aq", "missing"])
+    async def test_nonexistent_project_is_absent_and_never_spawns(
+        self, db, providers, scoped_lens, token_store, caplog, project_id
+    ):
+        caplog.set_level(logging.WARNING, logger="src.messages.session_lens")
+        for _ in range(3):
+            assert await scoped_lens.activity(
+                kind="session", target_id="supervisor-aq", project_id=project_id
+            ) == "absent"
+            assert await scoped_lens.ensure_started(
+                kind="session", target_id="supervisor-aq", project_id=project_id
+            ) is False
+        assert providers.create("fake").starts == []
+        assert token_store.mints == []
+        assert await db.list_sessions(name=_supervisor_runtime_name("aq")) == []
+        assert await db.get_project("aq") is None  # no phantom project either
+        reports = [r for r in caplog.records if "supervisor-aq" in r.getMessage()]
+        assert len(reports) == 1, [r.getMessage() for r in reports]
+        assert "re-send to supervisor-<project-id>" in reports[0].getMessage()
+
+    async def test_existing_project_cold_starts_and_reports_sleeping(
+        self, db, providers, scoped_lens, token_store
+    ):
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ) == "sleeping"
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ) is True
+        assert [s.session_name for s in providers.create("fake").starts] == [
+            _supervisor_runtime_name("proj1")
+        ]
+        assert token_store.mints[0]["project_id"] == "proj1"
+        assert token_store.mints[0]["elevated"] is True
+        assert (await db.get_session_by_name(_supervisor_runtime_name("proj1"))).project_id == "proj1"
+
+    async def test_legacy_alias_reaches_running_message_project_supervisor(
+        self, db, providers, scoped_lens
+    ):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ) == "idle"
+        assert (await scoped_lens.session_for(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        )).id == row.id
+        assert await scoped_lens.nudge(
+            kind="session", target_id="supervisor-aq", project_id="proj1", text="wake"
+        ) is True
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
+        assert len(providers.create("fake").starts) == 1  # only the seed
+
+    async def test_legacy_alias_cold_starts_message_project_supervisor_once(
+        self, db, providers, scoped_lens, token_store
+    ):
+        fake = providers.create("fake")
+        gate = asyncio.Event()
+        original_start = fake.start
+
+        async def slow_start(spec):
+            await gate.wait()
+            return await original_start(spec)
+
+        fake.start = slow_start
+        alias = asyncio.create_task(scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ))
+        canonical = asyncio.create_task(scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ))
+        await asyncio.sleep(0.05)
+        gate.set()
+        assert await alias is True and await canonical is True
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ) is True
+
+        assert [s.session_name for s in fake.starts] == [_supervisor_runtime_name("proj1")]
+        assert [m["project_id"] for m in token_store.mints] == ["proj1"]
+        assert len(await db.list_sessions(name=_supervisor_runtime_name("proj1"))) == 1
+        assert await db.list_sessions(name=_supervisor_runtime_name("aq")) == []
+
+    async def test_existing_suffix_is_never_treated_as_an_alias(self, db, providers, scoped_lens):
+        await db.create_project(Project(id="proj2", name="Proj2"))
+        await _seed_running_supervisor(db, providers, project_id="proj1")
+        # proj2's supervisor is asleep; proj1's live one must not answer for it.
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-proj2", project_id="proj1"
+        ) == "sleeping"
+        assert await scoped_lens.nudge(
+            kind="session", target_id="supervisor-proj2", project_id="proj1", text="x"
+        ) is False
+
+    @pytest.mark.parametrize("project_id", [None, "proj1"])
+    async def test_global_supervisor_keeps_admin_scope(
+        self, db, providers, scoped_lens, token_store, project_id
+    ):
+        # No project named "global" exists; the global address needs none.
+        assert await db.get_project("global") is None
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-global", project_id=project_id
+        ) == "sleeping"
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-global", project_id=project_id
+        ) is True
+        assert token_store.mints == [
+            {"session_id": token_store.mints[0]["session_id"], "project_id": None, "elevated": True}
+        ]
+        row = await db.get_session_by_name("n-supervisor--global")
+        assert row.project_id is None
+        assert row.work_dir == "/tmp/vault"
+        assert [s.session_name for s in providers.create("fake").starts] == ["n-supervisor--global"]
+
+    async def test_cold_start_refuses_missing_project_even_past_resolution(
+        self, db, providers, scoped_lens, token_store
+    ):
+        # Restart and any future direct caller enter below ``ensure_started``.
+        assert await scoped_lens._ensure_started_locked(
+            kind="session", target_id="supervisor-aq", project_id=None
+        ) is False
+        assert providers.create("fake").starts == []
+        assert token_store.mints == []
+
+    async def test_delivery_passes_deliver_alias_rows_and_never_spawn_for_undeliverable(
+        self, db, providers, scoped_lens, monkeypatch
+    ):
+        """End to end through the delivery engine across repeated passes."""
+        _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        legacy = await db.create_message(
+            project_id="proj1", from_kind="user", from_id="cli", to_kind="session",
+            to_id="supervisor-aq", subject="historical", body="original body, preserved",
+        )
+        orphan = await db.create_message(
+            project_id=None, from_kind="user", from_id="cli", to_kind="session",
+            to_id="supervisor-nowhere", subject="orphan", body="orphan body",
+        )
+        engine = _delivery_engine(db, scoped_lens)
+        fake = providers.create("fake")
+
+        results = [await engine.run_delivery_pass() for _ in range(3)]
+
+        assert [r["delivered"] for r in results] == [1, 0, 0]
+        assert fake.sent_nudges == [
+            (handle.name, f"Handle `aq message status {legacy.id} --json`.")
+        ]
+        delivered = await db.get_message(legacy.id)
+        assert delivered.delivered_at is not None and delivered.via == "nudge"
+        assert delivered.to_id == "supervisor-aq"  # the row itself is untouched
+        assert delivered.body == "original body, preserved"
+        # The undeliverable row never launched anything and stays pending.
+        assert len(fake.starts) == 1  # only the seed
+        pending = await db.get_message(orphan.id)
+        assert pending.delivered_at is None and pending.archived_at is None
+
+        # Once stale it parks to its sender with the body, like any dead session.
+        from src.messages import delivery
+
+        later = time.time() + delivery.PARK_AFTER_SECONDS + 60
+        monkeypatch.setattr(delivery.time, "time", lambda: later)
+        assert (await engine.run_delivery_pass())["parked"] == 1
+        parked = await db.get_message(orphan.id)
+        assert parked.archived_at is not None and parked.body == "orphan body"
+        notices = await db.list_messages(to_kind="user", include_archived=False, limit=10)
+        assert any(
+            n.reply_to_id == orphan.id and "orphan body" in n.body for n in notices
+        )
+        assert len(fake.starts) == 1
