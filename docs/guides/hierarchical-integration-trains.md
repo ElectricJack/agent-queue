@@ -575,7 +575,10 @@ provenance remain outside admission.
 
 Failed and terminally cancelled source checks file deduplicated repair roots with
 exact source identity and actionable check links. A newer pending/successful
-rerun supersedes an old cancellation. Repair branches preserve source ancestry;
+rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
+`pull_request` CI; with no required check on its head it is recorded as
+`conflict`, and under `repair.conflict_scope: batch` it enters the train so the
+batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
 when a repaired source is green, both it and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. Every final
 candidate still requires its own exact authenticated green CI.

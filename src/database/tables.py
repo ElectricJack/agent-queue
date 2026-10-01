@@ -687,7 +687,7 @@ integration_source_ci = Table(
     CheckConstraint("generation >= 0", name="ck_integration_source_ci_generation"),
     CheckConstraint("repair_attempt >= 0", name="ck_integration_source_ci_attempt"),
     CheckConstraint(
-        "state IN ('green', 'red', 'cancelled', 'pending')",
+        "state IN ('green', 'red', 'cancelled', 'pending', 'conflict')",
         name="ck_integration_source_ci_state",
     ),
     Index("idx_integration_source_ci_repair", "repair_task_id"),
