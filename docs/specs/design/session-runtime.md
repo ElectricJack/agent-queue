@@ -303,6 +303,27 @@ ours (Codex has no `--session-id`), the reader also reports it via
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
 
+Claude content UUIDs identify transcript events, while `message.id` identifies an API
+call. Usage accounting keys the provider, transcript conversation and API call separately
+from displayed content. Missing API IDs fall back to the event UUID. A durable per-call
+record retains the maximum observed value of each counter (uncached input, output, cache
+reads and cache writes); later partial/final observations append only positive increases
+to the ledger. Lower, missing or repeated counters cannot recharge a call. The progress
+record and ledger delta commit together, so retries, concurrent watchers and replay across
+AQ session incarnations are idempotent. Attribution stays with the first recorded usage.
+Accounting failures leave the byte checkpoint retryable. On adoption, consumed Claude
+records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
+or deleting the original rows. Historical inflation requires a separate evidenced
+correction; it is never repaired implicitly during ingest.
+
+Historical reconciliation is read-only and uses a frozen transcript/ledger window.
+Only unambiguous UUID matches with exact counter agreement and complete call coverage
+qualify for a proposed compensating adjustment. Reports retain original row IDs and
+hashes, deterministic correction IDs, signed category deltas and their inverse. Applying
+any adjustment requires a separate command with idempotency and evidence preconditions;
+the reporting tool has no apply mode. Token volumes do not imply subscription quota
+percentages.
+
 Codex rollout date folders and filenames use local time, while `session_meta` timestamps
 use UTC. Keyless discovery searches the UTC launch date and adjacent dates, then accepts
 only a unique match for the exact working directory and launch timestamp (−10/+60 seconds).

@@ -76,3 +76,34 @@ async def test_marks_are_per_path(db):
     await db.delete_transcript_checkpoint(PATH)
     assert await db.get_transcript_checkpoint(PATH) is None
     assert await db.get_transcript_checkpoint(PATH + ".2") is not None
+
+
+async def test_usage_call_migration_is_idempotent_and_preserves_ledger(db):
+    from importlib import import_module
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect, select
+    from src.database.tables import token_ledger, transcript_usage_calls
+
+    migration = import_module("migrations.versions.a00000000055_transcript_usage_calls")
+    await db.record_token_usage("p1", "a", "t", 7, session_id="s", call_id="legacy")
+    async with db._engine.begin() as conn:
+        original = (await conn.execute(select(token_ledger))).mappings().one()
+        def migrate(sync_conn):
+            # Simulate the incremental upgrade on the disposable test DB.
+            transcript_usage_calls.drop(sync_conn)
+            next(index for index in token_ledger.indexes
+                 if index.name == "idx_token_ledger_call_id").drop(sync_conn)
+            with Operations.context(MigrationContext.configure(sync_conn)):
+                migration.upgrade()
+                migration.upgrade()
+            inspector = inspect(sync_conn)
+            assert inspector.has_table("transcript_usage_calls")
+            assert "idx_token_ledger_call_id" in {
+                index["name"] for index in inspector.get_indexes("token_ledger")
+            }
+            assert "ck_transcript_usage_calls_nonnegative" in {
+                check["name"] for check in inspector.get_check_constraints("transcript_usage_calls")
+            }
+        await conn.run_sync(migrate)
+        assert dict((await conn.execute(select(token_ledger))).mappings().one()) == dict(original)
