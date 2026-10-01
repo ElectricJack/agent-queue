@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-138 commands are registered.
+139 commands are registered.
 
 ### Tasks, gates and routing
 

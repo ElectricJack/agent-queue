@@ -533,13 +533,14 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
+      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_rollover.py",
@@ -1106,6 +1107,7 @@
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
+        "tests/test_task_close_completion_recovery.py",
         "tests/test_task_close_summary_enforcement.py",
         "tests/test_task_command_authorization.py",
         "tests/test_task_context.py",
@@ -1315,7 +1317,7 @@
       ]
     }
   },
-  "digest": "sha256:76b86cdd97402a0f26820a42267eb94e04edffb727b84ba11148cb64f4deb937",
+  "digest": "sha256:4eadcd9a70ff3b0cb04d401c9db1c0699a4e2675112e975e0dbafdae876afddc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7493,6 +7495,23 @@
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
     },
+    "tests/test_integration_pr_delivery.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.pr_delivery",
+        "src.integration.promotion",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "An open PR closes only once Git proves its work is on the default branch."
+    },
     "tests/test_integration_promotion.py": {
       "areas": [
         "integration-promotion"
@@ -9381,7 +9400,9 @@
         "src.models",
         "src.object_loop.contracts"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
     },
     "tests/test_onboarding_queries.py": {
@@ -12275,6 +12296,8 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.development",
@@ -12386,9 +12409,11 @@
       "default_arm": true,
       "imports": [
         "src.agents.configuration",
+        "src.config",
         "src.database",
         "src.database.tables",
         "src.messages",
+        "src.messages.delivery",
         "src.models",
         "src.sessions",
         "src.sessions.fake",
@@ -13127,6 +13152,25 @@
         "parametrize"
       ],
       "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
+    },
+    "tests/test_task_close_completion_recovery.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A restart between task close's terminal transition and its completion"
     },
     "tests/test_task_close_summary_enforcement.py": {
       "areas": [
