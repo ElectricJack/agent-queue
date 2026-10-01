@@ -6,9 +6,10 @@ name: Venv cache
 # ref or on the default branch. `tests.yml` never runs on a push to `main`, so
 # without this workflow every PR merge ref and every new `aq/integration/**` or
 # `aq/parent/**` ref missed on its first run and installed ~80 MB from PyPI
-# inside a ten-minute job budget (run 36828686954 lost three jobs to a slow
-# PyPI). This job builds `.venv` exactly as a `tests.yml` cache miss does and
-# saves it under the same key. It runs no tests.
+# inside what was then a ten-minute job budget (run 36828686954 lost three
+# jobs to a slow PyPI). This job builds `.venv` exactly as a `tests.yml` cache
+# miss does, retrying a stalled download the same way, and saves it under the
+# same key. It runs no tests.
 #
 # * A push to `main` that changes a manifest the key hashes seeds the new key.
 # * The daily schedule seeds a key that changed with the runner's Python patch
@@ -66,8 +67,19 @@ jobs:
           path: .venv
           key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
 
+      # A seed that fails leaves `main` without an entry and every ref's first
+      # run misses again, so it retries a stalled download as tests.yml does.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+          for attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 \
+              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              exit 0
+            fi
+            echo "::warning::pip install attempt $attempt of 3 failed"
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::pip install failed after 3 attempts"
+          exit 1

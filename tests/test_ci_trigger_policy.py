@@ -492,3 +492,12 @@ def test_cache_miss_install_gives_up_after_bounded_attempts(tmp_path):
     assert result.returncode != 0
     assert len(calls) == 3
     assert '::error::' in result.stdout
+
+
+def test_venv_seed_retries_a_stalled_pypi_download(tmp_path):
+    # A failed seed leaves main without an entry, so every ref's first run
+    # would install from the same slow PyPI the retry exists for.
+    install = _step(workflow(SEED)['jobs']['seed'], INSTALL)
+    result, calls = _run_install(tmp_path, install['run'], fail_times=2)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 3

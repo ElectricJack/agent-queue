@@ -207,8 +207,10 @@ changes a manifest the key hashes (or the seed itself), daily for a runner's
 new Python patch version and against GitHub's seven-day eviction of unused
 entries, and on `workflow_dispatch`. Before it existed, the first run on
 every PR merge ref and every new integration or parent ref installed about
-80 MB from PyPI inside the ten-minute job budget and saved one more copy of
-the same key; a slow PyPI cost run 36828686954 three jobs.
+80 MB from PyPI inside what was then a ten-minute job budget and saved one
+more copy of the same key; a slow PyPI cost run 36828686954 three jobs. The
+seed retries a stalled download as the suite jobs do: a failed seed leaves
+`main` without an entry until it next runs.
 [`tests/test_ci_trigger_policy.py`](../../tests/test_ci_trigger_policy.py)
 holds the seed's checkout, Python, cache and install steps equal to
 `tests.yml`'s, so change them together.
