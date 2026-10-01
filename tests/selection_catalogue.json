@@ -1105,6 +1105,7 @@
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
+        "tests/test_task_close_completion_recovery.py",
         "tests/test_task_close_summary_enforcement.py",
         "tests/test_task_command_authorization.py",
         "tests/test_task_context.py",
@@ -1314,7 +1315,7 @@
       ]
     }
   },
-  "digest": "sha256:eb22ebde286a572a645039257ecd1d76ec67eb500240aeb10f125ee6baf8b17e",
+  "digest": "sha256:50b6682d9ee82bdde6ce11208159970193baabe6652a088b0012233a2dfc4f45",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13110,6 +13111,21 @@
         "parametrize"
       ],
       "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
+    },
+    "tests/test_task_close_completion_recovery.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.queries.result_queries",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "A restart between task close's terminal transition and its completion"
     },
     "tests/test_task_close_summary_enforcement.py": {
       "areas": [
