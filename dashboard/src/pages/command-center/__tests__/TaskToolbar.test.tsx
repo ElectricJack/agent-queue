@@ -308,3 +308,32 @@ describe("layout-aware task controls", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Tidy failed");
   });
 });
+
+
+describe("compact filter disclosure", () => {
+  it("keeps active secondary filters visible in its label and can be opened by keyboard", async () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true,
+      value: () => ({ matches: true }) });
+    try {
+      mount("/projects/alpha/tasks?window=24h&held=1");
+      const toggle = screen.getByRole("button", { name: "Filters (2 active)" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByRole("combobox", { name: "Time range" })).not.toBeInTheDocument();
+      expect(screen.getByRole("searchbox", { name: "Search tasks" })).toBeInTheDocument();
+      toggle.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("24h");
+      expect(screen.getByRole("checkbox", { name: "Held by provider" })).toBeChecked();
+      await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+      expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+      expect(screen.getByTestId("query")).toBeEmptyDOMElement();
+      await userEvent.click(toggle);
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+    }
+  });
+});

@@ -3,7 +3,7 @@ import { PauseIcon, PlayIcon, StopIcon, ArrowPathIcon, ChatBubbleLeftIcon, Trash
 import { usePauseTask, useResumeTask, useStopTask, useRestartTask, useEditTask, type Task } from "../../api/hooks";
 import DeleteTaskModal from "../../components/DeleteTaskModal";
 import { useShellPaneStore } from "../../panes/store";
-import { TASK_STATUSES } from "./taskFilters";
+import { TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 const STATUS_OPTIONS = TASK_STATUSES;
 
@@ -117,7 +117,7 @@ export function InlineStatus({ task }: { task: Task }) {
       {STATUS_OPTIONS.includes(current) ? null : <option value="">{current || "-"}</option>}
       {STATUS_OPTIONS.filter((s) => s !== "PAUSED" || current === "PAUSED").map((s) => (
         <option key={s} value={s}>
-          {s}
+          {taskStatusLabel(s)}
         </option>
       ))}
     </select>
