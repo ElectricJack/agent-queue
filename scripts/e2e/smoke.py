@@ -1713,6 +1713,28 @@ def _seed_development_validation(source: Path) -> None:
     )
 
 
+def _adoption_evidence(task_id: str, remote, head: str) -> str:
+    """Name the live inputs of an adoption that observed a non-ancestor source.
+
+    Hosted runs intermittently refused S15's adoption this way (runs
+    36779116662, 36786775568); the smoke output is all CI keeps, so carry the
+    task row, the remote heads and the daemon's observation into the failure.
+    """
+    from pathlib import Path
+    row = task_show(task_id)
+    observed = {key: row.get(key) for key in ("status", "branch_name", "assigned_agent",
+                                               "route_source", "updated_at")}
+    remote_heads = _git_text(str(remote), "for-each-ref",
+                             "--format=%(refname) %(objectname)", "refs/heads/")
+    log = Path(os.environ["AQ_E2E_HOME"]) / "daemon.log"
+    lines = [
+        line for line in log.read_text(errors="replace").splitlines()
+        if "development adoption:" in line and not line.startswith("{")
+    ][-3:] if log.is_file() else []
+    return (f"task now {observed}; pushed {head}; remote heads {remote_heads!r}; "
+            f"daemon observed {lines}")
+
+
 def s15_development_delivery(state: dict) -> str:
     """Operator configure → real published branch → AQ validation/promotion → adoption."""
     from pathlib import Path
@@ -1789,22 +1811,22 @@ def s15_development_delivery(state: dict) -> str:
     refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--target-ref", feature_ref, "--head-sha", head,
                  "--reason", "unlabelled legacy generation", check_ok=False)
-    check("provenance migration" in str(refused.get("_error")),
-          f"adoption invented legacy completion identity: {refused}")
+    if "provenance migration" not in str(refused.get("_error")):
+        raise Failure(f"adoption invented legacy completion identity: {refused}; "
+                      + _adoption_evidence(task_id, remote, head))
     # Reopen outside the claim frontier, then hold the fixture before adoption.
     # A READY interval can let workspace preparation replace its branch name.
     aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
     paused = api_checked("pause_task", {"task_id": task_id})
     check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
     aq("task", "set", task_id, "--branch", "fixture-feature")
-    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--target-ref", feature_ref, "--head-sha", head,
-                 "--reason", "operator creates an exact completion generation")
-    check(adopted.get("outcome") == "adopted", str(adopted))
-    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--target-ref", feature_ref, "--head-sha", head,
-                 "--reason", "prove repeatable operator reconciliation")
-    check(adopted.get("outcome") == "adopted", str(adopted))
+    for reason in ("operator creates an exact completion generation",
+                   "prove repeatable operator reconciliation"):
+        adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                     "--target-ref", feature_ref, "--head-sha", head,
+                     "--reason", reason, check_ok=False)
+        if adopted.get("outcome") != "adopted":
+            raise Failure(f"{adopted}; " + _adoption_evidence(task_id, remote, head))
     after = aq("integration", "migrate-provenance", "e2e-development")
     check(not any(entry["task_id"] == task_id for entry in after.get("fallback_generations", [])),
           f"the exact generation is still unlabelled: {after}")

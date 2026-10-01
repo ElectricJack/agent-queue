@@ -218,7 +218,13 @@ at the five-minute cap. Setup consumed 20–60 seconds and individual scenario
 timings varied substantially between runners. The groups spread independent
 S11 and S14 into claims, S13 into CLI, S12 into graphs and S18 into failover.
 This balances scenario work near 218–230 seconds per group using the slower
-measured timings, retaining every scenario and the existing job cap.
+measured timings, retaining every scenario.
+Balancing alone did not fit the former five-minute cap: in run
+[36786775568](https://github.com/ElectricJack/agent-queue/actions/runs/36786775568)
+the `graphs` group passed in a 236.68-second test, but a cold dependency
+installation (37 seconds) left the job cancelled at 5:03 during finalization.
+The smoke subprocess retains its 270-second deadline; the eight-minute job
+budget also covers cold installation and post-job cache/container cleanup.
 Fresh hosted runs must verify the complete job result, including finalization.
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
