@@ -25,11 +25,14 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import asdict
 from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
-from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+from src.database.queries.result_queries import (
+    PENDING_COMPLETION_KEY,
+    close_identity,
+    completion_draft,
+)
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 from src.models import TaskCompletion, TaskStatus
@@ -1198,18 +1201,29 @@ class SessionCommandsMixin:
                     "error": f"integration review evidence refused: {exc}",
                 }
         completion_id = str(uuid.uuid4())
+        expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
         # The terminal transition commits inside ``complete_session_task`` and
         # the completion record is saved only after it returns.  Draft the
-        # agent's account first so a restart in that window cannot lose it:
-        # ``recover_pending_completions`` saves the draft at daemon start when
-        # the transition committed (fair-ridge-26).  Fields computed after the
+        # agent's account first so a restart in that window cannot lose it
+        # (fair-ridge-26), bound to this attempt's identity.  The transition
+        # that accepts this close records the same identity in its own
+        # transaction (``accepted_close``); ``recover_pending_completions``
+        # saves the draft at daemon start only on that exact proof, never
+        # from the task's status (smart-cascade).  Fields computed after the
         # transition (auto-captured commit, unmerged-work note) are absent
         # from a recovered record rather than guessed.
+        accepted_close = close_identity(
+            completion_id,
+            session_id=session.id if session is not None else None,
+            claim_epoch=(
+                expect_claim_epoch if expect_claim_epoch is not None else task.claim_epoch
+            ),
+        )
         explicit_commit = str(args.get("commit") or "").strip()
         await self.db.set_task_meta(
             task_id,
             PENDING_COMPLETION_KEY,
-            asdict(
+            completion_draft(
                 TaskCompletion(
                     id=completion_id,
                     task_id=task_id,
@@ -1227,11 +1241,11 @@ class SessionCommandsMixin:
                     notes=str(args.get("notes") or "").strip(),
                     deliverables=deliverable_results,
                     completed_at=time.time(),
-                )
+                ),
+                accepted_close,
             ),
         )
         try:
-            expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
             result = await self.orchestrator.complete_session_task(
                 task,
                 outcome=outcome,
@@ -1246,10 +1260,11 @@ class SessionCommandsMixin:
                 session_id=session.id if session is not None else None,
                 review_evidence_snapshot=review_evidence_snapshot,
                 skip_open_subtasks=skip_open_subtasks_at_close,
+                accepted_close=accepted_close,
             )
             retry_in_session = bool(result.get("verification_retry"))
         except SubtasksOpenError as exc:
-            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+            await self.db.discard_pending_completion(task_id, completion_id)
             return {
                 "success": False,
                 "code": "subtasks.open",
@@ -1267,8 +1282,19 @@ class SessionCommandsMixin:
             # this call reaches it. The session is still live and holds
             # nothing to clean up, so it keeps its token.
             stale = True
-            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+            await self.db.discard_pending_completion(task_id, completion_id)
             return {"success": False, "result": "stale_claim", "error": str(exc)}
+        except Exception:
+            # Whether the transition committed is unknown here; only its own
+            # recorded identity can say.  A rejected attempt's draft goes, an
+            # accepted one stays for recovery -- its record is what was lost.
+            try:
+                await self.db.discard_pending_completion(task_id, completion_id)
+            except Exception:
+                logger.warning(
+                    "Could not discard the completion draft of %s", task_id, exc_info=True
+                )
+            raise
         finally:
             # Pool sessions keep their instance token — the workflow keeps
             # going (``claim_next``) so revoking here would kill it mid-loop.
@@ -1284,7 +1310,7 @@ class SessionCommandsMixin:
                         pass
 
         if retry_in_session:
-            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+            await self.db.discard_pending_completion(task_id, completion_id)
             # Not a close: the task is still IN_PROGRESS under this session's
             # claim, and the agent has to fix the listed git issues and call
             # ``aq task close`` again.  No completion record, no claim
@@ -1427,7 +1453,9 @@ class SessionCommandsMixin:
             ),
             **({"idempotent": True} if completion_record_id else {}),
         )
-        await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+        await self.db.discard_pending_completion(
+            task_id, accepted_close["completion_id"], keep_accepted=False
+        )
 
         await self.db.record_task_session_outcome(
             task_id, outcome, session_id=session.id if session is not None else None,

@@ -520,9 +520,12 @@ async def test_first_parent_checkpoint_reserves_one_frozen_episode_operation(db)
 
     with pytest.raises(StaleClaim):
         await hierarchy.checkpoint_and_suspend_parent(
-            "parent", "b" * 40, 2, expect_claim_epoch=99
+            "parent", "b" * 40, 2, expect_claim_epoch=99,
+            accepted_close={"completion_id": "c", "session_id": "s", "claim_epoch": 99},
         )
     assert (await db.get_integration_checkpoint("parent"))["episode_id"] is None
+    # A fenced-out suspension accepts no close.
+    assert await db.get_task_meta("parent", "accepted_close") is None
     assert await db.get_active_parent_integration_operation("parent") is None
 
     result = await hierarchy.checkpoint_parent("parent", "b" * 40, 2)

@@ -1286,6 +1286,7 @@ class ExecutionMixin:
         session_id: str | None = None,
         review_evidence_snapshot: dict | None = None,
         skip_open_subtasks: bool = False,
+        accepted_close: dict | None = None,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -1302,6 +1303,14 @@ class ExecutionMixin:
         session: it keeps its workspace agent-lock and instance token, so
         ``release_session_task_resources`` (a full release) is skipped —
         ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
+
+        ``accepted_close`` is the close's identity (``close_identity``).  Every
+        transition below that accepts the close -- and is followed by the
+        caller saving its completion record -- passes it on, so the identity
+        is stored in that status write's own transaction and a restart before
+        the record is saved can prove the close was accepted.  The accepted
+        repair-delegate path is the exception: it already owns a durable
+        record (``completion_record_id``).
         """
         agent = (
             await self.db.get_agent(task.assigned_agent_id)
@@ -1343,6 +1352,7 @@ class ExecutionMixin:
             project=project,
             close_session_live=session_live,
             work_outcome=work_outcome,
+            accepted_close=accepted_close,
         )
         repair_scope = await self.db.get_repair_filing_scope(
             task.id, session_id=session_id
@@ -1626,7 +1636,8 @@ class ExecutionMixin:
                                 completion = await ParentCompletion(
                                     self.db, git_manager=self.git
                                 ).complete_parent(
-                                    task.id, int(checkpoint["generation"]), head
+                                    task.id, int(checkpoint["generation"]), head,
+                                    accepted_close=accepted_close,
                                 )
                                 if completion["outcome"] == "completed":
                                     managed_parent_completed = True
@@ -1643,6 +1654,7 @@ class ExecutionMixin:
                                 head,
                                 int(checkpoint["generation"]),
                                 expect_claim_epoch=expect_claim_epoch,
+                                accepted_close=accepted_close,
                             )
                             managed_parent_suspended = True
                             pr_url = None
@@ -1791,6 +1803,7 @@ class ExecutionMixin:
                     fence_token=int(repair_scope["fence_token"]),
                     head_sha=repair_writer_head,
                     commit_proof=repair_commit_proof,
+                    accepted_close=accepted_close,
                 )
                 if closed["outcome"] != "completed":
                     feedback = closed.get(
@@ -1819,6 +1832,7 @@ class ExecutionMixin:
                         assigned_agent_id=None,
                         expect_claim_epoch=expect_claim_epoch,
                         skip_open_subtasks=skip_open_subtasks,
+                        accepted_close=accepted_close,
                         **pr_kwargs,
                     )
                 await self.db.log_blocked_flips(transition.flipped)
@@ -1833,6 +1847,7 @@ class ExecutionMixin:
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
                     **pr_kwargs,
                 )
             elif completion_source is not None and new_status == TaskStatus.COMPLETED:
@@ -1847,6 +1862,7 @@ class ExecutionMixin:
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
                     **pr_kwargs,
                 )
             else:
@@ -1857,6 +1873,7 @@ class ExecutionMixin:
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
                     **pr_kwargs,
                 )
         except HierarchyError as exc:

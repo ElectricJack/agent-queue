@@ -1475,7 +1475,8 @@ class Orchestrator(
         # because adoption reads process_names off them.
         # Before anything moves a task: a close interrupted between its
         # terminal transition and its completion record is finished from the
-        # drafted record, and a draft whose close never committed is dropped.
+        # drafted record when that transition recorded the draft's exact
+        # identity (``accepted_close``); every other draft is dropped.
         try:
             recovered = await self.db.recover_pending_completions()
             if recovered:

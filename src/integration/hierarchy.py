@@ -733,6 +733,7 @@ class HierarchyIntegration:
         *,
         _suspend: bool = False,
         expect_claim_epoch: int | None = None,
+        accepted_close: dict | None = None,
     ) -> dict:
         if not _OID.fullmatch(head_sha):
             raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
@@ -863,6 +864,7 @@ class HierarchyIntegration:
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     _manual_pause_control=True,
+                    accepted_close=accepted_close,
                 )
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
@@ -882,14 +884,20 @@ class HierarchyIntegration:
         generation: int,
         *,
         expect_claim_epoch: int,
+        accepted_close: dict | None = None,
     ) -> dict:
-        """Atomically reserve the collection episode and pause its producer."""
+        """Atomically reserve the collection episode and pause its producer.
+
+        ``accepted_close`` is the producer's ``task close`` identity, recorded
+        with the PAUSED transition (``_apply_transition``).
+        """
         return await self.checkpoint_parent(
             task_id,
             head_sha,
             generation,
             _suspend=True,
             expect_claim_epoch=expect_claim_epoch,
+            accepted_close=accepted_close,
         )
 
     async def materialize_origin(self, origin_id: str) -> dict:

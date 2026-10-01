@@ -1723,7 +1723,9 @@ class GitOpsMixin:
                 len(fixable),
             )
             return PhaseResult.STOP
-        reopened = await self._reopen_with_verification_feedback(task, fixable)
+        reopened = await self._reopen_with_verification_feedback(
+            task, fixable, accepted_close=ctx.accepted_close
+        )
         ctx.verification_reopened = reopened
         return PhaseResult.STOP
 
@@ -1973,6 +1975,8 @@ class GitOpsMixin:
         self,
         task,
         failures: list[tuple[str, bool]],
+        *,
+        accepted_close: dict | None = None,
     ) -> bool:
         """Reopen a task with git verification feedback.
 
@@ -1988,6 +1992,9 @@ class GitOpsMixin:
         (``PipelineContext.close_session_live`` is False) — otherwise
         ``_phase_verify`` refuses the close in place and the worker retries
         without a session restart.
+
+        ``accepted_close`` is the close's identity: this reopen is the status
+        write that accepts that close, so it records it in its transaction.
         """
         contexts = await self.db.get_task_contexts(task.id)
         retry_count = sum(1 for c in contexts if c.get("type") == "verification_feedback")
@@ -2005,6 +2012,7 @@ class GitOpsMixin:
             retry_count=0,
             assigned_agent_id=None,
             pr_url=None,
+            accepted_close=accepted_close,
         )
         await self._emit_text_notify(
             f"🔄 **Verification reopen:** Task `{task.id}` — "

@@ -1398,6 +1398,10 @@ class PipelineContext:
     #: close path copies this proof-backed verdict to ``task.completed`` as
     #: ``no_code``; intent metadata never sets it.
     no_work_proven: bool = False
+    #: Identity of the ``aq task close`` this pipeline runs for (see
+    #: ``close_identity``).  A phase that ends the close with its own status
+    #: write -- the verification reopen -- records it in that transaction.
+    accepted_close: dict | None = None
 
 
 @dataclass(frozen=True)

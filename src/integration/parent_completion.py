@@ -1085,9 +1085,15 @@ class ParentCompletion:
         return readiness | {"outcome": "woken", "owner_id": expected_owner}
 
     async def complete_parent(
-        self, task_id: str, generation: int, head_sha: str
+        self, task_id: str, generation: int, head_sha: str,
+        *, accepted_close: dict | None = None,
     ) -> dict[str, Any]:
-        result = await self._complete_parent_transition(task_id, generation, head_sha)
+        """Complete a verified parent.  ``accepted_close`` is the identity of
+        the parent's own ``task close`` when that close drives this completion;
+        it is recorded with the COMPLETED transition."""
+        result = await self._complete_parent_transition(
+            task_id, generation, head_sha, accepted_close=accepted_close
+        )
         if result["outcome"] not in {"completed", "already_completed"} or self.git_manager is None:
             return result
 
@@ -1117,7 +1123,8 @@ class ParentCompletion:
         return result
 
     async def _complete_parent_transition(
-        self, task_id: str, generation: int, head_sha: str
+        self, task_id: str, generation: int, head_sha: str,
+        *, accepted_close: dict | None = None,
     ) -> dict[str, Any]:
         from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
         from src.models import TaskStatus
@@ -1239,6 +1246,7 @@ class ParentCompletion:
                 # hold from this integration-owned PAUSED checkpoint.
                 _manual_pause_control=True,
                 _integration_completion_token=_INTEGRATION_COMPLETION_TOKEN,
+                accepted_close=accepted_close,
             )
             completed_at = self.clock()
             await conn.execute(

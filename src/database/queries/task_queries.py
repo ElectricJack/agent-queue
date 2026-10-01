@@ -99,6 +99,12 @@ INTEGRATION_REWORK_AT_KEY = "integration_rework_at"
 # COMPLETED so delivery readers never substitute an older close record while
 # the new record is still being saved by the close command.
 DEVELOPMENT_COMPLETION_ID_KEY = "development_completion_id"
+# The identity ({completion_id, session_id, claim_epoch}) of the last ``task
+# close`` whose own transition committed, written in that status write's
+# transaction (``_apply_transition(accepted_close=...)``).  A drafted
+# completion record is recovered after a restart only when this names it
+# exactly; a task's status alone never proves a close was accepted.
+ACCEPTED_CLOSE_KEY = "accepted_close"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -1115,6 +1121,7 @@ class TaskQueryMixin:
         _integration_completion_token=None,
         _operator_adoption_token=None,
         _integration_wake_token=None,
+        accepted_close: dict | None = None,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -1170,6 +1177,11 @@ class TaskQueryMixin:
         caller *in the same statement* via ``extra_where``; it skips the
         pre-read.  Only pass it when ``extra_where`` pins both values, so
         that a matched UPDATE proves the assertion.
+
+        ``accepted_close`` is the identity of the ``task close`` this write
+        accepts.  It is stored as ``ACCEPTED_CLOSE_KEY`` only when the status
+        write matched, in its transaction, so the identity exists exactly when
+        the close's transition committed.
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
@@ -1327,6 +1339,10 @@ class TaskQueryMixin:
                     raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")
                 if not matched:
                     return result
+                if accepted_close is not None:
+                    await self._upsert_meta(
+                        task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn
+                    )
                 if not stable and PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
                     # A same-status write can still flip is_blocked (e.g. a
@@ -1453,6 +1469,8 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+            if accepted_close is not None:
+                await self._upsert_meta(task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn)
 
             # A generation belongs to exactly one completed incarnation.
             # ``transition_task_with_meta`` can replace it later in this same
