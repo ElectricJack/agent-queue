@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
+from tests.test_e2e_cli_stateful import test_disposable_daemon_stateful_cli_smoke as e2e_smoke
 
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
@@ -277,7 +278,12 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert e2e['if'] == jobs['test']['if']
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
-    assert e2e['timeout-minutes'] == '10'
+    # The cap covers a cold dependency install (up to 7m30s observed on
+    # hosted runners) on top of the group's own pytest limit, so pytest's
+    # timeout, with its diagnostics, fires before the job is cancelled.
+    assert e2e['timeout-minutes'] == '20'
+    (group_limit,) = [mark.args[0] for mark in e2e_smoke.pytestmark if mark.name == 'timeout']
+    assert int(e2e['timeout-minutes']) * 60 - group_limit >= 450
     run = e2e['steps'][-1]['run']
     assert run == (
         "pytest 'tests/test_e2e_cli_stateful.py::"

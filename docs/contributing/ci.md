@@ -93,8 +93,11 @@ thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
 `--durations=50` reports the 50 slowest setup, call and teardown phases.
 
 Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
-Each stateful CLI group has a 540-second local test limit covering its
-setup (180s), smoke subprocess (270s) and cleanup (90s) deadlines. This does not extend the job deadline.
+Each stateful CLI group has a 600-second local test limit covering its
+setup, smoke subprocess including daemon shutdown, and fallback cleanup.
+Setup is limited to 180 seconds; the smoke subprocess gets the remaining
+time with 90 seconds reserved for fallback cleanup. Unused setup time stays
+available to the scenarios. This does not extend the job deadline.
 See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
 for marker precedence and timeout behavior.
 
@@ -103,7 +106,7 @@ at 10 minutes, including installation and migrations. These limits bound
 failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with five-minute caps, as described below. Hosted
+run in four separate jobs with twenty-minute caps, as described below. Hosted
 runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
 
 Worker counts are explicit: four for the broad suite arms, matching the
@@ -200,7 +203,13 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with a five-minute budget per job and `fail-fast: false`:
+parallel, with a twenty-minute budget per job and `fail-fast: false`. No
+`main` run populates the venv cache, so a branch's first run installs from
+PyPI, which took 25 seconds to 7.5 minutes on hosted runners; run 36829390463
+spent 5m06s installing and its failover group was cancelled at the former
+ten-minute cap while finishing S16a. The budget covers that install on top of
+the group's 600-second test limit, so a hung group fails under pytest's
+timeout, with its diagnostics, rather than being cancelled.
 
 | Group | Scenarios |
 |---|---|

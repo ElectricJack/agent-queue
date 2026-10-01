@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -35,7 +36,7 @@ def _unused_loopback_port() -> int:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(540)
+@pytest.mark.timeout(600)
 @pytest.mark.parametrize("scenarios", SCENARIO_GROUPS.values(), ids=list(SCENARIO_GROUPS))
 def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     env = {
@@ -62,6 +63,7 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     smoke = REPO_ROOT / "scripts" / "e2e-smoke.sh"
     cleanup = REPO_ROOT / "scripts" / "e2e-clean.sh"
 
+    deadline = time.monotonic() + 600
     try:
         subprocess.run([str(setup), "--reset"], cwd=REPO_ROOT, env=env, check=True, timeout=180)
         result = subprocess.run(
@@ -71,10 +73,10 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # CI gives each group its own runner and a five-minute job budget.
-            # Leave thirty seconds for environment setup and cleanup; daemon
-            # startup is part of this subprocess, alongside the scenarios.
-            timeout=270,
+            # Reserve fallback cleanup within the shared ten-minute budget.
+            # Fast setup leaves its unused time for daemon startup, scenarios
+            # and shutdown instead of cutting a passing run short.
+            timeout=max(1, deadline - time.monotonic() - 90),
         )
         # Keep the scenario durations visible on successful CI runs too;
         # a slow tail can otherwise only be diagnosed after a failure.

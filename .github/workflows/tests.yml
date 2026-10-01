@@ -235,7 +235,12 @@ jobs:
     runs-on: ubuntu-latest
     # Include setup and post-job cleanup around the real daemon scenarios.
     # A passing graphs group consumed 261 seconds before its cleanup steps.
-    timeout-minutes: 10
+    # Without a main-branch cache, a branch's first run installs cold: 25s to
+    # 7m30s on hosted runners. Run 36829390463 spent 5m06s installing and was
+    # cancelled at ten minutes while its failover group finished S16a. Leave
+    # room for that install after the group's 600-second pytest limit, so a
+    # hung group fails with diagnostics instead of a job-cap cancellation.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
