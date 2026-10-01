@@ -1687,6 +1687,24 @@ class WorkspaceMixin:
             session_instance_token=session.instance_token
         )
 
+    async def aconfirm_integration_pool_published_repair_handoff(
+        self, owner: dict, reservation_id: str, *, remote_head_reader
+    ) -> bool:
+        """Prove a qualified candidate repair without advancing its canonical ref."""
+        from src.integration.published_repair_handoff import confirm_published_pool_repair_handoff
+
+        try:
+            return await confirm_published_pool_repair_handoff(
+                self.db, self.git, self._git_mutex, owner, reservation_id,
+                remote_head_reader=remote_head_reader,
+            )
+        except Exception:
+            logger.warning(
+                "Could not prove published candidate repair handoff %s", reservation_id,
+                exc_info=True,
+            )
+            return False
+
     async def arecover_completed_integration_pool_claim(self, task, session) -> bool:
         """Release one terminal pool holder only after proving its writer is gone.
 
