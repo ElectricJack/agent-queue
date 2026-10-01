@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import and_, exists, or_, select
 
-from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
+from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_RENEW_WITHIN_SECONDS
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
@@ -49,7 +49,7 @@ class IntegrationReconciliationQueriesMixin:
                 integration_batches.c.lifecycle.in_(
                     ("sealed", "building", "testing", "repairing", "human_blocked", "promoting")
                 ),
-                project_integration_leases.c.expires_at <= now + INTEGRATION_LEASE_SECONDS / 2,
+                project_integration_leases.c.expires_at <= now + INTEGRATION_LEASE_RENEW_WITHIN_SECONDS,
             )
         )
         statement = (

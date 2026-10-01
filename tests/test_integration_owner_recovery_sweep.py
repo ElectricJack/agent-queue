@@ -15,12 +15,14 @@ async def test_tick_isolates_an_owner_recovery_failure_and_runs_other_sources():
     repair = SimpleNamespace(retire_terminal_delegates=AsyncMock(return_value=[]))
     recovery = AsyncMock(side_effect=RuntimeError("temporary Git failure"))
     outbox = SimpleNamespace(dispatch_due=AsyncMock())
+    # Every source observes the service clock, not the tick's argument.
     service = IntegrationService(
         SimpleNamespace(),
         SimpleNamespace(),
         repair,
         outbox,
         owner_recovery_handler=recovery,
+        clock=lambda: 100.0,
     )
 
     await service.tick(100.0)

@@ -1016,6 +1016,43 @@ async def test_same_owner_concurrent_builds_never_duplicate_external_mutation(db
     assert len(forge.calls) == 1
 
 
+async def test_concurrent_store_initializers_never_share_a_git_init_directory(tmp_path):
+    """Builders that both find the retained store missing must not ``git init``
+    one directory: the two inits race on its config lock and one fails."""
+    from types import SimpleNamespace
+
+    from src.integration.candidates import CandidateService
+
+    real = GitManager()
+    initialized: list[str] = []
+    both_arrived = asyncio.Event()
+
+    class GatedGit:
+        async def arun_git_result(self, args, **kwargs):
+            if args[:2] == ["init", "--bare"]:
+                initialized.append(args[-1])
+                if len(initialized) == 2:
+                    both_arrived.set()
+                await asyncio.wait_for(both_arrived.wait(), timeout=5)
+            return await real.arun_git_result(args, **kwargs)
+
+    services = [
+        CandidateService(
+            SimpleNamespace(), data_dir=tmp_path / "data", git_manager=GatedGit(),
+            clock=lambda: 100.0,
+        )
+        for _ in range(2)
+    ]
+    repository = SimpleNamespace(id="repo")
+
+    stores = await asyncio.gather(*(service._ensure_store(repository) for service in services))
+
+    assert len(set(initialized)) == 2
+    assert stores[0] == stores[1]
+    assert (stores[0] / "HEAD").is_file()
+    assert list(stores[0].parent.iterdir()) == [stores[0]]
+
+
 async def test_stage_change_before_conflict_cas_cannot_mark_new_stage_repairing(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService

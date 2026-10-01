@@ -363,6 +363,18 @@ after consumption may allocate the next request. The next sweep takes one fresh 
 snapshot; missed intervals never create a backlog of historical sweeps. Startup reconciles pending
 requests and outbox delivery, and zero-candidate sweeps use the same consumption protocol.
 
+Schedule maintenance and outbox acceptance run on a bounded control pass, independently of
+one nonoverlapping remote reconciliation pass. Remote Git/forge sources must not hold up
+lease heartbeats or green-candidate continuations. Each source and item observes the current
+clock; lease renewal samples it after locking the exact authority, including the prepared
+root intent's owner and fence. Outbox acceptance refreshes that project's lease before
+handing the event to its consumer. It does not acquire another owner's lease.
+
+Outbox pages advance a keyset cursor even when consumers decline. Retries use acceptance
+completion time, with bounded exponential delay. An event with no enabled consumer remains
+unacknowledged and discoverable after activation; it is never deleted or treated as accepted.
+Slow-source and lease-headroom refusal diagnostics include elapsed time and exact authority.
+
 There is no batch-size cap. A snapshot contains every compatible eligible root PR at that instant.
 
 One integration owns the project until promotion or explicit human disposition. The

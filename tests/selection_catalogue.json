@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:7c1f34e0577ca3a62ef2b4c77426cc20ecb2ca5d6d42019247f22bd9563a178e",
+  "digest": "sha256:cbafdceb5bb70e73a6303373c07c9f230fd8a02b52a4a25b3168d7ca2395c910",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7172,8 +7172,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
         "src.database",
         "src.database.adapters.postgresql",
         "src.database.tables",
@@ -7189,9 +7191,14 @@
         "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.release",
         "src.integration.repair",
         "src.integration.scheduler",
+        "src.integration.service",
         "src.models",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
+        "src.playbooks.runtime",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -7524,7 +7531,11 @@
       "imports": [
         "src.commands.principal",
         "src.database",
+        "src.database.queries.integration_schedule_queries",
         "src.database.tables",
+        "src.integration",
+        "src.integration.candidates",
+        "src.integration.main_promotion",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models",

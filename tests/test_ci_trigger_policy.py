@@ -1,8 +1,10 @@
 """Full CI runs on pull requests and integration boundaries, and on `main` only unattested."""
 import json
 import math
+import os
 import re
 import shlex
+import subprocess
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,3 +303,60 @@ def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_togeth
     assert set(scenarios) == expected
     assert len(scenarios) == len(expected)
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
+
+
+def _install_steps():
+    jobs = workflow()['jobs']
+    return {
+        job: next(step for step in jobs[job]['steps'] if step['name'] == 'Install dependencies on cache miss')
+        for job in ('test', 'e2e-cli')
+    }
+
+
+def _run_install(tmp_path, script, fail_times):
+    """Run a cache-miss install script as Actions does, with pip failing *fail_times* times."""
+    stubs = tmp_path / 'stubs'
+    stubs.mkdir()
+    for name, body in {'python': 'exit 0', 'sleep': 'exit 0'}.items():
+        (stubs / name).write_text(f'#!/bin/sh\n{body}\n')
+        (stubs / name).chmod(0o755)
+    venv_python = tmp_path / '.venv' / 'bin' / 'python'
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text(
+        '#!/bin/sh\n'
+        'echo "$*" >> calls.log\n'
+        'test "$(wc -l < calls.log)" -gt "$FAIL_TIMES"\n'
+    )
+    venv_python.chmod(0o755)
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', script],
+        cwd=tmp_path,
+        env={'PATH': f'{stubs}:{os.environ["PATH"]}', 'FAIL_TIMES': str(fail_times)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, (tmp_path / 'calls.log').read_text().splitlines()
+
+
+def test_cache_miss_installs_retry_a_stalled_pypi_download(tmp_path):
+    # Run 36828686954 lost its failover E2E group to one ReadTimeoutError
+    # mid-download; pip retries a refused connection, never a stalled body.
+    steps = _install_steps()
+    assert steps['test'] == steps['e2e-cli']
+    assert steps['test']['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    result, calls = _run_install(tmp_path, steps['test']['run'], fail_times=2)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 3
+    for call in calls:
+        args = shlex.split(call)
+        assert args[:2] == ['-m', 'pip'] and args[2] == 'install'
+        assert args[args.index('--timeout') + 1] == '60'
+        assert {'-e', '.[dev,cli]', 'poetry-core>=2.0.0,<3.0.0'} <= set(args)
+
+
+def test_cache_miss_install_gives_up_after_bounded_attempts(tmp_path):
+    result, calls = _run_install(tmp_path, _install_steps()['test']['run'], fail_times=99)
+    assert result.returncode != 0
+    assert len(calls) == 3
+    assert '::error::' in result.stdout
