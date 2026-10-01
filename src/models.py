@@ -1467,7 +1467,7 @@ class SessionRecord:
 
     #: Digest of the Git identity in this launch's environment
     #: (:func:`src.git.identity.identity_digest`); ``"legacy"`` for a session
-    #: launched by an earlier release (migration ``a00000000048``), ``None``
+    #: launched by an earlier release (migration ``a00000000053``), ``None``
     #: when none was recorded.  A pool claim retires the session when the
     #: project's identity resolves to something else now.
     git_identity_digest: str | None = None

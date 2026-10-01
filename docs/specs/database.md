@@ -434,8 +434,8 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
 | `review_delegate_to` | TEXT | nullable, `ck_projects_review_delegate_to` | Who decides the project's new document reviews: `user` or `supervisor`; NULL means `user`. Sets a new review's `doc_reviews.decider` (`supervisor` → `user_or_supervisor`). Added by Alembic `a00000000014` |
-| `git_identity_name` | TEXT | nullable, `ck_projects_git_identity_pair` | This project's Git commit identity override, set together with `git_identity_email`; a NULL pair inherits the installation default `git_identity` ([git identity](git-identity.md)). Added by Alembic `a00000000048` |
-| `git_identity_email` | TEXT | nullable, `ck_projects_git_identity_pair` | The override's email; `(git_identity_name IS NULL) = (git_identity_email IS NULL)`. Added by Alembic `a00000000048` |
+| `git_identity_name` | TEXT | nullable, `ck_projects_git_identity_pair` | This project's Git commit identity override, set together with `git_identity_email`; a NULL pair inherits the installation default `git_identity` ([git identity](git-identity.md)). Added by Alembic `a00000000053` |
+| `git_identity_email` | TEXT | nullable, `ck_projects_git_identity_pair` | The override's email; `(git_identity_name IS NULL) = (git_identity_email IS NULL)`. Added by Alembic `a00000000053` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -1354,7 +1354,7 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `ended_at` | REAL | nullable | Observed end time; unknown for legacy sessions |
 | `end_reason` | TEXT | nullable | Specific exit, stop, quarantine or sleep reason |
 | `hooks_provisioned` | BOOLEAN | NOT NULL DEFAULT 0 | Whether this launch wired the harness's subagent hooks; written once from the SessionSpec, never re-derived |
-| `git_identity_digest` | TEXT | nullable | Digest of the Git identity injected into this launch's env; a pool claim retires the session when the project now resolves to another identity. `legacy` marks rows from before Alembic `a00000000048` (always stale); NULL means none was recorded ([git identity](git-identity.md) §7) |
+| `git_identity_digest` | TEXT | nullable | Digest of the Git identity injected into this launch's env; a pool claim retires the session when the project now resolves to another identity. `legacy` marks rows from before Alembic `a00000000053` (always stale); NULL means none was recorded ([git identity](git-identity.md) §7) |
 
 ### Table: `task_session_attempts`
 

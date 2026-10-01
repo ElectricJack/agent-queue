@@ -1420,7 +1420,7 @@ sessions = Table(
     # Digest of the Git identity injected into this launch's environment
     # (``src/git/identity.py``).  A pool claim compares it with the identity
     # the project resolves to now and retires a session launched under a
-    # different one.  Migration a00000000048 stamps pre-existing rows
+    # different one.  Migration a00000000053 stamps pre-existing rows
     # ``legacy`` (always stale); NULL means no identity was recorded.
     Column("git_identity_digest", Text, nullable=True),
     Index("idx_sessions_agent", "agent_id", "state"),

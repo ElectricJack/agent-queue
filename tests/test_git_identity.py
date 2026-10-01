@@ -755,8 +755,8 @@ async def test_already_published_commits_are_not_judged(push_env):
 def _migration():
     import importlib.util
 
-    path = Path(__file__).resolve().parents[1] / "migrations/versions/a00000000048_git_identity.py"
-    spec = importlib.util.spec_from_file_location("a00000000048_git_identity", path)
+    path = Path(__file__).resolve().parents[1] / "migrations/versions/a00000000053_git_identity.py"
+    spec = importlib.util.spec_from_file_location("a00000000053_git_identity", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

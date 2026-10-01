@@ -409,7 +409,7 @@ class ClaimCommandsMixin:
         from launch (``SessionSpecBuilder.build_pool_spec``).  A session whose
         recorded digest differs from what the project resolves to now --
         an operator edit, or a launch from before the digest existed (stamped
-        ``legacy`` by migration ``a00000000048``) -- is retired instead of
+        ``legacy`` by migration ``a00000000053``) -- is retired instead of
         claiming.  A row with no digest recorded is not judged here; the
         publishing check still holds its commits to the resolved identity.
         """

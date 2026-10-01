@@ -66,7 +66,7 @@ git_identity:
   `ck_projects_git_identity_pair` makes them set-together or NULL-together. A
   NULL pair means the project inherits.
 - `sessions.git_identity_digest` records the digest of the identity injected
-  into each launch (§4). Migration `a00000000048` adds all three columns
+  into each launch (§4). Migration `a00000000053` adds all three columns
   idempotently and stamps every existing session row `legacy`.
 
 ## 3. Surfaces

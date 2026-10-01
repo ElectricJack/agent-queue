@@ -1,14 +1,14 @@
 """Project Git identity overrides and the launch identity of each session.
 
-Revision ID: a00000000048
-Revises: a00000000047
+Revision ID: a00000000053
+Revises: a00000000052
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000048"
-down_revision = "a00000000047"
+revision = "a00000000053"
+down_revision = "a00000000052"
 branch_labels = None
 depends_on = None
 
