@@ -162,11 +162,23 @@ jobs:
           path: .venv
           key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
 
+      # pip retries a refused connection but not a download that stalls
+      # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
+      # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+          for attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 \
+              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              exit 0
+            fi
+            echo "::warning::pip install attempt $attempt of 3 failed"
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::pip install failed after 3 attempts"
+          exit 1
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -291,11 +303,23 @@ jobs:
           path: .venv
           key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
 
+      # pip retries a refused connection but not a download that stalls
+      # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
+      # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+          for attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 \
+              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              exit 0
+            fi
+            echo "::warning::pip install attempt $attempt of 3 failed"
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::pip install failed after 3 attempts"
+          exit 1
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
