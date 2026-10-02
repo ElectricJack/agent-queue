@@ -104,6 +104,8 @@ class Snapshot:
     backlog: Mapping[str, int] = field(default_factory=dict)
     #: Bounded observational context; never a capacity reservation or policy input.
     context: Mapping[str, Any] = field(default_factory=dict)
+    #: Fresh server observations used only to rank hosted preference, not admission.
+    headroom: Mapping[str, int] = field(default_factory=dict)
 
     def profile(self, profile_id: str) -> ProfileFacts | None:
         return next((p for p in self.profiles if p.id == profile_id), None)
@@ -146,6 +148,7 @@ class Candidate:
     tier: str = FALLBACK
     lane: str | None = None
     hold: bool = False
+    preferred_hosted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -162,6 +165,7 @@ class Candidate:
             tier=tier if tier in {PREFERRED, FALLBACK} else FALLBACK,
             lane=(str(data["lane"]) if data.get("lane") else None),
             hold=bool(data.get("hold")),
+            preferred_hosted=bool(data.get("preferred_hosted")),
         )
 
 
@@ -178,9 +182,11 @@ class Score:
     load: int
     usage_percent: float | None
     usage_factor: float
+    usage_soft_limited: bool
     avail_factor: float
     weight: float
     pressure: float
+    effective_headroom: int | None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -194,6 +200,7 @@ class Selection:
     scores: tuple[Score, ...]
     #: The preferred tier had a free slot and the choice came from it.
     took_preferred: bool
+    took_hosted_preference: bool = False
 
     @property
     def score(self) -> Score:
@@ -334,6 +341,7 @@ class _Rule:
     clamped_from: str | None
     lane: str | None
     narrow: bool
+    prefer_harnesses: tuple[str, ...]
     notes: tuple[str, ...]
 
 
@@ -348,6 +356,7 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
         base = policy.kinds[policy.default_kind]
         rule_name = f"kinds.{policy.default_kind}"
     class_id, max_class, lane, narrow = base.class_, base.max_class, base.lane, base.narrow
+    prefer_harnesses = base.prefer_harnesses
     origin_name = (task.created_by_kind or "").strip() or None
     origin = policy.origins.get(origin_name) if origin_name else None
     if origin is not None:
@@ -356,6 +365,8 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
         max_class = origin.max_class if origin.max_class is not None else max_class
         lane = origin.lane if origin.lane is not None else lane
         narrow = origin.narrow if origin.narrow is not None else narrow
+        if origin.prefer_harnesses is not None:
+            prefer_harnesses = origin.prefer_harnesses
     else:
         origin_name = None
     hint = (task.class_hint or "").strip() or None
@@ -368,7 +379,8 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
         clamped_from, chosen = chosen, max_class
     return _Rule(
         kind=kind, rule=rule_name, origin=origin_name, class_id=chosen, hint=hint,
-        clamped_from=clamped_from, lane=lane, narrow=narrow, notes=tuple(notes),
+        clamped_from=clamped_from, lane=lane, narrow=narrow,
+        prefer_harnesses=prefer_harnesses, notes=tuple(notes),
     )
 
 
@@ -434,10 +446,11 @@ def _filter(
 
 
 def _candidate(profile: ProfileFacts, class_id: str, *, tier: str, lane: str | None,
-               hold: bool = False) -> Candidate:
+               hold: bool = False, preferred_hosted: bool = False) -> Candidate:
     return Candidate(
         profile_id=profile.id, intelligence_class=class_id, harness=profile.harness,
         provider=profile.provider, lifecycle=profile.lifecycle, tier=tier, lane=lane, hold=hold,
+        preferred_hosted=preferred_hosted,
     )
 
 
@@ -479,7 +492,8 @@ def _candidates(
         return _Pool(tuple(preferred + fallback), (), reason)
 
     general = [
-        _candidate(profile, rule.class_id, tier=FALLBACK, lane=None)
+        _candidate(profile, rule.class_id, tier=FALLBACK, lane=None,
+                   preferred_hosted=profile.harness in rule.prefer_harnesses)
         for profile in _cells(
             snapshot, rule.class_id, None, exclude=policy.narrow_harnesses()
         )
@@ -539,15 +553,26 @@ def score(candidate: Candidate, snapshot: Snapshot, balance: Balance) -> Score |
     facts = snapshot.provider(candidate.provider)
     busy = int(snapshot.busy.get(candidate.profile_id, 0))
     backlog = int(snapshot.backlog.get(candidate.profile_id, 0))
-    usage_factor = _usage_factor(facts.usage_percent, balance)
+    # Evaluate every window against its provider's own soft limit, then combine
+    # capacity factors conservatively. Never compare raw percentages between
+    # unlike windows/providers; stale/reset observations are evidence only.
+    if facts.quota:
+        factors = [(_usage_factor(float(q["used_percent"]), balance), float(q["used_percent"]))
+                   for q in facts.quota if q["freshness"] == "fresh"]
+        usage_factor, usage = min(factors, key=lambda f: f[0], default=(1.0, None))
+    else:
+        usage = facts.usage_percent
+        usage_factor = _usage_factor(usage, balance)
     avail_factor = balance.degraded_factor if facts.state == "degraded" else 1.0
     weight = balance.weight(candidate.harness)
     pressure = (busy + backlog + 1) / (slots * weight * usage_factor * avail_factor)
     return Score(
         profile_id=candidate.profile_id, intelligence_class=candidate.intelligence_class,
         tier=candidate.tier, slots=slots, busy=busy, backlog=backlog, load=busy + backlog,
-        usage_percent=facts.usage_percent, usage_factor=round(usage_factor, 4),
+        usage_percent=usage, usage_factor=round(usage_factor, 4),
+        usage_soft_limited=usage is not None and usage > balance.usage_soft_percent,
         avail_factor=avail_factor, weight=weight, pressure=round(pressure, 4),
+        effective_headroom=snapshot.headroom.get(candidate.profile_id),
     )
 
 
@@ -573,13 +598,103 @@ def reselect(
         entry for entry in scored
         if entry[1].tier == PREFERRED and entry[2].load < entry[2].slots
     ]
-    pool = free_preferred or scored
+    free_hosted = [
+        entry for entry in scored
+        if entry[1].preferred_hosted
+        and snapshot.provider(entry[1].provider).state == "available"
+        and not entry[2].usage_soft_limited
+        and _free(entry[2])
+    ]
+    # Only the opt-in hosted preference changes capacity fallback. Other policy
+    # documents keep their existing pressure and lane behavior.
+    free_fallback = [entry for entry in scored if _free(entry[2])]
+    hosted = any(candidate.preferred_hosted for candidate in candidates)
+    pool = free_preferred or free_hosted or (free_fallback if hosted else []) or scored
     _index, chosen, _score = min(pool, key=lambda entry: (entry[2].pressure, entry[0]))
     return Selection(
         chosen=chosen,
         scores=tuple(entry[2] for entry in scored),
         took_preferred=bool(free_preferred),
+        took_hosted_preference=not free_preferred and bool(free_hosted),
     )
+
+
+def _free(result: Score) -> bool:
+    return result.load < result.slots and (
+        result.effective_headroom is None or result.effective_headroom > 0
+    )
+
+
+def selection_evidence(
+    candidates: Sequence[Candidate], selection: Selection, snapshot: Snapshot,
+    *, prefer_harnesses: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Bounded fit, capacity and quota provenance for the actual fresh selection."""
+    scores = {(s.profile_id, s.intelligence_class): s for s in selection.scores}
+    observations = []
+    bounded = [selection.chosen, *(c for c in candidates if c != selection.chosen)][:64]
+    for candidate in bounded:
+        facts = snapshot.provider(candidate.provider)
+        result = scores.get((candidate.profile_id, candidate.intelligence_class))
+        bypass = None
+        if candidate.preferred_hosted:
+            if not launchable(candidate, snapshot):
+                bypass = "provider_unavailable"
+            elif facts.state != "available":
+                bypass = "provider_degraded"
+            elif result is None or not _free(result):
+                bypass = "capacity_full"
+            elif result.usage_soft_limited:
+                bypass = "own_usage_above_soft_limit"
+        observations.append({
+            "profile_id": candidate.profile_id, "provider": candidate.provider,
+            "class": candidate.intelligence_class, "preferred_hosted": candidate.preferred_hosted,
+            "state": facts.state, "launchable": launchable(candidate, snapshot),
+            "load": result.load if result else None, "slots": result.slots if result else None,
+            "effective_headroom": snapshot.headroom.get(candidate.profile_id),
+            "usage_percent": result.usage_percent if result else None,
+            "usage_factor": result.usage_factor if result else None,
+            "usage_soft_limited": result.usage_soft_limited if result else None,
+            "quota_status": "observed" if facts.quota else "unknown",
+            "quota": list(facts.quota[:8]), "preference_bypassed": bypass,
+        })
+    mode = "lane_preference" if selection.took_preferred else (
+        "hosted_preference" if selection.took_hosted_preference else "pressure_fallback"
+    )
+    return {
+        "mode": mode, "profile_id": selection.chosen.profile_id,
+        "provider": selection.chosen.provider, "class": selection.chosen.intelligence_class,
+        "snapshot_as_of": snapshot.context.get("as_of"),
+        "snapshot_age_seconds": snapshot.context.get("collection_seconds"),
+        "prefer_harnesses": list(prefer_harnesses),
+        "preference_unavailable": bool(prefer_harnesses) and not any(
+            c.preferred_hosted for c in candidates
+        ),
+        "candidates": observations, "truncated": len(candidates) > 64,
+    }
+
+
+def selection_reason(evidence: Mapping[str, Any]) -> str:
+    """Human-readable evidence, also used after apply reselects."""
+    chosen = next(c for c in evidence["candidates"] if c["profile_id"] == evidence["profile_id"])
+    headroom = chosen["effective_headroom"]
+    windows = ", ".join(
+        f"{q['window']}({q['scope']}) {q['used_percent']:g}% {q['freshness']} "
+        f"age {q['age_seconds']:g}s" for q in chosen["quota"][:2]
+    ) or (f"own usage {chosen['usage_percent']:g}% (window/age unknown)"
+          if chosen["usage_percent"] is not None else "quota unknown")
+    age = evidence["snapshot_age_seconds"]
+    reason = (
+        f"{evidence['mode']}: {evidence['profile_id']}/{evidence['provider']} "
+        f"class {evidence['class']}, {chosen['state']}, load {chosen['load']}/{chosen['slots']}, "
+        f"headroom {headroom if headroom is not None else 'unknown'}; {windows}; "
+        f"snapshot age {f'{age:g}s' if age is not None else 'unknown'}"
+    )
+    bypassed = [f"{c['profile_id']}: {c['preference_bypassed']}"
+                for c in evidence["candidates"] if c["preference_bypassed"]]
+    if evidence["preference_unavailable"]:
+        bypassed.append("no compatible preferred hosted candidate")
+    return reason + ("; bypassed " + ", ".join(bypassed[:2]) if bypassed else "")
 
 
 # -- step 7 --------------------------------------------------------------------
@@ -608,6 +723,8 @@ def _reason(rule: _Rule, pool: _Pool, selection: Selection) -> str:
     decided = f"lowest pressure {chosen.profile_id} {selection.score.pressure:.2f}"
     if selection.took_preferred:
         decided = f"preferred {chosen.profile_id} {selection.score.pressure:.2f}"
+    elif selection.took_hosted_preference:
+        decided = f"hosted preference {chosen.profile_id} {selection.score.pressure:.2f}"
     if others:
         decided += " vs " + ", ".join(f"{s.profile_id} {s.pressure:.2f}" for s in others)
     parts.append(decided)
@@ -742,6 +859,9 @@ def plan_route(
     candidates = [
         {**c.as_dict(), "launchable": launchable(c, snapshot)} for c in pool.candidates
     ]
+    evidence = selection_evidence(
+        pool.candidates, selection, snapshot, prefer_harnesses=rule.prefer_harnesses,
+    )
     return PlanResult("planned", {
         "task_id": task.task_id,
         "intelligence_class": selection.chosen.intelligence_class,
@@ -753,7 +873,9 @@ def plan_route(
         "rule": rule.rule,
         "candidates": candidates,
         "scores": [s.as_dict() for s in selection.scores],
-        "reason": _reason(rule, pool, selection),
+        "reason": _reason(rule, pool, selection) + "; " + selection_reason(evidence),
+        "decision": evidence,
+        "prefer_harnesses": list(rule.prefer_harnesses),
         "policy_sha256": policy_sha256,
         "class_clamped_from": rule.clamped_from,
         "classification": classification_record,

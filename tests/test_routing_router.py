@@ -34,7 +34,7 @@ from src.playbooks.invocation import _invocation_context, current_invocation
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
-from tests.test_routing_planner import SHIPPED_POLICY
+from tests.test_routing_planner import SHIPPED_POLICY, routine_policy
 from tests.assignment_routing_helpers import route_source_for
 
 ROUTER_ID = "default-assignment-routing"
@@ -744,6 +744,72 @@ async def test_backlog_counts_ready_and_assigned_routed_work_fleet_wide(orch):
         "standard-high-codex": 2, "standard-high-claude": 1,
     }
     assert await orch.db.count_busy_sessions_by_profile() == {}
+
+
+@pytest.mark.parametrize("constraint", ["backlog", "quarantine", "unavailable"])
+async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_context(
+    handler, orch, constraint,
+):
+    await _workspace(orch)
+    await _create(orch.db, "routine", task_type=TaskType.FEATURE, class_hint="standard-high")
+    policy, _digest = routine_policy()
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "routine", "policy": policy.canonical_json(),
+    })
+    assert plan["profile_id"] == "standard-high-codex"
+    assert plan["decision"]["mode"] == "hosted_preference"
+    if constraint == "backlog":
+        for i in range(2):
+            await _create(orch.db, f"queued-{i}", profile_id="standard-high-codex")
+    elif constraint == "quarantine":
+        orch._quarantine_pool("p", "standard-high-codex", "launch backoff")
+    else:
+        from src.routing.planner import ProviderFacts
+        original = handler._routing_static_facts
+
+        async def unavailable(*args, **kwargs):
+            profiles, providers = await original(*args, **kwargs)
+            providers["codex"] = ProviderFacts(state="exhausted", launchable=False)
+            return profiles, providers
+
+        handler._routing_static_facts = unavailable
+    plan["live_context"] = {"profiles": [{"profile_id": "standard-high-codex",
+                                          "effective_headroom": 999}]}
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "routine", "plan": plan})
+    assert result["outcome"] == "routed"
+    route = (await orch.db.get_task("routine")).route
+    assert (route["profile_id"], route["provider"], route["intelligence_class"]) == (
+        "standard-high-claude", "claude", "standard-high",
+    )
+    assert route["adjusted_at_apply"]
+    assert route["decision"]["mode"] == "pressure_fallback"
+    assert "bypassed" in route["reason"]
+    assert "snapshot age" in route["reason"]
+    assert route["decision"]["snapshot_as_of"] == route["live_context"]["as_of"]
+
+
+async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(handler, orch):
+    await _workspace(orch)
+    policy, _digest = routine_policy()
+    for i in range(3):
+        await _create(orch.db, f"routine-{i}", task_type=TaskType.FEATURE,
+                      class_hint="standard-high")
+    plans = [await handler.execute("task_route_plan", {
+        "task_id": f"routine-{i}", "policy": policy.canonical_json(),
+    }) for i in range(3)]
+    assert {p["profile_id"] for p in plans} == {"standard-high-codex"}
+    with _as_playbook():
+        results = await asyncio.gather(*(handler.execute("task_route_apply", {
+            "task_id": f"routine-{i}", "plan": plan,
+        }) for i, plan in enumerate(plans)))
+    assert all(r["outcome"] == "routed" for r in results)
+    routes = [(await orch.db.get_task(f"routine-{i}")).route for i in range(3)]
+    # The fixture has two Codex profile slots and lazy workspace capacity.
+    # Each committed route consumes backlog; the third apply sees saturation.
+    assert sum(r["decision"]["mode"] == "hosted_preference" for r in routes) == 2
+    assert [r["provider"] for r in routes].count("codex") == 2
+    assert [r["provider"] for r in routes].count("claude") == 1
 
 
 # -- task.route_needed carries the router and the class hint ------------------------------

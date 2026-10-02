@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:52b34b989180ae05562129bab663cebde3962c977b08104cd790a226068073d7",
+  "digest": "sha256:0fa00acf8ac7c621af898abe642633eebc35c12e53285192f36d795f11b19374",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11990,7 +11990,8 @@
       "imports": [
         "src.routing.context",
         "src.routing.planner",
-        "src.routing.policy"
+        "src.routing.policy",
+        "src.routing.replay"
       ],
       "markers": [
         "parametrize"
@@ -12021,6 +12022,7 @@
         "src.playbooks.invocation",
         "src.providers",
         "src.providers.availability",
+        "src.routing.planner",
         "src.routing.sources",
         "src.sessions.harness_parser"
       ],
