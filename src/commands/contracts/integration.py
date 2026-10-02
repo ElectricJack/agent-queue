@@ -717,7 +717,7 @@ class IntegrationAuthorizeRootValue(CommandValue):
 
 
 class IntegrationReopenCollectionValue(CommandValue):
-    """A cancelled parent collection and what reopening it would do."""
+    """A cancelled or failed-verification collection and what reopening it would do."""
 
     task_id: str | None = None
     project_id: str | None = None

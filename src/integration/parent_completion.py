@@ -303,6 +303,19 @@ class ParentCompletion:
                 existing = (
                     await conn.execute(select(tasks.c.id).where(tasks.c.id == verifier_id))
                 ).first()
+                archived = await conn.scalar(
+                    select(archived_tasks.c.id).where(archived_tasks.c.id == verifier_id)
+                )
+                if existing is not None or archived is not None:
+                    # Recovery preserves the failed verifier and its completion.
+                    # Bind a fresh task to the new generation, never re-arm it.
+                    verifier_id = f"verify-{operation['id']}-g{checkpoint['generation']}"
+                    for table in (tasks, archived_tasks):
+                        if await conn.scalar(select(table.c.id).where(table.c.id == verifier_id)):
+                            raise HierarchyError(
+                                "invariant_error", "fresh aggregate verifier identity already exists"
+                            )
+                    existing = None
                 if existing is None:
                     await self.db.create_task(
                         Task(
@@ -317,7 +330,7 @@ class ParentCompletion:
                             repo_id=checkpoint["repository_id"],
                             branch_name=checkpoint["branch"],
                             class_hint=route.verifier_intelligence_class,
-                            dedup_key=f"integration-verifier:{operation['id']}",
+                            dedup_key=f"integration-verifier:{operation['id']}:{checkpoint['generation']}",
                         ),
                         conn=conn,
                     )
@@ -581,6 +594,20 @@ class ParentCompletion:
                 blockers.append({"task_id": row["source_task_id"], "reason": "receipt_chain"})
                 break
             head_sha = row["after_sha"]
+        from src.integration.failed_verification_recovery import FAILED_AGGREGATE_META_KEY
+
+        failed_aggregate = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == parent["id"],
+            task_metadata.c.key == FAILED_AGGREGATE_META_KEY,
+        ))
+        if failed_aggregate is not None:
+            import json
+
+            failed_aggregate = json.loads(failed_aggregate)
+            if (failed_aggregate["operation_id"] == operation["id"]
+                    and failed_aggregate["episode_id"] == checkpoint["episode_id"]
+                    and failed_aggregate["head_sha"] == head_sha):
+                blockers.append({"task_id": parent["id"], "reason": "failed_aggregate_head_unchanged"})
         outcome = "ready" if not blockers else (
             "failed" if any(row["reason"] == "failed_child" for row in blockers) else "waiting"
         )

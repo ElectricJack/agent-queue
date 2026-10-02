@@ -1321,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:8cbc8ec9fc359bb6f142b7cb80998d5d7faa07a5876c9ab39dda1a9e343eb39d",
+  "digest": "sha256:b43ff47b4cd666dd0b62f202d5efdf59d19598f7563dcf99f9abd15d9b25b18e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6987,8 +6987,10 @@
         "src.integration.collection",
         "src.integration.delegate_release",
         "src.integration.development",
+        "src.integration.failed_verification_recovery",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.repair",
         "src.models"
