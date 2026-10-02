@@ -947,6 +947,72 @@ def test_pane_stream_rejects_non_positive():
     assert "pane_stream_max_sessions" in fields
 
 
+# ── sessions.worker_claude_plugin_overrides ─────────────────────────
+
+
+def test_worker_plugin_overrides_default_is_empty_and_valid():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig()
+    assert cfg.worker_claude_plugin_overrides == {}
+    assert cfg.validate() == []
+
+
+def test_worker_plugin_overrides_accepts_a_valid_name_at_marketplace_bool():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(
+        worker_claude_plugin_overrides={"fast-jev-compaction@fast-jev-compaction": False}
+    )
+    assert cfg.validate() == []
+
+
+def test_worker_plugin_overrides_rejects_a_non_mapping():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(worker_claude_plugin_overrides="not-a-mapping")  # type: ignore[arg-type]
+    errors = cfg.validate()
+    assert any(
+        e.field == "worker_claude_plugin_overrides" and "must be a mapping" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_rejects_a_bare_name_id():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(worker_claude_plugin_overrides={"myplugin": True})
+    errors = cfg.validate()
+    assert any(
+        e.field.startswith("worker_claude_plugin_overrides.") and "name@marketplace" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_rejects_a_non_bool_value():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(
+        worker_claude_plugin_overrides={"fast-jev-compaction@fast-jev-compaction": "nope"}  # type: ignore[dict-item]
+    )
+    errors = cfg.validate()
+    assert any(
+        e.field == "worker_claude_plugin_overrides.fast-jev-compaction@fast-jev-compaction"
+        and "must be a bool" in e.message
+        for e in errors
+    ), errors
+
+
+def test_worker_plugin_overrides_coerces_keys_to_strings():
+    """The loader stringifies keys so a YAML-integer key survives the hop."""
+    from src.config import _worker_plugin_overrides
+
+    assert _worker_plugin_overrides(None) == {}
+    loaded = _worker_plugin_overrides({1: False})
+    assert list(loaded) == ["1"]  # coercion is the loader's job
+    assert list(_worker_plugin_overrides(["a"]) ) == ["a"]  # non-mapping kept for validate()
+
+
 def test_transcript_startup_replay_limit_is_loaded_and_non_negative(tmp_path):
     from src.config import SessionsConfig
 
