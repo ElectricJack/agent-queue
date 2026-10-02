@@ -95,6 +95,40 @@ engine.run_startup_data_migrations = forbidden
     return marker
 
 
+def _install_legacy_memory_entry_point(path: Path) -> Path:
+    """Install aq-memory's ``memory`` entry point; importing it leaves a marker.
+
+    Mirrors the editable ``aq-memory`` install an operator's system Python can
+    still carry: its entry point names the core-owned ``aq memory`` group.
+    """
+    marker = path / "legacy-memory-imported"
+    package = path / "aq_memory"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        f"""
+from pathlib import Path
+
+Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+
+
+class MemoryPlugin:
+    pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+    dist_info = path / "aq_memory-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: aq-memory\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[aq.plugins]\nmemory = aq_memory:MemoryPlugin\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
 def _offline_env(tmp_path: Path, *, worker: bool, database_url: str | None) -> tuple[dict, Path]:
     _install_fixture_entry_point(tmp_path)
     marker = _install_database_tripwire(tmp_path)
@@ -145,6 +179,37 @@ def test_discovery_commands_are_offline_and_never_initialize_database(
 
     assert result.returncode == 0, result.stderr
     assert expected in result.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "returncode", "expected"),
+    [
+        (["--help"], 0, "memory"),
+        (["memory", "--help"], 0, "Search memory."),
+        (["--json", "task", "show", "fixture-task-1"], 3, '"daemon_unreachable"'),
+    ],
+    ids=["help", "core-memory-help", "json-task-show"],
+)
+def test_installed_legacy_memory_plugin_leaves_ordinary_commands_clean(
+    tmp_path: Path, args: list[str], returncode: int, expected: str
+) -> None:
+    env, marker = _offline_env(tmp_path, worker=True, database_url=None)
+    imported = _install_legacy_memory_entry_point(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "src.cli.app", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == returncode, result.stderr
+    assert expected in result.stdout
+    assert result.stderr == ""
+    assert not imported.exists()
     assert not marker.exists()
 
 

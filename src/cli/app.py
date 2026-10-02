@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import sys
 
 import click
@@ -577,6 +578,24 @@ def _tag_plugin_cli_tree(command: click.Command, plugin_name: str) -> None:
             _tag_plugin_cli_tree(child, plugin_name)
 
 
+#: ``aq.plugins`` entry points whose top-level name core owns on purpose, keyed
+#: to the distributions allowed to declare them.  Core generates ``aq memory``
+#: from the memory_* schemas the external aq-memory plugin implements at
+#: runtime (``inventory.EXTERNAL_PLUGIN_COMMANDS``), so that plugin mounts no
+#: CLI group and an installed copy is not a conflict.  The CLI never imports
+#: it to find out: it is a legacy memory writer.  Any other distribution that
+#: claims one of these names is still reported.
+_CORE_SURFACED_PLUGIN_ENTRY_POINTS: dict[str, frozenset[str]] = {
+    "memory": frozenset({"aq-memory"}),
+}
+
+
+def _entry_point_distribution(ep) -> str | None:
+    """Return the normalized name of the distribution that declared *ep*."""
+    name = getattr(getattr(ep, "dist", None), "name", None)
+    return re.sub(r"[-_.]+", "-", name).lower() if name else None
+
+
 def _load_plugin_cli_groups(
     cli_group: click.Group | None = None,
     *,
@@ -599,10 +618,21 @@ def _load_plugin_cli_groups(
             entry_point_provider = entry_points
 
         for ep in entry_point_provider(group="aq.plugins"):
+            dist_name = _entry_point_distribution(ep)
+            if dist_name in _CORE_SURFACED_PLUGIN_ENTRY_POINTS.get(ep.name, ()):
+                logger.debug(
+                    "Plugin entry point '%s' from '%s' is surfaced by the core command; "
+                    "not mounted",
+                    ep.name,
+                    dist_name,
+                )
+                continue
             if ep.name in cli_group.commands:
                 logger.warning(
-                    "Plugin CLI entry point '%s' conflicts with an existing command; skipped",
+                    "Plugin CLI entry point '%s' from %s conflicts with an existing command; "
+                    "skipped",
                     ep.name,
+                    f"distribution '{dist_name}'" if dist_name else "an unknown distribution",
                 )
                 continue
             try:
