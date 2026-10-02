@@ -458,6 +458,8 @@ class Subject(_Frozen):
     policy: PolicyArtifactPin
     task_id: str | None = Field(default=None, min_length=1)
     batch_id: str | None = Field(default=None, min_length=1)
+    # Episode identity survives a reopened collection's generation increment.
+    parent_episode_id: str | None = Field(default=None, min_length=1)
     target_ref: str | None = Field(default=None, min_length=1)
     head_sha: str | None = Field(default=None, pattern=SHA_PATTERN)
     base_sha: str | None = Field(default=None, pattern=SHA_PATTERN)
@@ -474,6 +476,8 @@ class Subject(_Frozen):
 
     @model_validator(mode="after")
     def _identity(self) -> Subject:
+        if self.parent_episode_id is not None and self.kind is not SubjectKind.PARENT_EPISODE:
+            raise ValueError("only a parent subject can bind a parent episode")
         if self.kind is SubjectKind.ROOT_BATCH:
             if self.task_id is not None:
                 raise ValueError("a root batch subject is not bound to a task")
@@ -544,6 +548,7 @@ class Subject(_Frozen):
             ),
             task_id=row.get("task_id"),
             batch_id=row.get("batch_id"),
+            parent_episode_id=row.get("parent_episode_id"),
             target_ref=row.get("target_ref"),
             head_sha=row.get("head_sha"),
             base_sha=row.get("base_sha"),
@@ -589,6 +594,7 @@ class Subject(_Frozen):
             "policy_artifact_sha256": self.policy.artifact_sha256,
             "task_id": self.task_id,
             "batch_id": self.batch_id,
+            "parent_episode_id": self.parent_episode_id,
             "target_ref": self.target_ref,
             "head_sha": self.head_sha,
             "base_sha": self.base_sha,
