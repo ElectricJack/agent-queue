@@ -3745,6 +3745,23 @@ class RepairService:
                 "current_subject": primary["current_subject"],
             },
         }
+        trigger_id = f"stage-exhausted:{operation['id']}:{previous_ordinal}"
+        conflict = await self._exhausted_subject_conflict_on(
+            conn, operation, primary["current_subject"]
+        )
+        if conflict is not None:
+            # The debug writer starts at the conflict's old tip, so the conflict is
+            # still its work: fenced resolve and push require the trigger to name it.
+            trigger_id = conflict["id"]
+            debug_dossier["trigger_id"] = trigger_id
+            debug_dossier["current_conflict"] = {
+                "intent_id": trigger_id,
+                "source_task_id": conflict["source_task_id"],
+                "source_head": conflict["source_head"],
+                "source_base": conflict["source_base"],
+                "expected_target": conflict["expected_target"],
+                "diagnostics": conflict["conflict_diagnostics"] or {},
+            }
         debug = {
             "operation_id": operation["id"],
             "ordinal": next_ordinal,
@@ -3755,7 +3772,7 @@ class RepairService:
             "repair_task_id": None,
             "writer_kind": None,
             "starting_sha": self._subject_sha(primary["current_subject"]),
-            "trigger_id": f"stage-exhausted:{operation['id']}:{previous_ordinal}",
+            "trigger_id": trigger_id,
             "current_subject": primary["current_subject"],
             "deadline_event_id": f"repair-deadline-{operation['id']}-{next_ordinal}",
             "success_subject": None,
@@ -3789,6 +3806,54 @@ class RepairService:
             available_at=now,
         )
         return True
+
+    async def _exhausted_subject_conflict_on(
+        self, conn, operation: dict[str, Any], subject: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Return the sole unresolved parent conflict whose old tip is ``subject``.
+
+        A debug stage starting there inherits that conflict. Any other subject,
+        a reserved or superseded resolution, or an ambiguous intent set leaves
+        the ``stage-exhausted`` trigger (and detached-stage recovery) unchanged.
+        """
+        head = self._subject_sha(subject)
+        if (
+            operation["target_kind"] != "parent"
+            or (subject or {}).get("kind") != "parent"
+            or not is_valid_git_oid(head)
+        ):
+            return None
+        parent = (
+            await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
+        ).mappings().one_or_none()
+        if parent is None:
+            return None
+        conflicts = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.operation_key == operation["id"],
+                    integration_promotion_intents.c.target_task_id == parent["id"],
+                    integration_promotion_intents.c.repository_id == parent["repo_id"],
+                    integration_promotion_intents.c.target_branch == parent["branch_name"],
+                    integration_promotion_intents.c.state.in_(("conflict", "resolution_reserved")),
+                )
+                .order_by(integration_promotion_intents.c.id)
+                .limit(2)
+                .with_for_update()
+            )
+        ).mappings().all()
+        if len(conflicts) != 1:
+            return None
+        conflict = dict(conflicts[0])
+        if (
+            conflict["state"] != "conflict"
+            or conflict["expected_target"] != head
+            or conflict["resolution_head_sha"] is not None
+            or conflict["superseded_by_intent_id"] is not None
+        ):
+            return None
+        return conflict
 
     async def _supervisor_recovery_on(
         self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str
