@@ -233,6 +233,7 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                 )
             ).mappings()
         ]
+        settled_repair_ids = set()
         for stage in stages:
             if stage["state"] not in {"passed", "failed", "expired", "cancelled"}:
                 return refuse(f"repair stage {stage['ordinal']} is still {stage['state']}")
@@ -248,6 +249,8 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                     or await self._live_holder_on(conn, delegate_id)
                 ):
                     return refuse(f"repair delegate {delegate_id} is not settled")
+                if delegate is not None:
+                    settled_repair_ids.add(delegate_id)
         owner = await row(
             integration_branch_owners,
             integration_branch_owners.c.repository_id == repo["id"],
@@ -260,12 +263,15 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             or owner["handoff_state"] not in {"released", "reserved"}
             or (owner["owner_role"], owner["owner_id"])
             not in {("verifier", verifier_id), ("collector", operation["id"])}
+            | {("repair", delegate_id) for delegate_id in settled_repair_ids}
         ):
             return refuse("the collection or failed verifier does not hold a detached fence")
         report["owner"] = dict(owner)
         from src.integration.recovery_controls import IntegrationRecoveryControls
 
-        ambiguous = await IntegrationRecoveryControls._ambiguous_writes_on(conn, operation)
+        ambiguous = await IntegrationRecoveryControls._ambiguous_writes_on(
+            conn, operation, allowed_writer_id=owner["id"]
+        )
         unsettled = await conn.scalar(
             select(integration_promotion_intents.c.id)
             .where(
