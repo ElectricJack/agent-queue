@@ -36,11 +36,11 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     projects,
-    task_completion_records,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
-    task_integration_checkpoints,
     task_gates,
+    task_integration_checkpoints,
     tasks,
 )
 from src.git.manager import GitManager
@@ -64,8 +64,8 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.ownership import BranchOwnership, StaleFence
+from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
@@ -387,6 +387,48 @@ async def test_failed_verification_reopens_then_receipts_fix_and_wakes_fresh_ver
     completed = await case.hierarchy.parent_completion.complete_parent(
         "epic", checkpoint["generation"], new_head)
     assert completed["outcome"] == "completed", completed
+
+
+@pytest.mark.parametrize("owner_state", ["reserved", "released"])
+async def test_failed_verification_recovers_settled_repair_fence(case, owner_state):
+    red_head, _ = await _failed_aggregate(case)
+    repair_id = "settled-repair"
+    await case.db.create_task(Task(
+        id=repair_id, project_id="p", repo_id="repo", branch_name="aq/epic",
+        title="settled repair", description="no remaining writer", status=TaskStatus.COMPLETED,
+    ))
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=case.operation_id, ordinal=0, intelligence_class="high",
+            policy={}, trigger_id="red", starting_sha=red_head, current_subject={}, attempts=1,
+            deadline_at=20.0, deadline_event_id="deadline", state="expired",
+            repair_task_id=repair_id, writer_kind="existing_verifier",
+        ))
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.ref == "aq/epic")
+                           .values(owner_id=repair_id, owner_role="repair", handoff_state=owner_state))
+    old_stages = await _rows(case.db, integration_repair_stages)
+    old_owner = await _owner(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    assert (await recovery.run("epic"))["outcome"] == "would_reopen"
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                                reason="collect fix after settled repair", operator_id="operator")
+    assert result["outcome"] == "reopened", result
+    owner = await _owner(case)
+    assert owner["owner_role"] == "collector"
+    assert owner["fence_token"] > old_owner["fence_token"]
+    assert await _rows(case.db, integration_repair_stages) == old_stages
+
+
+async def test_failed_verification_refuses_unrelated_repair_fence(case):
+    await _failed_aggregate(case)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.ref == "aq/epic")
+                           .values(owner_id="unrelated-repair", owner_role="repair"))
+    result = await FailedVerificationRecovery(case.db, case.promotion).run("epic")
+    assert result["outcome"] == "blocked"
+    assert "detached fence" in result["reason"]
 
 
 @pytest.mark.parametrize("blocker", [
