@@ -848,6 +848,7 @@ Playbook inputs own:
 - infrastructure retry policy;
 - `on_main_moved` (`rebuild` or `wait`), with shipped default `rebuild`;
 - `on_failed_child` (`block` or `ask`), with shipped default `block`;
+- `max_wait_seconds`, the outbox retry bound, with shipped default one hour;
 - successful and failed branch retention; and
 - integration branch naming and cleanup retry policy.
 
@@ -1056,8 +1057,11 @@ start the next controlled branch mutation while a previous intent remains unreso
 
 Root promotion uses the same protocol, with the full-CI attestation and candidate revision pinned
 in its intent. Finalize member receipts idempotently before lease release. Outbox events for
-delivery, schedules, deadlines, and stage transitions are retried until acknowledged; consumers
-deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
+delivery, schedules, deadlines, and stage transitions are retried until acknowledged or until the
+project's `max_wait_seconds` expires. Expiry quarantines the event as an explicit failed delivery
+that keeps its frozen destinations and can be replayed. The reviewed event types that no shipped
+playbook consumes are instead marked delivered with an audit reason, and only once the playbook
+runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
 
 ## 12. Events, gates, and operator controls

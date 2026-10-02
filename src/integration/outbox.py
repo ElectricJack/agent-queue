@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import integration_outbox, integration_outbox_artifact_pins
+from src.integration.models import DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 
 
 AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
@@ -30,7 +31,7 @@ UNSUBSCRIBED_EVENT_TYPES = frozenset({
     "task.integration_configuration_blocked",
     "integration.branch_materialization_pending",
 })
-DEFAULT_MAX_WAIT_SECONDS = 3600.0
+DEFAULT_MAX_WAIT_SECONDS = DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 RETRY_EXHAUSTED_PREFIX = "retry_budget_exhausted: "
 
 
