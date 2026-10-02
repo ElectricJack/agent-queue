@@ -219,6 +219,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
         "tests/test_stranded_work.py"
@@ -1328,7 +1329,7 @@
       ]
     }
   },
-  "digest": "sha256:a661bb846039e39d62b4e2fa6bf7ac7ac940aad85ff4da16f93cc335cab153e7",
+  "digest": "sha256:f1bcf5c6635b6b555649b1ad5b6288fd7365e78a93ec056fa6beed386680d3ea",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4741,6 +4742,29 @@
         "parametrize"
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
+    },
+    "tests/test_development_subjects.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.ci_producers",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.subjects",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Development policy equivalence and incremental engine ownership on PostgreSQL."
     },
     "tests/test_development_validation.py": {
       "areas": [
