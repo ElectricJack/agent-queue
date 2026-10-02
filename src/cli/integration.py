@@ -590,6 +590,47 @@ def integration_redrive_child(
     _execute(ctx, "integration_redrive_child", args)
 
 
+@integration.command("reopen-collection")
+@click.argument("task_id")
+@click.option(
+    "--apply", is_flag=True, help="Reopen the parent's collection; default is a dry run."
+)
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The parent branch head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_reopen_collection(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Reopen parent TASK_ID's collection after `cancel-preserving` cancelled it.
+
+    The parent keeps its episode, so delivered receipts stay bound as recorded.
+    The dry run proves the parent branch tip is the recorded collection head and
+    that no writer, hold or unresolved push remains, then answers
+    `would_reopen`, `nothing_to_reopen`, `ambiguous`, `blocked` or
+    `not_eligible` with the head, receipts, owner, delegates and any conflict.
+    `--apply` needs that head and a reason: it reclaims the collector fence for
+    the same operation and, for one current conflict, opens a fresh repair stage
+    that files a new delegate. Archived delegates are never restored.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_reopen_collection", args)
+
+
 @integration.command("rebind-reused-identity")
 @click.option("--task-id", required=True)
 @click.option("--apply", is_flag=True, help="Rebind the identity; default is a dry run.")

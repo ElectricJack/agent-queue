@@ -393,6 +393,7 @@ areas:
     match:
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
+      - tests/test_integration_cancelled_collection.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
       - tests/test_integration_root_pull_requests.py

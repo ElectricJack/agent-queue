@@ -225,6 +225,22 @@ def _client(result):
             },
         ),
         (
+            ["reopen-collection", "calm-grove-25"],
+            "integration_reopen_collection",
+            {"task_id": "calm-grove-25", "dry_run": True},
+        ),
+        (
+            [
+                "reopen-collection", "calm-grove-25", "--apply",
+                "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--reason", "collection cancelled",
+            ],
+            "integration_reopen_collection",
+            {
+                "task_id": "calm-grove-25", "dry_run": False,
+                "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "collection cancelled",
+            },
+        ),
+        (
             [
                 "clear-stale-request", "p", "--apply",
                 "--request-id", "integration-sweep:p:53", "--reason", "aborted batch",
@@ -471,6 +487,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_clear_stale_request",
         "integration_redrive_root",
         "integration_redrive_child",
+        "integration_reopen_collection",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
@@ -493,6 +510,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "clear-stale-request",
         "redrive-root",
         "redrive-child",
+        "reopen-collection",
         "rebind-reused-identity",
         "rebind-repair",
         "rebind-detached-repair",
@@ -651,6 +669,8 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
         ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
         ["redrive-child", "c1", "--apply", "--reason", "stuck"],
         ["redrive-child", "c1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["reopen-collection", "p1", "--apply", "--reason", "stuck"],
+        ["reopen-collection", "p1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ),
 )
 def test_redrive_root_apply_needs_the_head_and_a_reason(argv):

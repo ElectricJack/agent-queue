@@ -99,6 +99,7 @@ aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration materialize-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration authorize-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration redrive-child CHILD_TASK_ID [--apply --head HEAD_SHA --reason REASON]
+aq integration reopen-collection PARENT_TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
@@ -753,6 +754,11 @@ children still waiting after five minutes, and `aq integration redrive-child
 CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
 records evidence for that head and queues the parent's collection. See [A
 completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
+If `redrive-child` instead says the parent has no live collection operation,
+`cancel-preserving` cancelled the parent's whole collection; `aq integration
+reopen-collection PARENT_TASK_ID` reactivates it in its episode (receipts stay
+bound) and gives the current conflict a fresh repair stage. See [A parent's
+collection was cancelled](integration-troubleshooting.md#a-parents-collection-was-cancelled).
 Sibling prerequisites accept a code receipt created after the child's latest
 reopen; later task-row and close bookkeeping do not invalidate a delivered child.
 `aq doctor --check tasks.ready_frontier_exclusions` lists READY tasks withheld

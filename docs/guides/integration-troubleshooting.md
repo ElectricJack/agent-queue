@@ -64,6 +64,7 @@ aq doctor --check git.stale_branches
 | A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
+| `redrive-child` answers "the parent has no live collection operation"; a later child's conflict never gets a repair | `cancel-preserving` cancelled the parent's whole collection operation | [A parent's collection was cancelled](#a-parents-collection-was-cancelled) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | An open PR the train will never seat (untracked branch, child with no repository, parent with no verification), or one whose work already landed under other commits | Legacy delivery the train has no identity for | [A legacy PR stays open](#a-legacy-pr-stays-open) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
@@ -896,6 +897,67 @@ refused (`changed`). It records approved evidence for that head (the operator
 as reviewer, the reason in the evidence), queues the parent's collection, and
 logs an `integration.child_redriven` event. Promotion, the receipt and the
 parent's readiness then follow the normal path.
+
+## A parent's collection was cancelled
+
+```text
+redrive-child: blocked — the parent has no live collection operation for its current episode;
+a cancelled one is reopened with `aq integration reopen-collection <parent>`
+```
+
+A collecting parent has exactly one repair operation per episode, and it is
+also the parent's *collection* operation: the collector's fence names it, every
+child's receipt is bound to it, and its repair stages resolve the children's
+conflicts. `aq integration cancel-preserving <operation>` on that operation —
+typically meant to retire one expired repair stage — stops the whole
+collection. The parent stays `PAUSED` with an `awaiting_children` checkpoint in
+the same episode, the delivered receipts stay bound to it, the collector's
+fence is released and the stage delegates are settled and archived. Nothing
+continues it: the collector and `redrive-child` need a live operation,
+`reserve_episode_on` returns the cancelled one, `aq integration resume` needs a
+`human_required` operation and the delegate in `tasks`, and the next child's
+conflict intent never gets a repair stage (calm-grove-25 and azure-vault-92,
+2026-10-02).
+
+Reopen it in place, so every receipt stays valid as recorded:
+
+```bash
+aq integration reopen-collection <parent>        # dry run
+aq integration reopen-collection <parent> --apply --head <head_sha> --reason '<why>'
+```
+
+The dry run proves the parent's remote tip is the recorded collection head
+(the current conflict's old tip, else the last receipt's head) and that every
+receipt's head is still on the branch. It reports the operation, episode,
+owner, receipts, the settled or archived delegates, any open human gates and
+the one current conflict with the stage it would open.
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `would_reopen` | The operation is `cancelled` and nothing can still write. | `--apply --head <head_sha> --reason '<why>'`. |
+| `nothing_to_reopen` | The collection operation is already live. | `redrive-root` / `redrive-child` for the stall you see. |
+| `ambiguous` | A promotion, resolution, ref mutation or attestation of this operation or branch has an unknown outcome. | Reconcile that write first; it is never replayed. |
+| `blocked` | A branch owner that is attached or held by another writer, an unsettled or attached stage delegate, a verifier, a `manual_pause`, a draining project, more than one conflict, a conflict for a child that moved on, or a remote tip that is not the recorded head. | Settle what `reason` names (`aq doctor --check integration.stranded_delegates --fix` settles delegates). Never force it. |
+| `not_eligible` | Not a collecting parent, or the operation is `human_required` (`aq integration resume`) or `completed`. | Nothing to reopen here. |
+
+Applying needs the head the dry run printed and a reason; state that changed
+since the dry run is refused (`changed`). In one transaction it reclaims the
+collector reservation for the same operation at the next fence token
+(nothing holding an older token can write), returns the operation to `active`
+or `escalated`, and — when one conflict waits — opens a fresh repair stage
+bound to that conflict with its own deadline and budget. The daemon then files
+a new delegate `repair-<operation>-<stage>`; archived delegates are never
+restored and the cancelled stages stay cancelled. A parent the exhausted repair
+terminally `BLOCKED` returns to `PAUSED`. Reopened with no conflict waiting,
+the collection's next conflict opens a fresh stage past the cancelled one on
+its own. If the dispatch fails, the daemon's continuation sweep retries it.
+Gates and holds are untouched. Each
+apply logs an `integration.collection_reopened` event with the operator, the
+reason, the previous owner and fence, the receipts and the new stage.
+
+To retire only an expired repair while children are still landing, do not
+cancel the operation; let its deadline escalate or run `aq integration
+resume <operation>` once it asks for a human.
 
 ## Legacy children block observe readiness
 
