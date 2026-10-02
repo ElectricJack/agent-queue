@@ -507,10 +507,18 @@ async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypat
     run.assert_not_awaited()
 
 
-async def test_reopen_collection_runs_under_the_derived_operator_label(db, monkeypatch):
+@pytest.mark.parametrize("checkpoint_state", [None, "verifying"])
+async def test_reopen_collection_runs_under_the_derived_operator_label(db, monkeypatch, checkpoint_state):
     from src.models import Task
+    from src.database.tables import task_integration_checkpoints
 
     await db.create_task(Task(id="epic", project_id="p", title="epic", description=""))
+    if checkpoint_state is not None:
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="epic", repository_id="repo", branch="aq/epic",
+                state=checkpoint_state, updated_at=1.0,
+            ))
     run = AsyncMock(
         return_value={"outcome": "would_reopen", "task_id": "epic", "head_sha": "a" * 40}
     )
@@ -528,9 +536,12 @@ async def test_reopen_collection_runs_under_the_derived_operator_label(db, monke
             dispatched.append((operation_id, stage))
             return {"outcome": "dispatched"}
 
-    monkeypatch.setattr(
-        "src.integration.cancelled_collection_recovery.CancelledCollectionRecovery", _Recovery
+    recovery_path = (
+        "src.integration.failed_verification_recovery.FailedVerificationRecovery"
+        if checkpoint_state is not None
+        else "src.integration.cancelled_collection_recovery.CancelledCollectionRecovery"
     )
+    monkeypatch.setattr(recovery_path, _Recovery)
     handler = IntegrationCommandsMixin()
     handler.db = db
     handler.orchestrator = SimpleNamespace(promotion_service="promotion", repair_service=_Repair())

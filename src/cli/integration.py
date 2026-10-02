@@ -610,7 +610,7 @@ def integration_reopen_collection(
     expected_head_sha: str | None,
     reason: str | None,
 ) -> None:
-    """Reopen parent TASK_ID's collection after `cancel-preserving` cancelled it.
+    """Reopen parent TASK_ID's collection after cancellation or failed verification.
 
     The parent keeps its episode, so delivered receipts stay bound as recorded.
     The dry run proves the parent branch tip is the recorded collection head and
@@ -620,6 +620,9 @@ def integration_reopen_collection(
     `--apply` needs that head and a reason: it reclaims the collector fence for
     the same operation and, for one current conflict, opens a fresh repair stage
     that files a new delegate. Archived delegates are never restored.
+    A settled failed aggregate verifier requires a completed additional child
+    fix. Recovery preserves its failed completion, advances the checkpoint
+    generation and creates a fresh verifier after collecting the fix.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")

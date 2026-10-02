@@ -754,6 +754,17 @@ children still waiting after five minutes, and `aq integration redrive-child
 CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
 records evidence for that head and queues the parent's collection. See [A
 completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
+If aggregate verification failed and `redrive-child` says the checkpoint is no
+longer awaiting children, use `aq integration reopen-collection PARENT` to
+diagnose recovery. It requires a settled failed verifier whose completion pins
+the current remote checkpoint head, an additional completed child fix, detached
+writers and no ambiguous mutation or manual hold. Apply with the reported full
+`--head`, `--reason`, and `--apply`. The same episode and receipts survive; the
+collector receives a fresh fence and the checkpoint advances generation. The
+old failed verifier and repair budgets remain evidence. Redrive the child and
+let a fresh verifier check the resulting exact head. Human rollout gates remain
+binding; the old red aggregate is never certified by recovery.
+
 If `redrive-child` instead says the parent has no live collection operation,
 `cancel-preserving` cancelled the parent's whole collection; `aq integration
 reopen-collection PARENT_TASK_ID` reactivates it in its episode (receipts stay
