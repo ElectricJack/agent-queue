@@ -54,10 +54,11 @@ export function RevisionHeader({
         type="button"
         onClick={onDownloadMarkdown}
         disabled={downloadDisabled}
-        className="ml-auto flex min-h-11 items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+        title="Download Markdown"
+        className="ml-auto flex min-h-11 min-w-11 items-center justify-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <ArrowDownTrayIcon className="h-4 w-4" aria-hidden="true" />
-        Download Markdown
+        <span className="sr-only @min-[640px]/review:not-sr-only">Download Markdown</span>
       </button>
     </header>
   );

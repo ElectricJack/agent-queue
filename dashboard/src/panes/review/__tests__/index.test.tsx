@@ -290,6 +290,48 @@ describe("review pane", () => {
     }));
   });
 
+  it("keeps a draft and its opening revision when the viewed revision changes", async () => {
+    renderPane();
+    fireEvent.click(screen.getByRole("button", { name: "Comment on this section" }));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Keep this draft." } });
+    fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
+    expect(screen.getByLabelText("Comment")).toHaveValue("Keep this draft.");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(hooks.comment.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, quote: null, heading_path: ["Goal"], body: "Keep this draft.",
+    }));
+  });
+
+  it("retains the draft on submission failure and allows retry", async () => {
+    hooks.comment.mutateAsync.mockRejectedValueOnce(new Error("Comment service unavailable"));
+    renderPane();
+    fireEvent.click(screen.getByRole("button", { name: "Comment on this section" }));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Do not lose this." } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Comment service unavailable");
+    expect(screen.getByLabelText("Comment")).toHaveValue("Do not lose this.");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(hooks.comment.mutateAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("focuses without scrolling, contains Tab navigation, and restores focus on Escape", () => {
+    renderPane();
+    const button = screen.getByRole("button", { name: "Comment on this section" });
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    fireEvent.click(button);
+    const input = screen.getByLabelText("Comment");
+    expect(input).toHaveFocus();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    fireEvent.keyDown(input, { key: "Tab", shiftKey: true });
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(button).toHaveFocus();
+  });
+
   it("submits the selected response route with requested changes", async () => {
     renderPane();
     expect(screen.getByLabelText("Response route")).toHaveTextContent("routed by the project's router (no class hint)");

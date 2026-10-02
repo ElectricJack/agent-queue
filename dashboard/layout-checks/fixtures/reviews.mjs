@@ -1,4 +1,5 @@
 // The reviews inbox: what `/reviews` asks for beyond the shell's own requests.
+import { REVIEW as COMMENT_REVIEW_ID, review as commentReview } from "./review-comments.mjs";
 
 /** @satisfies {import("@aq/ts-client").PendingPullRequestsResponse} */
 const pullRequests = { pull_requests: [] };
@@ -15,6 +16,7 @@ export const REVIEW_MARKDOWN = {
  * @returns {import("@aq/ts-client").ReviewShowResponse}
  */
 function review(body) {
+  if (body.review_id === COMMENT_REVIEW_ID) return commentReview;
   const revision = body.revision === 1 ? 1 : 2;
   return {
     success: true,
