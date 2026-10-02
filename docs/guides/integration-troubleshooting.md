@@ -62,6 +62,7 @@ aq doctor --check git.stale_branches
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
 | A root batch stays `building` after `construct-and-test` ended `source_moved` | A member's head does not descend from its recorded base | [A batch stops at `source_moved`](#a-batch-stops-at-source_moved) |
 | A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
+| A repair stage passes its deadline but no stage 1 (or 2) appears; supervisor message "is waiting for a writer" or "Repair dispatch … is retrying" | Its writer was never claimed, is live, or stopped without publishing; or dispatch met a mechanical `unknown` | [A repair stage passes its deadline without escalating](#a-repair-stage-passes-its-deadline-without-escalating) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `redrive-child` answers "the parent has no live collection operation"; a later child's conflict never gets a repair | `cancel-preserving` cancelled the parent's whole collection operation | [A parent's collection was cancelled](#a-parents-collection-was-cancelled) |
@@ -818,6 +819,36 @@ aq playbook run --playbook-id agent-queue-root-train \
 ```
 
 Worker sessions still get `unauthorized`.
+
+## A repair stage passes its deadline without escalating
+
+A repair stage's clock only escalates (opens the next stage, or blocks for a
+human under a finite policy) when its writer had a conclusive CI attempt or
+moved the subject head. Otherwise the continuing ladder reads the delegate's
+state at the deadline and records each decision in the stage dossier's
+`deadline_deferrals` (the last ten, plus `deadline_deferral_count`):
+
+| `reason` | Meaning | What happens |
+|---|---|---|
+| `writer_unclaimed` | The delegate is `PAUSED`/`READY` and nobody claimed it: capacity, not failure. | Deadline moves by one primary budget; one supervisor message per stage. Check pool capacity for the stage's class. |
+| `writer_live` | Its session is still live. | Revisited every 5 minutes; the writer keeps its fence. |
+| `operator_hold` | The delegate carries a `manual_pause` hold. | Revisited; never refiled or dispatched around the hold. |
+| `writer_refiled` | It stopped without publishing anything; the owner recovery proved the stop. | The same ordinal and delegate get a fresh clock (`writer_refiles` in the dossier) and are dispatched again. |
+| `stale_fence`, `stop_proof_unavailable`, `checkout_in_use`, `origin_unreachable`, `stale_claim` | The stop could not be proven, or the fence is someone else's. | Revisited every 5 minutes; one supervisor message per stage and reason. Fix the named cause (for example [a branch held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone)). |
+
+A stopped writer with unpublished commits is not refiled: the stage rolls over
+to its successor, which resumes the preserved tip. A stage is refiled at most
+once, and at most three writers start on one unchanged subject head; after that
+the ladder's no-progress guard ends the budget once with a
+`Repair … stopped without progress` message.
+
+`integration_repair_dispatch` answers `unknown` (with `reason` and
+`reason_code`) for a state it did not expect — a missing or mismatched delegate,
+an id collision, a missing or non-predecessor owner, an incoherent handoff.
+Nothing is consumed and the continuation passes retry it; reviewed playbooks
+see it as `busy`, and the supervisor hears once per operation and reason.
+Only an operator hold on the delegate, or preserved progress that no longer
+proves its lineage, stays `human_required`.
 
 ## A completed root has no pull request
 

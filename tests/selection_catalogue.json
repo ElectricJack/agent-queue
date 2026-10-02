@@ -1321,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:b43ff47b4cd666dd0b62f202d5efdf59d19598f7563dcf99f9abd15d9b25b18e",
+  "digest": "sha256:94c8b8438866221fd6404f0182776b597c152a14a0b9d5dc2a2049dfe65a2d78",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7651,6 +7651,8 @@
       "default_arm": true,
       "imports": [
         "src.claim_file",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
@@ -7664,6 +7666,7 @@
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.outbox",
+        "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.repair",
         "src.intelligence_classes",

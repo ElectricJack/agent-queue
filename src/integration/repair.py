@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -36,6 +37,7 @@ from src.database.tables import (
     sessions,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -49,6 +51,8 @@ from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
+
+logger = logging.getLogger(__name__)
 
 
 def repair_subject_sha(subject: dict[str, Any] | None) -> str:
@@ -74,6 +78,42 @@ STUCK_BATCH_ATTEMPTS = 3
 #: How long a delivered construction re-drive may run before a stage-0 deadline
 #: that still finds no candidate escalates (``_redrive_unfinished_construction_on``).
 CONSTRUCTION_REDRIVE_GRACE_SECONDS = 600.0
+#: A due stage whose writer is live, held, or not yet provably stopped is
+#: revisited on this bounded clock instead of being superseded.
+WRITER_RECHECK_SECONDS = 300.0
+#: Writer allocations that may start on one unchanged subject head: the first
+#: writer plus at most two more (same-ordinal refiles and successor stages).
+MAX_WRITER_ALLOCATIONS_PER_SUBJECT = 3
+#: Same-ordinal refiles of a stopped writer that never published, per stage.
+MAX_REFILES_PER_STAGE = 1
+#: Deadline deferrals each stage dossier keeps verbatim; older ones are counted.
+_DEFERRAL_HISTORY = 10
+#: Deferral reasons the supervisor hears about once per stage.  A live writer,
+#: an operator's own hold, or a row a concurrent expiry already released is
+#: not news.
+_NOTICE_DEFERRALS = frozenset({
+    "writer_unclaimed", "stale_fence", "stop_proof_unavailable", "stale_claim",
+    "checkout_in_use", "origin_unreachable",
+})
+#: Delegate statuses with no writer: the pool has not (re)claimed it yet.
+_UNCLAIMED_STATUSES = frozenset({
+    TaskStatus.DEFINED.value, TaskStatus.PAUSED.value, TaskStatus.READY.value,
+})
+#: Delegate statuses a stopped writer can leave behind without closing.
+_STOPPED_STATUSES = frozenset({
+    TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value, TaskStatus.BLOCKED.value,
+    TaskStatus.PAUSED.value, TaskStatus.READY.value,
+})
+#: Exit-time holds a refile clears; an operator's ``manual_pause`` stays binding.
+_REFILE_CLEARED_HOLDS = ("needs_attention", "claim_prepare_backoff_until")
+
+
+class _StoppedWriter(Exception):
+    """An expiring stage's writer stopped without publishing; prove it outside the lock."""
+
+    def __init__(self, facts: dict[str, Any]) -> None:
+        super().__init__(facts["task_id"])
+        self.facts = facts
 
 
 def _unfinished_candidate_publication(batch_id):
@@ -1398,21 +1438,37 @@ class RepairService:
                     task = await self._restore_archived_delegate_on(
                         conn, repair_task_id, operation, repair_stage, target, project_id
                     )
-                if task is None or repair_stage["writer_kind"] != "repair_delegate":
-                    return self._dispatch_value(
-                        "human_required",
-                        operation_id,
-                        stage,
-                        repair_task_id=repair_task_id,
+                if repair_stage["writer_kind"] != "repair_delegate":
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "writer_kind",
+                        f"stage writer {repair_task_id} is a {repair_stage['writer_kind']}, "
+                        "not a repair delegate this command can hand off",
+                        conn=conn, repair_task_id=repair_task_id,
                         writer_kind=repair_stage["writer_kind"],
                     )
-                if not self._delegate_task_matches(task, operation, target, project_id):
+                if task is None:
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_missing",
+                        f"repair delegate {repair_task_id} has no task row and no "
+                        "restorable archive",
+                        conn=conn, repair_task_id=repair_task_id,
+                        writer_kind=repair_stage["writer_kind"],
+                    )
+                if await self.db._read_manual_pause(conn, repair_task_id) is not None:
+                    # An operator's hold on the delegate is a human decision.
                     return self._dispatch_value(
                         "human_required",
                         operation_id,
                         stage,
                         repair_task_id=repair_task_id,
                         writer_kind="repair_delegate",
+                    ) | {"reason": f"repair delegate {repair_task_id} is held by an operator"}
+                if not self._delegate_task_matches(task, operation, target, project_id):
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_mismatch",
+                        f"repair delegate {repair_task_id} ({task['status']}) does not match "
+                        "the operation's project, branch, provenance or a dispatchable status",
+                        conn=conn, repair_task_id=repair_task_id, writer_kind="repair_delegate",
                     )
             else:
                 # The delegate is filed with the stage's class as a hint; the
@@ -1432,8 +1488,12 @@ class RepairService:
                     )
                 ).mappings().one_or_none()
                 if collision is not None:
-                    return self._dispatch_value(
-                        "human_required", operation_id, stage
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_id_collision",
+                        f"task {repair_task_id} already exists ({collision['status']}, created "
+                        f"by {collision['created_by_kind']} {collision['created_by_id']}) but "
+                        "is not linked to this stage",
+                        conn=conn,
                     )
                 await self.db.create_task(
                     Task(
@@ -1474,12 +1534,11 @@ class RepairService:
 
         owner = await self._ownership.get_owner(target)
         if owner is None:
-            return self._dispatch_value(
-                "human_required",
-                operation_id,
-                stage,
-                repair_task_id=repair_task_id,
-                writer_kind="repair_delegate",
+            return await self._dispatch_unknown(
+                operation_id, stage, "owner_missing",
+                f"integration branch {target.branch} has no owner row to hand to "
+                f"{repair_task_id}",
+                repair_task_id=repair_task_id, writer_kind="repair_delegate",
             )
         # The deadline retires authority, not the writer's unpublished work.
         # Use the existing provider-backed recovery after drain has stopped
@@ -1528,10 +1587,12 @@ class RepairService:
                             integration_repair_stages.c.operation_id == operation_id,
                             integration_repair_stages.c.ordinal == stage,
                         ).values(dossier=dossier))
+                # Preserved history that no longer proves its lineage is an
+                # unexplained remote move: a human decision, not a retry.
                 return self._dispatch_value(
                     "human_required", operation_id, stage, repair_task_id=repair_task_id,
                     writer_kind="repair_delegate",
-                )
+                ) | {"reason": f"preserved repair progress is unusable: {exc}"}
         if (
             owner["owner_id"] == repair_task_id
             and owner["owner_role"] == "repair"
@@ -1586,12 +1647,12 @@ class RepairService:
                 if not released_primary and not self._predecessor_matches(
                     owner, operation
                 ):
-                    return self._dispatch_value(
-                        "human_required",
-                        operation_id,
-                        stage,
-                        repair_task_id=repair_task_id,
-                        writer_kind="repair_delegate",
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "owner_not_predecessor",
+                        f"the fence belongs to {owner['owner_id']} ({owner['owner_role']}, "
+                        f"{owner['handoff_state']}), which is not a predecessor this stage "
+                        f"may take over for {repair_task_id}",
+                        repair_task_id=repair_task_id, writer_kind="repair_delegate",
                     )
                 old_fence = Fence(
                     target=target,
@@ -1681,12 +1742,12 @@ class RepairService:
                 or int(owner["fence_token"]) != fence.token
                 or not (reserved or attached)
             ):
-                return self._dispatch_value(
-                    "human_required",
-                    operation_id,
-                    stage,
-                    repair_task_id=repair_task_id,
-                    writer_kind="repair_delegate",
+                return await self._dispatch_unknown(
+                    operation_id, stage, "handoff_unconfirmed",
+                    f"after the handoff to {repair_task_id} (fence {fence.token}) the stage, "
+                    "owner row, delegate status or attached session no longer form a "
+                    "coherent reserved or attached writer",
+                    conn=conn, repair_task_id=repair_task_id, writer_kind="repair_delegate",
                 )
             ready = []
             if progress is not None and reserved:
@@ -1695,7 +1756,12 @@ class RepairService:
                     current_stage["current_subject"] != progress["subject"]
                     or (current_stage["dossier"] or {}).get("manifest") != progress["manifest"]
                 ):
-                    return self._dispatch_value("human_required", operation_id, stage)
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "progress_subject_moved",
+                        "the stage subject or manifest changed after preserved progress "
+                        f"{progress['ref']} was proven; it is re-proven on the next dispatch",
+                        conn=conn,
+                    )
                 dossier = dict(current_stage["dossier"] or {})
                 dossier.pop("preserved_progress_blocker", None)
                 dossier.update(
@@ -1898,8 +1964,25 @@ class RepairService:
     async def expire(
         self, operation_id: str, stage: int, *, now: float | None = None
     ) -> dict[str, Any]:
-        """Conditionally expire the exact current stage at its absolute deadline."""
+        """Conditionally expire the exact current stage at its absolute deadline.
+
+        Under a continuing ladder the clock alone never allocates a writer that
+        nobody needed: a delegate the pool never claimed extends the stage, a
+        live writer is revisited, and a stopped writer that published nothing
+        is proven gone and refiled at the same ordinal.  Conclusive attempts or
+        a moved subject head escalate as before.
+        """
         observed_at = self.clock() if now is None else now
+        try:
+            return await self._expire(operation_id, stage, observed_at, classify=True)
+        except _StoppedWriter as stopped:
+            return await self._expire_stopped_writer(
+                operation_id, stage, stopped.facts, observed_at
+            )
+
+    async def _expire(
+        self, operation_id: str, stage: int, observed_at: float, *, classify: bool
+    ) -> dict[str, Any]:
         if stage < 0:
             return self._timeout_value("stale", "ignore", operation_id, stage)
         async with self.db.immediate() as conn:
@@ -1998,7 +2081,23 @@ class RepairService:
                     conn, dict(operation), dict(row), now=observed_at
                 ):
                     return self._timeout_value("not_due", "wait", operation_id, stage)
-            if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
+            continues = (
+                stage == 0
+                or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
+            )
+            if continues and classify:
+                writer = await self._expiring_writer_on(conn, dict(operation), dict(row))
+                disposition = writer["disposition"] if writer is not None else "ladder"
+                if disposition == "stopped":
+                    # Nothing was written in this transaction; the stop proof
+                    # runs Git and provider probes without the row locks.
+                    raise _StoppedWriter(writer)
+                if disposition != "ladder":
+                    return await self._defer_expiry_on(
+                        conn, dict(operation), dict(row), writer,
+                        reason=writer["reason"], now=observed_at,
+                    )
+            if continues:
                 continued = await self._activate_debug_on(
                     conn,
                     operation=dict(operation),
@@ -2085,6 +2184,499 @@ class RepairService:
         if started is None:
             started = redrive["available_at"]
         return now - float(started) < CONSTRUCTION_REDRIVE_GRACE_SECONDS
+
+    async def _expiring_writer_on(
+        self, conn, operation: dict[str, Any], stage: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Classify a due stage's delegate from durable facts, never from the clock.
+
+        ``ladder`` keeps the existing escalation: a conclusive attempt, a subject
+        head that moved since this writer was allocated, a writer that closed,
+        or a spent refile budget.  ``unclaimed`` is a capacity wait, ``live``
+        and ``held`` are waits, and ``stopped`` needs a stop proof before its
+        ordinal is refiled.  ``None`` leaves a stage without a delegate (or
+        one this cannot read) to the ladder.
+        """
+        from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+        from src.integration.finished_owners import _live_task_session
+        from src.integration.owner_recovery import RECOVERABLE_STATES
+
+        task_id = stage["repair_task_id"]
+        if (
+            stage["state"] != "active"
+            or stage["writer_kind"] != "repair_delegate"
+            or not task_id
+            or stage["deadline_at"] is None
+        ):
+            return None
+        task = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().one_or_none()
+        context = await self._dispatch_context_on(conn, operation["id"], int(stage["ordinal"]))
+        if task is None or context is None:
+            return None
+        target = context[2]
+        owner = (await conn.execute(
+            select(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            ).with_for_update()
+        )).mappings().one_or_none()
+        rows = await self._stage_rows_on(conn, operation["id"])
+        subject_sha = self._subject_sha(stage["current_subject"])
+        facts = {
+            "operation_id": operation["id"],
+            "batch_id": operation.get("batch_id"),
+            "stage": int(stage["ordinal"]),
+            "task_id": task_id,
+            "task_status": task["status"],
+            "claim_epoch": int(task["claim_epoch"] or 0),
+            "attempts": int(stage["attempts"]),
+            "deadline_at": float(stage["deadline_at"]),
+            "subject_sha": subject_sha,
+            "allocation_sha": self._writer_allocation_sha(stage, rows),
+            "target": target,
+            "owner": dict(owner) if owner is not None else None,
+        }
+
+        def verdict(disposition: str, reason: str) -> dict[str, Any]:
+            return facts | {"disposition": disposition, "reason": reason}
+
+        if (
+            facts["attempts"] > 0
+            or not is_valid_git_oid(subject_sha)
+            or subject_sha != facts["allocation_sha"]
+        ):
+            return verdict("ladder", "progress")
+        if await self.db._read_manual_pause(conn, task_id) is not None:
+            return verdict("held", "operator_hold")
+        if await _live_task_session(conn, task_id) is not None:
+            return verdict("live", "writer_live")
+        status = task["status"]
+        attached = bool(
+            owner is not None
+            and owner["owner_id"] == task_id
+            and owner["handoff_state"] in RECOVERABLE_STATES
+        )
+        if status in _UNCLAIMED_STATUSES and not attached:
+            return verdict("unclaimed", "writer_unclaimed")
+        terminal = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+        ))
+        if status not in _STOPPED_STATUSES or (
+            status == TaskStatus.BLOCKED.value and terminal is not None
+        ):
+            return verdict("ladder", "writer_closed")
+        if (
+            len((stage["dossier"] or {}).get("writer_refiles") or []) >= MAX_REFILES_PER_STAGE
+            or self._allocations_on_head(rows, subject_sha) >= MAX_WRITER_ALLOCATIONS_PER_SUBJECT
+        ):
+            return verdict("ladder", "refile_budget_exhausted")
+        return verdict("stopped", "writer_stopped")
+
+    @staticmethod
+    async def _stage_rows_on(conn, operation_id: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in (await conn.execute(
+            select(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == operation_id)
+            .order_by(integration_repair_stages.c.ordinal)
+        )).mappings()]
+
+    @classmethod
+    def _stage_allocation_sha(cls, stage: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+        """The subject head this stage's first writer was allocated on."""
+        dossier = stage["dossier"] or {}
+        allocated = (dossier.get("allocation") or {}).get("subject_sha")
+        if allocated:
+            return str(allocated)
+        ordinal = int(stage["ordinal"])
+        predecessor = next((row for row in rows if int(row["ordinal"]) == ordinal - 1), None)
+        if ordinal == 0 or predecessor is None or dossier.get("continuations"):
+            # Stage zero and a continued conflict move ``starting_sha`` together
+            # with the subject; a successor inherits its predecessor's subject.
+            return str(stage["starting_sha"] or "")
+        return cls._subject_sha(predecessor["current_subject"])
+
+    @classmethod
+    def _writer_allocation_sha(cls, stage: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+        """The subject head the stage's current writer was allocated (or refiled) on."""
+        refiles = (stage["dossier"] or {}).get("writer_refiles") or []
+        if refiles and refiles[-1].get("subject_sha"):
+            return str(refiles[-1]["subject_sha"])
+        return cls._stage_allocation_sha(stage, rows)
+
+    @classmethod
+    def _allocations_on_head(cls, rows: list[dict[str, Any]], head: str) -> int:
+        """Stages and same-ordinal refiles whose writer started on *head*."""
+        return sum(
+            int(cls._stage_allocation_sha(row, rows) == head)
+            + sum(
+                1
+                for refile in (row["dossier"] or {}).get("writer_refiles") or []
+                if refile.get("subject_sha") == head
+            )
+            for row in rows
+        )
+
+    async def _locked_due_stage_on(
+        self, conn, operation_id: str, stage: int, facts: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Re-lock the exact stage *facts* describe, or ``None`` if it moved on."""
+        project_id = (await conn.execute(
+            select(integration_batches.c.project_id)
+            .join(integration_repair_operations,
+                  integration_repair_operations.c.batch_id == integration_batches.c.id)
+            .where(integration_repair_operations.c.id == operation_id)
+        )).scalar_one_or_none()
+        if project_id is not None:
+            await self.db.lock_hierarchy_project(conn, project_id)
+        operation = (await conn.execute(
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.id == operation_id)
+            .with_for_update()
+        )).mappings().one_or_none()
+        row = (await conn.execute(
+            select(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == stage,
+            )
+            .with_for_update()
+        )).mappings().one_or_none()
+        if (
+            operation is None
+            or row is None
+            or operation["state"] not in {"active", "escalated"}
+            or int(operation["active_stage"]) != stage
+            or row["state"] != "active"
+            or row["repair_task_id"] != facts["task_id"]
+            or row["writer_kind"] != "repair_delegate"
+            or int(row["attempts"]) != facts["attempts"]
+            or row["deadline_at"] is None
+            or float(row["deadline_at"]) != facts["deadline_at"]
+            or self._subject_sha(row["current_subject"]) != facts["subject_sha"]
+        ):
+            return None
+        return dict(operation), dict(row)
+
+    async def _defer_expiry_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        stage: dict[str, Any],
+        facts: dict[str, Any],
+        *,
+        reason: str,
+        now: float,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a due stage's deadline forward without consuming its ordinal.
+
+        An unclaimed delegate gets one primary budget (capacity is not a failed
+        repair); anything else is revisited after :data:`WRITER_RECHECK_SECONDS`.
+        Attempts, ordinal, writer and fence are untouched.
+        """
+        ordinal = int(stage["ordinal"])
+        policy = RepairPolicy.model_validate(stage["policy"])
+        seconds = (
+            policy.primary_seconds if reason == "writer_unclaimed" else WRITER_RECHECK_SECONDS
+        )
+        previous = float(stage["deadline_at"])
+        deadline = max(previous, now) + seconds
+        entry = {
+            "reason": reason,
+            "at": now,
+            "previous_deadline_at": previous,
+            "deadline_at": deadline,
+            "task_id": facts["task_id"],
+            "task_status": facts["task_status"],
+            "claim_epoch": facts["claim_epoch"],
+        }
+        if detail:
+            entry["detail"] = detail
+        dossier = dict(stage["dossier"] or {})
+        history = list(dossier.get("deadline_deferrals") or []) + [entry]
+        dossier["deadline_deferrals"] = history[-_DEFERRAL_HISTORY:]
+        dossier["deadline_deferral_count"] = int(dossier.get("deadline_deferral_count") or 0) + 1
+        dossier["budget"] = dict(dossier.get("budget") or {}) | {"deadline_at": deadline}
+        changed = await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == ordinal,
+                integration_repair_stages.c.state == "active",
+                integration_repair_stages.c.deadline_at == previous,
+            )
+            .values(deadline_at=deadline, dossier=dossier)
+        )
+        waiting = self._timeout_value("not_due", "wait", operation["id"], ordinal)
+        if changed.rowcount != 1:
+            return waiting
+        if reason in _NOTICE_DEFERRALS:
+            if reason == "writer_unclaimed":
+                subject = f"Repair stage {ordinal} of {operation['id']} is waiting for a writer"
+                body = (
+                    f"Repair stage {ordinal} of operation {operation['id']} reached its "
+                    f"deadline before any writer claimed delegate {facts['task_id']} "
+                    f"(status {facts['task_status']}, claim epoch {facts['claim_epoch']}). "
+                    "This is a capacity wait, not a failed repair: the deadline moved by "
+                    f"one primary budget to {deadline} and no successor stage was "
+                    "allocated. If it persists, check pool capacity for intelligence class "
+                    f"{stage['intelligence_class']}."
+                )
+            else:
+                subject = f"Repair stage {ordinal} of {operation['id']} cannot refile its writer"
+                body = (
+                    f"Repair stage {ordinal} of operation {operation['id']} is due and its "
+                    f"delegate {facts['task_id']} (status {facts['task_status']}) has "
+                    f"stopped without publishing, but it was not refiled: {reason}"
+                    + (f": {detail}" if detail else "")
+                    + f". The stage is revisited every {WRITER_RECHECK_SECONDS:.0f}s; no "
+                    "successor stage was allocated and the fence was not moved."
+                )
+            await self._stage_notice_on(
+                conn, operation,
+                key=f"repair-deferred:{operation['id']}:{ordinal}:{reason}",
+                subject=subject, body=body, body_kind="integration_repair_deferred", now=now,
+            )
+        return waiting | {"reason": reason, "deadline_at": deadline}
+
+    async def _defer_expiry(
+        self,
+        operation_id: str,
+        stage: int,
+        facts: dict[str, Any],
+        *,
+        reason: str,
+        now: float,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        async with self.db.immediate() as conn:
+            current = await self._locked_due_stage_on(conn, operation_id, stage, facts)
+            if current is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            operation, row = current
+            return await self._defer_expiry_on(
+                conn, operation, row, facts, reason=reason, now=now, detail=detail
+            )
+
+    async def _expire_stopped_writer(
+        self, operation_id: str, stage: int, facts: dict[str, Any], now: float
+    ) -> dict[str, Any]:
+        """Prove a stopped, unpublished writer gone, then refile its ordinal.
+
+        The stop proof is the existing provider-backed owner recovery.  A dry
+        run first: a checkout with unpublished commits keeps the rollover path,
+        whose successor resumes the preserved tip.  A writer with nothing to
+        preserve is released and its own ordinal is re-armed for a new claim.
+        """
+        from src.integration.owner_recovery import (
+            NOT_ELIGIBLE,
+            PRESERVED_AND_RELEASED,
+            RECOVERABLE_STATES,
+        )
+
+        owner = facts["owner"]
+        if (
+            owner is not None
+            and owner["owner_id"] == facts["task_id"]
+            and owner["handoff_state"] in RECOVERABLE_STATES
+        ):
+            if self._owner_recovery is None:
+                return await self._defer_expiry(
+                    operation_id, stage, facts, reason="stop_proof_unavailable", now=now,
+                    detail="no provider-backed owner recovery is configured",
+                )
+            proofs = []
+            for dry_run in (True, False):
+                recovered = await self._owner_recovery.recover(
+                    owner["id"], principal="repair_stage_expiry", dry_run=dry_run
+                )
+                if recovered.outcome == NOT_ELIGIBLE:
+                    return await self._defer_expiry(
+                        operation_id, stage, facts, reason=recovered.reason or "stop_unproven",
+                        now=now, detail=(recovered.evidence or {}).get("detail"),
+                    )
+                if recovered.outcome == PRESERVED_AND_RELEASED:
+                    return await self._expire(operation_id, stage, now, classify=False)
+                proofs.append(recovered)
+            evidence = proofs[-1].evidence or {}
+            proof = {
+                "owner_row_id": owner["id"],
+                "outcome": proofs[-1].outcome,
+                "released_fence_token": evidence.get("released_fence_token"),
+                "stop_proof": evidence.get("stop_proof"),
+                "claim_released": evidence.get("claim_released"),
+            }
+        else:
+            refusal = self._refile_owner_refusal(owner, facts)
+            if refusal is not None:
+                return await self._defer_expiry(
+                    operation_id, stage, facts, reason="stale_fence", now=now, detail=refusal
+                )
+            proof = {
+                "owner_row_id": owner["id"],
+                "outcome": "detached",
+                "owner_id": owner["owner_id"],
+                "handoff_state": owner["handoff_state"],
+                "fence_token": int(owner["fence_token"]),
+            }
+        return await self._refile_stage(operation_id, stage, facts, proof, now)
+
+    @staticmethod
+    def _refile_owner_refusal(owner: dict[str, Any] | None, facts: dict[str, Any]) -> str | None:
+        """Why the branch fence does not belong to this stage's stopped writer."""
+        if owner is None:
+            return "the integration branch has no owner row"
+        if owner["handoff_state"] == "released":
+            return None
+        if (
+            owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None
+            and owner["workspace_id"] is None
+            and (
+                (owner["owner_id"] == facts["task_id"] and owner["owner_role"] == "repair")
+                or (
+                    owner["owner_role"] == "collector"
+                    and owner["owner_id"] in {facts["operation_id"], facts["batch_id"]}
+                )
+            )
+        ):
+            return None
+        return (
+            f"the fence belongs to {owner['owner_id']} ({owner['owner_role']}, "
+            f"{owner['handoff_state']}, token {owner['fence_token']}), not to stopped "
+            f"writer {facts['task_id']}"
+        )
+
+    async def _refile_stage(
+        self,
+        operation_id: str,
+        stage: int,
+        facts: dict[str, Any],
+        proof: dict[str, Any],
+        now: float,
+    ) -> dict[str, Any]:
+        """Re-arm the same ordinal and delegate for a new claim, with a fresh clock.
+
+        The delegate keeps its identity (and so every stage, archive and
+        release relation); only its claim, hold metadata and deadline renew.
+        Attempts are durable, as with a human resume.
+        """
+        from src.integration.finished_owners import _live_task_session
+
+        task_id = facts["task_id"]
+        transition = None
+        async with self.db.immediate() as conn:
+            current = await self._locked_due_stage_on(conn, operation_id, stage, facts)
+            if current is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            operation, row = current
+            task = (await conn.execute(
+                select(tasks).where(tasks.c.id == task_id).with_for_update()
+            )).mappings().one_or_none()
+            if task is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            if await self.db._read_manual_pause(conn, task_id) is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="operator_hold", now=now
+                )
+            if await _live_task_session(conn, task_id) is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="writer_live", now=now
+                )
+            claimed = (await conn.execute(
+                select(sessions.c.id).where(
+                    sessions.c.task_id == task_id, sessions.c.claim_phase.is_not(None)
+                ).limit(1)
+            )).scalar_one_or_none()
+            if claimed is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="stale_claim", now=now,
+                    detail=f"stopped session {claimed} still holds a claim on {task_id}",
+                )
+            policy = RepairPolicy.model_validate(row["policy"])
+            deadline = now + (policy.primary_seconds if stage == 0 else policy.debug_seconds)
+            dossier = dict(row["dossier"] or {})
+            dossier["writer_refiles"] = list(dossier.get("writer_refiles") or []) + [{
+                "task_id": task_id,
+                "claim_epoch": int(task["claim_epoch"] or 0),
+                "task_status": task["status"],
+                "subject_sha": facts["subject_sha"],
+                "previous_deadline_at": float(row["deadline_at"]),
+                "deadline_at": deadline,
+                "refiled_at": now,
+                "stop_proof": proof,
+            }]
+            dossier["budget"] = dict(dossier.get("budget") or {}) | {"deadline_at": deadline}
+            changed = await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == stage,
+                    integration_repair_stages.c.state == "active",
+                    integration_repair_stages.c.repair_task_id == task_id,
+                )
+                .values(deadline_at=deadline, dossier=dossier)
+            )
+            if changed.rowcount != 1:
+                raise _RepairInvariant("repair stage changed while refiling its writer")
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key.in_(_REFILE_CLEARED_HOLDS),
+            ))
+            if task["status"] != TaskStatus.PAUSED.value:
+                transition = await self.db._apply_transition(
+                    conn,
+                    task_id,
+                    TaskStatus.PAUSED,
+                    context="integration_repair_refile",
+                    force=True,
+                    _manual_pause_control=True,
+                    assigned_agent_id=None,
+                )
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                resume_after=None,
+                description=await self._delegate_description_on(
+                    conn, operation, row | {"dossier": dossier}
+                ),
+            ))
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        try:
+            dispatched = (await self.dispatch(operation_id, stage))["outcome"]
+        except Exception:
+            # The stage is durable; the continuation passes retry its dispatch.
+            logger.warning(
+                "Refiled repair stage %s/%s could not dispatch now; the continuation "
+                "passes retry it", operation_id, stage, exc_info=True,
+            )
+            dispatched = "runtime_error"
+        return self._timeout_value("not_due", "wait", operation_id, stage) | {
+            "reason": "writer_refiled", "deadline_at": deadline, "dispatch": dispatched,
+        }
+
+    async def _stage_notice_on(
+        self, conn, operation: dict[str, Any], *, key: str, subject: str, body: str,
+        body_kind: str, now: float,
+    ) -> None:
+        """One supervisor message per *key*, however often the condition recurs."""
+        project_id = await self._operation_project_id_on(conn, operation)
+        await conn.execute(pg_insert(messages).values(
+            id=f"msg-{key}", project_id=project_id,
+            from_kind="system", from_id="integration-repair", to_kind="session",
+            to_id=f"supervisor-{project_id}", subject=subject, body=body,
+            created_at=now, priority=50, archive_after_inject=1, body_kind=body_kind,
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def due_stages(
         self,
@@ -3668,6 +4260,13 @@ class RepairService:
             f"Starting SHA: {repair_stage['starting_sha']}\n"
             f"Dossier: {repair_stage['dossier']}"
         )
+        refiles = (repair_stage["dossier"] or {}).get("writer_refiles")
+        if refiles:
+            description += (
+                "\n\nThis stage was refiled at the same ordinal: its previous writer "
+                f"(claim epoch {refiles[-1]['claim_epoch']}) stopped without publishing "
+                "anything. Start from the published stage head."
+            )
         progress = (repair_stage["dossier"] or {}).get("preserved_progress")
         if progress:
             description += (
@@ -3956,6 +4555,20 @@ class RepairService:
                     attempts=attempts, now=now, terminal_state=terminal_state,
                 )
                 return False
+        successor_sha = self._subject_sha(primary["current_subject"])
+        if is_valid_git_oid(successor_sha) and self._allocations_on_head(
+            await self._stage_rows_on(conn, operation["id"]), successor_sha
+        ) >= MAX_WRITER_ALLOCATIONS_PER_SUBJECT:
+            # Refiles and successors share one budget per unchanged head.
+            await self._supervisor_recovery_on(
+                conn, operation=operation, stage=primary | {"dossier": primary_dossier},
+                attempts=attempts, now=now, terminal_state=terminal_state,
+                reason=(
+                    f"{MAX_WRITER_ALLOCATIONS_PER_SUBJECT} writers were already allocated "
+                    "on this unchanged subject head"
+                ),
+            )
+            return False
         await conn.execute(
             update(integration_repair_stages)
             .where(
@@ -3972,6 +4585,12 @@ class RepairService:
         )
         primary_budget = dict(primary_dossier.get("budget", {}))
         debug_dossier = dict(primary_dossier)
+        # Refiles and deadline deferrals belong to the stage that made them.
+        for key in ("writer_refiles", "deadline_deferrals", "deadline_deferral_count"):
+            debug_dossier.pop(key, None)
+        debug_dossier["allocation"] = {
+            "subject_sha": successor_sha, "ordinal": next_ordinal, "allocated_at": now,
+        }
         progress = debug_dossier.get("preserved_progress")
         if progress and progress["subject"] != primary["current_subject"]:
             history = list(debug_dossier.get("preserved_progress_history", []))
@@ -4106,14 +4725,15 @@ class RepairService:
         return conflict
 
     async def _supervisor_recovery_on(
-        self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str
+        self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str,
+        reason: str = "repair subject has not advanced since the preceding stage",
     ) -> None:
         """End an unchanged-head budget once; preserve its writer and incident."""
         incident_id = f"repair-no-progress:{operation['id']}:{stage['ordinal']}"
         dossier = dict(stage["dossier"] or {})
         dossier["supervisor_recovery"] = {
             "incident_id": incident_id,
-            "reason": "repair subject has not advanced since the preceding stage",
+            "reason": reason,
             "subject": stage["current_subject"],
             "stage": int(stage["ordinal"]),
             "attempts": attempts,
@@ -4423,6 +5043,61 @@ class RepairService:
         if fence is not None:
             value["fence"] = fence.model_dump(mode="json")
         return value
+
+    async def _dispatch_unknown(
+        self,
+        operation_id: str,
+        stage: int,
+        reason_code: str,
+        reason: str,
+        *,
+        conn=None,
+        repair_task_id: str | None = None,
+        writer_kind: str | None = None,
+    ) -> dict[str, Any]:
+        """A state dispatch did not expect: retryable ``unknown``, never a human gate.
+
+        Nothing is consumed, so the continuation and reservation passes retry
+        the stage as it is.  The supervisor hears once per (operation, reason);
+        the exact reason travels with every result.
+        """
+        if conn is None:
+            async with self.db.immediate() as own:
+                await self._dispatch_unknown_notice_on(
+                    own, operation_id, stage, reason_code, reason
+                )
+        else:
+            await self._dispatch_unknown_notice_on(
+                conn, operation_id, stage, reason_code, reason
+            )
+        return self._dispatch_value(
+            "unknown", operation_id, stage,
+            repair_task_id=repair_task_id, writer_kind=writer_kind,
+        ) | {"reason": reason, "reason_code": reason_code}
+
+    async def _dispatch_unknown_notice_on(
+        self, conn, operation_id: str, stage: int, reason_code: str, reason: str
+    ) -> None:
+        operation = (await conn.execute(
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.id == operation_id)
+        )).mappings().one_or_none()
+        if operation is None:
+            return
+        await self._stage_notice_on(
+            conn, dict(operation),
+            key=f"repair-dispatch-unknown:{operation_id}:{reason_code}",
+            subject=f"Repair dispatch for {operation_id} is retrying: {reason_code}",
+            body=(
+                f"Dispatching repair stage {stage} of operation {operation_id} met a state "
+                f"it did not expect ({reason_code}): {reason}. This is not a human "
+                "decision: nothing was consumed and the stage stays retryable by the "
+                "repair continuation and reservation passes. This notice is sent once per "
+                "operation and reason."
+            ),
+            body_kind="integration_repair_dispatch_unknown",
+            now=self.clock(),
+        )
 
     @staticmethod
     def _start_value(stage: Any, *, outcome: str) -> dict[str, Any]:

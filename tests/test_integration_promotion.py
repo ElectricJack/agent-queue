@@ -3300,7 +3300,9 @@ async def _exhaust_conflict_stage(db, case, exhausted_stage: int) -> dict:
                 deadline_event_id="repair-deadline-resolution-op-1",
                 started_at=4.0,
                 deadline_at=now - 1.0,
-                attempts=0,
+                # A conclusive attempt: the clock ends a stage that tried, while
+                # its writer may still be live.
+                attempts=1,
                 dossier={
                     "starting_sha": case["target"],
                     "branch_sha": case["target"],

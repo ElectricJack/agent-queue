@@ -2437,6 +2437,13 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
     )
     conflict = await service.build("batch")
     if stage == 1:
+        # The never-claimed primary only extends its clock; one conclusive
+        # attempt is what lets the deadline escalate to the debug stage.
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "repair-batch-batch",
+                integration_repair_stages.c.ordinal == 0,
+            ).values(attempts=1))
         expired = await repair.expire("repair-batch-batch", 0, now=131.0)
         assert expired["action"] == "dispatch_debug"
         async with db.immediate() as conn:
@@ -2642,6 +2649,13 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
     await db.update_session(session_id, state="stopped", desired_state="stopped")
     if handoff_crash == "superseded_recovery":
+        # Supersede the writer's stage through counted attempts: a stopped
+        # writer alone waits for its stop proof instead of losing its stage.
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "repair-batch-batch",
+                integration_repair_stages.c.state == "active",
+            ).values(attempts=1))
         await repair.expire("repair-batch-batch", 0, now=131.0)
         await repair.expire("repair-batch-batch", 1, now=300.0)
         recovery_clock[0] = 300.0
