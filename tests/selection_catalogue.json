@@ -530,7 +530,8 @@
         "tests/test_integration_published_repair_handoff.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py"
+        "tests/test_integration_workspace_handoff.py",
+        "tests/test_integration_writers.py"
       ]
     },
     "integration-promotion": {
@@ -1324,7 +1325,7 @@
       ]
     }
   },
-  "digest": "sha256:83ce6ea60d574726778d1bf73dc8e65695537a76800fd93eff64a84c48d6afc1",
+  "digest": "sha256:9421656e14755ff52af2a19ff18989ee9e3a07ccedd7c27450a0ddfe17f16f6a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8040,6 +8041,26 @@
         "parametrize"
       ],
       "summary": "Server-side stop and checkout-detachment proofs for owner handoff."
+    },
+    "tests/test_integration_writers.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.owner_recovery",
+        "src.integration.ownership",
+        "src.integration.subjects",
+        "src.integration.writers",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Subject writers: replay, expiry, unknown stops and real-Git preservation."
     },
     "tests/test_intelligence_class_deletion.py": {
       "areas": [
