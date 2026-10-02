@@ -376,6 +376,7 @@ areas:
   - id: integration-ownership
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
+      - tests/test_integration_writers.py
       - tests/test_integration_ownership.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
