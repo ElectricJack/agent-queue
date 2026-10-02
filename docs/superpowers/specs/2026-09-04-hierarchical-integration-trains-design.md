@@ -319,7 +319,12 @@ compressed `main` history.
 The current generation describes the entire required child set, including unresolved children
 created in earlier generations. Every child branch reservation retains a repository, parent task,
 parent branch, base SHA, and creation generation. Once materialized, that origin is immutable;
-updating the parent's checkpoint never replaces the child's base used for three-way application.
+updating the parent's checkpoint never replaces the child's recorded base or review identity.
+For child-to-parent promotion, when the frozen expected parent tip is an ancestor of the
+reviewed source head, that tip is the effective three-way merge base. This preserves changes
+the child already inherited from the parent without replaying them against the older origin.
+Otherwise promotion continues to use the recorded source base. Ancestry-check errors fail
+closed; the recorded origin, review evidence, and promotion identity remain unchanged.
 Reparenting an unstarted child retires its unused reservation and records a new one, preserving
 the old reservation for audit.
 

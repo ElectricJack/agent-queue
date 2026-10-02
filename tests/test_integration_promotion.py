@@ -1729,6 +1729,30 @@ async def test_clean_promotion_preserves_independent_parent_changes(db, promotio
     assert _git(["rev-list", "--first-parent", "--count", f"{target}..{prepared.prepared_sha}"], retained) == "1"
 
 
+async def test_promotion_uses_inherited_parent_tip_without_changing_review_base(db, promotion_case):
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    # The parent added child.txt; the child then edited it. Using the older
+    # origin as merge base would incorrectly classify this as an add/add conflict.
+    target = _git(["rev-parse", f"{case['head']}^"], case["work"])
+    _git(["push", "origin", f"{target}:refs/heads/aq/parent"], case["work"])
+    request = case["request"].model_copy(update={"expected_target": target})
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+
+    prepared = await service.prepare(request)
+    assert (await service.prepare(request)).prepared_sha == prepared.prepared_sha
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    assert _git(["rev-parse", f"{prepared.prepared_sha}^{{tree}}"], retained) == case["tree"]
+    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == (
+        f"{target} {case['head']}"
+    )
+    intent = await db.get_integration_promotion_intent(prepared.intent_id)
+    assert intent["source_base"] == case["base"]
+    await service.push(prepared.intent_id, case["fence"])
+    assert _git(["rev-parse", "refs/heads/aq/parent"], case["origin"]) == prepared.prepared_sha
+
+
 async def test_late_push_marker_cannot_regress_a_committed_intent(db, promotion_case):
     from src.integration.promotion import PromotionService
 

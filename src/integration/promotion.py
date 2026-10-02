@@ -237,11 +237,19 @@ class PromotionService:
             if intent["state"] == "conflict":
                 raise PromotionConflict(value, intent.get("conflict_diagnostics") or {})
 
+            # The origin remains part of the reviewed identity, but replaying
+            # inherited parent changes from it can produce false add/add conflicts.
+            merge_base = intent["source_base"]
+            if await self._is_ancestor(
+                repository.retained_git_dir, intent["expected_target"], intent["source_head"]
+            ):
+                merge_base = intent["expected_target"]
+
             result = await self.git.arun_git_result(
                 [
                     "merge-tree",
                     "--write-tree",
-                    f"--merge-base={intent['source_base']}",
+                    f"--merge-base={merge_base}",
                     intent["expected_target"],
                     intent["source_head"],
                 ],
