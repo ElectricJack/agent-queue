@@ -1,57 +1,45 @@
-This session's surface is CLI-first (docs/specs/design/aq-surface.md D6). Prefer shelling
-out to `aq <command>` for anything exploratory or administrative — `aq task show <id>`,
-`aq task comments <id>`, `aq schema` (never guess enum values; look them up), etc. The CLI
-costs far less context than reasoning about a large tool schema, and it works identically
-across harnesses. Your session token is scoped to this task, this session and this project:
-operator surfaces (`aq task list`, `aq doctor`, `aq session ...`, deleting or restarting
-tasks) answer `out of scope: <command>` and are not worth retrying.
+Use the CLI first; inspect specific commands with `--help` and enums with `aq schema`.
+Read authoritative project AGENTS.md/CLAUDE.md, applicable directory instructions and
+linked task specs before editing. Profile Role/Rules above remain authoritative.
+Discover applicable skills in the harness catalogue and read their SKILL.md before use;
+load workflow details on demand (aq-cli, aq-tasks, aq-workspaces-and-git, aq-reviews).
+Keep plugins available; avoid reprinting unchanged catalogues, help or transcripts.
 
-Run tests with `aq test <pytest args>` rather than bare `pytest` for anything past a single
-file. It takes one of this box's global test slots before running, and applies the per-session
-worker cap and the default marker deselects; everything that is not an `--aq-*` option is passed
-to pytest untouched. A `waiting for 1 of N test slot(s)` line means the box is busy, not that you
-are stuck; exit code 75 means no slot came free, which is retryable and not a test failure. Never
-raise `-n` above what the session was given — the cap is what keeps concurrent agents from
-saturating the machine.
+Your token is scoped to the held task/session/project. Operator commands (`aq task list`,
+`aq doctor`, `aq session`, daemon lifecycle) are out of scope; never bypass a rejection.
+Native equivalents include task_show, task_set, task_comment, task_comments, task_close,
+task_heartbeat, task_claim, task_handoff, message_send, message_inbox, memory_save,
+memory_search. Use the convenient surface; both dispatch through CommandHandler.
 
-For a supported job, task, message or timer condition, use `aq wait register` with
-an idempotency key and end your turn. An active durable wait retains your claim,
-workspace and pool seat without heartbeat turns. Resume from the result pointer
-with `aq wait show WAIT_ID --consume --json`: this reads the result and consumes only
-its notification. Handle the actual failure, cancellation or timeout; a satisfied wait
-does not by itself prove success. Register once and end the turn instead of sleeping,
-polling process output, or repeatedly reading an unchanged inbox. Registration returns
-immediately. For managed validation, use
-`aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` or
-`aq test --aq-detach --aq-wait TEST_ARGS`; submission and its wait commit
-together. Job admission requires the operator to enable `resources.jobs.enabled`.
-Use task waits for review or task settlement, message waits with the returned thread
-and cursor for replies, and bounded timers for planned delays. CI owned by integration
-is followed through its task's settlement; a timer is not proof that CI passed. If managed
-admission is disabled, keep the normal foreground `aq test` resource controls.
+Run focused tests and the related area suite with `aq test`; record exact commands/results.
+Keep its worker cap and marker defaults; never raise `-n`. Slot timeout 75 is retryable.
+Full-suite runs belong to CI and tasks about the suite. Use the recorded known-failing
+baseline instead of capturing your own baseline. A pre-existing failure does not fail
+your task or justify changing tests: never weaken or skip a test; name it when closing.
+Task authors specify focused/area checks, not "run the full suite before closing".
+For agent-queue, see docs/guides/resource-gating.md.
 
-If close returns `messages.pending_before_close`, read and handle each mailbox named
-in the refusal with `--inject --json` before retrying. A plain inbox or status read
-does not consume delivery. After an accepted close, follow its next-claim result;
-do not keep polling the closed task or retrying close.
+Use durable `aq wait register` with an idempotency key for a supported job, task, message
+or timer condition and end the turn; it retains claim/workspace/seat without heartbeat
+polling. Register once instead of sleeping, polling process output or rereading an unchanged
+inbox. Resume with `aq wait show WAIT_ID --consume --json` (reads the result, consumes only
+its notification) and handle the actual failure, cancellation or timeout: a satisfied wait
+is not proof of success. Use task waits for review/task settlement, message waits with the
+returned thread and cursor for replies, and bounded timers for planned delays; follow
+integration-owned CI through its task's settlement, since a timer is not proof CI passed.
+Managed tests: `aq test --aq-detach --aq-wait TEST_ARGS` or
+`aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` (operator must
+enable resources.jobs.enabled; otherwise keep foreground `aq test` resource controls).
+Do not resubmit pending work.
 
-Run focused tests for what changed and the related area suite, and record the exact commands.
-Full-suite runs belong to CI and tasks whose subject is the suite; do not run one as a routine
-close check. Compare failures with the project's recorded known-failing baseline note instead
-of capturing your own baseline. A pre-existing failure does not fail your task and is never a
-reason to weaken or skip a test; name it in your close summary. When authoring a task, specify
-focused and area checks, not "run the full suite before closing". For the agent-queue project,
-see `docs/guides/resource-gating.md` for the baseline-note path and comparison workflow.
+If close returns `messages.pending_before_close`, handle each mailbox named in the refusal
+with `--inject --json` before retrying; a plain inbox or status read does not consume
+delivery. After an accepted close, follow its next-claim result; do not keep polling the
+closed task or retrying close.
 
-A small, fixed set of native tools also exists for calls you'll make mid-turn where a native
-tool call beats shelling out: `task_show`, `task_set`, `task_comment`, `task_comments`, `task_close`, `task_heartbeat`,
-`task_claim`, `task_handoff`, `message_send`, `message_inbox`, `memory_save`,
-`memory_search`. Use whichever of the two paths (CLI or native tool) is more convenient —
-both hit the same command handler and return identical results. The ask_human command is not
-part of the supported surface; report blockers with message_send to the user. `task_close`'s only two
-outcomes are `pass` and `fail` (`aq schema`'s `outcome` enum). If you're missing context to
-finish, say so in the summary and close `fail`.
-
-If your task shows a `## Subtasks` checklist, settle each one with `aq task subtask-done N` /
-`aq task subtask-skip N --note …` as you go — closing with `--outcome pass` while any remain
-pending or in progress is refused (`subtasks.open`) unless you pass `--skip-open-subtasks`.
+Summarize normal success with `--brief`. For large evidence, use `--save-output PATH`
+on an emit-based CLI command: read the saved JSON by relevant keys/pages as needed.
+The receipt gives exact bytes/hash/path; failures, warnings, gates, claim outcomes and
+instructions stay visible. Keep full error details and evidence paths in task comments.
+Save non-CLI logs to files and page relevant ranges; never replace required instructions
+or failures with a success summary.
