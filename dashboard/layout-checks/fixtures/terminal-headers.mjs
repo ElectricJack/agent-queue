@@ -1,6 +1,7 @@
 import { LONG_TITLE, NOW, POOL_SESSION, SESSION } from "./base.mjs";
 
 export const WORKER_NAME = "Builder — " + LONG_TITLE;
+export const SECOND_POOL_SESSION = "fixture-pool-2";
 export const TERMINAL_SELECTION = "/agents?agent=worker-a&agent=supervisor-global&agent=pool%3Adeep-high-claude";
 
 /**
@@ -19,14 +20,17 @@ export function terminalHeaderFixtures(stub) {
       provider: "openai", model: "gpt-5.6", intelligence_class: "standard-high",
       project_id: "fixture", session_id: "supervisor-global", session_state: "running", session_provider: "tmux" },
   ], count: 2 }));
-  stub.override("POST /api/system/session-list", () => ({ success: true, count: 2, sessions: [
+  const sessions = [
     { id: POOL_SESSION, name: "Pool worker with a long session name", profile_id: "deep-high-claude",
       lifecycle: "pool", provider: "tmux", state: "running", started_at: NOW - 600,
       project_id: "fixture", harness: "claude", model: "claude-opus-4-6", intelligence_class: "deep-high",
       task_id: "fixture-task-3", work_dir: "/workspaces/" + "long-workspace-path/".repeat(10) },
-    { id: "fixture-pool-2", name: "Second worker", profile_id: "deep-high-claude",
+    { id: SECOND_POOL_SESSION, name: "Second worker", profile_id: "deep-high-claude",
       lifecycle: "pool", provider: "tmux", state: "running", started_at: NOW - 300 },
-  ] }));
+  ];
+  stub.override("POST /api/system/session-list", () => ({ success: true, count: sessions.length, sessions }));
   stub.allowTerminal(SESSION, "\x1b[32mAQ worker connected\x1b[0m\r\nclaimed: fixture-task-1\r\n$ aq task heartbeat\r\nWorking on a long task title…\r\n");
   stub.allowTerminal(POOL_SESSION, "\x1b[36mAQ pool worker\x1b[0m\r\nclaimed: fixture-task-3\r\n$ npm run typecheck\r\nAll checks passed.\r\n");
+  stub.allowTerminal(SECOND_POOL_SESSION, "Second pool worker terminal\r\n");
+  return sessions;
 }

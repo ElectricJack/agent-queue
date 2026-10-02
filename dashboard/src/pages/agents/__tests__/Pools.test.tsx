@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
@@ -576,29 +577,87 @@ describe("pools in the agent flock", () => {
 });
 
 describe("pool instance selection", () => {
-  it("binds the terminal to the selected instance and rebinds when it changes", async () => {
+  it("switches live terminals from the single-row header without opening details", async () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
-    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
+    const header = window.querySelector("header")!;
+    const picker = within(header).getByRole("combobox", { name: "Terminal for worker-standard pool" });
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
     // Oldest instance first, so the first live session is bound by default.
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
     act(() => TerminalSocketMock.instances[0]!.open());
 
-    const picker = within(window).getByLabelText("Instance");
+    expect(picker).toHaveValue("p-worker-standard--agent-queue--aaa");
     expect(within(picker).getByRole("option", { name: /p-worker-standard--agent-queue--bbb · agent-queue · quick-torrent-39 · 42s idle/ })).toBeInTheDocument();
-    fireEvent.change(picker, { target: { value: "p-worker-standard--agent-queue--bbb" } });
+    const user = userEvent.setup();
+    picker.focus();
+    expect(picker).toHaveFocus();
+    await user.selectOptions(picker, "p-worker-standard--agent-queue--bbb");
 
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2), SLOW);
     expect(TerminalSocketMock.instances[1]!.url).toContain("p-worker-standard--agent-queue--bbb");
     expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
+    expect(picker).toHaveValue("p-worker-standard--agent-queue--bbb");
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    act(() => TerminalSocketMock.instances[1]!.open());
+
+    // The existing details picker stays in sync and uses the same action.
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    const detailsPicker = within(window).getByLabelText("Instance");
+    expect(detailsPicker).toHaveValue("p-worker-standard--agent-queue--bbb");
+    fireEvent.change(detailsPicker, { target: { value: "p-worker-standard--agent-queue--aaa" } });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(3), SLOW);
+    expect(picker).toHaveValue("p-worker-standard--agent-queue--aaa");
+    expect(TerminalSocketMock.instances[1]!.closed).toBe(true);
+  });
+
+  it("preserves selection when instances arrive and falls back when the selected instance leaves", async () => {
+    renderAgents("/agents?agent=" + encodeURIComponent(poolSelectionKey("worker-standard", instance("bbb").id)));
+    const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    const header = window.querySelector("header")!;
+    const picker = within(header).getByRole("combobox", { name: "Terminal for worker-standard pool" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
+    act(() => TerminalSocketMock.instances[0]!.open());
+    expect(picker).toHaveValue(instance("bbb").id);
+    await act(async () => { clients[clients.length - 1]!.setQueryData(["sessions", "pool"], [instance("aaa"), instance("bbb"), instance("ccc")]); });
+    await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3), SLOW);
+    expect(picker).toHaveValue(instance("bbb").id);
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+
+    await act(async () => { clients[clients.length - 1]!.setQueryData(["sessions", "pool"], [instance("aaa"), instance("ccc")]); });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2), SLOW);
+    expect(picker).toHaveValue(instance("aaa").id);
+    expect(TerminalSocketMock.instances[1]!.url).toContain(instance("aaa").id);
+    expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
+    act(() => TerminalSocketMock.instances[1]!.open());
+    expect(within(picker).queryByRole("option", { name: /--bbb/ })).not.toBeInTheDocument();
+
+    await act(async () => { clients[clients.length - 1]!.setQueryData(["sessions", "pool"], [instance("aaa")]); });
+    await waitFor(() => expect(within(header).queryByRole("combobox")).not.toBeInTheDocument(), SLOW);
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    await act(async () => { clients[clients.length - 1]!.setQueryData(["sessions", "pool"], []); });
+    expect(await screen.findByText("No live pool instance", undefined, SLOW)).toBeInTheDocument();
+    expect(TerminalSocketMock.instances[1]!.closed).toBe(true);
+    await act(async () => { clients[clients.length - 1]!.setQueryData(["sessions", "pool"], [instance("ddd"), instance("eee")]); });
+    await waitFor(() => expect(within(header).getByRole("combobox")).toHaveValue(instance("ddd").id), SLOW);
+  });
+
+  it("keeps the picker in details only for a single live instance", async () => {
+    api.sessionList.mockResolvedValue({ data: { success: true, sessions: [instance("aaa")], count: 1 } });
+    renderAgents("/agents?agent=pool%3Aworker-standard");
+    const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    expect(within(window.querySelector("header")!).queryByRole("combobox")).not.toBeInTheDocument();
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
+    expect(within(window).getByLabelText("Instance")).toHaveValue(instance("aaa").id);
   });
 
   it("falls back to a live instance when the pinned one is gone", async () => {
     renderAgents("/agents?agent=" + encodeURIComponent(poolSelectionKey("worker-standard", "p-worker-standard--agent-queue--zzz")));
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
+    expect(screen.getByRole("combobox", { name: "Terminal for worker-standard pool" })).toHaveValue(instance("aaa").id);
   });
 
   it("drops a pre-global-pools key from the URL instead of opening a dead view", async () => {
