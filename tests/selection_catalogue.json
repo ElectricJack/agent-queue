@@ -536,6 +536,7 @@
     "integration-promotion": {
       "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
       "modules": [
+        "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
@@ -1320,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:7d659a038b19eec73b51bd819c6dcecd3b97bdf9f5279a1305a815230201ec0e",
+  "digest": "sha256:8cbc8ec9fc359bb6f142b7cb80998d5d7faa07a5876c9ab39dda1a9e343eb39d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6972,6 +6973,30 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_integration_cancelled_collection.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.cancelled_collection_recovery",
+        "src.integration.child_delivery",
+        "src.integration.collection",
+        "src.integration.delegate_release",
+        "src.integration.development",
+        "src.integration.hierarchy",
+        "src.integration.models",
+        "src.integration.promotion",
+        "src.integration.repair",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A parent collection cancelled mid-episode is reopened without stranding receipts."
     },
     "tests/test_integration_candidates.py": {
       "areas": [

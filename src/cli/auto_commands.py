@@ -141,6 +141,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_materialize_root",
     "integration_authorize_root",
     "integration_redrive_child",
+    "integration_reopen_collection",
     "integration_rebind_reused_identity",
     "integration_rebind_repair",
     "integration_rebind_detached_repair",
