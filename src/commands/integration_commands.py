@@ -55,6 +55,36 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationEngineTransferArgs
+        from src.integration.engine import EngineRefused, RootEngineOwnership
+        from src.integration.subjects import SubjectEngine
+
+        try:
+            request = IntegrationEngineTransferArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        repository = await self.db.get_repo(request.repository_id)
+        if repository is None:
+            return _failure("refused", "repository does not exist")
+        operator, error = await integration_operator(self.db, repository.project_id)
+        if error:
+            return _failure("unauthorized", error)
+        if (not request.dry_run and request.engine == "reconciler"
+            and not self.config.integration.reconciler_active):
+            return _failure("refused", "enable the active loop before transferring roots")
+        try:
+            result = await RootEngineOwnership(self.db).transfer(
+                request.repository_id, engine=SubjectEngine(request.engine),
+                expected_versions=request.expected_versions, reason=request.reason,
+                evidence=request.evidence, operator_id=operator, dry_run=request.dry_run,
+            )
+        except (EngineRefused, BranchBusy, StaleFence) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     """Implemented integration command handlers are registered incrementally."""
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:

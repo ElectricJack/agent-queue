@@ -31,6 +31,8 @@ from src.database.tables import (
     repos,
 )
 from src.git.manager import GitError, _validate_ref
+from src.integration.engine import root_engine_guard
+
 from src.integration.epic_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
@@ -414,6 +416,7 @@ class TrainService:
         self.page_size = page_size
         self.migration_inspector = migration_inspector
 
+    @root_engine_guard("project", outcome="busy")
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         # Keep the public sealed/empty/busy contract. A frontier that moved
         # while Git was being read gets fresh inspection, never unchecked seal.
@@ -883,6 +886,23 @@ class TrainService:
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        from src.integration.engine import current_admission
+
+        admission = current_admission()
+        if admission is not None:
+            if not admission.include_authorized:
+                members = [m for m in members if
+                           m["review"]["evidence"].get("decision_path") != "authorized_task"]
+            if admission.task_kinds and members:
+                from src.database.tables import tasks
+
+                allowed = set((await conn.execute(select(tasks.c.id).where(
+                    tasks.c.id.in_([m["task_id"] for m in members]),
+                    tasks.c.task_type.in_(admission.task_kinds),
+                ))).scalars())
+                members = [m for m in members if m["task_id"] in allowed]
+            if admission.max_members is not None:
+                members = members[:admission.max_members]
         project = (await conn.execute(select(projects).where(projects.c.id == project_id))).mappings().one()
         policy_data = project["hierarchical_integration_policy"]
         policy = HierarchicalIntegrationPolicy.model_validate(policy_data) if policy_data else None

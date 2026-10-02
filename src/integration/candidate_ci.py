@@ -2,6 +2,8 @@
 
 from sqlalchemy import select
 
+from src.integration.engine import root_engine_guard
+
 from src.database.tables import integration_candidate_publications
 
 
@@ -11,6 +13,7 @@ class CandidateCIService:
         self.candidate_service_factory = candidate_service_factory
         self.attestation = attestation
 
+    @root_engine_guard("candidate", outcome="wait")
     async def handle(self, row, now):
         async with self.db._engine.connect() as conn:
             publication = (

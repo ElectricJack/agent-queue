@@ -44,6 +44,8 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.integration.engine import root_engine_guard
+
 from src.integration.development import GENERATED_MERGE_CONFIG
 from src.integration.models import BranchKey, Fence, RepairPolicy
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -274,6 +276,7 @@ class CandidateService:
         self.confirm_published_repair = confirm_published_repair
         self.clock = clock
 
+    @root_engine_guard("batch", result_model=CandidateBuildResult)
     async def build(self, batch_id: str) -> CandidateBuildResult:
         return await self._continued(await self._build(batch_id))
 
@@ -639,6 +642,7 @@ class CandidateService:
                 return False
         return True
 
+    @root_engine_guard("batch", result_model=CandidateBuildResult)
     async def rebuild(
         self, batch_id: str, expected_revision: int, new_base_sha: str
     ) -> CandidateBuildResult:

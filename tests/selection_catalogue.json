@@ -571,6 +571,7 @@
         "tests/test_integration_outbox.py",
         "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
+        "tests/test_integration_root_adapters.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
@@ -1326,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:690703c5e2077f0bdf00de1d845b748b32bb6396b2254c813b751c4f9c946489",
+  "digest": "sha256:4f916ce012e5a4147b29384fff0b4f0bf8141474d55a2a622a9cd56806e947fa",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7776,6 +7777,34 @@
       ],
       "markers": [],
       "summary": "Trusted real-review verdict production for integration sources."
+    },
+    "tests/test_integration_root_adapters.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.integration.development",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.repair",
+        "src.integration.root_adapters",
+        "src.integration.root_runtime",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Root cutover races, restart/rollback, exact records and trusted publication."
     },
     "tests/test_integration_root_authorization.py": {
       "areas": [

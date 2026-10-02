@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 476,
+    "leaf_commands": 478,
     "registration": {
-      "generated": 303,
-      "handwritten": 173
+      "generated": 304,
+      "handwritten": 174
     },
     "ownership": {
-      "core": 437,
+      "core": 439,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 475
+      "supported": 477
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 303,
-      "registration": 159
+      "dispatch": 304,
+      "registration": 160
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 416
+      "untested": 418
     }
   },
   "commands": [
@@ -3953,6 +3953,41 @@
         "optional": [
           "--waiver-id",
           "--interval-seconds",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration engine-transfer",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_engine_transfer",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "repository_id",
+          "--engine"
+        ],
+        "optional": [
+          "--expected-subject",
+          "--reason",
+          "--evidence",
+          "--apply",
           "--json",
           "--brief",
           "--api-url"
@@ -11963,6 +11998,47 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-engine-transfer",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_engine_transfer",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--repository-id",
+          "--engine"
+        ],
+        "optional": [
+          "--expected-versions",
+          "--reason",
+          "--evidence",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--expected-versions",
+          "--evidence"
+        ],
         "nullable": []
       }
     },
