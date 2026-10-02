@@ -579,6 +579,45 @@ async def build_messages_section(
         except Exception:
             logger.debug("prime: could not read job results for %s", task_id, exc_info=True)
 
+    # Delivery stamps are transport evidence, not a session's memory. Keep
+    # bounded pointers after a nudge, compaction or change of task holder.
+    if callable(getattr(db, "list_agent_waits", None)):
+        from src.agent_waits import wait_next_step
+        from src.jobs.result import bounded
+
+        try:
+            task = task or await db.get_task(task_id)
+            session = session or await db.get_session_for_task(task_id)
+            history = await db.list_agent_waits(
+                project_id=task.project_id, owner_kind="task", owner_id=task_id, limit=5
+            )
+            summaries = []
+            for wait in history:
+                current = bool(
+                    session and session.state in ("starting", "running")
+                    and wait["claim_epoch"] == task.claim_epoch
+                    and wait["session_id"] == session.id
+                    and wait["session_instance_token"] == session.instance_token
+                )
+                claim = "current claim" if current else "previous claim; no inactivity exemption"
+                guidance = (
+                    "Check the current claim before acting on this historical wait."
+                    if not current and wait["state"] == "active"
+                    else wait_next_step(wait)
+                )
+                summaries.append(
+                    f"aq wait show {wait['id']} --consume --json\n"
+                    + json.dumps({
+                        "kind": wait["kind"], "state": wait["state"], "claim": claim,
+                        "deadline_at": wait["deadline_at"], "result_ref": wait["result_ref"],
+                        "digest": wait["digest"], "next_step": guidance,
+                    }, ensure_ascii=False)
+                )
+            if summaries:
+                parts.append("Durable waits:\n" + bounded("\n\n".join(summaries), 6000))
+        except Exception:
+            logger.debug("prime: could not read waits for %s", task_id, exc_info=True)
+
     rows = await db.get_task_contexts(task_id)
     from src.handoffs import collect_facts, latest_note, render_facts, render_note
 

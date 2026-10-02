@@ -17,10 +17,23 @@ saturating the machine.
 For a supported job, task, message or timer condition, use `aq wait register` with
 an idempotency key and end your turn. An active durable wait retains your claim,
 workspace and pool seat without heartbeat turns. Resume from the result pointer
-with `aq wait show WAIT_ID --json`. Registration returns immediately. For managed validation, use
+with `aq wait show WAIT_ID --consume --json`: this reads the result and consumes only
+its notification. Handle the actual failure, cancellation or timeout; a satisfied wait
+does not by itself prove success. Register once and end the turn instead of sleeping,
+polling process output, or repeatedly reading an unchanged inbox. Registration returns
+immediately. For managed validation, use
 `aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` or
 `aq test --aq-detach --aq-wait TEST_ARGS`; submission and its wait commit
 together. Job admission requires the operator to enable `resources.jobs.enabled`.
+Use task waits for review or task settlement, message waits with the returned thread
+and cursor for replies, and bounded timers for planned delays. CI owned by integration
+is followed through its task's settlement; a timer is not proof that CI passed. If managed
+admission is disabled, keep the normal foreground `aq test` resource controls.
+
+If close returns `messages.pending_before_close`, read and handle each mailbox named
+in the refusal with `--inject --json` before retrying. A plain inbox or status read
+does not consume delivery. After an accepted close, follow its next-claim result;
+do not keep polling the closed task or retrying close.
 
 Run focused tests for what changed and the related area suite, and record the exact commands.
 Full-suite runs belong to CI and tasks whose subject is the suite; do not run one as a routine

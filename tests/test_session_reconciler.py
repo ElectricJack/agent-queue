@@ -2788,7 +2788,7 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
         orch._last_delivery_pass = 0
         await orch._deliver_messages()
     assert provider.sent_nudges == [
-        (row.name, f"Handle `aq wait show {wait['id']} --json`."),
+        (row.name, f"Handle `aq wait show {wait['id']} --consume --json`."),
     ]
     assert (await db.get_message(result["result_message_id"])).delivered_at == clock
     await orch._reconcile_sessions()
@@ -3040,7 +3040,7 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
             await asyncio.sleep(0.5)
         assert received.exists(), "due timer did not reach the idle terminal within 20 seconds"
         assert await provider.last_activity(handle) >= now
-        expected = f"Handle `aq wait show {wait['id']} --json`.\n"
+        expected = f"Handle `aq wait show {wait['id']} --consume --json`.\n"
         assert received.read_text() == expected
         result = await db.get_agent_wait(wait["id"])
         assert result["state"] == "satisfied" and result["result_ref"] == f"timer:{due}"

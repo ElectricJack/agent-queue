@@ -16292,6 +16292,8 @@
           "wait_id"
         ],
         "optional": [
+          "--consume",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
