@@ -62,6 +62,9 @@ aq doctor --check git.stale_branches
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
 | A root batch stays `building` after `construct-and-test` ended `source_moved` | A member's head does not descend from its recorded base | [A batch stops at `source_moved`](#a-batch-stops-at-source_moved) |
 | A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
+| A `dispatch-debug` or `promote-delivery` run ended `busy`, `stale` or `human_required` and the stage has no running writer | A refused dispatch; the service retries it | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
+| A child's delivery intent stays `prepared`; later deliveries end `target_moved: target has an unresolved promotion` | Its push was refused after the collector's fence changed | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
+| Log line `integration source=<name> exceeded its …s budget` | A remote call hung and was cancelled | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `redrive-child` answers "the parent has no live collection operation"; a later child's conflict never gets a repair | `cancel-preserving` cancelled the parent's whole collection operation | [A parent's collection was cancelled](#a-parents-collection-was-cancelled) |
@@ -804,8 +807,7 @@ is written when a batch's state changes:
 |---|---|---|
 | `blocked` | The snapshot is not promotable. The reason names the writer still attached, a short or foreign lease, or an unpublished candidate. | Wait for that holder. An attached writer is never taken over. |
 | `handed_off` / `continued` | A continuation was enqueued. | Nothing. |
-| `pending` / `backoff` | A continuation was just delivered; retries double from 60 s. | Nothing. |
-| `exhausted` | Six continuations for the same authority did not promote. | Read the promotion refusal, then re-drive it as below. |
+| `pending` / `backoff` | A continuation was just delivered; retries double from 60 s up to one hour and never stop while the authority is unchanged. | Nothing. From the sixth continuation the line is logged as a warning: read the promotion refusal it keeps hitting. |
 
 A live supervisor can re-drive the batch. `integration_promote_main` and a
 manual `aq playbook run` of the root train execute as the supervisor session.
@@ -820,6 +822,47 @@ aq playbook run --playbook-id agent-queue-root-train \
 ```
 
 Worker sessions still get `unauthorized`.
+
+## Refused runs and hung sources
+
+A playbook rule runs once per event. When its command answers with a typed
+refusal (`busy`, `stale`, `wait`, `human_required`) the run ends failed and
+nothing in the playbook looks again. The integration service re-finds that work
+from durable rows on every pass instead, so a lost or refused event does not
+leave a subject waiting:
+
+- **Repair dispatch.** Every active repair stage, under any `on_exhausted`
+  policy, whose writer was never launched (no delegate, or a delegate still
+  `PAUSED` because the branch never passed to it) is dispatched again through
+  `integration_repair_dispatch`. The first sight dispatches at once; each later
+  attempt waits twice as long, from 30 s up to 10 minutes. The log line
+  `integration repair dispatch operation=<id> stage=<n> outcome=<outcome>` is
+  written when a stage's outcome changes. Operations a human must decide
+  (`human_required`), supervisor-recovery stages and delegates an operator
+  paused are never selected.
+- **Green promotion.** See [A green batch never promotes](#a-green-batch-never-promotes);
+  continuations never stop, at most an hour apart.
+- **Parent delivery intents.** A child delivery whose exact commit is already on
+  the parent branch is finalized. A `prepared` intent whose push did not apply
+  is pushed again with its own frozen identity under the parent's *current*
+  reserved collector fence (the same expected-old push the original run would
+  have made), after a 60 s grace and with the same backoff. A branch held by a
+  repair or verifier writer is a wait. A diverged target, an intent whose commit
+  was never built (`reserved`), an ended collection operation and an operator
+  pause on the parent are reported once (`parent delivery intent <id> …`) and
+  left alone.
+
+Every source of the pass and every item of a page the service iterates itself
+runs under a budget: `integration.service_source_timeout_seconds` (300 s),
+`integration.service_item_timeout_seconds` (60 s) and per-source
+`integration.service_source_timeouts`, keyed by the name in the log line. A
+call past its budget is cancelled, `integration source=<name> exceeded its …s
+budget` is logged, and the other sources run; the work stays retryable on the
+next pass. A call that ignores cancellation is left to finish on its own and its
+source is skipped (`skipped until its timed-out call finishes unwinding`) until
+it has, so one hung GitHub or Git call no longer stops CI observation, repair
+deadlines, intents, cleanup and drains. A source that times out on every pass
+because it is slow rather than hung needs a larger per-source budget.
 
 ## A completed root has no pull request
 
@@ -1426,10 +1469,15 @@ refused.
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py),
 [`src/integration/delivery_path.py`](../../src/integration/delivery_path.py),
 [`src/integration/manual_delivery.py`](../../src/integration/manual_delivery.py),
-[`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py).
+[`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py),
+[`src/integration/service.py`](../../src/integration/service.py),
+[`src/integration/green_continuation.py`](../../src/integration/green_continuation.py),
+[`src/integration/parent_intents.py`](../../src/integration/parent_intents.py).
 
 ```bash
 aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
+aq test tests/test_integration_service.py
+aq test tests/test_integration_repair_rollover.py tests/test_integration_promotion.py -k "parent_intent or busy_successor"
 aq test tests/test_delivery_manual.py tests/test_integration_mode.py tests/test_merge_slot.py
 aq test tests/test_integration_pr_delivery.py
 ```
