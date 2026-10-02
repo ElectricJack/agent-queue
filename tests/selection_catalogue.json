@@ -818,6 +818,7 @@
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
+        "tests/test_playbook_v2_integration_policy.py",
         "tests/test_playbook_v2_resolution.py",
         "tests/test_playbook_v2_validation.py"
       ]
@@ -1326,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:7c55d7729f2b227645c52c6883f907230b3ef996d22c42fe54cdec251e3ff213",
+  "digest": "sha256:b4878ef8f795fa41cf8ae444606b873b3bf2c8d13e447953ab733e15f737da24",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10203,6 +10204,27 @@
         "parametrize"
       ],
       "summary": "Operator adoption path for reviewed Playbook V2 artifact bundles."
+    },
+    "tests/test_playbook_v2_integration_policy.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.models",
+        "src.integration.subjects",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.playbooks.proposal",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reviewed subject tables: compiler guards, pure decisions and immutable pins."
     },
     "tests/test_playbook_v2_resolution.py": {
       "areas": [
