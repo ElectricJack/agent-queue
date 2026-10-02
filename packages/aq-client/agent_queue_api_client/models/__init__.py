@@ -760,6 +760,11 @@ from .object_checkpoint_read_request import ObjectCheckpointReadRequest
 from .object_checkpoint_read_response import ObjectCheckpointReadResponse
 from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
 from .object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
+from .object_loop_inputs_request import ObjectLoopInputsRequest
+from .object_loop_inputs_response import ObjectLoopInputsResponse
+from .object_loop_inputs_response_422 import ObjectLoopInputsResponse422
+from .object_loop_inputs_response_loops_item import ObjectLoopInputsResponseLoopsItem
+from .object_loop_inputs_response_starts_item import ObjectLoopInputsResponseStartsItem
 from .object_loop_reconcile_request import ObjectLoopReconcileRequest
 from .object_loop_reconcile_response import ObjectLoopReconcileResponse
 from .object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
@@ -2378,6 +2383,11 @@ __all__ = (
     "ObjectCheckpointReadResponse",
     "ObjectCheckpointReadResponse422",
     "ObjectCheckpointReadResponseState",
+    "ObjectLoopInputsRequest",
+    "ObjectLoopInputsResponse",
+    "ObjectLoopInputsResponse422",
+    "ObjectLoopInputsResponseLoopsItem",
+    "ObjectLoopInputsResponseStartsItem",
     "ObjectLoopReconcileRequest",
     "ObjectLoopReconcileResponse",
     "ObjectLoopReconcileResponse422",

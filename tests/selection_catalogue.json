@@ -743,7 +743,8 @@
     "object-loop": {
       "description": "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion.",
       "modules": [
-        "tests/test_object_loop.py"
+        "tests/test_object_loop.py",
+        "tests/test_object_loop_playbook.py"
       ]
     },
     "orchestrator": {
@@ -1318,7 +1319,7 @@
       ]
     }
   },
-  "digest": "sha256:974d6c9bde721c0174f9a9d4c5f021b24be0965e615e6b907a57f2ddac884358",
+  "digest": "sha256:674fea2d261b502936c80147c33aaec2a0e8e7f16018261d053be8408cf5920f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9439,6 +9440,34 @@
         "parametrize"
       ],
       "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
+    },
+    "tests/test_object_loop_playbook.py": {
+      "areas": [
+        "object-loop"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.development",
+        "src.models",
+        "src.object_loop.inputs",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.required",
+        "src.profiles.capabilities",
+        "src.task_graph.formulas",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "AQ-3: real command traces, replayed through V2's write-free dry runner."
     },
     "tests/test_onboarding_queries.py": {
       "areas": [

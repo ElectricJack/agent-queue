@@ -50,6 +50,7 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 
 #: Frontmatter id -> the shipped Markdown it was compiled from.
 SHIPPED_SOURCES: dict[str, str] = {
+    "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
