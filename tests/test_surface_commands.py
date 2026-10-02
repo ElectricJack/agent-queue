@@ -867,9 +867,13 @@ class TestStructuredHandoff:
                     "completed": [""],
                 },
             )
-            assert result["noop"] and result["handoff_id"] is None
+            assert result["created"] and not result["restart_requested"]
         rows = await db.get_task_contexts(task.id)
-        assert len(rows) == 1 and rows[0]["id"] == saved["handoff_id"]
+        assert len(rows) == 4
+        snapshots = [json.loads(row["content"]) for row in rows
+                     if row["id"] != saved["handoff_id"]]
+        assert all(note["facts_only"] and note["facts"]["task_id"] == task.id
+                   for note in snapshots)
         body = (await prime_handler.execute("prime", {"task_id": task.id}))["body"]
         assert "Run the renderer tests" in body
         assert "Check quoting" in body

@@ -3430,6 +3430,8 @@
           "--waiting-for",
           "--file",
           "--decision",
+          "--constraint",
+          "--evidence",
           "--do-not-repeat",
           "--uncertainty",
           "--idempotency-key",

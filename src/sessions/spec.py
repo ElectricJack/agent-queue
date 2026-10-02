@@ -552,6 +552,7 @@ class SessionSpecBuilder:
             hook_files=hook_files,
             task_intelligence_class=task_intelligence_class,
             class_config=class_config,
+            worker_context=lifecycle in _WORKER_LIFECYCLES,
         )
 
         files.extend(hook_files)
@@ -571,6 +572,15 @@ class SessionSpecBuilder:
             launch_env.update(git_identity.env())
         if lifecycle in _WORKER_LIFECYCLES:
             harness_env = getattr(harness, "env_map", None) or {}
+            from src.sessions.context import compact_tokens
+
+            limit = compact_tokens(self.config)
+            key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+            if _is_claude_cli(harness) and (limit or key in harness_env):
+                # This is configuration, never inherited session identity.
+                # build_session_env filters CLAUDE_CODE_* from harness input;
+                # the builder explicitly supplies this one supported setting.
+                launch_env.setdefault(key, str(harness_env.get(key, limit)))
             for key, value in WORKER_TOOL_ENV.items():
                 if key not in harness_env:
                     launch_env.setdefault(key, value)
@@ -665,6 +675,7 @@ class SessionSpecBuilder:
         hook_files: list[tuple[str, str]] | None = None,
         task_intelligence_class: str | None = None,
         class_config: dict | None = None,
+        worker_context: bool = False,
     ) -> list[str]:
         if class_config is None:
             class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
@@ -678,6 +689,10 @@ class SessionSpecBuilder:
             argv.append(resume_key)
 
         argv.extend(harness.args)
+        if worker_context and _is_codex_cli(harness):
+            from src.sessions.context import codex_compact_override
+
+            argv.extend(codex_compact_override(harness.args, self.config))
 
         # These profile switches are explicit opt-ins for one concrete CLI.
         # Raw harness args remain a supported escape hatch; when they already

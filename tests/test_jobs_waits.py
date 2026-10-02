@@ -604,3 +604,83 @@ async def test_prime_job_summary_is_bounded_and_selects_recent_terminal_results(
     assert completed[-1] in section.body and completed[0] not in section.body
     assert len(section.body.encode()) <= 6000 + len("Managed job results:\n")
     assert await setup.db.get_pending_messages("task", "owner") == []
+
+
+async def test_long_worker_compaction_checkpoint_preserves_claim_job_wait_gate_and_next_action(
+    setup, tmp_path, monkeypatch
+):
+    import subprocess
+    from src.event_bus import EventBus
+    from src.handoffs import HANDOFF_BYTES
+    from src.sessions.context import context_guidance
+
+    for argv in (["git", "init", "-b", "worker"],
+                 ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                  "commit", "--allow-empty", "-m", "base"]):
+        subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True)
+    await setup.db.update_session("s", work_dir=str(tmp_path))
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["task_handoff", "prime"],
+        harness_tools=[], plugin_tools=[]))
+    job = await submit(setup)
+    gate_id, _ = await setup.db.create_gate(
+        "p", "human", "Human approval required", waiter_task_ids=["owner"])
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.security.capability_enforcement = "enforce"
+    bus = EventBus()
+    restarts = []
+    bus.subscribe("session.restart_requested", lambda event: restarts.append(event))
+    orch = SimpleNamespace(db=setup.db, bus=bus, plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p",
+                 task_id="owner")
+    reading = {"input_tokens": 170000, "source": "codex last request input",
+               "observed_at": NOW, "transcript_path": str(tmp_path / "raw.jsonl")}
+    context_reader = AsyncMock(return_value=reading)
+    monkeypatch.setattr("src.sessions.context.read_context", context_reader)
+    assert "threshold is reached" in context_guidance(config, setup.session, reading)
+    args = dict(
+        auto=True, claim_epoch=1, goal="Finish owner task", next_step="Read the existing job result",
+        waiting_for=job["wait"]["id"], constraints=["Keep the human approval gate"],
+        evidence=["Earlier failing test: exact error; raw /tmp/validation.log"],
+        do_not_repeat=["Do not resubmit the running validation"], _scope=scope,
+    )
+    saved = await handler.execute("task_handoff", args)
+    assert saved.get("success"), saved
+    assert not saved["restart_requested"]
+    # Simulate native PreCompact, whose empty hook saves only authoritative facts.
+    hook = await handler.execute("task_handoff", dict(auto=True, claim_epoch=1, _scope=scope))
+    assert hook.get("success"), hook
+    rows = await setup.db.get_task_contexts("owner")
+    snapshot = json.loads(next(row["content"] for row in rows if row["id"] == hook["handoff_id"]))
+    facts = snapshot["facts"]
+    assert snapshot["facts_only"] and facts["claim_epoch"] == 1 and facts["session_id"] == "s"
+    assert facts["job_ids"] == [job["id"]] and facts["wait_ids"] == [job["wait"]["id"]]
+    assert facts["open_gates"][0]["id"] == gate_id
+    assert facts["context"] == reading and facts["work_dir"] == str(tmp_path)
+    # Native compaction reduces context, then SessionStart re-primes the same owner.
+    context_reader.return_value = {**reading, "input_tokens": 25000}
+    primed = await handler.execute("prime", {"_scope": scope})
+    assert primed.get("success"), primed
+    wake = next(section["body"] for section in primed["sections"] if section["key"] == "messages")
+    assert "Read the existing job result" in wake and "Keep the human approval gate" in wake
+    assert job["id"] in wake and job["wait"]["id"] in wake and gate_id in wake
+    assert "Earlier failing test: exact error" in wake
+    assert "25000 tokens" in primed["body"]
+    assert restarts == []
+    assert (await setup.db.get_task("owner")).claim_epoch == 1
+    assert (await setup.db.get_session("s")).task_id == "owner"
+    assert (await setup.db.get_session("s")).state == "running"
+    assert (await setup.db.get_gate(gate_id))["status"] == "open"
+    assert (await setup.db.get_agent_wait(job["wait"]["id"]))["state"] == "active"
+    assert len(await setup.db.list_jobs(task_id="owner")) == 1
+    assert len(wake.encode()) < HANDOFF_BYTES + 2048
+    # A terminal result pointer also survives; wait_resumed_at is not proof of consumption.
+    await finish(setup, job)
+    await setup.db.reconcile_agent_waits(now=NOW + 60)
+    from src.handoffs import collect_facts
+
+    after = await collect_facts(setup.db, await setup.db.get_task("owner"))
+    assert after["waits"][0]["result_ref"] is not None
+    assert after["waits"][0]["state"] == "satisfied"
+    assert after["jobs"] == []

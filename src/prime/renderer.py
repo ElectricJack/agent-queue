@@ -116,6 +116,9 @@ class PrimeRenderer:
         allow_subtask_updates = await _sections.profile_allows_command(
             self.db, effective_profile_id, _sections.SUBTASK_UPDATE_COMMAND
         )
+        from src.sessions.context import read_context
+
+        observation = await read_context(sess)
 
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
@@ -148,7 +151,7 @@ class PrimeRenderer:
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
-            _sections.build_tool_guidance_section(),
+            _sections.build_tool_guidance_section(self.config, sess, observation),
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
