@@ -569,6 +569,7 @@
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
+        "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
         "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
@@ -1327,7 +1328,7 @@
       ]
     }
   },
-  "digest": "sha256:b4878ef8f795fa41cf8ae444606b873b3bf2c8d13e447953ab733e15f737da24",
+  "digest": "sha256:a661bb846039e39d62b4e2fa6bf7ac7ac940aad85ff4da16f93cc335cab153e7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7436,6 +7437,24 @@
         "parametrize"
       ],
       "summary": "Integration-mode policy tests."
+    },
+    "tests/test_integration_observe.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic facts, unknowns and read-only ports for integration subjects."
     },
     "tests/test_integration_operational_controls.py": {
       "areas": [
