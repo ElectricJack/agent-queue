@@ -722,15 +722,23 @@ def build_completion_protocol_section(
             "Do not push main yourself.\n\n") + generated + body[end:]
         stacked = body.find("## Stacked branches")
         if stacked >= 0:
-            body = body[:stacked] + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n"
+            end = body.index("## Stay visible", stacked)
+            body = (
+                body[:stacked]
+                + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n\n"
+                + body[end:]
+            )
     # Pool sessions (swarm-work-model §10) never get pushed a next task —
     # they pull in a loop via `--claim-next`. That's a materially different
-    # completion contract, so it renders as an addendum only for a session
-    # whose lifecycle is "pool", never for a task/named session.
+    # completion contract, so it replaces the task-session close instruction
+    # only for lifecycle "pool", preserving all shared verification rules.
     if lifecycle == "pool":
         pool_body = _load_template("completion_protocol_pool.md").replace("{task_id}", task_id)
         if pool_body:
-            body = f"{body}\n\n{pool_body}" if body else pool_body
+            # The pool loop owns close/next-claim; don't also prescribe a
+            # task-session close followed by drain-ack.
+            shared = body[body.index("## Deliverable self-check"):]
+            body = f"{pool_body}\n\n{shared}"
     # A profile whose policy denies ``create_task`` must not be told to file
     # emergent work — the instruction would land as a capability denial.
     emergent_work = _load_template("emergent_work.md") if allow_emergent_work else ""

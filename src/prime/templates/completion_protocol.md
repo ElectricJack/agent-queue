@@ -1,125 +1,58 @@
-When you are done with this task, close it explicitly — do not just stop:
+Close explicitly when work is complete:
 
-    aq task close {task_id} --outcome pass|fail [--failure-class transient|hard] \
-        --summary "What changed, findings, verification, and remaining issues"
+    aq task close {task_id} --outcome pass|fail --summary "Changes, findings, checks, issues"
     aq session drain-ack
 
 ## Deliverable self-check
 
-If this task lists **Deliverables**, re-read the plan section you implemented and reconcile
-each listed file, test, command, flag, or registration before you close. A passing close
-checks files and symbols in the worktree; declared test deliverables must also be named in a
-recorded repeatable `--test "..."` command. A test or command item whose target is a command
-line (`aq test tests/a.py tests/b.py`, `ruff check <changed files>`) is met by a recorded
-`--test` / `--command` value that matches it (`<placeholder>` matches any arguments), or,
-for tests, by running each named suite in its own `--test`. A `review` item is met by a
-document review this task submitted with
-`aq review submit --task-id {task_id} --file <draft.md> --kind <kind> --title "<title>"`,
-never by a commit; research and design tasks carry one even when none is listed. If an item
-is intentionally not shipped, make it visible to the reviewer with one
-`--deliverable-unmet 'id: reason'` option per item. A pass with an unlisted gap is refused
-and keeps the task claimed so you can correct it.
-
-An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently. The canonical human-operator recipient is `user:dashboard`.
+Reconcile every required file, symbol, test, command and registration before a passing
+close. Record repeatable checks with `--test` / `--command`; unavailable checks are not
+passes. Test deliverables must name the actual commands/files. Submit required documents
+with `aq review submit --task-id {task_id} --file <draft.md> --kind <kind> --title "<title>"`;
+research/design work carries a review deliverable even when not listed. Declare intentional
+gaps with `--deliverable-unmet 'id: reason'`; undeclared gaps refuse close. Follow the
+aq-tasks/aq-reviews skills for detailed evidence and revision protocols.
+Settle task subtasks with `aq task subtask-done N` or
+`aq task subtask-skip N --note ...`; do not bypass required open children or human gates.
 
 ## Prepare feature history before review
 
-Before the first passing close submits a leaf feature for review, squash its
-implementation commits on its own task branch into one commit based on its
-recorded source base. Preserve the final tree, author attribution, and test
-results. Keep local history edits in your worktree. Publish the final commit
-through `aq git push`, then close; review must bind the pushed SHA.
-If you already pushed the branch before squashing, save the pushed commit's
-full OID at the successful push (`aq git push` reports it as `oid`; it is
-`git rev-parse HEAD` at that push). After squashing, use
-`aq git push --expected-remote-oid <pushed-oid>`.
-The daemon uses an explicit lease on your own task branch and refuses a push
-if the remote moved. Do not retry with a newly guessed OID or an unconditional
-force push; report the conflict. An all-zero 40-digit OID is only for creating
-a branch that must still be absent.
-Do not rewrite a branch held by another worker or rewrite reviewed/delivered
-history. Fixes after review require a fresh review of their final SHA.
-
-Do not squash a parent/integration branch or erase child merge ancestry.
-AQ merges reviewed feature tips with merge commits into parent/integration
-branches, tests the complete candidate, and fast-forwards main to that exact
-candidate. Already-reviewed branches retain their existing commits.
+Before the first passing feature close, squash implementation commits on your own leaf
+branch to one commit based on its recorded source base; preserve tree, attribution and
+checks. Never rewrite reviewed/delivered history, another worker's branch, or parent merge
+ancestry. Save the successful push's full OID. After a local squash of already-pushed work,
+use `aq git push --expected-remote-oid <pushed-oid>`; a moved remote requires escalation,
+never a guessed lease or unconditional force push. All-zero OID is only for an absent branch.
+Review binds the final pushed SHA; later fixes require fresh review.
 
 ## Never close over unpushed commits
 
-A close that is not a pass does not run the completion pipeline, so nothing
-merges, pushes or reviews your work. Publish your task branch before you close:
-
-    aq git push
-
-If you close `--outcome fail` with commits that no remote branch has, the
-daemon pushes them for you to `aq/<task-id>` (or `aq/<task-id>-wip` when that
-name is taken by someone else's commits) and records the branch and SHA in
-your completion summary. If it *cannot* push them, the close is refused and
-the task stays yours: fix the push problem and retry `aq git push`, then close
-again. Nothing is discarded and
-nothing closes silently — a slot is reset for the next task the moment you let
-go of it, and local-only commits are unreachable from that point on.
-
-For a task that requires a PR, publish its branch first, then run
-`aq git create-pr --title "..." --body "..."`. The daemon supplies the
-project's GitHub credentials for these network operations. A worker shell
-does not receive a GitHub App credential. If either command is denied by your
-profile's capabilities, report it to the supervisor. These repair commands
-are operator-only (`out of scope` for a worker). On an upgraded install,
-the operator can inspect `aq doctor --check profiles.system_drift` and add
-missing shipped worker grants with
-`aq agent profile-reseed --profile-id worker-<harness> --grants-only`;
-that repair preserves customized vault profile content.
+Commit and publish your assigned task branch with `aq git push` before pass or fail close;
+record HEAD and checks. Slots reset after release. A failed close preserves unpushed work
+on an AQ recovery branch; if its push fails, the task remains held. Fix publication before
+retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after pushing.
+The daemon supplies credentials. Do not bypass capability denials; report them.
+Operator-only repair (`aq doctor --check profiles.system_drift` and
+`aq agent profile-reseed --profile-id <id> --grants-only`) is out of scope for workers.
 
 ## Stacked branches: avoid them
 
-Branch from the default branch (`main`). Stack on another task's branch only
-when the work genuinely cannot compile or run without it: declare the
-dependency and say so in your close summary.
-
-Delivery to the default branch belongs to the project's configured integration
-owner, not to the last task in a stack (software-factory policy,
-`docs/concepts/factory-policy.md`). Follow the delivery section of this prime;
-open a PR only when the task or project asks for one, and never merge it
-yourself. A PR merged into a feature branch has put nothing on `main`: the
-tasks close COMPLETED, dependents believe the work shipped, and `main` never
-gains a line of it until the configured owner delivers the base.
+Stay on your assigned branch. Stack only for a genuine prerequisite; declare it in the
+close summary. Delivery belongs to the configured integration owner
+(docs/concepts/factory-policy.md); never merge or push the default branch yourself.
+A PR into a feature branch has not delivered to the default branch.
 
 ## Stay visible while you work
 
-The daemon holds a lease on this task and watches for activity. If it sees nothing for
-`sessions.lease_ttl_seconds` (default 8 minutes) it treats you as stalled — first a nudge,
-then an interrupt, then a kill and a restart. That is deliberate: a genuinely hung agent has
-to be recoverable without a human noticing.
-
-So before anything that will run quiet for more than a few minutes — a full test suite, a
-long build, a large install, a big download — refresh the lease first:
-
-    aq task heartbeat {task_id}
-
-It is one cheap call and it buys you another full lease window. Call it again in the middle
-of anything really long. Silence is the only thing the daemon can read as trouble, so do not
-make it guess.
-
+Before minutes of quiet work, run `aq task heartbeat {task_id}`; renew during long work.
+An active durable wait holds the lease without heartbeats. Never manage the operator daemon.
 
 ## Save findings before closing or handing off
 
-Keep the task description current with confirmed findings that change how this task
-should be completed. Preserve the original goal, requirements, and acceptance criteria;
-do not replace them with a progress log. Read the current description first, then write
-the complete updated text using `aq task set {task_id} --description "..."
---expected-description "<description you read>"`. If it conflicts, re-read and merge;
-do not force an overwrite of someone else's findings.
-
-Append meaningful progress, evidence, decisions, test results, and blockers as comments:
-
-    aq task comment {task_id} --body "Finding: ... Evidence: ... Next: ..."
-    aq task comments {task_id}
-
-Comments are durable, attributed history for the next agent. Record useful findings as
-you discover them and before close, handoff, or waiting for input; terminal output and a
-close summary are not substitutes. Distinguish confirmed facts from hypotheses. A comment
-does not request approval or notify the user: use the question/message workflow for input.
-Do not put secrets into descriptions or comments. New sessions get recent comments in prime;
-read full history when necessary. No findings means no invented update is needed.
+Record material findings/decisions, exact checks and evidence paths while working with
+`aq task comment {task_id} --body "Finding: ... Evidence: ... Next: ..."`.
+For changed requirements read the full description first and update with
+`aq task set {task_id} --description "..." --expected-description "<read value>"`;
+preserve the goal/acceptance criteria and merge conflicts by rereading. No secrets.
+Comments are durable evidence, not approval or notification. For a blocking human decision,
+use `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: ..."`.

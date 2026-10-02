@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:f0f555b3ab8c59b949b039b2c91ad5b07fbc592d5950dfe3af63010c8a05ac40",
+  "digest": "sha256:b548b462cdcb9ffcd3abb2fe45931f1f749c63e39791340c2b7875465be8f556",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4531,8 +4531,10 @@
       "default_arm": true,
       "imports": [
         "src.api.scope",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
+        "src.prompt_builder",
         "src.vault"
       ],
       "markers": [],

@@ -57,6 +57,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -95,6 +96,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -139,6 +141,7 @@
           "--system-prompt-suffix",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -175,6 +178,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -209,6 +213,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -248,6 +253,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -293,6 +299,7 @@
           "--install",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -331,6 +338,7 @@
           "--create-gist",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -364,6 +372,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -397,6 +406,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -430,6 +440,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -466,6 +477,7 @@
           "--overwrite",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -499,6 +511,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -531,6 +544,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -562,6 +576,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -593,6 +608,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -628,6 +644,7 @@
           "--reply-to",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -660,6 +677,7 @@
           "--legacy-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -693,6 +711,7 @@
           "--drifted-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -728,6 +747,7 @@
           "--grants-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -762,6 +782,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -796,6 +817,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -829,6 +851,7 @@
           "--opencode-export",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -865,6 +888,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -897,6 +921,7 @@
           "--timeout",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -928,6 +953,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -962,6 +988,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -997,6 +1024,7 @@
           "--budget",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1029,6 +1057,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1060,6 +1089,7 @@
           "--after",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1092,6 +1122,7 @@
           "--group-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1120,6 +1151,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1150,6 +1182,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1180,6 +1213,7 @@
           "--port",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1210,6 +1244,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1244,6 +1279,7 @@
           "--subject",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1275,6 +1311,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1311,6 +1348,7 @@
           "--base-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1347,6 +1385,7 @@
           "--subject",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1377,6 +1416,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1407,6 +1447,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1435,6 +1476,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1466,6 +1508,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1495,6 +1538,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1528,6 +1572,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1560,6 +1605,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1594,6 +1640,7 @@
           "--confirm",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1627,6 +1674,7 @@
           "--json",
           "--check",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1666,6 +1714,7 @@
           "--decision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1708,6 +1757,7 @@
           "--choices",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1743,6 +1793,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1778,6 +1829,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1816,6 +1868,7 @@
           "--received-sequence",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1858,6 +1911,7 @@
           "--terminal-evidence",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1896,6 +1950,7 @@
           "--newer-than",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1934,6 +1989,7 @@
           "--replace-all",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1968,6 +2024,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2007,6 +2064,7 @@
           "--max-results",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2042,6 +2100,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2080,6 +2139,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2114,6 +2174,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2151,6 +2212,7 @@
           "--category",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2186,6 +2248,7 @@
           "--mode",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2225,6 +2288,7 @@
           "--seed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -2263,6 +2327,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2300,6 +2365,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2334,6 +2400,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2369,6 +2436,7 @@
           "--as-cooked",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2404,6 +2472,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2438,6 +2507,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2473,6 +2543,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2508,6 +2579,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2543,6 +2615,7 @@
           "--max-attempts",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2581,6 +2654,7 @@
           "--failing-checks",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -2621,6 +2695,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2656,6 +2731,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2693,6 +2769,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2729,6 +2806,7 @@
           "--description",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2767,6 +2845,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2802,6 +2881,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2838,6 +2918,7 @@
           "--tech-stack",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2871,6 +2952,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2908,6 +2990,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2944,6 +3027,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2979,6 +3063,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3015,6 +3100,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3049,6 +3135,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3086,6 +3173,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3121,6 +3209,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3155,6 +3244,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3188,6 +3278,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3223,6 +3314,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3258,6 +3350,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3291,6 +3384,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3326,6 +3420,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3358,6 +3453,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3394,6 +3490,7 @@
           "--variant",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3441,6 +3538,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3478,6 +3576,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3522,6 +3621,7 @@
           "--git-name",
           "--git-email",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3553,6 +3653,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3588,6 +3689,7 @@
           "--accept-equivalent",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3624,6 +3726,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3657,6 +3760,7 @@
           "--apply",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3689,6 +3793,7 @@
           "--repository-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3722,6 +3827,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3754,6 +3860,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3785,6 +3892,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3818,6 +3926,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3852,6 +3961,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3890,6 +4000,7 @@
           "--regenerate-timeout-seconds",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3922,6 +4033,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3957,6 +4069,7 @@
           "--interval-seconds",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3987,6 +4100,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4020,6 +4134,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4055,6 +4170,7 @@
           "--source",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4105,6 +4221,7 @@
           "--check-prs",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4137,6 +4254,7 @@
           "--head",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4171,6 +4289,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4203,6 +4322,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4234,6 +4354,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4264,6 +4385,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4297,6 +4419,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4330,6 +4453,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4360,6 +4484,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4391,6 +4516,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4423,6 +4549,7 @@
           "--older-than",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4453,6 +4580,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4486,6 +4614,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4516,6 +4645,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4546,6 +4676,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4579,6 +4710,7 @@
           "--dismiss",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4610,6 +4742,7 @@
           "--control-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4642,6 +4775,7 @@
           "--recover-child",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4678,6 +4812,7 @@
           "--print",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4710,6 +4845,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4741,6 +4877,7 @@
           "--after",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4771,6 +4908,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4802,6 +4940,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4835,6 +4974,7 @@
           "--follow",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4866,6 +5006,7 @@
           "--max-bytes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4896,6 +5037,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4933,6 +5075,7 @@
           "argv",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4978,6 +5121,7 @@
           "--no-color",
           "--log-file",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5022,6 +5166,7 @@
           "--headers",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5062,6 +5207,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5104,6 +5250,7 @@
           "--headers",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5144,6 +5291,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5178,6 +5326,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5211,6 +5360,7 @@
           "--server-names",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5249,6 +5399,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5283,6 +5434,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5318,6 +5470,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5354,6 +5507,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5390,6 +5544,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5427,6 +5582,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5473,6 +5629,7 @@
           "--pane-open",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5506,6 +5663,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5541,6 +5699,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5578,6 +5737,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5612,6 +5772,7 @@
           "--specs-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5648,6 +5809,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5681,6 +5843,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5715,6 +5878,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5751,6 +5915,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5788,6 +5953,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5823,6 +5989,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5857,6 +6024,7 @@
           "--health",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5892,6 +6060,7 @@
           "--base-sha256",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5926,6 +6095,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5959,6 +6129,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5990,6 +6161,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6026,6 +6198,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6060,6 +6233,7 @@
           "--event",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6095,6 +6269,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6130,6 +6305,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6172,6 +6348,7 @@
           "--history-limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6206,6 +6383,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6237,6 +6415,7 @@
           "--activate",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6270,6 +6449,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6303,6 +6483,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6337,6 +6518,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6372,6 +6554,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6408,6 +6591,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6442,6 +6626,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6476,6 +6661,7 @@
           "--event",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6512,6 +6698,7 @@
           "--receipt-limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6546,6 +6733,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6582,6 +6770,7 @@
           "--show-prompts",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6617,6 +6806,7 @@
           "--expected-source-hash",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6654,6 +6844,7 @@
           "--include-advanced",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6687,6 +6878,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6722,6 +6914,7 @@
           "--baseline-artifact-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6754,6 +6947,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6787,6 +6981,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6818,6 +7013,7 @@
           "key_values",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6848,6 +7044,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6878,6 +7075,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6908,6 +7106,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6938,6 +7137,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6970,6 +7170,7 @@
           "--name",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6998,6 +7199,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7033,6 +7235,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7063,6 +7266,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7093,6 +7297,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7124,6 +7329,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7155,6 +7361,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7185,6 +7392,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7220,6 +7428,7 @@
           "--allow-pinned-wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -7261,6 +7470,7 @@
           "--allow-pinned-wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7294,6 +7504,7 @@
           "--provider",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7331,6 +7542,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7368,6 +7580,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7403,6 +7616,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7437,6 +7651,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7471,6 +7686,7 @@
           "--hook-format",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7510,6 +7726,7 @@
           "--kind-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7544,6 +7761,7 @@
           "--relative-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7583,6 +7801,7 @@
           "--default-branch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7616,6 +7835,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7646,6 +7866,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7684,6 +7905,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7718,6 +7940,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7751,6 +7974,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7782,6 +8006,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7815,6 +8040,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7848,6 +8074,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7879,6 +8106,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7910,6 +8138,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7942,6 +8171,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7976,6 +8206,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8022,6 +8253,7 @@
           "--github-url",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8055,6 +8287,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8087,6 +8320,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8122,6 +8356,7 @@
           "--profile-id",
           "--brief",
           "--json",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8159,6 +8394,7 @@
           "--fields",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8194,6 +8430,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8230,6 +8467,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8263,6 +8501,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8298,6 +8537,7 @@
           "--cursor",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8332,6 +8572,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8369,6 +8610,7 @@
           "--created-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8403,6 +8645,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8437,6 +8680,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8469,6 +8713,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8503,6 +8748,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8536,6 +8782,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8573,6 +8820,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8609,6 +8857,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8649,6 +8898,7 @@
           "--no-expiry",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8682,6 +8932,7 @@
           "--verbose",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8713,6 +8964,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8744,6 +8996,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8773,6 +9026,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8810,6 +9064,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8842,6 +9097,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8875,6 +9131,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8905,6 +9162,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8939,6 +9197,7 @@
           "--max-lookback-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8975,6 +9234,7 @@
           "--max-lookback-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -9009,6 +9269,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9040,6 +9301,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9070,6 +9332,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9100,6 +9363,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9134,6 +9398,7 @@
           "--evidence-ref",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9164,6 +9429,7 @@
           "--no-dashboard-server",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9198,6 +9464,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9234,6 +9501,7 @@
           "--content-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9273,6 +9541,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9307,6 +9576,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9338,6 +9608,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9375,6 +9646,7 @@
           "--heading-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -9414,6 +9686,7 @@
           "--responder-class",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9448,6 +9721,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9484,6 +9758,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9517,6 +9792,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9550,6 +9826,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9585,6 +9862,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9621,6 +9899,7 @@
           "--diff-from",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9661,6 +9940,7 @@
           "--activate-on-approval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9695,6 +9975,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9729,6 +10010,7 @@
           "argv",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9759,6 +10041,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9790,6 +10073,7 @@
           "--interval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9821,6 +10105,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9850,6 +10135,7 @@
           "--interval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9878,6 +10164,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9907,6 +10194,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9936,6 +10224,7 @@
           "session_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9965,6 +10254,7 @@
           "--session-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9997,6 +10287,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10030,6 +10321,7 @@
           "--live",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10061,6 +10353,7 @@
           "--attempt",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10092,6 +10385,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10122,6 +10416,7 @@
           "--lines",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10153,6 +10448,7 @@
           "session_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10183,6 +10479,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10215,6 +10512,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10245,6 +10543,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10276,6 +10575,7 @@
           "--unless-stopped",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10307,6 +10607,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10337,6 +10638,7 @@
           "--no-dashboard-server",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10367,6 +10669,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10430,6 +10733,7 @@
           "--after-seq",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10464,6 +10768,7 @@
           "--turn-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10498,6 +10803,7 @@
           "--session-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10535,6 +10841,7 @@
           "--state",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10573,6 +10880,7 @@
           "--provenance",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10612,6 +10920,7 @@
           "--file",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10643,6 +10952,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10678,6 +10988,7 @@
           "--task-ids",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10711,6 +11022,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10739,6 +11051,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10769,6 +11082,7 @@
           "section",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10804,6 +11118,7 @@
           "--host",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10833,6 +11148,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10864,6 +11180,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10898,6 +11215,7 @@
           "--config",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10935,6 +11253,7 @@
           "--current-stage",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10966,6 +11285,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11000,6 +11320,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11038,6 +11359,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11075,6 +11397,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11108,6 +11431,7 @@
           "--checks",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11147,6 +11471,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11182,6 +11507,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11216,6 +11542,7 @@
           "--top-k",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11249,6 +11576,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11284,6 +11612,7 @@
           "--since-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11316,6 +11645,7 @@
           "--section",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11347,6 +11677,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11381,6 +11712,7 @@
           "--group-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11413,6 +11745,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11450,6 +11783,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11481,6 +11815,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11516,6 +11851,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11549,6 +11885,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11582,6 +11919,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11617,6 +11955,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11651,6 +11990,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11688,6 +12028,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11722,6 +12063,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11755,6 +12097,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11790,6 +12133,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11823,6 +12167,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11858,6 +12203,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11893,6 +12239,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11930,6 +12277,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11968,6 +12316,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12004,6 +12353,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12038,6 +12388,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12073,6 +12424,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12107,6 +12459,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12141,6 +12494,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12174,6 +12528,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12207,6 +12562,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12246,6 +12602,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12283,6 +12640,7 @@
           "--head-sha",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12323,6 +12681,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12357,6 +12716,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12395,6 +12755,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12433,6 +12794,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12468,6 +12830,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12506,6 +12869,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12539,6 +12903,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12570,6 +12935,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12605,6 +12971,7 @@
           "--tag",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12640,6 +13007,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12674,6 +13042,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12705,6 +13074,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12738,6 +13108,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12769,6 +13140,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12803,6 +13175,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12835,6 +13208,7 @@
           "--provider",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12873,6 +13247,7 @@
           "--pattern",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12907,6 +13282,7 @@
           "--path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12940,6 +13316,7 @@
           "--wait-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12974,6 +13351,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13007,6 +13385,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13042,6 +13421,7 @@
           "--variables",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13076,6 +13456,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13111,6 +13492,7 @@
           "--key",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13146,6 +13528,7 @@
           "--clear",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13180,6 +13563,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13217,6 +13601,7 @@
           "--classification",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13252,6 +13637,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13289,6 +13675,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13323,6 +13710,7 @@
           "--with-summaries",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13359,6 +13747,7 @@
           "--include-affinity",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13395,6 +13784,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13431,6 +13821,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13462,6 +13853,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13497,6 +13889,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13530,6 +13923,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13566,6 +13960,7 @@
           "--edges",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13603,6 +13998,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13643,6 +14039,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13682,6 +14079,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13714,6 +14112,7 @@
           "--wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13764,6 +14163,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13798,6 +14198,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13832,6 +14233,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13867,6 +14269,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13900,6 +14303,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13948,6 +14352,7 @@
           "--requires-kind",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13985,6 +14390,7 @@
           "--branches",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14021,6 +14427,7 @@
           "--expected-head",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14056,6 +14463,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14089,6 +14497,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14139,6 +14548,7 @@
           "--clear-needs-attention",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14189,6 +14599,7 @@
           "--parent-title",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14222,6 +14633,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14261,6 +14673,7 @@
           "--waiter-task-ids",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14302,6 +14715,7 @@
           "--gate-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14337,6 +14751,7 @@
           "--resolution",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14372,6 +14787,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14405,6 +14821,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14438,6 +14855,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14471,6 +14889,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14504,6 +14923,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14537,6 +14957,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14572,6 +14993,7 @@
           "--max-depth",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14603,6 +15025,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14638,6 +15061,7 @@
           "--include-completed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14670,6 +15094,7 @@
           "--include-completed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14703,6 +15128,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14737,6 +15163,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14774,6 +15201,7 @@
           "--stop-reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14833,6 +15261,7 @@
           "--max-plateau-rounds",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14884,6 +15313,7 @@
           "--review-sha256",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14926,6 +15356,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14962,6 +15393,7 @@
           "--parent-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14996,6 +15428,7 @@
           "--parent-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15031,6 +15464,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15065,6 +15499,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15102,6 +15537,7 @@
           "--expected-hold-at",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15137,6 +15573,7 @@
           "--dep-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15171,6 +15608,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15206,6 +15644,7 @@
           "--root",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15238,6 +15677,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15271,6 +15711,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15309,6 +15750,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15345,6 +15787,7 @@
           "--intelligence-class",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15377,6 +15820,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15406,6 +15850,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15448,6 +15893,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15482,6 +15928,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15515,6 +15962,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15548,6 +15996,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15582,6 +16031,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15614,6 +16064,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15648,6 +16099,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15682,6 +16134,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15714,6 +16167,7 @@
           "--task",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15748,6 +16202,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15782,6 +16237,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15812,6 +16268,7 @@
           "task_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15892,6 +16349,7 @@
           "--before",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15925,6 +16383,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15964,6 +16423,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -16000,6 +16460,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16033,6 +16494,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16069,6 +16531,7 @@
           "--interactive",
           "--state-file",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16100,6 +16563,7 @@
           "--no-backup",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16133,6 +16597,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16165,6 +16630,7 @@
           "--data-dir",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16196,6 +16662,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16227,6 +16694,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16264,6 +16732,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16294,6 +16763,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
