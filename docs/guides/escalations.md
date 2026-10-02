@@ -286,6 +286,16 @@ reflex:
   reuses a durable escalation with the question as its source. A human
   answering directly with `question_answer` is refused: the human replies to
   the escalation, and the supervisor applies that evidence.
+* **A stuck worker question.** A question the supervisor has neither answered
+  nor escalated within `supervisor_delivery_timeout_minutes`
+  (`question_unanswered`), an accepted answer that still has not reached the
+  worker after that long (`question_delivery`), or an OpenCode dialog answer
+  the worker never resumed from (`question_resume`) raises at most one
+  incident per question and kind
+  ([`src/sessions/questions.py`](../../src/sessions/questions.py),
+  [Questions from live agents](../agent-questions.md)). Like the watchdog's,
+  these report a stuck worker only: they cannot answer, approve or re-route
+  the question, which stays the supervisor's.
 * **The supervisor delivery watchdog.** If an internal notice to a supervisor
   stays undelivered past `supervisor_delivery_timeout_minutes`, at most one
   operational incident per notice is raised
