@@ -3032,6 +3032,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
     git("commit", "-m", "base")
     git("remote", "add", "origin", str(remote))
     git("push", "-u", "origin", "aq/parent")
+    published_head = git("rev-parse", "HEAD")
     if retained_state == "tracked":
         (checkout / "tracked.txt").write_text("tracked edit\n")
     elif retained_state == "untracked":
@@ -3057,11 +3058,16 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
     policy = _policy()
     if lifecycle == "pool":
         policy["parent"]["repair"]["on_exhausted"] = "continue"
-    await _seed_parent_operation(db, policy=policy)
+    await _seed_parent_operation(db, starting_sha=published_head, policy=policy)
     await _add_parent_evidence(
-        db, "failed-check-2", run_id="run-2", conclusion="failure"
+        db, "failed-check-2", run_id="run-2", conclusion="failure", head_sha=published_head
     )
     async with db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="parent-origin", task_id="parent", repository_id="repo",
+            base_sha=published_head, creation_generation=0, reserved=True,
+            materialized=True, created_at=1.0, materialized_at=1.0,
+        ))
         await conn.execute(
             insert(integration_branch_owners).values(
                 id="owner",
@@ -3091,7 +3097,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         db,
         confirm_stopped=stopped,
     )
-    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.start("operation", published_head, "failed-check", now=100.0)
     primary = await service.dispatch("operation", 0)
     primary_task_id = primary["repair_task_id"]
     await db.create_session(
@@ -3183,7 +3189,8 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
             )
         ).mappings().one()
     assert stage["retained_workspace_id"] == "retained"
-    assert stage["starting_sha"] == retained_head
+    assert stage["starting_sha"] == published_head
+    assert stage["current_subject"]["head_sha"] == published_head
     assert stage["dossier"]["branch_sha"] == retained_head
     assert stage["retained_handoff"] == {
         "old_task_id": primary_task_id,
@@ -3197,6 +3204,18 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
     }
     from src.orchestrator.workspace import WorkspaceMixin
 
+    runtime = SimpleNamespace(db=db, git=GitManager())
+    project = await db.get_project("p")
+    origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
+        runtime, debug_task, project
+    )
+    assert role == "repair" and origin["base_sha"] == published_head
+    # Pool admission proves remote ancestry before it attaches the retained
+    # checkout. Local-only commits must not become that required remote base.
+    assert await WorkspaceMixin._hierarchy_repair_start(
+        runtime, str(checkout), origin, fence, repository_url=str(remote)
+    ) == published_head
+    assert git("ls-remote", "origin", "refs/heads/aq/parent").split()[0] == published_head
     before = (
         git("status", "--porcelain=v1"),
         git("ls-files", "--stage"),
@@ -3208,12 +3227,12 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         },
     )
     prepared = await WorkspaceMixin._prepare_exact_origin_workspace(
-        SimpleNamespace(db=db, git=GitManager()),
+        runtime,
         debug_task,
-        await db.get_project("p"),
+        project,
         SimpleNamespace(workspace=workspace),
-        {"base_sha": STARTING_SHA},
-        Fence.model_validate(debug["fence"]),
+        origin,
+        fence,
     )
     assert prepared == "aq/parent"
     after = (
@@ -3256,6 +3275,19 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         assert (await db.get_session("successor-session")).task_id is None
         assert read_claim_file(str(checkout)) is None
         assert (await db.get_workspace("retained")).locked_by_task_id == third["repair_task_id"]
+        third_task = await db.get_task(third["repair_task_id"])
+        origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
+            runtime, third_task, project
+        )
+        assert role == "repair" and origin["base_sha"] == published_head
+        assert await WorkspaceMixin._hierarchy_repair_start(
+            runtime, str(checkout), origin, fence, repository_url=str(remote)
+        ) == published_head
+        assert await WorkspaceMixin._prepare_exact_origin_workspace(
+            runtime, third_task, project,
+            SimpleNamespace(workspace=await db.get_workspace("retained")), origin, fence,
+        ) == "aq/parent"
+        assert git("rev-parse", "HEAD") == retained_head
         assert git("status", "--porcelain=v1") == before[0]
         assert git("ls-files", "--stage") == before[1]
 
@@ -3418,12 +3450,23 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
     )
     debug = await handoff_service.dispatch("operation", 1)
     assert debug["outcome"] == "dispatched"
+    retained = await db.get_active_integration_repair_for_task(debug["repair_task_id"])
+    assert retained["stage_starting_sha"] == base_sha
+    assert retained["stage_subject"]["head_sha"] == base_sha
+    assert retained["stage_dossier"]["branch_sha"] == head_sha
+    assert retained["stage_dossier"]["repair_commits"] == exact_commits
     commit_proof = {
         "base_sha": base_sha,
         "head_sha": head_sha,
         "commits": exact_commits,
     }
     async with db.immediate() as conn:
+        # Publication-backed subject binding is a separate transition from
+        # retaining a checkout. It can still advance with the exact proof.
+        bound = await handoff_service.bind_current_parent_subject_on(
+            conn, "operation", head_sha=head_sha, commit_proof=commit_proof, now=105.0
+        )
+        assert bound["changed"] is True
         replay = await handoff_service.bind_current_parent_subject_on(
             conn,
             "operation",
