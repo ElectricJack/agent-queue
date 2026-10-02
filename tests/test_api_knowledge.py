@@ -29,9 +29,11 @@ ROUTES = {
     "knowledge_diff": "/api/knowledge/diff",
     "knowledge_retire": "/api/knowledge/retire",
     "knowledge_restore": "/api/knowledge/restore",
+    "knowledge_export": "/api/knowledge/export",
     "record_show": "/api/record/show",
     "record_search": "/api/record/search",
     "record_capabilities": "/api/record/capabilities",
+    "record_repair": "/api/record/repair",
     "link_create": "/api/record/link-create",
     "link_list": "/api/record/link-list",
     "link_remove": "/api/record/link-remove",
@@ -48,6 +50,8 @@ CODES = (
     "record.revision_redacted",
     "record.precondition_required",
     "record.retryable",
+    "record.hash_divergence",
+    "record.integrity_conflict",
 )
 
 
@@ -96,8 +100,8 @@ def test_every_route_is_registered_with_a_distinct_operation_id(app):
     for name, path in ROUTES.items():
         assert path in paths, f"missing route {path}"
         assert ops_by_path[path] == name, f"{path} -> {ops_by_path[path]} (want {name})"
-    assert len(ops) == 14
-    assert len(ROUTES) == len(set(ROUTES.values())) == 14
+    assert len(ops) == len(ROUTES)
+    assert len(ROUTES) == len(set(ROUTES.values())) == 16
 
 
 def test_not_found_maps_to_404_on_every_route(app):
@@ -158,6 +162,8 @@ def test_status_is_consistent_across_verbs(app, code):
         ("record.revision_redacted", 410),
         ("record.precondition_required", 428),
         ("record.retryable", 503),
+        ("record.hash_divergence", 503),
+        ("record.integrity_conflict", 409),
     ],
 )
 def test_documented_status_pins(app, code, status):

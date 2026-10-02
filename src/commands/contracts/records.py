@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -40,6 +40,13 @@ class RecordSearchArgs(CommandArgs):
 
 class RecordCapabilitiesArgs(CommandArgs):
     project_id: str | None = None
+
+
+class RecordRepairArgs(CommandArgs):
+    operation: Literal["backfill-task-mappings", "replay-outbox"]
+    dry_run: bool = True
+    event_id: str | None = None
+    max_batches: int = Field(default=2, ge=1, le=20)
 
 
 class LinkCreateArgs(CommandArgs):
@@ -86,6 +93,11 @@ class RecordValue(CommandValue):
     links_in: list[dict[str, Any]] | None = None
     changed: list[str] | None = None
     capabilities: dict[str, Any] | None = None
+    dry_run: bool | None = None
+    inventory: dict[str, Any] | None = None
+    batches: list[dict[str, Any]] | None = None
+    done: bool | None = None
+    eligible: bool | None = None
 
 
 def _record_invoke(name: str, result_model: type[CommandValue]):
@@ -116,6 +128,7 @@ def register_record_contracts(registry) -> None:
         ("record_show", RecordShowArgs, RecordValue, SideEffectClass.READ),
         ("record_search", RecordSearchArgs, RecordValue, SideEffectClass.READ),
         ("record_capabilities", RecordCapabilitiesArgs, RecordValue, SideEffectClass.READ),
+        ("record_repair", RecordRepairArgs, RecordValue, SideEffectClass.UPDATE),
         ("link_create", LinkCreateArgs, RecordValue, SideEffectClass.LINK),
         ("link_list", LinkListArgs, RecordValue, SideEffectClass.READ),
         ("link_remove", LinkRemoveArgs, RecordValue, SideEffectClass.LINK),
@@ -124,6 +137,7 @@ def register_record_contracts(registry) -> None:
         "record_show": "Read a record by identity, pinned to a revision when knowledge.",
         "record_search": "Search authorized records with a bounded query.",
         "record_capabilities": "Describe what this caller may do with records.",
+        "record_repair": "Inspect or apply bounded task mapping backfill or outbox replay.",
         "link_create": "Add, update, or remove typed record links in one batch.",
         "link_list": "List the typed links on a record.",
         "link_remove": "Remove one typed record link.",

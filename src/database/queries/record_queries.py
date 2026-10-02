@@ -159,7 +159,9 @@ class RecordQueryMixin:
             raise RecordIntegrityError("task alias exists in both live and archive domains")
         return dict(rows[0]) if rows else None
 
-    async def ensure_task_record_on(self, task_id: str, *, actor_id: str, conn) -> dict:
+    async def ensure_task_record_on(
+        self, task_id: str, *, actor_id: str, conn, return_inserted: bool = False
+    ) -> dict | tuple[dict, bool]:
         domain = await self.get_task_record_domain_on(task_id, conn=conn)
         existing = await self.get_record_on(task_id=task_id, conn=conn)
         if domain is None:
@@ -170,7 +172,7 @@ class RecordQueryMixin:
         record_id = task_record_id(await self.get_record_installation_on(conn=conn), task_id)
         # Both alias and UUID uniqueness are checked after conflict-safe insertion.
         # A UUID collision is never a request to allocate another random mapping.
-        await conn.execute(
+        inserted = await conn.scalar(
             pg_insert(records)
             .values(
                 record_id=record_id,
@@ -180,6 +182,7 @@ class RecordQueryMixin:
                 created_by=actor_id,
             )
             .on_conflict_do_nothing()
+            .returning(records.c.record_id)
         )
         row = await self.get_record_on(record_id=record_id, conn=conn)
         if row is None or (
@@ -203,4 +206,4 @@ class RecordQueryMixin:
             )
             .on_conflict_do_nothing(index_elements=[task_record_link_state.c.record_id])
         )
-        return row
+        return (row, inserted is not None) if return_inserted else row

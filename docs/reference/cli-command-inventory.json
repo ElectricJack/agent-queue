@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 488,
+    "leaf_commands": 490,
     "registration": {
-      "generated": 316,
+      "generated": 318,
       "handwritten": 172
     },
     "ownership": {
-      "core": 449,
+      "core": 451,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 487
+      "supported": 489
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 316,
+      "dispatch": 318,
       "registration": 158
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 428
+      "untested": 430
     }
   },
   "commands": [
@@ -5091,6 +5091,41 @@
       }
     },
     {
+      "path": "aq knowledge export",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_export",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--identity"
+        ],
+        "optional": [
+          "--revision-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq knowledge history",
       "registration": "generated",
       "owner_kind": "core",
@@ -9309,6 +9344,42 @@
           "--if-revision",
           "--if-link-token",
           "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record repair",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "record_repair",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--operation"
+        ],
+        "optional": [
+          "--dry-run",
+          "--event-id",
+          "--max-batches",
           "--json",
           "--brief",
           "--api-url"

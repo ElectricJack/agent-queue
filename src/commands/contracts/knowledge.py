@@ -54,6 +54,10 @@ class KnowledgeShowArgs(CommandArgs):
     revision_id: str | None = None
 
 
+class KnowledgeExportArgs(KnowledgeShowArgs):
+    """Returns authorized bytes; the daemon accepts no filesystem destination."""
+
+
 class KnowledgeUpdateArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     identity: str = Field(min_length=4)
@@ -123,6 +127,9 @@ class KnowledgeValue(CommandValue):
     items: list[dict[str, Any]] | None = None
     next_cursor: str | None = None
     changes: list[dict[str, Any]] | None = None
+    content: str | None = None
+    export_sha256: str | None = None
+    format_version: int | None = None
 
 
 def _knowledge_invoke(name: str, args_model, result_model: type[CommandValue]):
@@ -153,6 +160,7 @@ def register_knowledge_contracts(registry) -> None:
         ("knowledge_create", KnowledgeCreateArgs, KnowledgeValue, SideEffectClass.CREATE),
         ("knowledge_list", KnowledgeListArgs, KnowledgeValue, SideEffectClass.READ),
         ("knowledge_show", KnowledgeShowArgs, KnowledgeValue, SideEffectClass.READ),
+        ("knowledge_export", KnowledgeExportArgs, KnowledgeValue, SideEffectClass.READ),
         ("knowledge_update", KnowledgeUpdateArgs, KnowledgeValue, SideEffectClass.UPDATE),
         ("knowledge_history", KnowledgeHistoryArgs, KnowledgeValue, SideEffectClass.READ),
         ("knowledge_diff", KnowledgeDiffArgs, KnowledgeValue, SideEffectClass.READ),
@@ -163,6 +171,7 @@ def register_knowledge_contracts(registry) -> None:
         "knowledge_create": "Create one active, unverified knowledge finding.",
         "knowledge_list": "List authorized knowledge metadata with a page cursor.",
         "knowledge_show": "Read an authorized knowledge snapshot at an exact revision.",
+        "knowledge_export": "Export an authorized knowledge revision as Markdown bytes.",
         "knowledge_update": "Revise editable knowledge fields with a concurrency token.",
         "knowledge_history": "Read the revision history of a knowledge record.",
         "knowledge_diff": "Diff two exact, readable revisions of a knowledge record.",
@@ -174,6 +183,7 @@ def register_knowledge_contracts(registry) -> None:
             continue
         keyed = name not in {
             "knowledge_list", "knowledge_show", "knowledge_history", "knowledge_diff",
+            "knowledge_export",
         }
         registry.register(
             CommandRegistration(

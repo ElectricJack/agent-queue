@@ -6623,6 +6623,53 @@
         }
       }
     },
+    "/api/knowledge/export": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Export an authorized knowledge revision as Markdown bytes; no daemon destination path.",
+        "description": "Export an authorized knowledge revision as Markdown bytes; no daemon destination path.",
+        "operationId": "knowledge_export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/history": {
       "post": {
         "tags": [
@@ -11993,6 +12040,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RecordCapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/repair": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Local operator only: dry-run task mapping backfill or selected outbox replay before explicit apply.",
+        "description": "Local operator only: dry-run task mapping backfill or selected outbox replay before explicit apply.",
+        "operationId": "record_repair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordRepairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordRepairResponse"
                 }
               }
             }
@@ -36600,6 +36694,120 @@
         "type": "object",
         "title": "KnowledgeDiffResponse"
       },
+      "KnowledgeExportRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "identity"
+        ],
+        "title": "KnowledgeExportRequest"
+      },
+      "KnowledgeExportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "default": ""
+          },
+          "export_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Sha256"
+          },
+          "format_version": {
+            "type": "integer",
+            "title": "Format Version",
+            "default": 1
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeExportResponse"
+      },
       "KnowledgeHistoryRequest": {
         "properties": {
           "project_id": {
@@ -53332,6 +53540,137 @@
           "record"
         ],
         "title": "RecordFileInspectionResponse"
+      },
+      "RecordRepairRequest": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": ""
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id",
+            "description": ""
+          },
+          "max_batches": {
+            "type": "integer",
+            "title": "Max Batches",
+            "description": "",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "title": "RecordRepairRequest"
+      },
+      "RecordRepairResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "inventory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory"
+          },
+          "batches": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batches"
+          },
+          "done": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done"
+          },
+          "eligible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RecordRepairResponse"
       },
       "RecordSearchRequest": {
         "properties": {

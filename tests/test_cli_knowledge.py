@@ -32,7 +32,7 @@ class TestGroupRegistration:
         kgroup = cli.commands["knowledge"]
         expected = {
             "create", "list", "show", "update",
-            "history", "diff", "retire", "restore",
+            "history", "diff", "retire", "restore", "export",
         }
         missing = expected - set(kgroup.commands.keys())
         assert not missing, f"knowledge group is missing: {missing}"
@@ -46,7 +46,8 @@ class TestGroupRegistration:
         from src.cli.app import cli
 
         rgroup = cli.commands["record"]
-        expected = {"show", "search", "capabilities", "link-create", "link-list", "link-remove"}
+        expected = {"show", "search", "capabilities", "link-create", "link-list", "link-remove",
+                    "repair"}
         missing = expected - set(rgroup.commands.keys())
         assert not missing, f"record group is missing: {missing}"
 
