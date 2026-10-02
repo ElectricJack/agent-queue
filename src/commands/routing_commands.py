@@ -16,12 +16,14 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
+from dataclasses import replace
 from typing import Any
 
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.database.queries.routing_queries import ROUTABLE_STATUSES, RoutingBusyError
 from src.models import TASK_TYPE_VALUES, TaskStatus
 from src.playbooks.invocation import current_invocation
+from src.routing.context import live_context, quota_observations, summarize_context
 from src.routing.planner import (
     ROUTABLE_SOURCES,
     ROUTED_SOURCES,
@@ -139,7 +141,7 @@ class RoutingCommandsMixin:
         return str(mapping.get("model") or "").strip() or None
 
     async def _routing_static_facts(
-        self, project_id: str, class_ids
+        self, project_id: str, class_ids, *, conn=None
     ) -> tuple[tuple[ProfileFacts, ...], dict[str, ProviderFacts]]:
         """The half of a snapshot routing does not move: profiles and providers.
 
@@ -155,7 +157,7 @@ class RoutingCommandsMixin:
         orchestrator = self.orchestrator
         availability = getattr(orchestrator, "provider_availability", None)
         registry = getattr(orchestrator, "harness_registry", None)
-        agents = await self.db.list_agents()
+        agents = await self.db.list_agents(conn=conn)
         agent_slots = Counter(
             agent.profile_id for agent in agents
             if agent.enabled and agent.role == "worker" and agent.deleted_at is None
@@ -171,7 +173,7 @@ class RoutingCommandsMixin:
 
         facts: list[ProfileFacts] = []
         keys: set[str] = set()
-        for profile in await self.db.list_profiles():
+        for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
             if not harness:
                 continue
@@ -202,6 +204,7 @@ class RoutingCommandsMixin:
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),
+                needs_workspace=bool(getattr(profile, "needs_workspace", True)),
             ))
             keys.add(key)
 
@@ -225,12 +228,85 @@ class RoutingCommandsMixin:
                     if reading is not None
                 ]
                 usage = max(readings) if readings else None
+            row = availability.row(key) if availability is not None and callable(
+                getattr(availability, "row", None)
+            ) else None
             providers[key] = ProviderFacts(
                 state=availability.effective_state(key) if availability is not None else "available",
                 launchable=not availability.suppresses(key) if availability is not None else True,
                 usage_percent=usage,
+                reason_code=row.effective_reason_code(now) if row else "",
+                updated_at=row.updated_at if row else None,
+                quota=quota_observations(
+                    rows_by_provider.get(key, []), now=now,
+                    stale_after=stale_after_seconds(key, self.config),
+                ),
+                quota_source="provider_usage_snapshots" if rows_by_provider else "unknown",
             )
         return tuple(facts), providers
+
+    async def _routing_snapshot(self, task, project, class_ids, *, conn=None) -> Snapshot:
+        """Reuse planner facts, adding bounded observations of the existing admission limits.
+
+        Pending launches consume headroom before their durable session rows exist.
+        Workspace counts and provider usage are observations, not locked reservations;
+        eligibility/load at apply are refreshed inside the fleet-wide route transaction.
+        """
+        from src.models import ProjectStatus
+        from src.pool_claims import pool_claim_loop_stall_seconds
+
+        started = time.time()
+        pending = tuple(getattr(self.orchestrator, "_pool_launches", {}).values())
+        unacquired = {p.session_id for p in pending if not p.workspace_acquired}
+        profiles, providers = await self._routing_static_facts(
+            task.project_id, class_ids, conn=conn
+        )
+        snapshot = Snapshot(
+            profiles=profiles, providers=providers,
+            busy=await self.db.count_busy_sessions_by_profile(conn=conn),
+            backlog=await self.db.count_routed_backlog_by_profile(conn=conn),
+        )
+        supply = await self.db.routing_supply(
+            now=time.time(), stall_seconds=pool_claim_loop_stall_seconds(self.config.swarm),
+            conn=conn,
+        )
+        for launch in pending:
+            if launch.session_id not in supply["session_ids"]:
+                supply["supply"].append({
+                    "project_id": launch.project_id, "profile_id": launch.profile_id,
+                    "lifecycle": "pool", "bucket": "starting", "count": 1,
+                })
+        worktrees = self.orchestrator._worktrees_enabled()
+        # Pool workers always need a project-repo seat; task workers may require
+        # additional kinds. The minimum reports a conservative shared bound.
+        requirements = await self.db.fetch_task_workspace_requirements(task.id)
+        kinds = {r.kind_id for r in requirements} or {"project-repo"}
+        if any(p.lifecycle == "pool" and worker_classes(p) for p in profiles):
+            kinds.add("project-repo")
+        capacities = [await self.db.count_available_workspaces(
+            task.project_id, kind_id=kind,
+            worktree_slot_cap=self.orchestrator._project_slot_cap(project) if worktrees else None,
+        ) for kind in sorted(kinds)]
+        workspace_capacity = max(0, min(capacities) - sum(
+            launch.project_id == task.project_id and launch.session_id in unacquired
+            for launch in pending
+        ))
+        now = time.time()
+        quarantine = {
+            profile_id: until
+            for (project_id, profile_id), until
+            in getattr(self.orchestrator, "_pool_quarantine", {}).items()
+            if project_id == task.project_id and until > now
+        }
+        context = live_context(
+            snapshot, project_id=task.project_id, now=now, started_at=started,
+            supply=supply["supply"], active_kinds=supply["active_kinds"],
+            project_cap=project.max_concurrent_agents if project else 0,
+            project_active=project is not None and project.status == ProjectStatus.ACTIVE,
+            global_cap=self.orchestrator._pool_global_cap(),
+            workspace_capacity=workspace_capacity, quarantine=quarantine,
+        )
+        return replace(snapshot, context=context)
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -318,13 +394,7 @@ class RoutingCommandsMixin:
             return {"success": False, "code": "routing.invalid_policy", "error": str(exc)}
         project = await self.db.get_project(task.project_id)
         facts = await self._routing_task_facts(task, project)
-        profiles, providers = await self._routing_static_facts(task.project_id, policy.class_order)
-        snapshot = Snapshot(
-            profiles=profiles,
-            providers=providers,
-            busy=await self.db.count_busy_sessions_by_profile(),
-            backlog=await self.db.count_routed_backlog_by_profile(),
-        )
+        snapshot = await self._routing_snapshot(task, project, policy.class_order)
         if len(facts.benchmark_arms) == 1:
             arm_name = facts.benchmark_arms[0]
             arm = policy.benchmark_arms.get(arm_name)
@@ -335,12 +405,16 @@ class RoutingCommandsMixin:
                         "success": True, "outcome": "held", "task_id": task.id,
                         "benchmark_arm": arm_name, "reason": "requested_model_unavailable",
                         "requested_model": arm.requested_model, "mapped_model": mapped,
+                        "live_context": dict(snapshot.context),
+                        "live_summary": summarize_context(snapshot.context),
                     }
         result = plan_route(
             facts, policy, snapshot,
             policy_sha256=digest, classification=args.get("classification"),
         )
-        return {"success": True, "outcome": result.outcome, **result.value}
+        return {"success": True, "outcome": result.outcome, **result.value,
+                "live_context": dict(snapshot.context),
+                "live_summary": summarize_context(snapshot.context)}
 
     def _not_router_refusal(self, project) -> dict | None:
         """``routing.not_router`` unless the caller is *project*'s bound router (§6.6).
@@ -425,9 +499,6 @@ class RoutingCommandsMixin:
         except (ValueError, KeyError, TypeError) as exc:
             return {"success": False, "code": "routing.invalid_plan", "error": str(exc)}
 
-        profiles, providers = await self._routing_static_facts(
-            task.project_id, sorted({c.intelligence_class for c in candidates})
-        )
         planned_profile_id = plan.get("profile_id")
         try:
             async with self.db.routing_apply_lock() as conn:
@@ -436,18 +507,24 @@ class RoutingCommandsMixin:
                 if stale is not None:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": stale}
+                project = await self.db.get_project(fresh.project_id)
+                refusal = self._not_router_refusal(project)
+                if refusal is not None:
+                    return refusal
+                fresh_facts = await self._routing_task_facts(fresh, project)
                 if plan.get("benchmark_arm") and self._benchmark_mapped_model(
                     plan["benchmark_class"], plan["benchmark_harness"], task.project_id
                 ) != plan["requested_model"]:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": "benchmark requested model mapping changed"}
-                snapshot = Snapshot(
-                    profiles=profiles,
-                    providers=providers,
-                    busy=await self.db.count_busy_sessions_by_profile(conn=conn),
-                    backlog=await self.db.count_routed_backlog_by_profile(conn=conn),
+                snapshot = await self._routing_snapshot(
+                    fresh, project, sorted({c.intelligence_class for c in candidates}), conn=conn,
                 )
-                valid = [c for c in candidates if is_candidate(c, snapshot)]
+                valid = [c for c in candidates if is_candidate(c, snapshot)
+                         and c.provider not in fresh_facts.exclude_providers
+                         and (not fresh_facts.preferred_provider
+                              or c.provider == fresh_facts.preferred_provider)
+                         and (not fresh_facts.needs_task_lifecycle or c.lifecycle == "task")]
                 selection = reselect(valid, snapshot, balance)
                 if selection is None:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
@@ -500,6 +577,7 @@ class RoutingCommandsMixin:
                     "planned_profile_id": planned_profile_id,
                     "adjusted_at_apply": adjusted,
                     "routed_at": time.time(),
+                    "live_context": dict(snapshot.context),
                 }
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):

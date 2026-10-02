@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:2097f7e8ce2856856c4ff08965ae8aa571a525774a3d01da4ab774187e970b3a` |
+| Contract fingerprint | `sha256:aafab91f3dd8b6ccb157cd46c1bb00a6728fb40147b159d5c4a400fca55dcdcf` |
 
 ## Parameters
 
@@ -29,6 +29,8 @@
 | Field | Type | Description |
 |---|---|---|
 | `task_id` | `string \| null` | — |
+| `live_context` | `object \| null` | — |
+| `live_summary` | `string \| null` | — |
 | `intelligence_class` | `string \| null` | Intelligence class |
 | `profile_id` | `string \| null` | Agent profile |
 | `provider` | `string \| null` | Provider |
