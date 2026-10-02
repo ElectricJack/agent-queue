@@ -18,6 +18,28 @@ function instanceLabel(instance: PoolEntry["instances"][number]) {
   ].join(" · ");
 }
 
+function InstancePicker({ entry, instance, onChange, compact = false }: {
+  entry: PoolEntry;
+  instance: PoolEntry["instances"][number] | null;
+  onChange: (instanceId: string | null) => void;
+  compact?: boolean;
+}) {
+  const id = useId();
+  return (
+    <label className={compact ? "flex w-32 min-w-11 shrink items-center" : "mt-1 flex min-w-0 items-center gap-2 text-[10px] text-gray-500"} htmlFor={id}>
+      <span className={compact ? "sr-only" : undefined}>{compact ? "Terminal for " + entry.pool.profile_id + " pool" : "Instance"}</span>
+      <select data-primary-control id={id} value={instance?.id ?? ""}
+        title={instance ? instanceLabel(instance) : undefined}
+        onChange={(event) => onChange(event.target.value || null)}
+        className={"min-w-0 flex-1 truncate rounded border border-gray-700 bg-gray-950 px-2 text-xs text-gray-200 focus-visible:outline-2 focus-visible:outline-indigo-400 " + (compact ? "h-8" : "py-1")}>
+        {entry.instances.map((row, index) => (
+          <option key={row.id} value={row.id}>{compact ? `${index + 1} · ` : ""}{instanceLabel(row)}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 /**
  * One worker pool: its bounds, its live supply, and whichever instance the
  * user has selected. Unlike a fixed worker a pool has no single session — the
@@ -51,23 +73,16 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
   return (
     <section aria-label={title + " agent window"}
       className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
-      <TerminalPane title={title} status={instance?.stalled ? "Stalled" : instance?.state || "Idle"} onClose={onClose} titleId={id + "-title"} details={<>
+      <TerminalPane title={title} status={instance?.stalled ? "Stalled" : instance?.state || "Idle"} onClose={onClose} titleId={id + "-title"}
+        primary={instances.length > 1 ? <InstancePicker entry={entry} instance={instance} onChange={onInstanceChange} compact /> : undefined}
+        details={<>
         <PoolBadge />
         <p className="mt-0.5"><PoolSupplyRow pool={pool} /></p>
         <PoolOutsidePools pool={pool} />
         <PoolPlacementRow projects={projects} />
         <PoolQuarantine projects={projects} />
         {instances.length > 0 ? (
-          <label className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-gray-500" htmlFor={id + "-instance"}>
-            Instance
-            <select data-primary-control id={id + "-instance"} value={instance?.id ?? ""}
-              onChange={(event) => onInstanceChange(event.target.value || null)}
-              className="min-w-0 flex-1 truncate rounded border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-200">
-              {instances.map((row) => (
-                <option key={row.id} value={row.id}>{instanceLabel(row)}</option>
-              ))}
-            </select>
-          </label>
+          <InstancePicker entry={entry} instance={instance} onChange={onInstanceChange} />
         ) : (
           <p className="mt-1 text-[10px] text-gray-500">No live instances.</p>
         )}

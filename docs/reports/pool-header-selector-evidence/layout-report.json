@@ -1,0 +1,113 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "agents-watch-only",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 1598
+    },
+    {
+      "check": "agents-watch-only",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 1733
+    },
+    {
+      "check": "agents-watch-only",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1941
+    },
+    {
+      "check": "agents-watch-only",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1871
+    },
+    {
+      "check": "agents-watch-only",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 1523
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 16348
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 8780
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 9185
+    },
+    {
+      "check": "focus-session",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 8088
+    },
+    {
+      "check": "focus-session",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 8718
+    },
+    {
+      "check": "phone-typing",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 1811
+    },
+    {
+      "check": "phone-typing",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 1920
+    },
+    {
+      "check": "phone-typing",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1977
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 1083
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 1395
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1598
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1239
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 1129
+    }
+  ]
+}

@@ -208,7 +208,7 @@ export async function startStubServer({ distDir, fixtures }) {
     }
     if (path !== "/ws/events") return socket.destroy();
     acceptUpgrade(req, socket);
-    socket.resume(); // Client frames (subscriptions, pings) are ignored: no events are ever sent.
+    socket.resume(); // Client frames (subscriptions, pings) are ignored.
     eventSockets.add(socket);
     socket.on("close", () => eventSockets.delete(socket));
   });
@@ -224,6 +224,10 @@ export async function startStubServer({ distDir, fixtures }) {
     typed: (sessionId) => terminalInputs.filter((r) => r.sessionId === sessionId).flatMap((r) => r.frames.filter((f) => typeof f === "string")),
     statePuts: () => requests.filter((r) => r.path === "/api/dashboard/state-put").map((r) => JSON.parse(r.body)),
     override: (key, handler) => overrides.set(key, handler),
+    pushEvent(frame) {
+      const encoded = wsFrame(1, Buffer.from(JSON.stringify(frame)));
+      for (const socket of eventSockets) socket.write(encoded);
+    },
     pushPane(sessionId, frame) {
       for (const res of paneStreams.get(sessionId) ?? []) res.write(`data: ${JSON.stringify(frame)}\n\n`);
     },

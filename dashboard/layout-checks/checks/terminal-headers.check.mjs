@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { expectLayout } from "../probes.mjs";
-import { terminalHeaderFixtures, TERMINAL_SELECTION, WORKER_NAME } from "../fixtures/terminal-headers.mjs";
+import { terminalHeaderFixtures, TERMINAL_SELECTION, WORKER_NAME, SECOND_POOL_SESSION } from "../fixtures/terminal-headers.mjs";
 import { terminalHeaderGeometry } from "../terminal-header-geometry.mjs";
-import { SESSION } from "../fixtures/base.mjs";
+import { POOL_SESSION, SESSION } from "../fixtures/base.mjs";
 
 export const name = "terminal-headers";
 const DETAILS = '[data-terminal-header] [aria-label^="Details for "]';
 const DIALOG = "[data-terminal-details]";
+const PICKER = '[data-terminal-header] select';
 
 async function oneRow(t) {
   const geometry = await terminalHeaderGeometry(t.page);
@@ -16,21 +17,21 @@ async function oneRow(t) {
     assert.ok(pane.terminal >= 200, `${pane.name}: only ${pane.terminal}px of terminal height`);
   }
   assert.equal(await t.page.$$eval("[data-terminal-header]", (headers) => headers.length), 3, "nested transport headers returned");
-  const controls = await t.page.$$eval("[data-terminal-header] button, [data-terminal-header] a", (buttons) => buttons.map((button) => {
+  const controls = await t.page.$$eval("[data-terminal-header] button, [data-terminal-header] a, [data-terminal-header] select", (buttons) => buttons.map((button) => {
     const r = button.getBoundingClientRect();
     const h = button.closest("header").getBoundingClientRect();
-    return { width: r.width, height: r.height, inside: r.left >= h.left && r.right <= h.right && r.top >= h.top && r.bottom <= h.bottom, label: button.getAttribute("aria-label") };
+    return { width: r.width, height: r.height, inside: r.left >= h.left && r.right <= h.right && r.top >= h.top && r.bottom <= h.bottom, label: button.getAttribute("aria-label") || button.labels?.[0]?.textContent };
   }));
   for (const control of controls) {
     assert.ok(control.label && control.inside, `inaccessible/clipped control: ${JSON.stringify(control)}`);
     assert.ok(control.width >= 32 && control.height >= 32, `small target: ${JSON.stringify(control)}`);
   }
-  await expectLayout(t);
+  await expectLayout(t, { primary: [PICKER] });
   return geometry;
 }
 
 export async function run(t) {
-  terminalHeaderFixtures(t.stub);
+  const sessions = terminalHeaderFixtures(t.stub);
   await t.page.goto(t.url(TERMINAL_SELECTION), { waitUntil: "domcontentloaded" });
   await t.page.waitForFunction(() => document.querySelectorAll('[data-terminal-header] [aria-label^="Details for "]').length === 3);
   if (t.page.viewport().width >= 768) {
@@ -91,4 +92,41 @@ export async function run(t) {
   assert.ok(panel.left >= 0 && panel.right <= t.page.viewport().width && panel.top >= 0 && panel.bottom <= t.page.viewport().height);
   await t.page.keyboard.press("Escape");
   await oneRow(t);
+
+  // Native keyboard selection switches without opening the disclosure.
+  await t.page.focus(PICKER);
+  assert.ok(await t.page.$eval(PICKER, (el) => el === document.activeElement));
+  await t.page.keyboard.press("ArrowDown");
+  await t.page.keyboard.press("Enter");
+  await t.page.waitForFunction((id) => document.querySelector('[data-terminal-header] select')?.value === id, {}, SECOND_POOL_SESSION);
+  assert.equal(await t.page.$(DIALOG), null);
+  assert.ok(new URL(t.page.url()).searchParams.getAll("agent").includes("pool:deep-high-claude@" + SECOND_POOL_SESSION));
+  if (t.page.viewport().width >= 768) {
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent.includes("connected"));
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
+  } else {
+    await t.page.waitForSelector('[aria-label="Second worker terminal status"]');
+    assert.deepEqual(t.stub.terminalUpgrades, []);
+  }
+  await oneRow(t);
+  await t.shot("pool-header-selection");
+
+  // A live session-exited refresh drops the selected option and rebinds the
+  // remaining worker, leaving the original single-instance header behavior.
+  sessions.splice(1, 1);
+  t.stub.pushEvent({ _event_type: "session.exited", session_id: SECOND_POOL_SESSION });
+  await t.page.waitForFunction(() => document.querySelector('[data-terminal-header] select') === null);
+  if (t.page.viewport().width >= 768) {
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent.includes("connected"));
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
+  } else {
+    await t.page.waitForSelector('[aria-label="Pool worker with a long session name terminal status"]');
+  }
+  assert.equal(await t.page.$(DIALOG), null);
+  // The one remaining instance still has its existing picker in details.
+  await t.page.click(poolDetails);
+  await t.page.waitForSelector(`${DIALOG} select`);
+  assert.equal(await t.page.$eval(`${DIALOG} select`, (el) => el.value), POOL_SESSION);
+  await t.page.keyboard.press("Escape");
+  await t.shot("pool-header-removal");
 }
