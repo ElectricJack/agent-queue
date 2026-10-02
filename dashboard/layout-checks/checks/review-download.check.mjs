@@ -15,7 +15,7 @@ export async function run(t) {
   await context.setDownloadBehavior({ policy: "allow", downloadPath: downloadDir });
   try {
     await t.page.goto(t.url(`/reviews/${REVIEW_ID}`), { waitUntil: "networkidle0" });
-    const button = 'button::-p-text(Download Markdown)';
+    const button = '::-p-aria([name="Download Markdown"][role="button"])';
     await t.page.waitForSelector(button);
 
     async function download(revision, keyboard = false) {
