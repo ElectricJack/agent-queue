@@ -595,6 +595,14 @@
         "tests/test_tier_provider_defaults.py"
       ]
     },
+    "knowledge-records": {
+      "description": "Durable record identities, knowledge schema and immutable revision integrity.",
+      "modules": [
+        "tests/test_knowledge_migrations.py",
+        "tests/test_record_queries.py",
+        "tests/test_record_schema.py"
+      ]
+    },
     "level-editor": {
       "description": "The level editor: voxel grid, page, layer and level models and the brush system.",
       "modules": [
@@ -1319,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:4d2f66320d5393a4eca1fa966078dc02499bdc17590d1bf8a2ee2222dc0ca707",
+  "digest": "sha256:a9826f1c82c889fbb2e67ebabe53f037ef8ae9a9b541c568da330bb2096fa85b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8219,6 +8227,20 @@
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
     },
+    "tests/test_knowledge_migrations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Real disposable PostgreSQL upgrades, helper reinstall and safe rollback."
+    },
     "tests/test_known_tools.py": {
       "areas": [
         "install"
@@ -8975,7 +8997,8 @@
       "imports": [
         "src.database.engine",
         "src.database.schema_key",
-        "src.database.tables"
+        "src.database.tables",
+        "src.records.schema"
       ],
       "markers": [
         "integration",
@@ -11299,6 +11322,34 @@
         "asyncio"
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
+    },
+    "tests/test_record_queries.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.queries.record_queries",
+        "src.database.tables",
+        "src.models",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Deterministic aliases and exact revision reads survive execution lifecycle."
+    },
+    "tests/test_record_schema.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Prove the storage contract with direct writes and commit-time checks."
     },
     "tests/test_reference_stub_enricher.py": {
       "areas": [
