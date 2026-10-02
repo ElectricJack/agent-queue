@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.claimed_by import ClaimedBy
+    from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
@@ -67,6 +68,7 @@ class TaskSetResponse:
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
         route (None | TaskSetResponseRouteType0 | Unset):
+        delivery_status (EpicDeliveryStatus | None | Unset):
         context (list[TaskSetResponseContextItem] | Unset):
         labels (list[str] | Unset):
         provenance (list[TaskSetResponseProvenanceItem] | Unset):
@@ -112,6 +114,7 @@ class TaskSetResponse:
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     route: None | TaskSetResponseRouteType0 | Unset = UNSET
+    delivery_status: EpicDeliveryStatus | None | Unset = UNSET
     context: list[TaskSetResponseContextItem] | Unset = UNSET
     labels: list[str] | Unset = UNSET
     provenance: list[TaskSetResponseProvenanceItem] | Unset = UNSET
@@ -121,6 +124,7 @@ class TaskSetResponse:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.claimed_by import ClaimedBy
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
@@ -314,6 +318,14 @@ class TaskSetResponse:
         else:
             route = self.route
 
+        delivery_status: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_status, Unset):
+            delivery_status = UNSET
+        elif isinstance(self.delivery_status, EpicDeliveryStatus):
+            delivery_status = self.delivery_status.to_dict()
+        else:
+            delivery_status = self.delivery_status
+
         context: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.context, Unset):
             context = []
@@ -423,6 +435,8 @@ class TaskSetResponse:
             field_dict["class_hint"] = class_hint
         if route is not UNSET:
             field_dict["route"] = route
+        if delivery_status is not UNSET:
+            field_dict["delivery_status"] = delivery_status
         if context is not UNSET:
             field_dict["context"] = context
         if labels is not UNSET:
@@ -439,6 +453,7 @@ class TaskSetResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.claimed_by import ClaimedBy
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
@@ -736,6 +751,23 @@ class TaskSetResponse:
 
         route = _parse_route(d.pop("route", UNSET))
 
+        def _parse_delivery_status(data: object) -> EpicDeliveryStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_status_type_0 = EpicDeliveryStatus.from_dict(data)
+
+                return delivery_status_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatus | None | Unset, data)
+
+        delivery_status = _parse_delivery_status(d.pop("delivery_status", UNSET))
+
         _context = d.pop("context", UNSET)
         context: list[TaskSetResponseContextItem] | Unset = UNSET
         if _context is not UNSET:
@@ -814,6 +846,7 @@ class TaskSetResponse:
             route_source=route_source,
             class_hint=class_hint,
             route=route,
+            delivery_status=delivery_status,
             context=context,
             labels=labels,
             provenance=provenance,
