@@ -568,6 +568,7 @@
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_records_and_gates.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
@@ -1323,7 +1324,7 @@
       ]
     }
   },
-  "digest": "sha256:f90ced791f36459344f002018fc331f138287ca0bb0f7d561aa9cb9c83301e1a",
+  "digest": "sha256:83ce6ea60d574726778d1bf73dc8e65695537a76800fd93eff64a84c48d6afc1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7645,6 +7646,23 @@
         "parametrize"
       ],
       "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
+    },
+    "tests/test_integration_records_and_gates.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.gates",
+        "src.integration.records",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact identity, human decisions and replay safety of primitives 14–19."
     },
     "tests/test_integration_repair.py": {
       "areas": [
