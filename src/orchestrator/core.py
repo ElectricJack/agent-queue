@@ -2052,16 +2052,15 @@ class Orchestrator(
             discovered = await self.plugin_registry.discover_plugins()
             if discovered:
                 logger.info("Discovered %d plugins: %s", len(discovered), discovered)
-            # Feature pause (feature-pauses.md M1): when the memory
-            # subsystem is paused the aq-memory plugin is simply not loaded.
-            # The registry is told *what* to skip; it never mutates the
-            # plugin's DB status, so re-enabling is a config flip + restart.
-            skip_plugins: frozenset[str] = (
-                frozenset() if self.config.memory.enabled else frozenset({"aq-memory", "memory"})
-            )
+            # Knowledge rollout keeps the legacy writer excluded even when
+            # the memory master is enabled. K07 owns its adapter handshake;
+            # skipping preserves installed data and the plugin's DB status.
+            from src.knowledge.legacy import LEGACY_MEMORY_PLUGINS
+
+            skip_plugins = LEGACY_MEMORY_PLUGINS
             if skip_plugins:
                 logger.info(
-                    "Memory subsystem PAUSED (memory.enabled=false) — aq-memory plugin "
+                    "Legacy memory writer excluded pending adapter handshake — aq-memory plugin "
                     "not loaded; L1/L2 prompt tiers empty; reflection off; data "
                     "preserved. See docs/specs/design/feature-pauses.md"
                 )

@@ -3,14 +3,89 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import func, insert
+from sqlalchemy import func, insert, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import knowledge_search, record_link_heads, record_link_versions
+from src.database.tables import knowledge_search, record_link_heads, record_link_versions, tasks
 from src.models import Project, Task, TaskStatus
 from src.records.identity import knowledge_identity
 
 NOW = datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def knowledge_config(**changes):
+    from src.config import KnowledgeConfig
+
+    return KnowledgeConfig(
+        **{"enabled": True, "enabled_projects": ["p", "q"], "writes_enabled": True, **changes}
+    )
+
+
+async def worker_principal(db, name="worker", *, project_id="p", elevated=False, grants=None):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.models import Agent, SessionRecord
+    from src.profiles.capabilities import CapabilityPolicy
+
+    await seed_project(db, project_id)
+    await db.create_agent(Agent(id=name, name=name, profile_id="test-worker"))
+    task_id = None if elevated else f"task-{name}"
+    if task_id:
+        await db.create_task(
+            Task(
+                id=task_id,
+                project_id=project_id,
+                title="Held task",
+                description="",
+                status=TaskStatus.IN_PROGRESS,
+                assigned_agent_id=name,
+                claim_epoch=1,
+            )
+        )
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(claim_epoch=1))
+    await db.create_session(
+        SessionRecord(
+            id=name,
+            project_id=project_id,
+            profile_id="test-worker",
+            harness="codex",
+            provider="fake",
+            name=name,
+            lifecycle="named" if elevated else "pool",
+            work_dir="/tmp/knowledge-fixture",
+            epoch="test",
+            instance_token=f"instance-{name}",
+            started_at=1,
+            task_id=task_id,
+            state="running",
+            agent_id=name,
+            last_claim_epoch=1,
+        )
+    )
+    if grants is None:
+        grants = [
+            "knowledge_create",
+            "knowledge_show",
+            "knowledge_update",
+            "knowledge_history",
+            "knowledge_search",
+            "knowledge_retire",
+            "knowledge_restore",
+            "record_show",
+            "link_create",
+            "link_remove",
+            "link_list",
+        ]
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=grants),
+        session_id=name,
+        session_instance_token=f"instance-{name}",
+        task_id=task_id,
+        project_id=project_id,
+        profile_id="test-worker",
+        elevated=elevated,
+    )
 
 
 def snapshot(**changes):

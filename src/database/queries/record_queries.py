@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, literal, select, union_all
+from sqlalchemy import and_, insert, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     archived_tasks,
     projects,
     record_installation,
+    record_link_heads,
+    record_link_versions,
+    record_requests,
     record_scopes,
     records,
     task_record_link_state,
@@ -30,6 +33,56 @@ class RecordDomainUnavailable(ValueError):
 
 
 class RecordQueryMixin:
+    async def begin_record_request_on(
+        self, *, scope_key, actor_key, operation, idempotency_key, request_sha256, conn
+    ) -> dict:
+        key = dict(
+            scope_key=scope_key,
+            actor_key=actor_key,
+            operation=operation,
+            idempotency_key=idempotency_key,
+        )
+        await conn.execute(
+            pg_insert(record_requests)
+            .values(**key, request_sha256=request_sha256, result={})
+            .on_conflict_do_nothing()
+        )
+        row = await conn.execute(
+            select(record_requests)
+            .where(*(record_requests.c[name] == value for name, value in key.items()))
+            .with_for_update()
+        )
+        return dict(row.mappings().one())
+
+    async def finish_record_request_on(self, receipt: dict, result: dict, *, conn) -> None:
+        keys = ("scope_key", "actor_key", "operation", "idempotency_key")
+        await conn.execute(
+            update(record_requests)
+            .where(*(record_requests.c[name] == receipt[name] for name in keys))
+            .values(result=result)
+        )
+
+    async def current_record_links_on(self, record_id, *, conn, link_ids=()) -> list[dict]:
+        rows = await conn.execute(
+            select(record_link_versions)
+            .join(
+                record_link_heads,
+                and_(
+                    record_link_heads.c.link_id == record_link_versions.c.link_id,
+                    record_link_heads.c.current_version == record_link_versions.c.version,
+                ),
+            )
+            .where(
+                record_link_heads.c.source_record_id == record_id,
+                or_(
+                    record_link_versions.c.removed.is_(False),
+                    record_link_heads.c.link_id.in_(link_ids),
+                ),
+            )
+            .order_by(record_link_heads.c.link_id)
+        )
+        return [dict(row) for row in rows.mappings()]
+
     async def get_record_installation_on(self, *, conn) -> UUID:
         return (await conn.execute(select(record_installation.c.installation_id))).scalar_one()
 

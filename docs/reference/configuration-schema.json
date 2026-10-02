@@ -762,6 +762,128 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "knowledge": {
+      "additionalProperties": false,
+      "default": {
+        "consolidation": {
+          "enabled": false
+        },
+        "context": {
+          "enabled": false
+        },
+        "enabled": false,
+        "enabled_projects": [],
+        "export": {
+          "enabled": false
+        },
+        "extraction": {
+          "enabled": false
+        },
+        "global_enabled": false,
+        "legacy_memory_mode": "disabled",
+        "semantic": {
+          "enabled": false
+        },
+        "ui_enabled": false,
+        "writes_enabled": false
+      },
+      "properties": {
+        "consolidation": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled_projects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "export": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "extraction": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "global_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "legacy_memory_mode": {
+          "default": "disabled",
+          "type": "string"
+        },
+        "semantic": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ui_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "writes_enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "unclassified"
+    },
     "llm": {
       "additionalProperties": false,
       "default": {
@@ -3001,7 +3123,9 @@
       "test_selection",
       "work_graph"
     ],
-    "other": [],
+    "other": [
+      "knowledge"
+    ],
     "restart_required": [
       "api_auth",
       "data_dir",

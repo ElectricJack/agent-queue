@@ -5,14 +5,58 @@ must authorize and validate before using these methods. Exact reads never fall
 back to the current revision. Payload changes are forbidden by database guards.
 """
 
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import knowledge_records, knowledge_revision_payloads, knowledge_revisions
+from src.database.tables import (
+    knowledge_records,
+    knowledge_revision_payloads,
+    knowledge_revisions,
+    knowledge_search,
+)
 
 
 class KnowledgeQueryMixin:
+    async def project_knowledge_search_on(
+        self, record_id, revision_id, scope_key, snapshot, updated_at, *, conn
+    ) -> None:
+        values = {
+            key: snapshot[key]
+            for key in (
+                "title",
+                "summary",
+                "category",
+                "lifecycle",
+                "verification",
+                "valid_until",
+                "recheck_at",
+            )
+        }
+        for key in ("valid_until", "recheck_at"):
+            if values[key] is not None:
+                values[key] = datetime.fromisoformat(values[key])
+        values.update(
+            record_id=record_id,
+            revision_id=revision_id,
+            scope_key=scope_key,
+            updated_at=updated_at,
+            search_vector=func.to_tsvector(
+                "simple",
+                snapshot["title"] + " " + (snapshot["summary"] or "") + " " + snapshot["body"],
+            ),
+        )
+        await conn.execute(
+            pg_insert(knowledge_search)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[knowledge_search.c.record_id],
+                set_=values,
+            )
+        )
+
     async def insert_knowledge_record_on(self, values: dict, *, conn) -> None:
         await conn.execute(insert(knowledge_records).values(**values))
 
