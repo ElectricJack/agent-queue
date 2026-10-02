@@ -31,6 +31,36 @@ def integration() -> None:
     """Inspect and control hierarchical integration trains."""
 
 
+@integration.command("engine-transfer")
+@click.argument("repository_id")
+@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--expected-subject", "expected_subjects", multiple=True,
+              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every root subject.")
+@click.option("--reason", default="", help="Required explanation when applying the transfer.")
+@click.option("--evidence", multiple=True, help="Shadow, scenario and operator approval references.")
+@click.option("--apply", is_flag=True, help="Apply the exact previewed versions; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_engine_transfer(ctx, repository_id, engine, expected_subjects, reason, evidence, apply):
+    """Preview or transfer exclusive root publisher ownership for REPOSITORY_ID."""
+    versions = {}
+    for item in expected_subjects:
+        try:
+            subject_id, version = item.rsplit(":", 1)
+            if not subject_id or int(version) < 0 or subject_id in versions:
+                raise ValueError
+            versions[subject_id] = int(version)
+        except ValueError:
+            raise click.BadParameter("use unique SUBJECT_ID:VERSION with a nonnegative version",
+                                     param_hint="--expected-subject") from None
+    if apply and (not versions or not reason.strip() or (engine == "reconciler" and not evidence)):
+        raise click.UsageError("--apply needs exact subject versions, a reason and cutover evidence")
+    _execute(ctx, "integration_engine_transfer", {
+        "repository_id": repository_id, "engine": engine, "expected_versions": versions,
+        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
+    })
+
+
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")

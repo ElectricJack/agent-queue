@@ -465,7 +465,13 @@ async def publisher_exclusion(db, repository_id):
         if not acquired:
             raise DevelopmentBusy("repository publisher is already running")
         try:
-            yield
+            from src.integration.engine import EngineRefused, RootEngineOwnership
+
+            try:
+                async with RootEngineOwnership(db).operation(repository_id, publisher=True):
+                    yield
+            except EngineRefused as exc:
+                raise DevelopmentBusy(str(exc)) from exc
         finally:
             await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
 
