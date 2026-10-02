@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -1137,4 +1138,199 @@ __all__ = [
     "CleanupExecutionResult",
     "CleanupMaterializationResult",
     "IntegrationCleanupService",
+    "SubjectCleanup",
+    "SubjectCleanupItem",
 ]
+
+
+@dataclass(frozen=True)
+class SubjectCleanupItem:
+    """Retention facts supplied by a published subject's existing inventory.
+
+    The inventory keeps existing branch-discard backups and preserved-repair
+    retention. Failed work is retained until its explicit deadline; it is never
+    deleted merely because a retry counter was exhausted.
+    """
+
+    kind: Literal["remote_ref", "local_ref", "pull_request"]
+    identity: str
+    expected_sha: str
+    successful_source: bool = False
+    failed_at: float | None = None
+    retain_until: float | None = None
+    irreversible: bool = False
+
+    def __post_init__(self):
+        if self.kind not in {"remote_ref", "local_ref", "pull_request"} or not self.identity:
+            raise ValueError("cleanup requires an exact ref or PR identity")
+        if len(self.expected_sha) != 40 or any(
+            c not in "0123456789abcdef" for c in self.expected_sha
+        ):
+            raise ValueError("cleanup requires a full expected SHA")
+        if self.kind != "pull_request" and not self.identity.startswith("refs/"):
+            raise ValueError("cleanup requires a fully qualified ref")
+
+
+class SubjectCleanup:
+    """Primitive 20 over shared Git/journal/authority ports, beside legacy cleanup.
+
+    ``inventory`` returns immutable cleanup identities after proving publication
+    from existing receipts. ``held`` rechecks live writer/reference holds.
+    ``close_pr`` must bind repository, PR identity and expected head, refusing a
+    moved PR. Each delete uses an expected-old lease and an intent recorded
+    before I/O. A new subject visit supplies the retry/backoff policy.
+    """
+
+    def __init__(self, gitops, *, inventory, held, close_pr=None, clock=time.time):
+        self.gitops = gitops
+        self.inventory, self.held, self.close_pr = inventory, held, close_pr
+        self.clock = clock
+
+    def bind(self, ports):
+        from src.integration.subjects import Primitive
+
+        ports.bind(Primitive.CLEANUP, self)
+
+    async def __call__(self, subject, args):
+        from dataclasses import asdict
+
+        from src.integration.development import DevelopmentBusy
+        from src.integration.gitops import operation_key
+        from src.integration.ownership import BranchOwnershipError
+        from src.integration.subjects import PrimitiveOutcome, SubjectPhase
+
+        p = args.primitive
+        if subject.phase not in {SubjectPhase.PUBLISHED, SubjectPhase.CLEANING}:
+            return PrimitiveOutcome.unknown(p, "cleanup_requires_published_subject")
+        pending, retained, deleted, retention_deadlines = [], [], [], []
+        try:
+            repo = await self.gitops._repository(subject)
+            async with self.gitops.exclusion(repo.repository_id):
+                await self.gitops.authority(subject)
+                items = await self.inventory(subject)
+                for item in items:
+                    if item.irreversible:
+                        return PrimitiveOutcome(primitive=p, outcome="irreversible_marker",
+                                                detail={"item": asdict(item)})
+                for item in items:
+                    identity = asdict(item)
+                    key = operation_key(subject, p, identity)
+                    if await self.gitops.journal.read(subject, key + ":clean"):
+                        deleted.append(item.identity)
+                        continue
+                    deadline = max(item.retain_until or 0, (
+                        item.failed_at + args.retain_failed_seconds
+                        if item.failed_at is not None else 0
+                    ))
+                    if (item.identity in {subject.target_ref, f"refs/heads/{repo.default_branch}"}
+                            or item.successful_source and not args.delete_successful_sources
+                            or self.clock() < deadline):
+                        retained.append(item.identity)
+                        if self.clock() < deadline:
+                            retention_deadlines.append(deadline)
+                        continue
+                    if await self.held(subject, item):
+                        pending.append({"item": item.identity, "reason": "live_reference"})
+                        continue
+                    # Reconcile an ambiguous deletion even after the write
+                    # budget was exhausted. Reads are not another attempt.
+                    if item.kind == "remote_ref":
+                        absent = await self.gitops.remote(repo, item.identity) is None
+                    elif item.kind == "local_ref":
+                        exists = await self.gitops.git.aref_exists(str(repo.store), item.identity)
+                        if exists is None:
+                            pending.append({"item": item.identity, "reason": "local_ref_unknown"})
+                            continue
+                        absent = not exists
+                    else:
+                        absent = False
+                    if absent:
+                        await self.gitops.journal.append(
+                            subject, key + ":clean", p, "clean", identity
+                        )
+                        deleted.append(item.identity)
+                        continue
+                    attempt = 0
+                    while await self.gitops.journal.read(subject, f"{key}:try:{attempt}"):
+                        attempt += 1
+                    if attempt >= args.max_tries:
+                        pending.append({"item": item.identity, "reason": "retry_exhausted"})
+                        continue
+                    await self.gitops.authority(subject)
+                    if item.kind != "pull_request" and not await self.gitops.authority.unowned(
+                        repo.repository_id, item.identity
+                    ):
+                        pending.append({"item": item.identity, "reason": "writer_owned"})
+                        continue
+                    await self.gitops.journal.append(subject, f"{key}:try:{attempt}", p,
+                                                     "prepared", identity)
+                    # Repeat external holds after the durable intent is written.
+                    await self.gitops.authority(subject)
+                    if await self.held(subject, item):
+                        pending.append({"item": item.identity, "reason": "live_reference"})
+                        continue
+                    try:
+                        async with self.gitops.authority.mutation(
+                            subject,
+                            unowned_ref=item.identity if item.kind != "pull_request" else None,
+                        ) as deadline:
+                            await self._apply(repo, item, deadline)
+                    except Exception as exc:
+                        pending.append({"item": item.identity, "reason": str(exc),
+                                        "attempts": attempt + 1})
+                        continue
+                    await self.gitops.journal.append(subject, key + ":clean", p, "clean", identity)
+                    deleted.append(item.identity)
+            return PrimitiveOutcome(
+                primitive=p,
+                outcome="pending" if pending or retention_deadlines else "clean",
+                detail={
+                    "pending": pending, "retained": retained, "deleted": deleted,
+                    "retention_due_at": min(retention_deadlines) if retention_deadlines else None,
+                },
+            )
+        except (GitError, BranchOwnershipError, DevelopmentBusy, ValueError) as exc:
+            return PrimitiveOutcome.unknown(p, str(exc))
+
+    async def _apply(self, repo, item, deadline):
+        from src.integration.gitops import branch
+        from src.integration.ownership import StaleFence
+
+        if item.kind == "remote_ref":
+            actual = await self.gitops.remote(repo, item.identity)
+            if actual is not None:
+                if actual != item.expected_sha:
+                    raise StaleFence("cleanup ref moved")
+                try:
+                    await self.gitops.git.adelete_repository_ref(
+                        str(repo.store), repository=repo.binding,
+                        branch=branch(item.identity), expected_old_oid=item.expected_sha,
+                        authority_deadline=deadline,
+                    )
+                except Exception:
+                    if await self.gitops.remote(repo, item.identity) is not None:
+                        raise
+                if await self.gitops.remote(repo, item.identity) is not None:
+                    raise StaleFence("cleanup delete is unconfirmed")
+        elif item.kind == "local_ref":
+            exists = await self.gitops.git.aref_exists(str(repo.store), item.identity)
+            if exists is None:
+                raise StaleFence("cleanup local ref unknown")
+            if exists:
+                actual = await self.gitops.git.arev_parse(str(repo.store), item.identity)
+                if actual != item.expected_sha:
+                    raise StaleFence("cleanup local ref moved")
+                if item.identity.startswith("refs/heads/"):
+                    await self.gitops.git.adelete_local_ref_exact(
+                        str(repo.store), ref=item.identity, expected_old_oid=item.expected_sha,
+                    )
+                else:
+                    # Construction pins live under refs/aq, whereas the legacy
+                    # local-deletion helper accepts heads only. Keep Git's exact
+                    # old-object comparison for these retained-store refs too.
+                    await self.gitops.run(repo, "check-ref-format", item.identity)
+                    await self.gitops.run(
+                        repo, "update-ref", "-d", item.identity, item.expected_sha
+                    )
+        elif self.close_pr is None or not await self.close_pr(repo, item):
+            raise StaleFence("PR close is unavailable or unconfirmed")
