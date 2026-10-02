@@ -437,12 +437,17 @@ async def test_output_limit_is_enforced_while_process_is_running(tmp_path):
 
 
 def _descendant_executable(tmp_path: Path) -> tuple[Path, Path]:
+    # The pid file is published with a rename: the tests act as soon as it exists, and a
+    # SIGTERM between open() and the implicit close would otherwise leave it empty.
     pid_file = tmp_path / "processes.json"
+    staging = tmp_path / "processes.json.tmp"
     executable = _write_executable(
         tmp_path / "gh",
         "import json, os, subprocess, time\n"
         "child = subprocess.Popen(['/usr/bin/python3', '-c', 'import time; time.sleep(300)'])\n"
-        f"open({str(pid_file)!r}, 'w').write(json.dumps([os.getpid(), child.pid]))\n"
+        f"with open({str(staging)!r}, 'w') as handle:\n"
+        "    handle.write(json.dumps([os.getpid(), child.pid]))\n"
+        f"os.replace({str(staging)!r}, {str(pid_file)!r})\n"
         "time.sleep(300)\n",
     )
     return executable, pid_file

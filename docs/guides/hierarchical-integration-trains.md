@@ -665,7 +665,9 @@ batch ancestry and rejects unsealed side branches before accepting the aggregate
 Continuous repair stages retain finite time/attempt budgets. At exhaustion AQ
 stops and proves the exact old writer, retains its checkout/index/dirty work,
 fences and releases its pool claim, and files a fresh operation-bound stage.
-Incomplete handoffs are retried by the reconciler. Old counters and history stay
+Incomplete handoffs are retried by the reconciler, except for a delegate an
+operator paused with `aq task pause`: it stays paused, even through an explicit
+dispatch, until `aq task resume`. Old counters and history stay
 visible. Periodic sweeps continue after the settling window is cleared, so a
 released batch does not need another review event to schedule the next batch.
 

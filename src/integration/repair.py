@@ -36,6 +36,7 @@ from src.database.tables import (
     sessions,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -95,6 +96,17 @@ def _unfinished_candidate_publication(batch_id):
     ).exists()
 
 
+def _operator_held(task_id):
+    """``aq task pause`` wrote a hold on *task_id*; only ``aq task resume`` lifts it.
+
+    A held delegate and a never-launched one are both ``PAUSED`` with no
+    timer, so the status alone cannot tell them apart.
+    """
+    return select(task_metadata.c.task_id).where(
+        task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+    ).exists()
+
+
 class _RepairInvariant(ValueError):
     """Persisted repair identity is internally inconsistent."""
 
@@ -120,7 +132,11 @@ class RepairService:
         self._archive_cursor: str | None = None
 
     async def pending_dispatches(self, *, after=None, limit=20):
-        """Replay incomplete continuous-policy handoffs through the command path."""
+        """Replay incomplete continuous-policy handoffs through the command path.
+
+        A delegate an operator paused is not replayed: the hold is the
+        operator's decision, and ``aq task resume`` is what releases it.
+        """
         stage = integration_repair_stages
         operation = integration_repair_operations
         statement = select(stage.c.operation_id, stage.c.ordinal).select_from(
@@ -134,7 +150,8 @@ class RepairService:
             or_(
                 and_(
                     stage.c.policy["on_exhausted"].as_string() == "continue",
-                    or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
+                    or_(stage.c.repair_task_id.is_(None),
+                        (tasks.c.status == "PAUSED") & ~_operator_held(stage.c.repair_task_id),
                         (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
                 ),
                 # ``aq integration reopen-collection`` dispatches its stage
@@ -1714,7 +1731,13 @@ class RepairService:
                         | {"starting_sha": progress["sha"], "dossier": dossier},
                     ),
                 ))
-            if reserved and task["status"] == TaskStatus.PAUSED.value:
+            # The fence is handed over either way; an operator hold keeps the
+            # delegate PAUSED until ``aq task resume`` restores it to READY.
+            if (
+                reserved
+                and task["status"] == TaskStatus.PAUSED.value
+                and await self.db._read_manual_pause(conn, repair_task_id) is None
+            ):
                 transition = await self.db._apply_transition(
                     conn,
                     repair_task_id,

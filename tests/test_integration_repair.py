@@ -2211,6 +2211,66 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
     assert origins == []
 
 
+@pytest.mark.parametrize("held", [False, True])
+async def test_continuous_replay_never_releases_operator_held_delegate(db, held):
+    """An operator hold on a continuous delegate stays binding until resume."""
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["parent"]["repair"]["on_exhausted"] = "continue"
+    await _seed_parent_operation(db, policy=policy)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=4,
+                handoff_state="attached",
+                session_id="old-session",
+                workspace_id="old-workspace",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    handoff = {"confirmed": False}
+    service = RepairService(db, confirm_handoff=lambda _owner: handoff["confirmed"])
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    # The collector has not confirmed it stopped: the delegate is filed but
+    # never launched, so the continuation sweep must keep replaying it.
+    interrupted = await service.dispatch("operation", 0)
+    assert interrupted["outcome"] == "busy", interrupted
+    repair_task_id = interrupted["repair_task_id"]
+    assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
+    pending = [{"operation_id": "operation", "ordinal": 0}]
+    assert await service.pending_dispatches() == pending
+    handoff["confirmed"] = True
+    if not held:
+        dispatched = await service.dispatch("operation", 0)
+        assert dispatched["outcome"] == "dispatched", dispatched
+        assert (await db.get_task(repair_task_id)).status is TaskStatus.READY
+        assert await service.pending_dispatches() == []
+        return
+
+    await db.pause_task(repair_task_id)
+    assert await service.pending_dispatches() == []
+    # An explicit dispatch may hand the fence over; it never lifts the hold.
+    dispatched = await service.dispatch("operation", 0)
+    assert dispatched["outcome"] == "dispatched", dispatched
+    assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
+    assert await db.get_task_meta(repair_task_id, "manual_pause") is not None
+    assert (await service.dispatch("operation", 0))["outcome"] == "already_dispatched"
+    assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
+    assert await service.pending_dispatches() == []
+
+    await db.resume_task(repair_task_id)
+    assert (await db.get_task(repair_task_id)).status is TaskStatus.READY
+    assert await db.get_task_meta(repair_task_id, "manual_pause") is None
+    assert await service.pending_dispatches() == []
+
+
 async def test_resumed_event_redispatches_established_repair_delegate(db):
     """A safely reserved delegate remains the exact writer after human resume."""
     from src.integration.repair import RepairService
