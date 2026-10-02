@@ -1073,6 +1073,7 @@ class HierarchyQueryMixin:
         branch_policy: str | None = None,
         abandon_undelivered: bool = False,
         delivery=None,
+        obsolete_integration_delegate: bool = False,
     ) -> bool:
         """Fence canonical hierarchy/lifecycle writers for enabled projects.
 
@@ -1142,6 +1143,7 @@ class HierarchyQueryMixin:
                 mode=mode,
                 abandon_undelivered=abandon_undelivered,
                 delivery=delivery,
+                obsolete_integration_delegate=obsolete_integration_delegate,
             )
         if mode not in {"hierarchy", "train"}:
             return False
