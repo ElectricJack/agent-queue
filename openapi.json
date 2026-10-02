@@ -15860,6 +15860,53 @@
         }
       }
     },
+    "/api/task/object-loop-inputs": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_loop_inputs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectLoopInputsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectLoopInputsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/object-loop-reconcile": {
       "post": {
         "tags": [
@@ -39953,6 +40000,57 @@
           "approved"
         ],
         "title": "ObjectCheckpointReadResponse"
+      },
+      "ObjectLoopInputsRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 32
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ObjectLoopInputsRequest"
+      },
+      "ObjectLoopInputsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "starts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Starts"
+          },
+          "loops": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Loops"
+          }
+        },
+        "type": "object",
+        "required": [
+          "starts",
+          "loops"
+        ],
+        "title": "ObjectLoopInputsResponse"
       },
       "ObjectLoopReconcileRequest": {
         "properties": {

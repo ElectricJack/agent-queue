@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-141 commands are registered.
+142 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -165,6 +165,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`object_checkpoint_read`](object_checkpoint_read.md) | Object Checkpoint Read | Coordinate a bounded, durable object evaluation round. |
+| [`object_loop_inputs`](object_loop_inputs.md) | Object Loop Inputs | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |

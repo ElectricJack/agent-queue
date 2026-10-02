@@ -10,6 +10,7 @@ from __future__ import annotations
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
     "object_loop_start": "task",
+    "object_loop_inputs": "task",
     "object_loop_reconcile": "task",
     "object_score_record": "task",
     "object_checkpoint_read": "task",

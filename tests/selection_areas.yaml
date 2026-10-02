@@ -75,7 +75,7 @@ areas:
       - tests/test_task_graph_live_events.py
   - id: object-loop
     description: "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion."
-    match: [tests/test_object_loop.py]
+    match: [tests/test_object_loop.py, tests/test_object_loop_playbook.py]
   - id: formulas
     description: "Formulas: vault formula parsing, extends/var resolution and chain hashes, provenance in the creation transaction, formula list/show/cook commands, doctor checks and statement budgets."
     match:
