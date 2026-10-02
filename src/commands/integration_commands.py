@@ -1269,6 +1269,43 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
+        """Reopen a parent collection ``cancel-preserving`` stopped, in its own episode."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReopenCollectionArgs
+        from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
+
+        try:
+            request = IntegrationReopenCollectionArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid collection reopen request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        repair = self._integration_repair_service()
+
+        async def dispatch(operation_id: str, stage: int) -> dict:
+            return await repair.dispatch(operation_id, stage)
+
+        result = await CancelledCollectionRecovery(
+            self.db, self._integration_promotion_service(), dispatch=dispatch
+        ).run(
+            request.task_id,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_reopen", "reopened", "nothing_to_reopen"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
     async def _cmd_integration_rebind_reused_identity(self, args: dict) -> dict:
         """Prove a task's inherited integration identity; rebind it once settled."""
         from pydantic import ValidationError

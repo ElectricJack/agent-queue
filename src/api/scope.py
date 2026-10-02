@@ -180,6 +180,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_materialize_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_reopen_collection",
         "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",

@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import delete, insert, or_, select, tuple_, update
+from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -131,9 +131,19 @@ class RepairService:
             operation.c.state.in_(("active", "escalated")),
             stage.c.state == "active",
             ~((stage.c.ordinal == 0) & _unfinished_candidate_publication(operation.c.batch_id)),
-            stage.c.policy["on_exhausted"].as_string() == "continue",
-            or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
-                (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
+            or_(
+                and_(
+                    stage.c.policy["on_exhausted"].as_string() == "continue",
+                    or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
+                        (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
+                ),
+                # ``aq integration reopen-collection`` dispatches its stage
+                # itself; whatever the policy, retry a dispatch that failed.
+                and_(
+                    stage.c.repair_task_id.is_(None),
+                    stage.c.dossier["reopened"].as_string().is_not(None),
+                ),
+            ),
         ).order_by(stage.c.operation_id, stage.c.ordinal).limit(limit)
         if after is not None:
             statement = statement.where(tuple_(stage.c.operation_id, stage.c.ordinal) > after)
@@ -330,6 +340,16 @@ class RepairService:
                             )
                         )
                     ).mappings().one_or_none()
+            # ``aq integration reopen-collection`` can return a cancelled
+            # parent collection to life with its last stage still cancelled.
+            # That stage has no writer to continue, so the next conflict gets
+            # a fresh stage of its own instead of a stale refusal.
+            reopened = bool(
+                active_stage is not None
+                and active_stage["state"] == "cancelled"
+                and operation["target_kind"] == "parent"
+                and operation["state"] in {"active", "escalated"}
+            )
             # The shipped parent policy passes its operation key on a merge
             # conflict. Resolve that alias to the exact durable intent, never
             # treat the operation ID itself as failure evidence. Older pinned
@@ -338,11 +358,21 @@ class RepairService:
                 trigger_id = await self._resolve_parent_conflict_trigger_on(
                     conn,
                     dict(operation),
-                    dict(active_stage) if active_stage is not None else None,
+                    dict(active_stage) if active_stage is not None and not reopened else None,
                     starting_sha=starting_sha,
                 )
                 if trigger_id is None:
                     return {"outcome": "stale", "operation_id": operation_id}
+            if reopened:
+                return await self._start_fresh_parent_stage_on(
+                    conn,
+                    dict(operation),
+                    dict(active_stage),
+                    starting_sha=starting_sha,
+                    trigger_id=trigger_id,
+                    project_id=project_id,
+                    now=activated_at,
+                )
             if existing is not None:
                 if active_stage is None:
                     return {"outcome": "invariant_error", "operation_id": operation_id}
@@ -424,6 +454,201 @@ class RepairService:
             await self.db._notify_settled(continuation_transition.settled)
             await self.db._notify_ready(continuation_transition.ready)
         return continuation_result
+
+    async def _start_fresh_parent_stage_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        cancelled: dict[str, Any],
+        *,
+        starting_sha: str,
+        trigger_id: str,
+        project_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        """Open a writerless stage for a reopened collection's next conflict."""
+        stale = {"outcome": "stale", "operation_id": operation["id"]}
+        conflict = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(integration_promotion_intents.c.id == trigger_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"]).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            conflict is None
+            or parent is None
+            or conflict["state"] != "conflict"
+            or conflict["expected_target"] != starting_sha
+            or conflict["operation_key"] != operation["id"]
+            or conflict["fence_owner_id"] != operation["id"]
+            or conflict["target_task_id"] != parent["id"]
+            or conflict["project_id"] != project_id
+            or parent["status"] != TaskStatus.PAUSED.value
+        ):
+            return stale
+        ordinal = int(
+            (
+                await conn.execute(
+                    select(func.max(integration_repair_stages.c.ordinal)).where(
+                        integration_repair_stages.c.operation_id == operation["id"]
+                    )
+                )
+            ).scalar_one()
+        ) + 1
+        plan = await self.fresh_parent_stage_plan_on(conn, operation, dict(conflict), ordinal)
+        if isinstance(plan, str):
+            return stale
+        row = await self.fresh_parent_stage_row_on(
+            conn,
+            operation,
+            dict(conflict),
+            plan,
+            now=now,
+            extra={
+                "previous_stage": {
+                    "ordinal": int(cancelled["ordinal"]),
+                    "state": cancelled["state"],
+                    "trigger_id": cancelled["trigger_id"],
+                    "starting_sha": cancelled["starting_sha"],
+                },
+            },
+        )
+        await conn.execute(insert(integration_repair_stages).values(**row))
+        advanced = await conn.execute(
+            update(integration_repair_operations)
+            .where(
+                integration_repair_operations.c.id == operation["id"],
+                integration_repair_operations.c.state == operation["state"],
+                integration_repair_operations.c.active_stage == cancelled["ordinal"],
+            )
+            .values(
+                active_stage=ordinal,
+                state="active" if ordinal == 0 else "escalated",
+                updated_at=now,
+            )
+        )
+        if advanced.rowcount != 1:
+            raise _RepairInvariant("repair operation changed while opening a fresh stage")
+        return self._start_value(row, outcome="started")
+
+    async def fresh_parent_stage_plan_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        conflict: dict[str, Any],
+        ordinal: int,
+    ) -> dict[str, Any] | str:
+        """The frozen budget of a writerless parent stage bound to *conflict*.
+
+        Used where a parent collection has no live stage to continue: the
+        stage ``aq integration reopen-collection`` opens, and the next conflict
+        of a reopened collection.  Returns why when the operation's frozen
+        route cannot repair *conflict*.
+        """
+        try:
+            context = await self._start_context_on(
+                conn,
+                operation,
+                starting_sha=conflict["expected_target"],
+                trigger_id=conflict["id"],
+            )
+        except _RepairInvariant as exc:
+            return f"the operation's frozen repair route is unusable: {exc}"
+        if context is None:
+            return f"conflict {conflict['id']} does not match the operation's frozen route"
+        _policy, boundary, subject = context
+        repair = boundary.repair
+        if ordinal == 0:
+            intelligence_class = (
+                boundary.primary_intelligence_class or repair.debug_intelligence_class
+            )
+            timeout, limit = repair.primary_seconds, repair.primary_attempts
+        else:
+            intelligence_class = repair.debug_intelligence_class
+            timeout, limit = repair.debug_seconds, repair.debug_attempts
+        return {
+            "ordinal": ordinal,
+            "intelligence_class": intelligence_class,
+            "timeout_seconds": timeout,
+            "attempt_limit": limit,
+            "boundary": boundary,
+            "subject": subject,
+        }
+
+    async def fresh_parent_stage_row_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        conflict: dict[str, Any],
+        plan: dict[str, Any],
+        *,
+        now: float,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """A writerless stage row bound to *conflict*, shaped like a debug escalation's.
+
+        Its dossier carries the continuation marker, so a parent policy's
+        literal stage-zero dispatch selects it (:meth:`_effective_dispatch_stage_on`).
+        """
+        ordinal = int(plan["ordinal"])
+        starting_sha = conflict["expected_target"]
+        deadline_at = now + plan["timeout_seconds"]
+        dossier = await self._initial_dossier_on(
+            conn,
+            operation=operation,
+            subject=plan["subject"],
+            starting_sha=starting_sha,
+            trigger_id=conflict["id"],
+            boundary=plan["boundary"],
+            started_at=now,
+            deadline_at=deadline_at,
+        )
+        dossier["budget"] = {
+            "ordinal": ordinal,
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempt_limit": plan["attempt_limit"],
+            "attempts": 0,
+        }
+        dossier["current_conflict"] = {
+            "intent_id": conflict["id"],
+            "source_task_id": conflict["source_task_id"],
+            "source_head": conflict["source_head"],
+            "source_base": conflict["source_base"],
+            "expected_target": starting_sha,
+            "diagnostics": conflict["conflict_diagnostics"] or {},
+        }
+        dossier["continuations"] = [
+            {"intent_id": conflict["id"], "starting_sha": starting_sha, "recorded_at": now}
+        ]
+        dossier.update(extra or {})
+        return {
+            "operation_id": operation["id"],
+            "ordinal": ordinal,
+            "policy": plan["boundary"].repair.model_dump(mode="json"),
+            "intelligence_class": plan["intelligence_class"],
+            # Deprecated column: the router chooses the route from the class hint.
+            "profile_id": None,
+            "repair_task_id": None,
+            "writer_kind": None,
+            "starting_sha": starting_sha,
+            "trigger_id": conflict["id"],
+            "current_subject": plan["subject"],
+            "deadline_event_id": f"repair-deadline-{operation['id']}-{ordinal}",
+            "success_subject": None,
+            "success_evidence_id": None,
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempts": 0,
+            "dossier": dossier,
+            "state": "active",
+        }
 
     async def _resolve_parent_conflict_trigger_on(
         self,

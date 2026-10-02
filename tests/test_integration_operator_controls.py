@@ -507,6 +507,72 @@ async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypat
     run.assert_not_awaited()
 
 
+async def test_reopen_collection_runs_under_the_derived_operator_label(db, monkeypatch):
+    from src.models import Task
+
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description=""))
+    run = AsyncMock(
+        return_value={"outcome": "would_reopen", "task_id": "epic", "head_sha": "a" * 40}
+    )
+    constructed = []
+
+    class _Recovery:
+        def __init__(self, database, promotion, *, dispatch=None):
+            constructed.append((database, promotion, dispatch))
+            self.run = run
+
+    dispatched = []
+
+    class _Repair:
+        async def dispatch(self, operation_id, stage):
+            dispatched.append((operation_id, stage))
+            return {"outcome": "dispatched"}
+
+    monkeypatch.setattr(
+        "src.integration.cancelled_collection_recovery.CancelledCollectionRecovery", _Recovery
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(promotion_service="promotion", repair_service=_Repair())
+
+    local = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert (local["success"], local["outcome"], local["dry_run"]) == (
+        True, "would_reopen", True,
+    )
+    [(database, promotion, dispatch)] = constructed
+    assert (database, promotion) == (db, "promotion")
+    # A fresh repair stage is dispatched through the daemon's repair service.
+    assert await dispatch("op", 2) == {"outcome": "dispatched"}
+    assert dispatched == [("op", 2)]
+    assert run.await_args.args == ("epic",)
+    assert run.await_args.kwargs["operator_id"] == "human:local-operator"
+
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_reopen_collection(
+            {"task_id": "epic", "dry_run": False, "expected_head_sha": "a" * 40,
+             "reason": "cancelled the whole collection"}
+        )
+    assert run.await_args.kwargs == {
+        "dry_run": False,
+        "expected_head_sha": "a" * 40,
+        "reason": "cancelled the whole collection",
+        "operator_id": "supervisor session:super-p",
+    }
+
+    run.reset_mock()
+    invalid = await handler._cmd_integration_reopen_collection(
+        {"task_id": "epic", "dry_run": False}
+    )
+    assert invalid["outcome"] == "invalid"
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert refused["outcome"] == "unauthorized"
+    with principal_context(_session("super-other", "other")):
+        foreign = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert foreign["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 async def test_adopt_legacy_deliveries_runs_under_the_derived_operator_label(db, monkeypatch):
     run = AsyncMock(
         return_value={

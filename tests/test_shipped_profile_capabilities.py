@@ -153,6 +153,9 @@ def test_supervisor_holds_every_operator_integration_control():
     # Its twin for a completed child its parent never assembled (vivid-ridge).
     assert "integration_redrive_child" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_redrive_child" in granted
+    # Reopening a parent collection cancel-preserving stopped (agile-harbor).
+    assert "integration_reopen_collection" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_reopen_collection" in granted
     # Closing an open PR only on Git proof that its work landed (fresh-willow-73).
     assert "integration_close_delivered_pr" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_close_delivered_pr" in granted
