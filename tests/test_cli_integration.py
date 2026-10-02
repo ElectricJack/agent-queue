@@ -242,6 +242,22 @@ def _client(result):
             {"task_id": "repair-t", "dry_run": False, "expected_head_sha": "a" * 40},
         ),
         (
+            ["rebind-detached-repair", "op-1"],
+            "integration_rebind_detached_repair",
+            {"operation_id": "op-1", "dry_run": True},
+        ),
+        (
+            [
+                "rebind-detached-repair", "op-1", "--apply", "--stage", "7",
+                "--remote-head", "a" * 40, "--reason", "frozen head unpublished",
+            ],
+            "integration_rebind_detached_repair",
+            {
+                "operation_id": "op-1", "dry_run": False, "expected_stage": 7,
+                "expected_remote_head_sha": "a" * 40, "reason": "frozen head unpublished",
+            },
+        ),
+        (
             [
                 "rebind-reused-identity", "--task-id", "t", "--apply",
                 "--origin-id", "o1", "--origin-id", "o2",
@@ -448,6 +464,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
+        "integration_rebind_detached_repair",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -468,6 +485,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "redrive-child",
         "rebind-reused-identity",
         "rebind-repair",
+        "rebind-detached-repair",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
@@ -487,6 +505,21 @@ def test_rebind_repair_apply_requires_previewed_head_before_transport():
 
     assert result.exit_code == 2
     assert "--apply requires --head from dry-run" in result.output
+    client.execute.assert_not_called()
+
+
+def test_rebind_detached_repair_apply_requires_previewed_identity_before_transport():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "rebound"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "integration", "rebind-detached-repair", "op-1", "--apply",
+            "--remote-head", "a" * 40, "--reason", "frozen head unpublished",
+        ])
+
+    assert result.exit_code == 2
+    assert "--apply requires --stage, --remote-head and --reason" in result.output
     client.execute.assert_not_called()
 
 

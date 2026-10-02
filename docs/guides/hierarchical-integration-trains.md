@@ -30,6 +30,30 @@ records the reservation under the current intent; the attached repair session
 then pushes with its current fence and closes. If the writer has stopped,
 recover its attachment through the existing repair lifecycle first.
 
+A parent debug stage can be frozen on a commit the parent branch never
+received: its retained handoff bound a stopped writer's local head, so every
+delegate fails admission with `slot_reset_failed` ("repair branch no longer
+descends from its frozen starting commit") and its `stage-exhausted` trigger
+cannot resolve the open conflict. The same operators can rebind that detached
+stage to the conflict at the published head:
+
+```bash
+aq integration rebind-detached-repair OPERATION_ID
+aq integration rebind-detached-repair OPERATION_ID --apply \
+    --stage STAGE --remote-head PUBLISHED_SHA --reason "..."
+```
+
+Pass the `stage` and `remote_head_sha` the dry run reported. The command
+refuses unless the writer is detached and unclaimed, the stage is within its
+unchanged deadline and attempts, the published head is the conflict's
+expected target, and the frozen head is an unpublished descendant of it. Every
+receipt must also sit in the published history. Apply changes only the stage's
+starting commit, trigger and subject, and records the previous values in the
+dossier's `detached_rebinds`. The branch, fence, budget, intent and gates are
+left as they were. The same delegate is then readied, and it resolves the
+conflict through the normal fenced publication path. Design:
+[detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
+
 The command synopsis used below is:
 
 ```text

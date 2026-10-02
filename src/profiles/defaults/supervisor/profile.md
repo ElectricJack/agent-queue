@@ -133,6 +133,7 @@ its outbox; transport failures never need a new author turn.
     "integration_migrate_provenance",
     "integration_rebind_reused_identity",
     "integration_rebind_repair",
+    "integration_rebind_detached_repair",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",

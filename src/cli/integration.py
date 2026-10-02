@@ -662,6 +662,44 @@ def integration_rebind_repair(
     _execute(ctx, "integration_rebind_repair", args)
 
 
+@integration.command("rebind-detached-repair")
+@click.argument("operation_id")
+@click.option("--dry-run/--apply", default=True, help="Prove only, or rebind the proven stage.")
+@click.option("--stage", "expected_stage", type=int, help="Stage ordinal reported by dry-run.")
+@click.option(
+    "--remote-head", "expected_remote_head_sha",
+    help="Published parent head reported by dry-run; required with --apply.",
+)
+@click.option("--reason", help="Why the stage is rebound; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_rebind_detached_repair(
+    ctx: click.Context,
+    operation_id: str,
+    dry_run: bool,
+    expected_stage: int | None,
+    expected_remote_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Rebind OPERATION_ID's detached debug stage to its conflict at the published head.
+
+    For a parent repair whose stage is frozen on a commit the parent branch never
+    received, so no delegate can be admitted. Apply moves only the stage's
+    starting commit and trigger, keeps its deadline, attempts and fence, and
+    readies the same delegate. Nothing is pushed or recorded as delivered.
+    """
+    if not dry_run and not (expected_stage is not None and expected_remote_head_sha and reason):
+        raise click.UsageError("--apply requires --stage, --remote-head and --reason")
+    args: dict[str, Any] = {"operation_id": operation_id, "dry_run": dry_run}
+    if expected_stage is not None:
+        args["expected_stage"] = expected_stage
+    if expected_remote_head_sha is not None:
+        args["expected_remote_head_sha"] = expected_remote_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_rebind_detached_repair", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.option("--archive-obsolete", is_flag=True,
