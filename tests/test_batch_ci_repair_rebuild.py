@@ -4,7 +4,7 @@
 import subprocess
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import false, insert, select, update
 from tests.test_integration_candidates import (
     db,
     _make_origin,
@@ -14,6 +14,7 @@ from tests.test_integration_candidates import (
     _CrashOnce,
     _LocalPushGit,
     _AuditForge,
+    _policy,
 )
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
@@ -27,6 +28,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
+    integration_candidate_publications,
     integration_candidate_revisions,
     integration_repair_stages,
     tasks,
@@ -438,3 +440,118 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
         db, data_dir=tmp_path / "promotion-data", git_manager=GitManager()
     ).prepare("batch", 2)
     assert promotion.outcome == "ci_missing"
+
+
+async def _publication_case(db, tmp_path, *, crash_hook=None):
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    policy = _policy()
+    policy["root"]["repair"]["on_exhausted"] = "continue"
+    await _seed_batch(db, members=members, base_sha=base, policy=policy)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    return CandidateService(
+        db, data_dir=tmp_path / "data", git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(), app_client=app, clock=lambda: 110,
+        crash_hook=crash_hook,
+    )
+
+
+async def test_stage_zero_dispatch_waits_through_candidate_publication(db, tmp_path, monkeypatch):
+    observed = []
+
+    async def interleave(point):
+        if point not in {"before_publication", "after_candidate_push", "after_audit_pr_create"}:
+            return
+        observed.append(point)
+        assert await service.repair.pending_dispatches() == []
+        dispatched = await service.repair.dispatch("repair-batch-batch", 0)
+        assert dispatched["outcome"] == "stale"
+        async with db._engine.connect() as conn:
+            owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+        assert owner["owner_role"] == "collector"
+
+    service = await _publication_case(db, tmp_path, crash_hook=interleave)
+    publish = service._publish
+
+    async def checked_publish(*args):
+        await interleave("before_publication")
+        return await publish(*args)
+
+    monkeypatch.setattr(service, "_publish", checked_publish)
+    built = await service.build("batch")
+    assert built.outcome == "built"
+    assert observed == ["before_publication", "after_candidate_push", "after_audit_pr_create"]
+    assert await service.repair.pending_dispatches() == [
+        {"operation_id": "repair-batch-batch", "ordinal": 0},
+    ]
+    dispatched = await service.repair.dispatch("repair-batch-batch", 0)
+    assert dispatched["repair_task_id"]
+
+
+
+async def _legacy_unfinished_writer(db, tmp_path, monkeypatch):
+    service = await _publication_case(
+        db, tmp_path, crash_hook=_CrashOnce("after_candidate_push"),
+    )
+    with pytest.raises(RuntimeError, match="crash at after_candidate_push"):
+        await service.build("batch")
+    # Reproduce the old dispatch behavior on a genuinely unfinished journal.
+    with monkeypatch.context() as patch:
+        patch.setattr("src.integration.repair._unfinished_candidate_publication", lambda _: false())
+        dispatched = await service.repair.dispatch("repair-batch-batch", 0)
+    async with db._engine.connect() as conn:
+        revision = (await conn.execute(select(integration_candidate_revisions))).mappings().one()
+    return service, dispatched["repair_task_id"], revision["head_sha"]
+
+
+@pytest.mark.parametrize("publication_state", ["reserved", "ref_published", "pr_reserved"])
+async def test_completed_unchanged_writer_returns_unfinished_publication(
+    db, tmp_path, monkeypatch, publication_state
+):
+    service, task_id, head = await _legacy_unfinished_writer(db, tmp_path, monkeypatch)
+    async with db.immediate() as conn:
+        if publication_state == "pr_reserved":
+            await conn.execute(update(integration_candidate_publications).values(state="ref_published"))
+        await conn.execute(update(integration_candidate_publications).values(state=publication_state))
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
+    resumed = await service.build("batch")
+    assert resumed.outcome == "already_built", resumed
+    assert resumed.revision == 0 and resumed.head_sha == head
+    async with db._engine.connect() as conn:
+        publication = (await conn.execute(
+            select(integration_candidate_publications)
+        )).mappings().one()
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert publication["state"] == "pr_published"
+    assert owner["owner_id"] == "repair-batch-batch"
+    assert owner["owner_role"] == "collector"
+
+
+@pytest.mark.parametrize("guard", ["live_task", "attached", "subject", "published", "task_identity"])
+async def test_unfinished_publication_recovery_preserves_writer_guards(
+    db, tmp_path, monkeypatch, guard
+):
+    if guard == "published":
+        service = await _publication_case(db, tmp_path)
+        await service.build("batch")
+        dispatched = await service.repair.dispatch("repair-batch-batch", 0)
+        task_id = dispatched["repair_task_id"]
+    else:
+        service, task_id, _head = await _legacy_unfinished_writer(db, tmp_path, monkeypatch)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            status="IN_PROGRESS" if guard == "live_task" else "COMPLETED",
+            **({"created_by_id": "another-operation"} if guard == "task_identity" else {}),
+        ))
+        if guard == "attached":
+            await conn.execute(update(integration_branch_owners).values(
+                handoff_state="attached", session_id="live-session", workspace_id="live-workspace",
+            ))
+        if guard == "subject":
+            await conn.execute(update(integration_repair_stages).values(current_subject={}))
+    resumed = await service.build("batch")
+    assert resumed.outcome == "wait"
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert owner["owner_id"] == task_id

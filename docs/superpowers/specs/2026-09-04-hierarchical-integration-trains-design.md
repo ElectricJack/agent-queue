@@ -511,6 +511,14 @@ remove a PR, or create a replacement batch in response to aggregate CI failure.
 
 ### 9.1 Primary integration repair
 
+Stage zero starts its budget during construction, but a built candidate retains collector
+branch authority until its exact revision's audit publication reaches `pr_published`.
+Both pending-dispatch discovery and dispatch revalidation enforce this boundary; conflict
+repair remains dispatchable before a final candidate exists. A completed, detached repair
+writer may return an unchanged current candidate to the collector when its matching
+publication is `reserved`, `ref_published`, or `pr_reserved`. This recovery requires the
+exact stage subject, task identity, and detached repair owner; it does not confer CI success.
+
 One integration task owns the repair surface exclusively. Its agent:
 
 - resolves merge conflicts;

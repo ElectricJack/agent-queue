@@ -2162,9 +2162,8 @@ class CandidateService:
     async def _return_completed_repair_on(self, conn, batch, operation, target):
         """Recover a closed delegate's detached branch for the collector.
 
-        Two shapes are exact: an adopted repair revision still awaiting its CI,
-        and an unchanged candidate that turned green while the writer was
-        attached.  The second hands off through the repair service's guard,
+        Recover adopted repairs awaiting CI and unchanged candidates awaiting
+        publication or already green. The green case uses the repair service's guard,
         which also enqueues the promotion continuation its CI fact can no
         longer provide.
         """
@@ -2176,8 +2175,7 @@ class CandidateService:
             now=self.clock(),
         ) is not None:
             return
-        if (operation["state"] not in {"active", "escalated"}
-                or int(batch["current_revision"]) == 0):
+        if operation["state"] not in {"active", "escalated"}:
             return
         stage = (await conn.execute(select(integration_repair_stages).where(
             integration_repair_stages.c.operation_id == operation["id"],
@@ -2188,7 +2186,6 @@ class CandidateService:
             integration_candidate_revisions.c.revision == batch["current_revision"],
         ).with_for_update())).mappings().one_or_none()
         if (stage is None or revision is None
-                or revision["repair_parent_revision"] is None
                 or revision["state"] != "built"
                 or stage["state"] != "active"
                 or stage["writer_kind"] != "repair_delegate"
@@ -2197,13 +2194,22 @@ class CandidateService:
                     "candidate_sha": revision["head_sha"],
                 }):
             return
+        if revision["repair_parent_revision"] is None:
+            publication = (await conn.execute(select(integration_candidate_publications).where(
+                integration_candidate_publications.c.batch_id == batch["id"],
+                integration_candidate_publications.c.revision == revision["revision"],
+            ).with_for_update())).mappings().one_or_none()
+            if publication is None or publication["state"] not in {
+                "reserved", "ref_published", "pr_reserved",
+            } or publication["head_sha"] != revision["head_sha"]:
+                return
         task = (await conn.execute(select(tasks).where(
             tasks.c.id == stage["repair_task_id"],
         ).with_for_update())).mappings().one_or_none()
         if (task is None or task["status"] != "COMPLETED"
                 or task["project_id"] != batch["project_id"]
                 or task["repo_id"] != batch["repository_id"]
-                or task["branch_name"]
+                or str(task["branch_name"] or "").removeprefix("refs/heads/")
                 != batch["integration_branch"].removeprefix("refs/heads/")
                 or task["created_by_kind"] != "integration_repair"
                 or task["created_by_id"] != operation["id"]):

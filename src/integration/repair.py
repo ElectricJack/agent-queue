@@ -19,6 +19,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
+    integration_candidate_publications,
     integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_check_evidence,
@@ -75,6 +76,25 @@ STUCK_BATCH_ATTEMPTS = 3
 CONSTRUCTION_REDRIVE_GRACE_SECONDS = 600.0
 
 
+def _unfinished_candidate_publication(batch_id):
+    """Built candidates retain collector authority through audit publication."""
+    revision = integration_candidate_revisions
+    publication = integration_candidate_publications
+    batch = integration_batches
+    return select(revision.c.batch_id).select_from(
+        revision.join(batch, batch.c.id == revision.c.batch_id).outerjoin(
+            publication,
+            (publication.c.batch_id == revision.c.batch_id)
+            & (publication.c.revision == revision.c.revision),
+        )
+    ).where(
+        batch.c.id == batch_id,
+        batch.c.current_revision == revision.c.revision,
+        revision.c.state.in_(("built", "green")),
+        or_(publication.c.state.is_(None), publication.c.state != "pr_published"),
+    ).exists()
+
+
 class _RepairInvariant(ValueError):
     """Persisted repair identity is internally inconsistent."""
 
@@ -110,6 +130,7 @@ class RepairService:
             operation.c.active_stage == stage.c.ordinal,
             operation.c.state.in_(("active", "escalated")),
             stage.c.state == "active",
+            ~((stage.c.ordinal == 0) & _unfinished_candidate_publication(operation.c.batch_id)),
             stage.c.policy["on_exhausted"].as_string() == "continue",
             or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
                 (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
@@ -2896,6 +2917,10 @@ class RepairService:
                 or batch["id"] != operation["episode_id"]
                 or not batch["integration_branch"]
                 or batch["lifecycle"] not in {"testing", "repairing"}
+            ):
+                return None
+            if stage == 0 and await conn.scalar(
+                select(_unfinished_candidate_publication(batch["id"]))
             ):
                 return None
             project_id = batch["project_id"]
