@@ -1327,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:1521249aeb92c56fa29b1b4dd49c10831a5cce0f52bbf714d035044a5fd9cbe0",
+  "digest": "sha256:f43e60bcdbd737cce17b39345ec645da67ef1570994e08fadf551019234f6f67",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3199,7 +3199,9 @@
         "src.cli.auto_commands",
         "src.cli.inventory"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Maintained inventory and plugin-extension startup guards for ``aq``."
     },
     "tests/test_cli_logs.py": {
