@@ -294,6 +294,7 @@ areas:
     description: "Playbook V2 artifacts: the strict definition model, typed expressions and conditions, whole-graph validation, runtime resolution, intent explanation, graph projection, the artifact store and artifact diffs."
     match:
       - tests/test_playbook_v2_definition.py
+      - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
