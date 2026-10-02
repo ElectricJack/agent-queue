@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+from hashlib import sha256
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
@@ -245,7 +246,69 @@ def emit_error(code: str, message: str, details: Any = None) -> None:
     width, splitting the message mid-sentence. Agent-facing commands
     (``aq reply``, ``aq inbox``) depend on this staying machine-readable.
     """
-    click.echo(json.dumps(to_jsonable(error_envelope(code, message, details)), ensure_ascii=False))
+    result = to_jsonable(error_envelope(code, message, details))
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None and (ctx.obj or {}).get("save_output"):
+        try:
+            result["evidence"] = _save_output(ctx.obj["save_output"], result)
+        except click.ClickException as exc:
+            # Saving must not swallow the original failure or break JSON mode.
+            result["error"]["output_save_error"] = exc.format_message()
+    click.echo(json.dumps(result, ensure_ascii=False))
+
+
+def _save_output(destination: str | Path, full_envelope: dict) -> dict:
+    """Write exact retrievable evidence, without following/overwriting an existing file."""
+    # Resolve only the parent: resolving the leaf would follow an existing
+    # symlink and could create its missing target instead of refusing it.
+    requested = Path(destination).expanduser()
+    path = requested.parent.resolve() / requested.name
+    raw = (json.dumps(full_envelope, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+    except OSError as exc:
+        raise click.ClickException(f"Cannot save output to {path}: {exc}") from exc
+    data = full_envelope.get("data")
+    receipt = {"path": str(path), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+    if isinstance(data, dict):
+        receipt["shape"] = {"type": "object", "fields": list(data)[:20], "count": len(data)}
+    elif isinstance(data, list):
+        receipt["shape"] = {"type": "array", "count": len(data)}
+    else:
+        receipt["shape"] = {"type": type(data).__name__}
+    return receipt
+
+
+def _requires_full_output(value: Any) -> bool:
+    """Conservatively retain actionable/authoritative data, including nested findings."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = key.lower()
+            if name == "success" and item is False:
+                return True
+            if name in {"exit_code", "returncode"} and item not in (None, 0):
+                return True
+            if name in {"status", "state", "outcome"} and isinstance(item, str):
+                if any(term in item.lower() for term in (
+                    "fail", "error", "block", "approval", "reject", "denied", "cancel",
+                    "timeout", "stale", "paused", "waiting", "drain", "exhaust", "conflict",
+                )):
+                    return True
+            if any(term in name for term in (
+                "error", "warning", "failure", "gate", "blocker", "claim", "instruction",
+                "constraint", "evidence", "next_step", "prompt", "spec", "description",
+                "acceptance",
+            )) and item not in (None, False, "", [], {}):
+                return True
+            if name in {"body", "rules", "role", "result"}:
+                return True
+            if _requires_full_output(item):
+                return True
+    elif isinstance(value, list):
+        return any(_requires_full_output(item) for item in value)
+    return False
 
 
 def reject_json_mode(ctx: click.Context, command: str, reason: str) -> None:
@@ -281,10 +344,45 @@ def emit(
       callback receives the same projected payload as JSON mode; otherwise it
       receives *data* unchanged. If no *render* is supplied, falls back to an
       indented JSON dump (adequate for commands without a Rich formatter).
+    - ``--save-output PATH``: saves the full unprojected envelope in a new
+      private file. Ordinary success prints only an integrity receipt;
+      failures, control outcomes and instructions also retain full output.
     """
     obj = ctx.obj or {}
     as_json = bool(obj.get("json"))
     payload = apply_brief(data, entity) if obj.get("brief") else data
+
+    destination = obj.get("save_output")
+    if destination:
+        full = to_jsonable(envelope(data, total=total))
+        try:
+            receipt = _save_output(destination, full)
+        except click.ClickException as exc:
+            # The command already returned. Retain its identity/result so a
+            # presentation failure cannot invite replaying a successful write.
+            full["output_save_error"] = exc.format_message()
+            full["automatic_retry"] = False
+            click.echo(json.dumps(full, ensure_ascii=False))
+            raise SystemExit(1) from exc
+        # Never apply --brief to failures, control flow or authoritative prose.
+        retain = (
+            ctx.info_name in {"prime", "handoff", "claim", "close"}
+            or not isinstance(full["data"], (dict, list))
+            or _requires_full_output(full["data"])
+        )
+        if as_json:
+            output = full if retain else envelope({"saved_output": receipt})
+            if retain:
+                output["evidence"] = receipt
+            click.echo(json.dumps(output, ensure_ascii=False))
+        else:
+            click.echo(json.dumps({"saved_output": receipt}, ensure_ascii=False))
+            if retain:
+                if ctx.info_name == "prime" and render is not None:
+                    render(data)
+                else:
+                    click.echo(json.dumps(full["data"], ensure_ascii=False, indent=2))
+        return
 
     if as_json:
         if _json_legacy_active():

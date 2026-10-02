@@ -23,6 +23,7 @@ import asyncio
 import functools
 import logging
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -127,9 +128,11 @@ def _handle_errors(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         as_json = _json_mode()
+        ctx = click.get_current_context(silent=True)
+        save_output = bool(ctx is not None and (ctx.obj or {}).get("save_output"))
 
         def _fail_command(exc: CommandError) -> None:
-            if as_json:
+            if as_json or save_output:
                 emit_error(exc.code, exc.detail_message, exc.details or None)
             else:
                 from rich.text import Text
@@ -143,7 +146,7 @@ def _handle_errors(func):
         try:
             return func(*args, **kwargs)
         except DaemonNotRunningError as exc:
-            if as_json:
+            if as_json or save_output:
                 emit_error(exc.code, str(exc))
                 raise SystemExit(exc.exit_code)
             import os
@@ -305,6 +308,12 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Trim output to each entity's lite projection (composes with --json).",
 )
+@click.option(
+    "--save-output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Save full emit-based output to a new private JSON file and print an evidence receipt.",
+)
 @click.version_option(version=_installed_version(), prog_name="aq")
 @click.pass_context
 def cli(
@@ -313,6 +322,7 @@ def cli(
     help_all: bool,
     output_json: bool,
     brief: bool,
+    save_output: Path | None,
 ) -> None:
     """Agent Q CLI — Modern terminal interface for task management.
 
@@ -322,6 +332,7 @@ def cli(
     ctx.obj["api_url"] = api_url
     ctx.obj["json"] = output_json
     ctx.obj["brief"] = brief
+    ctx.obj["save_output"] = save_output
 
     if help_all:
         _print_full_help(ctx)
