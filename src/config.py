@@ -1509,8 +1509,16 @@ class SessionsConfig:
     #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
     #: every other provider.
     fake_script_file: str = ""
+    #: Per-worker Claude plugin overrides, keyed by ``name@marketplace``.  A
+    #: non-empty map is merged as ``enabledPlugins`` into the rendered
+    #: ``.aq/hooks/claude.json`` of worker-lifecycle (``task``/``pool``)
+    #: sessions only; the empty default leaves the file byte-identical.
+    worker_claude_plugin_overrides: dict[str, bool] = field(default_factory=dict)
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
+    _PLUGIN_ID_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1565,6 +1573,33 @@ class SessionsConfig:
         ):
             if getattr(self, name) <= 0:
                 errors.append(ConfigError("sessions", name, "must be > 0"))
+        if not isinstance(self.worker_claude_plugin_overrides, dict):
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "worker_claude_plugin_overrides",
+                    "must be a mapping of plugin id (name@marketplace) to bool",
+                )
+            )
+        else:
+            for plugin_id, enabled in self.worker_claude_plugin_overrides.items():
+                if not isinstance(plugin_id, str) or not self._PLUGIN_ID_RE.fullmatch(plugin_id):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id!r}",
+                            "plugin id must look like name@marketplace "
+                            "(e.g. fast-jev-compaction@fast-jev-compaction)",
+                        )
+                    )
+                elif not isinstance(enabled, bool):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id}",
+                            f"must be a bool, got {type(enabled).__name__}",
+                        )
+                    )
         return errors
 
 
@@ -4300,6 +4335,15 @@ def _test_interpreters(raw: object) -> object:
     return raw
 
 
+def _worker_plugin_overrides(raw: object) -> object:
+    """``sessions.worker_claude_plugin_overrides``; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
+
+
 def _dataclass_kwargs(cls: type, section: object) -> dict:
     """:func:`_present_kwargs` with the spec read off the dataclass itself.
 
@@ -4737,6 +4781,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
                     "fake_script_file": str,
+                    "worker_claude_plugin_overrides": _worker_plugin_overrides,
                 },
             )
         )

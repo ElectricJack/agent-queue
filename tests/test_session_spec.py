@@ -6,6 +6,7 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, asdict, dataclass, replace
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -329,6 +330,122 @@ class TestHookSettingsWiring:
         )
         settings = _json.loads(dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"])
         assert settings["promptSuggestionEnabled"] is False
+
+
+class TestWorkerClaudePluginOverrides:
+    """``sessions.worker_claude_plugin_overrides`` merges as ``enabledPlugins``
+    into the rendered ``.aq/hooks/claude.json`` of worker-lifecycle Claude
+    sessions only — never supervisors, never a re-serialisation that perturbs
+    the default."""
+
+    HARNESS = replace(
+        CLAUDE,
+        supports_hooks=True,
+        hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        settings_flag="--settings",
+    )
+
+    @staticmethod
+    def _builder(overrides):
+        """A builder whose ``config.sessions`` carries *overrides*."""
+        from src.sessions.spec import SessionSpecBuilder
+
+        class _S:
+            pass
+
+        class _C(_Cfg):
+            sessions = _S()
+
+        cfg = _C()
+        cfg.sessions.worker_claude_plugin_overrides = overrides
+        return SessionSpecBuilder(cfg)
+
+    def _worker(self, overrides):
+        from src.models import RepoSourceType
+
+        return self._builder(overrides).build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=self.HARNESS,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+
+    def test_empty_map_leaves_the_hook_file_byte_identical(self):
+        import json as _json
+
+        tpl = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "prime" / "templates" / "hooks" / "claude.json"
+        ).read_text(encoding="utf-8")
+        spec = self._worker({})
+        raw = dict(spec.files)[".aq/hooks/claude.json"]
+        assert raw == tpl
+        # and no invented key
+        assert "enabledPlugins" not in _json.loads(raw)
+
+    def test_override_appears_in_a_worker_claude_hook(self):
+        import json as _json
+
+        overrides = {"fast-jev-compaction@fast-jev-compaction": False}
+        spec = self._worker(overrides)
+        settings = _json.loads(dict(spec.files)[".aq/hooks/claude.json"])
+        assert settings["enabledPlugins"] == overrides
+        # the rest of the payload is untouched
+        assert settings["promptSuggestionEnabled"] is False
+        assert "SessionStart" in settings["hooks"]
+
+    def test_supervisor_named_session_never_sees_the_override(self, builder):
+        import json as _json
+
+        cfg_builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        spec = cfg_builder.build_named_spec(
+            profile=_Profile(),
+            harness=self.HARNESS,
+            project_id=None,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+        )
+        if ".aq/hooks/claude.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(
+                dict(spec.files)[".aq/hooks/claude.json"]
+            )
+
+    def test_no_claude_harness_gets_no_override(self):
+        """A non-Claude worker session never acquires ``enabledPlugins``."""
+        import json as _json
+
+        codex = replace(
+            CLAUDE,
+            id="codex",
+            command="codex",
+            supports_hooks=True,
+            hook_files=((".codex/hooks.json", "hooks/codex.json"),),
+            settings_flag="--settings",
+        )
+        builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        from src.models import RepoSourceType
+
+        spec = builder.build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=codex,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+        if ".codex/hooks.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(dict(spec.files)[".codex/hooks.json"])
 
 
 class TestCodexHookTrust:
