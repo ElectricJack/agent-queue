@@ -3262,8 +3262,21 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
                 integration_branch_owners.c.id == "owner").values(
                 handoff_state="attached", session_id="successor-session", workspace_id="retained"))
         write_claim_file(str(checkout), {"task_id": debug_task.id, "claim_epoch": 2})
-        # This handoff carries unpublished checkout progress. Bind an exact
-        # advanced subject before another automatic continuation is allowed.
+        if retained_head == published_head:
+            # Uncommitted checkout work never advances the published subject,
+            # so worker turnover alone stops once for supervisor recovery and
+            # keeps the retained writer and checkout intact.
+            expired = await service.expire("operation", 1, now=162.0)
+            assert expired["stage"] == 1
+            assert expired["action"] == "supervisor_recovery"
+            assert (await db.get_workspace("retained")).locked_by_task_id == debug_task.id
+            assert git("rev-parse", "HEAD") == retained_head
+            assert git("ls-files", "--stage") == before[1]
+            assert (checkout / "tracked.txt").read_bytes() == before[3]["tracked.txt"]
+            return
+        # Committed checkout progress renews continuous work only once it is
+        # published: push it, then bind the exact advanced subject.
+        git("push", "origin", f"{retained_head}:refs/heads/aq/parent")
         async with db.immediate() as conn:
             await service.bind_current_parent_subject_on(
                 conn, "operation", head_sha=retained_head, now=150.0
@@ -3279,10 +3292,10 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
             runtime, third_task, project
         )
-        assert role == "repair" and origin["base_sha"] == published_head
+        assert role == "repair" and origin["base_sha"] == retained_head
         assert await WorkspaceMixin._hierarchy_repair_start(
             runtime, str(checkout), origin, fence, repository_url=str(remote)
-        ) == published_head
+        ) == retained_head
         assert await WorkspaceMixin._prepare_exact_origin_workspace(
             runtime, third_task, project,
             SimpleNamespace(workspace=await db.get_workspace("retained")), origin, fence,
