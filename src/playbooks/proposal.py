@@ -67,6 +67,7 @@ AUTHORITATIVE_FIELDS: Final[frozenset[str]] = frozenset(
 class SemanticBody(V2Base):
     rules: list[Rule]
     steps: dict[str, Step]
+    integration_policy: Any | None = None
 
 
 class DuplicateSemanticKey(ValueError):
@@ -123,26 +124,34 @@ def migrate_legacy_agent_task_routes(
         inputs = raw_step.get("inputs", {})
         input_hint = inputs.get("intelligence_class") if isinstance(inputs, Mapping) else None
         if existing not in (None, class_hint) or input_hint not in (
-            None, {"type": "literal", "value": class_hint}
+            None,
+            {"type": "literal", "value": class_hint},
         ):
-            diagnostics.append(Diagnostic(
-                "error", "legacy_worker_route_conflict",
-                f"agent_task {step_id!r} has a class hint that conflicts with {profile_id!r}",
-                field=f"/steps/{step_id}",
-            ))
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "legacy_worker_route_conflict",
+                    f"agent_task {step_id!r} has a class hint that conflicts with {profile_id!r}",
+                    field=f"/steps/{step_id}",
+                )
+            )
             continue
         clean = dict(raw_step)
         clean.pop("profile_id")
         clean["intelligence_class"] = class_hint
         if input_hint is not None:
-            clean["inputs"] = {key: value for key, value in inputs.items()
-                               if key != "intelligence_class"}
+            clean["inputs"] = {
+                key: value for key, value in inputs.items() if key != "intelligence_class"
+            }
         migrated_steps[step_id] = clean
-        diagnostics.append(Diagnostic(
-            "warning", "legacy_worker_route_migrated",
-            f"agent_task {step_id!r}: {profile_id!r} became class hint {class_hint!r}",
-            field=f"/steps/{step_id}",
-        ))
+        diagnostics.append(
+            Diagnostic(
+                "warning",
+                "legacy_worker_route_migrated",
+                f"agent_task {step_id!r}: {profile_id!r} became class hint {class_hint!r}",
+                field=f"/steps/{step_id}",
+            )
+        )
     return migrated, diagnostics
 
 
@@ -341,6 +350,18 @@ def propose(
             None,
         )
     try:
+        from src.playbooks.integration_policy import IntegrationPolicy, policy_from_markdown
+
+        policy = policy_from_markdown(source.raw)
+        if semantic.integration_policy is not None:
+            try:
+                proposed_policy = IntegrationPolicy.model_validate(semantic.integration_policy)
+            except ValidationError:
+                raise ValueError(
+                    "compiler integration_policy differs from the authored block"
+                ) from None
+            if proposed_policy != policy:
+                raise ValueError("compiler integration_policy differs from the authored block")
         artifact = PlaybookDefinition(
             id=source.frontmatter["id"],
             version=version,
@@ -351,6 +372,7 @@ def propose(
             compiler_build=COMPILER_BUILD,
             rules=semantic.rules,
             steps=semantic.steps,
+            integration_policy=policy,
         )
     except (KeyError, ValueError, ValidationError) as exc:
         diagnostics.append(Diagnostic("error", "ambiguous_prose", str(exc)))
