@@ -744,7 +744,8 @@
     "object-loop": {
       "description": "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion.",
       "modules": [
-        "tests/test_object_loop.py"
+        "tests/test_object_loop.py",
+        "tests/test_object_loop_playbook.py"
       ]
     },
     "orchestrator": {
@@ -1319,7 +1320,7 @@
       ]
     }
   },
-  "digest": "sha256:caa882957437c2d997d0b6aa656ae7fde7bd635565872aef557a9c1b607d50ae",
+  "digest": "sha256:7d659a038b19eec73b51bd819c6dcecd3b97bdf9f5279a1305a815230201ec0e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7550,6 +7551,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.integration",
         "src.commands.principal",
         "src.config",
         "src.database.tables",
@@ -7559,8 +7561,10 @@
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.preserved_repair",
         "src.integration.promotion",
         "src.integration.repair",
         "src.models",
@@ -9466,6 +9470,34 @@
         "parametrize"
       ],
       "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
+    },
+    "tests/test_object_loop_playbook.py": {
+      "areas": [
+        "object-loop"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.development",
+        "src.models",
+        "src.object_loop.inputs",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.required",
+        "src.profiles.capabilities",
+        "src.task_graph.formulas",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "AQ-3: real command traces, replayed through V2's write-free dry runner."
     },
     "tests/test_onboarding_queries.py": {
       "areas": [

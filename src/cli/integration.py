@@ -662,6 +662,36 @@ def integration_rebind_repair(
     _execute(ctx, "integration_rebind_repair", args)
 
 
+@integration.command("recover-preserved-repair")
+@click.argument("operation_id")
+@click.option("--intent", "intent_id", required=True, help="Exact current conflict intent.")
+@click.option("--candidate", "candidate_sha", required=True, help="Exact preserved commit SHA.")
+@click.option("--dry-run/--apply", default=True, help="Prove only, or publish the proven resolution.")
+@click.option("--stage", "expected_stage", type=int, help="Stage from preview.")
+@click.option("--released-fence", "expected_released_fence", type=int, help="Released fence from preview.")
+@click.option("--reason", help="Operator reason; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_recover_preserved_repair(
+    ctx, operation_id, intent_id, candidate_sha, dry_run,
+    expected_stage, expected_released_fence, reason,
+):
+    """Recover a completed parent resolution preserved by owner recovery.
+
+    Keeps exhausted deadlines and consumed attempts. Parent verification and
+    human gates still apply. No new repair stage or writer is started.
+    """
+    if not dry_run and (expected_stage is None or expected_released_fence is None or not reason):
+        raise click.UsageError("--apply requires --stage, --released-fence and --reason")
+    args = {"operation_id": operation_id, "intent_id": intent_id,
+            "candidate_sha": candidate_sha, "dry_run": dry_run}
+    for key, value in (("expected_stage", expected_stage),
+                       ("expected_released_fence", expected_released_fence), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_recover_preserved_repair", args)
+
+
 @integration.command("rebind-detached-repair")
 @click.argument("operation_id")
 @click.option("--dry-run/--apply", default=True, help="Prove only, or rebind the proven stage.")

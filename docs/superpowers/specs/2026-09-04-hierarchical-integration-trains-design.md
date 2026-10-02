@@ -319,7 +319,12 @@ compressed `main` history.
 The current generation describes the entire required child set, including unresolved children
 created in earlier generations. Every child branch reservation retains a repository, parent task,
 parent branch, base SHA, and creation generation. Once materialized, that origin is immutable;
-updating the parent's checkpoint never replaces the child's base used for three-way application.
+updating the parent's checkpoint never replaces the child's recorded base or review identity.
+For child-to-parent promotion, when the frozen expected parent tip is an ancestor of the
+reviewed source head, that tip is the effective three-way merge base. This preserves changes
+the child already inherited from the parent without replaying them against the older origin.
+Otherwise promotion continues to use the recorded source base. Ancestry-check errors fail
+closed; the recorded origin, review evidence, and promotion identity remain unchanged.
 Reparenting an unstarted child retires its unused reservation and records a new one, preserving
 the old reservation for audit.
 
@@ -510,6 +515,14 @@ Batch membership is never changed after sealing. Agent Queue does not bisect, gu
 remove a PR, or create a replacement batch in response to aggregate CI failure.
 
 ### 9.1 Primary integration repair
+
+Stage zero starts its budget during construction, but a built candidate retains collector
+branch authority until its exact revision's audit publication reaches `pr_published`.
+Both pending-dispatch discovery and dispatch revalidation enforce this boundary; conflict
+repair remains dispatchable before a final candidate exists. A completed, detached repair
+writer may return an unchanged current candidate to the collector when its matching
+publication is `reserved`, `ref_published`, or `pr_reserved`. This recovery requires the
+exact stage subject, task identity, and detached repair owner; it does not confer CI success.
 
 One integration task owns the repair surface exclusively. Its agent:
 

@@ -30,6 +30,12 @@ records the reservation under the current intent; the attached repair session
 then pushes with its current fence and closes. If the writer has stopped,
 recover its attachment through the existing repair lifecycle first.
 
+When a parent repair stage exhausts at the open conflict's old tip, its debug
+successor keeps that conflict intent as its trigger. Its writer resolves and
+publishes through `integration-resolve-conflict` and `push-conflict-resolution`
+under its own fence, with no rebind. Any other debug stage carries the trigger
+`stage-exhausted:<operation>:<ordinal>`.
+
 A parent debug stage can be frozen on a commit the parent branch never
 received: its retained handoff bound a stopped writer's local head, so every
 delegate fails admission with `slot_reset_failed` ("repair branch no longer
@@ -53,6 +59,23 @@ dossier's `detached_rebinds`. The branch, fence, budget, intent and gates are
 left as they were. The same delegate is then readied, and it resolves the
 conflict through the normal fenced publication path. Design:
 [detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
+
+If a debug stage has already expired without progress, but its stopped writer
+completed a resolution that `release-owner` preserved, preview that exact commit:
+
+```bash
+aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
+```
+
+Run the returned `apply_command` after inspecting its source, target, parents,
+tree, released fence and remaining attempts. Apply requires `--stage`,
+`--released-fence` and `--reason`; it repeats every proof and publishes with an
+expected-old compare-and-swap under a fresh collector fence. It consumes only
+the audited two-parent merge. The expired deadline and consumed attempts remain
+unchanged, the former delegate stays blocked, and normal parent verification is
+still required. An exhausted attempt budget or human gate returns a specific
+blocker. An interrupted push with an unchanged target is ambiguous and is never
+blindly retried. See [preserved repair recovery](../superpowers/specs/2026-10-01-preserved-repair-recovery-design.md).
 
 The command synopsis used below is:
 

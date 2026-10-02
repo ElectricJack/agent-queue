@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 473,
+    "leaf_commands": 475,
     "registration": {
-      "generated": 302,
-      "handwritten": 171
+      "generated": 303,
+      "handwritten": 172
     },
     "ownership": {
-      "core": 434,
+      "core": 436,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 472
+      "supported": 474
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 302,
-      "registration": 157
+      "dispatch": 303,
+      "registration": 158
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 413
+      "untested": 415
     }
   },
   "commands": [
@@ -4294,6 +4294,42 @@
           "reservation_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration recover-preserved-repair",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_recover_preserved_repair",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "operation_id",
+          "--intent",
+          "--candidate"
+        ],
+        "optional": [
+          "--dry-run",
+          "--stage",
+          "--released-fence",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"
@@ -14768,6 +14804,40 @@
           "--project-id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task object-loop-inputs",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_loop_inputs",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--limit",
           "--json",
           "--brief",
           "--api-url"
