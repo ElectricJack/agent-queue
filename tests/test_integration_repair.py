@@ -150,7 +150,8 @@ async def _configure_db(database) -> None:
 
 
 async def _seed_parent_operation(
-    db, *, evidence_id: str = "failed-check", starting_sha: str = STARTING_SHA, policy=None
+    db, *, evidence_id: str = "failed-check", starting_sha: str = STARTING_SHA, policy=None,
+    parent_status: TaskStatus = TaskStatus.PAUSED,
 ) -> None:
     await db.create_task(
         Task(
@@ -158,7 +159,7 @@ async def _seed_parent_operation(
             project_id="p",
             title="Parent",
             description="",
-            status=TaskStatus.PAUSED,
+            status=parent_status,
             repo_id="repo",
             branch_name="aq/parent",
         )
@@ -406,35 +407,54 @@ async def _blocked_delegate(db, **fields) -> None:
             repair_task_id="delegate", writer_kind="repair_delegate"))
 
 
-async def _stopped_delegate_writer(db, *, sid: str = "writer") -> None:
+async def _stopped_delegate_writer(
+    db, *, sid: str = "writer", task_id: str = "delegate"
+) -> None:
     """The delegate's writer died without closing, as the reconciler records it."""
     await db.create_session(SessionRecord(
-        id=sid, task_id="delegate", project_id="p", profile_id="repairer",
+        id=sid, task_id=task_id, project_id="p", profile_id="repairer",
         harness="fake", provider="fake", name=sid, lifecycle="task",
         state="running", desired_state="running", work_dir="/tmp/retained", epoch="epoch",
         instance_token=sid, started_at=100.0, last_activity=150.0,
     ))
     await db.update_session(sid, state="stopped", desired_state="stopped", ended_at=200.0,
                             end_reason="session_exited_open")
-    await db.set_task_meta("delegate", "needs_attention", "session_exited_open")
+    await db.set_task_meta(task_id, "needs_attention", "session_exited_open")
 
 
-async def test_integration_owned_failure_is_one_incident_with_its_stage_budget(db):
-    from src.database.tables import messages
+@pytest.mark.parametrize("operation_state", ["active", "escalated", "human_required"])
+@pytest.mark.parametrize("delegate_kind", ["repair", "verifier"])
+async def test_integration_owned_failure_is_one_incident_with_its_stage_budget(
+    db, operation_state, delegate_kind
+):
     from src.integration.repair import RepairService
 
     await _seed_parent_operation(db)
     await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
     await _blocked_delegate(db)
     await _stopped_delegate_writer(db)
+    async with db.immediate() as conn:
+        fields = {"state": operation_state}
+        if delegate_kind == "verifier":
+            fields["verifier_task_id"] = "delegate"
+            await conn.execute(update(integration_repair_stages).values(
+                repair_task_id=None, writer_kind=None))
+        await conn.execute(update(integration_repair_operations).values(**fields))
 
-    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "queued"
-    await db.queue_task_recovery_notifications()
-    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "existing"
+    first = await db.notify_task_recovery("delegate", project_id="p")
+    assert first["outcome"] == "not_actionable"
+    assert first["operation_id"] == "operation"
+    assert await db.queue_task_recovery_notifications() == 0
+    replay = await db.notify_task_recovery("delegate", project_id="p")
+    assert replay["outcome"] == "existing"
+    assert replay["incident_id"] == first["incident_id"]
+    assert replay["redelivered"] is False
     incident = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    assert incident["id"] == first["incident_id"]
     assert incident["owner"] == {
         "kind": "integration_operation", "operation_id": "operation",
-        "operation_state": "active", "role": "delegate", "stage": 0, "stage_state": "active",
+        "operation_state": operation_state, "role": "delegate", "stage": 0,
+        "stage_state": "active",
         "attempts": 0, "attempt_limit": 2, "deadline_at": 130.0,
         "deadline_kind": "stage_runtime",
     }
@@ -448,13 +468,115 @@ async def test_integration_owned_failure_is_one_incident_with_its_stage_budget(d
     assert (await db.get_task("delegate")).status == TaskStatus.BLOCKED
     assert await db.get_task_meta("delegate", "supervisor_recovery_attempts") is None
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(messages))).all()) == 1
+        assert (await conn.execute(select(messages))).all() == []
 
     # Waiting for a passing result to be accepted is its own clock.
     async with db.immediate() as conn:
         await conn.execute(update(integration_repair_stages).values(state="awaiting_completion"))
         owner = await db._recovery_owner(conn, {"id": "delegate", "project_id": "p"})
     assert owner["deadline_kind"] == "acceptance_wait"
+
+
+async def test_dead_integration_delegate_records_incident_without_supervisor_notice(db):
+    from src.config import AppConfig
+    from src.integration.repair import RepairService
+    from src.sessions.fake import FakeProvider
+    from src.sessions.provider import SessionSpec
+    from src.sessions.reconciler import SessionReconciler
+
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _blocked_delegate(db, retry_count=3, max_retries=3)
+    await db.transition_task("delegate", TaskStatus.IN_PROGRESS, force=True)
+    provider = FakeProvider()
+    await provider.start(SessionSpec(
+        session_name="writer", work_dir="/tmp/retained", command=("fake",),
+        instance_token="writer",
+    ))
+    await db.create_session(SessionRecord(
+        id="writer", task_id="delegate", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="writer", lifecycle="task",
+        state="running", desired_state="running", work_dir="/tmp/retained", epoch="epoch",
+        instance_token="writer", started_at=100.0,
+    ))
+    provider.script_death("writer")
+    config = AppConfig()
+    config.sessions.enabled = True
+    config.agents_config.stuck_timeout_seconds = 0
+    reconciler = SessionReconciler(
+        db, config, SimpleNamespace(create=lambda *_: provider), epoch="epoch"
+    )
+    await reconciler.tick(now=10_000.0)
+
+    assert (await db.get_task("delegate")).status == TaskStatus.BLOCKED
+    assert (await db.get_session("writer")).state == "stopped"
+    assert await db.get_task_meta("delegate", "needs_attention") == "session_exited_open"
+    assert await db.queue_task_recovery_notifications() == 0
+    incident = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    result = await db.notify_task_recovery("delegate", project_id="p")
+    assert result["outcome"] == "existing"
+    assert incident["id"] == result["incident_id"]
+    assert incident["owner"]["deadline_at"] == 130.0
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(messages))).all() == []
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_legacy_delegate_recovery_notice_is_archived_without_redelivery(db, delivered):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _blocked_delegate(db)
+    await _stopped_delegate_writer(db)
+    await db.notify_task_recovery("delegate", project_id="p")
+    incident = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    await db.create_session(SessionRecord(
+        id="supervisor", project_id="p", profile_id="repairer", harness="fake",
+        provider="fake", name="n-supervisor--p", lifecycle="named", state="running",
+        desired_state="running", epoch="epoch", instance_token="supervisor",
+        work_dir="/tmp/supervisor", started_at=100.0,
+    ))
+    await db.update_session("supervisor", state="stopped", desired_state="stopped")
+    message_id = "msg-" + incident["id"]
+    async with db.immediate() as conn:
+        await conn.execute(insert(messages).values(
+            id=message_id, project_id="p", from_kind="system", from_id="task-recovery",
+            to_kind="session", to_id="supervisor-p", subject="Task recovery: delegate",
+            body="Legacy delegate notice", created_at=200.0, archive_after_inject=1,
+            body_kind="task_recovery", delivered_at=300.0 if delivered else None,
+        ))
+
+    replay = await db.notify_task_recovery("delegate", project_id="p")
+    assert replay["outcome"] == "existing"
+    assert replay["redelivered"] is False
+    archived = await db.get_message(message_id)
+    assert archived.archived_at is not None
+    assert archived.delivered_at == (300.0 if delivered else None)
+    assert await db.queue_task_recovery_notifications() == 0
+    assert (await db.get_message(message_id)).archived_at == archived.archived_at
+    assert await db.get_task_meta("delegate", "supervisor_recovery_incident") == incident
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(messages))).all()) == 1
+
+
+async def test_integration_parent_failure_still_notifies_supervisor(db):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db, parent_status=TaskStatus.BLOCKED)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.update_task("parent", created_at=1.0)
+    await _stopped_delegate_writer(db, task_id="parent")
+
+    first = await db.notify_task_recovery("parent", project_id="p")
+    assert first["outcome"] == "queued"
+    assert await db.queue_task_recovery_notifications() == 0
+    incident = await db.get_task_meta("parent", "supervisor_recovery_incident")
+    assert incident["owner"]["role"] == "parent"
+    async with db._engine.connect() as conn:
+        queued = (await conn.execute(select(messages))).mappings().all()
+    assert len(queued) == 1
+    assert queued[0]["subject"] == "Task recovery: parent"
 
 
 async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_names_cleanup(
@@ -538,10 +660,10 @@ async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_name
     assert superseded["id"] == open_incident["id"]
     assert superseded["decision"] == "superseded"
     assert "retired" in superseded["decision_reason"]
-    assert (await db.get_message("msg-" + open_incident["id"])).archived_at is not None
+    assert await db.get_message("msg-" + open_incident["id"]) is None
     assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "retired"
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(messages))).all()) == 1
+        assert (await conn.execute(select(messages))).all() == []
     with pytest.raises(ValueError, match="no longer required"):
         await db.transition_task("delegate", TaskStatus.READY, context="restart_task", force=True)
     assert await service.retire_terminal_delegates(301.0) == []
