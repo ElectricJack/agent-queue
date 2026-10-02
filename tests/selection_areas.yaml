@@ -363,12 +363,14 @@ areas:
       - tests/test_integration_accepted_repair.py
       - tests/test_integration_outbox.py
       - tests/test_integration_contracts.py
+      - tests/test_integration_subjects.py
       - tests/test_integration_mode.py
       - tests/test_integration_hierarchy.py
       - tests/test_integration_resume_metadata.py
       - tests/test_integration_completion_recovery.py
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
+      - tests/test_integration_ci_producers.py
       - tests/test_integration_cleanup.py
       - tests/test_attestation_check_run_id.py
       - tests/test_hosted_attestation.py
