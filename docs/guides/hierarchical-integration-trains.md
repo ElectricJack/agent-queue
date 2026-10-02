@@ -409,6 +409,11 @@ for projects using legacy delivery. `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
 `blocked-task-escalation` must defer integration-owned tasks to operation-level
 recovery instead of generic task recovery or replacement repair budgets.
+Failed delegates of active, escalated or human-required repair operations keep
+inspectable recovery incidents with their stage attempts and deadlines, but do
+not send `Task recovery: <delegate>` supervisor messages. Failure-event replays
+and the recovery scan also archive older delegate notices without redelivery.
+Integration parents and ordinary tasks keep their existing notifications.
 
 When replacing project integration playbooks with shared system activations,
 first disable/drain affected projects and verify there is no active operation.

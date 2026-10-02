@@ -131,7 +131,11 @@ an incident with `aq task recover`; nothing outside the daemon needs to file one
    `idle_seconds`, routing fields and `next_action` — write them to the
    `supervisor_recovery_incident` task metadata key, insert the
    `msg-<incident-id>` message to `session:supervisor-<project>`, and return
-   `queued`.
+   `queued`. A delegate of an active, escalated or human-required integration
+   operation instead records the same incident diagnostics and returns
+   `not_actionable` with the incident and operation ids, without inserting a
+   message. Replays return `existing` and archive any older delegate notice
+   without re-arming delivery. Integration parents retain their notices.
 4. `_outcome_of` (`builtin.py:476`) passes the handler's `outcome` through when
    it is one of `queued` / `existing` / `not_actionable` / `retired`
    (`_RECOVERY_NOTIFY_OUTCOMES`, `builtin.py:603`) and maps anything else to
@@ -146,8 +150,11 @@ of `msg-<incident-id>`, `priority: 60`, `archive_after_inject`, and
 task-row lock, which is what makes "one incident, one notice" an invariant
 rather than a hope.
 
-On `existing`: nothing new — at most the same message's delivery is re-armed.
-On `not_actionable` and `retired`: nothing at all.
+On `existing`: nothing new — at most the same message's delivery is re-armed
+for supervisor recovery, or archived for an integration-owned delegate.
+On `not_actionable`: an integration-owned delegate's diagnostic incident may
+be recorded without a message; other non-actionable failures write nothing.
+On `retired`: nothing at all.
 
 The deterministic message id is the durable dedup: a replayed event cannot
 insert a second notice, and a restarted or replacement supervisor still finds
