@@ -596,6 +596,12 @@
         "tests/test_tier_provider_defaults.py"
       ]
     },
+    "knowledge-inventory": {
+      "description": "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests.",
+      "modules": [
+        "tests/test_knowledge_inventory.py"
+      ]
+    },
     "level-editor": {
       "description": "The level editor: voxel grid, page, layer and level models and the brush system.",
       "modules": [
@@ -1321,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:8cbc8ec9fc359bb6f142b7cb80998d5d7faa07a5876c9ab39dda1a9e343eb39d",
+  "digest": "sha256:8a11630559013dfa13096e0353daa7d309ca7ca23fae4a1b59c12f4ebe361404",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8244,6 +8250,21 @@
         "parametrize"
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
+    },
+    "tests/test_knowledge_inventory.py": {
+      "areas": [
+        "knowledge-inventory"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.knowledge.imports.inventory",
+        "src.knowledge.imports.legacy_memory",
+        "src.knowledge.imports.manifest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
     },
     "tests/test_known_tools.py": {
       "areas": [

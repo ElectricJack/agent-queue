@@ -688,6 +688,9 @@ areas:
     match: [tests/test_editor_*.py]
 
   # ------------------------------------------------------------ vault, memory, prompts
+  - id: knowledge-inventory
+    description: "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests."
+    match: [tests/test_knowledge_inventory.py]
   - id: vault
     description: "The vault: directory initialization, central path resolution, the consolidated migration, the watcher and its service facade, index generation and summaries, glossary, wiki links and aq:// URIs, and vault CLI commands."
     match:
