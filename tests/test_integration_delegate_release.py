@@ -11,11 +11,15 @@ Design: ``docs/superpowers/specs/2026-09-20-integration-delegate-release-design.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    archived_tasks,
+    gates,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -28,9 +32,13 @@ from src.database.tables import (
     integration_repair_stages,
     integration_review_evidence,
     sessions,
+    task_comments,
     tasks,
 )
 from src.models import (
+    Agent,
+    AgentOutput,
+    AgentResult,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -146,6 +154,153 @@ async def _cancelled_operation_with_delegate(
         await _episode(conn, parent_task_id="parent")
         await _operation(conn, state=state)
         await _stage(conn, repair_task_id="delegate")
+
+
+async def _obsolete_stage_delegate(db, *, operation_state="escalated", active_stage=1):
+    await _cancelled_operation_with_delegate(db, state=operation_state)
+    await _task(db, "current", TaskStatus.BLOCKED)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id.in_(["delegate", "current"]))
+                           .values(created_by_kind="integration_repair", created_by_id="operation"))
+        await conn.execute(update(integration_repair_operations).values(active_stage=active_stage))
+        await _stage(conn, repair_task_id="current", state="active", ordinal=1)
+    await db.set_task_meta("delegate", "integration_retirement", {"reason": "prior budget expired"})
+
+
+@pytest.mark.parametrize("operation_state", ["escalated", "completed", "cancelled"])
+async def test_archive_obsolete_delegate_preserves_status_history_and_current_incident(
+    db, operation_state
+):
+    from src.integration.delegate_release import archive_obsolete_delegates
+
+    await _obsolete_stage_delegate(db, operation_state=operation_state)
+    if operation_state in {"completed", "cancelled"}:
+        # The active-stage reference of an ended operation is obsolete too.
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "current")
+                               .values(created_by_kind="human"))
+    before = await db.get_integration_operation("operation")
+    result = await archive_obsolete_delegates(db, operation_ids=["operation"])
+    assert result["archived_delegates"] == ["delegate"] and not result["blockers"]
+    assert await db.get_task("delegate") is None
+    assert await db.get_task("current") is not None
+    assert await db.get_integration_operation("operation") == before
+    async with db._engine.connect() as conn:
+        archived = (await conn.execute(select(archived_tasks).where(
+            archived_tasks.c.id == "delegate",
+        ))).mappings().one()
+        assert archived["status"] == "BLOCKED" and archived["branch_name"] == "aq/delegate"
+        assert (await conn.execute(select(integration_repair_stages.c.repair_task_id).where(
+            integration_repair_stages.c.ordinal == 0,
+        ))).scalar_one() == "delegate"
+        note = (await conn.execute(select(task_comments.c.body).where(
+            task_comments.c.task_id == "delegate",
+        ))).scalar_one()
+        assert "prior budget expired" in note and '"ordinal": 0' in note
+    assert not (await archive_obsolete_delegates(db))["archived_delegates"]
+
+
+@pytest.mark.parametrize("blocker", [
+    "owner", "workspace", "claim", "session", "gate", "dependency", "verifier",
+    "current_stage", "nonterminal_stage", "child",
+])
+async def test_obsolete_delegate_archive_refuses_retained_authority_and_gates(db, blocker):
+    from src.integration.delegate_release import archive_obsolete_delegates
+
+    await _obsolete_stage_delegate(db, active_stage=0 if blocker == "current_stage" else 1)
+    if blocker == "owner":
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner", repository_id="repo", ref="aq/delegate", owner_id="delegate",
+                owner_role="repair", fence_token=1, handoff_state="reserved",
+                created_at=1.0, updated_at=1.0,
+            ))
+    elif blocker == "workspace":
+        await db.create_workspace(Workspace(id="retained", project_id="p",
+            workspace_path="/tmp/retained", source_type=RepoSourceType.LINK,
+            locked_by_task_id="delegate", enabled=True))
+    elif blocker in {"claim", "session"}:
+        await db.create_session(SessionRecord(id="holder", task_id="delegate", project_id="p",
+            profile_id="repairer", harness="fake", provider="fake", name="holder",
+            lifecycle="pool", state="stopped" if blocker == "claim" else "running",
+            desired_state="stopped" if blocker == "claim" else "running",
+            claim_phase="active" if blocker == "claim" else None,
+            work_dir="/tmp/retained", epoch="epoch", instance_token="token", started_at=1.0))
+    elif blocker == "gate":
+        await db.create_gate("p", "human", "Preserve decision", waiter_task_ids=["delegate"])
+    elif blocker == "dependency":
+        await _task(db, "dependent", TaskStatus.READY)
+        await db.add_dependency("dependent", "delegate")
+    elif blocker == "child":
+        await db.create_task(Task(id="delegate.1", project_id="p", title="Child", description="",
+                                 parent_task_id="delegate", status=TaskStatus.BLOCKED))
+    else:
+        async with db.immediate() as conn:
+            if blocker == "verifier":
+                await conn.execute(update(integration_repair_operations)
+                                   .values(verifier_task_id="delegate"))
+            elif blocker == "current_stage":
+                pass  # Seeded as the current stage; stage identities cannot decrease.
+            else:
+                await conn.execute(update(integration_repair_stages)
+                                   .where(integration_repair_stages.c.ordinal == 0)
+                                   .values(state="active"))
+    result = await archive_obsolete_delegates(db)
+    assert not result["archived_delegates"]
+    assert await db.get_task("delegate") is not None
+    if blocker not in {"current_stage", "nonterminal_stage"}:
+        assert result["blockers"]
+    if blocker == "gate":
+        async with db._engine.connect() as conn:
+            assert (await conn.execute(select(gates.c.status))).scalar_one() == "open"
+            assert not (await conn.execute(select(task_comments.c.id))).first()
+
+
+async def test_obsolete_delegate_archive_keeps_unresolved_candidate_reservation(db):
+    from src.integration.delegate_release import archive_obsolete_delegates
+
+    await _candidate_resolution(db, operation_state="cancelled", resolution_state="reserved")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "delegate")
+                           .values(created_by_kind="integration_repair", created_by_id="operation"))
+    result = await archive_obsolete_delegates(db)
+    assert not result["archived_delegates"]
+    assert result["blockers"][0]["blockers"][0]["code"] == "candidate_resolution_retained"
+
+
+async def test_archive_obsolete_control_does_not_cancel_live_operation(db):
+    from src.integration.controls import IntegrationControlService
+
+    await _obsolete_stage_delegate(db)
+    controls = IntegrationControlService(db)
+    assert (await controls.release_delegates("operation"))["outcome"] == "invalid_state"
+    result = await controls.release_delegates("operation", archive_obsolete=True)
+    assert result["outcome"] == "released" and result["archived_delegates"] == ["delegate"]
+    assert (await db.get_integration_operation("operation"))["state"] == "escalated"
+
+
+async def test_automatic_delegate_archive_retains_large_metadata_snapshot(db):
+    from src.integration.repair import RepairService
+
+    await _obsolete_stage_delegate(db)
+    marker = "exact preserved failure context " * 1800
+    await db.set_task_meta("delegate", "failure_history", {"context": marker})
+    await db.create_agent(Agent(id="history-agent", name="Prior worker", profile_id="worker"))
+    await db.save_task_result("delegate", "history-agent", AgentOutput(
+        result=AgentResult.FAILED, summary="frozen stage timed out", error_message="exact failure",
+    ))
+    await RepairService(db).retire_terminal_delegates(100.0)
+    assert await db.get_task("delegate") is None
+    assert await db.get_task("current") is not None
+    async with db._engine.connect() as conn:
+        notes = (await conn.execute(select(task_comments.c.body).where(
+            task_comments.c.task_id == "delegate",
+        ).order_by(task_comments.c.created_at))).scalars().all()
+    assert len(notes) > 1 and all(len(note) <= 16000 for note in notes)
+    snapshot = json.loads("".join(note.split(": ", 1)[1] for note in notes))
+    assert json.loads(snapshot["metadata"]["failure_history"])["context"] == marker
+    assert snapshot["results"][0]["error_message"] == "exact failure"
+    assert snapshot["results"][0]["result"] == "failed"
 
 
 # -- §3 history refuses deletion but permits archive, by name -----------------

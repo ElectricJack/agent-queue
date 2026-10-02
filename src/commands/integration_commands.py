@@ -960,7 +960,9 @@ class IntegrationCommandsMixin:
         _label, refusal = await self._integration_operator_for_operation(operation_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        return await self._integration_control_service().release_delegates(operation_id)
+        return await self._integration_control_service().release_delegates(
+            operation_id, archive_obsolete=bool(args.get("archive_obsolete", False))
+        )
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
         """Recover a durable pushed root-candidate repair."""

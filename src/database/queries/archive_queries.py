@@ -9,7 +9,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 
-from sqlalchemy import and_, delete, exists, func, literal, select, update
+from sqlalchemy import and_, delete, exists, func, insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -158,6 +158,7 @@ class ArchiveQueryMixin:
         abandon_reason: str | None = None,
         abandoned_by: str = "operator",
         delivery=None,
+        obsolete_integration_delegate: bool = False,
     ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
@@ -194,7 +195,27 @@ class ArchiveQueryMixin:
                 branch_policy="keep",
                 abandon_undelivered=abandon_undelivered,
                 delivery=delivery,
+                obsolete_integration_delegate=obsolete_integration_delegate,
             )
+            if obsolete_integration_delegate:
+                from src.integration.delegate_release import assert_obsolete_delegate_on
+
+                proof = await assert_obsolete_delegate_on(self, conn, task_id)
+                project_id = (await conn.execute(select(tasks.c.project_id).where(
+                    tasks.c.id == task_id,
+                ))).scalar_one()
+                snapshot = json.dumps(proof, sort_keys=True)
+                # Comments are capped at 16k characters; retain the complete
+                # snapshot even when a legacy dossier or metadata is larger.
+                chunks = [snapshot[i:i + 15000] for i in range(0, len(snapshot), 15000)]
+                for index, chunk in enumerate(chunks, start=1):
+                    await conn.execute(insert(task_comments).values(
+                        id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
+                        author_kind="agent", author_id="integration-reconciliation", kind="note",
+                        body="Obsolete integration delegate archived; branches and stage history "
+                             f"preserved. Retirement proof {index}/{len(chunks)}: " + chunk,
+                        created_at=time.time(),
+                    ))
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False

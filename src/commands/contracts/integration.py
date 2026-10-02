@@ -186,6 +186,10 @@ class IntegrationOperationControlArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
 
 
+class IntegrationReleaseDelegatesArgs(IntegrationOperationControlArgs):
+    archive_obsolete: bool = False
+
+
 class IntegrationAbortArgs(IntegrationOperationControlArgs):
     reason: str = Field(min_length=1)
 
@@ -507,6 +511,7 @@ class IntegrationOperationalValue(CommandValue):
     parked: tuple[Any, ...] = ()
     preserved_owners: tuple[str, ...] = ()
     released_delegates: tuple[str, ...] = ()
+    archived_delegates: tuple[str, ...] = ()
     project_id: str | None = None
     operation_id: str | None = None
     batch_id: str | None = None
@@ -997,6 +1002,7 @@ class IntegrationRecordRepairValue(CommandValue):
         "completion_ready",
         "dispatch_debug",
         "block_for_human",
+        "supervisor_recovery",
         "duplicate",
         "stale",
     ] | None = None
@@ -1016,6 +1022,7 @@ class IntegrationRepairTimeoutValue(CommandValue):
         "ignore",
         "dispatch_debug",
         "block_for_human",
+        "supervisor_recovery",
         "none",
         "wait",
         "awaiting_promotion",
@@ -1215,7 +1222,7 @@ INTEGRATION_RETRY_CLEANUP = _operational_contract(
 
 INTEGRATION_RELEASE_DELEGATES = _operational_contract(
     "integration_release_delegates",
-    IntegrationOperationControlArgs,
+    IntegrationReleaseDelegatesArgs,
     ("released", "nothing_to_release", "invalid_state", "not_found"),
     successes=frozenset({"released", "nothing_to_release"}),
     side_effect=SideEffectClass.UPDATE,
@@ -2767,7 +2774,7 @@ async def _retry_cleanup_adapter(
 
 
 async def _release_delegates_adapter(
-    args: IntegrationOperationControlArgs, ctx: CommandContext | None
+    args: IntegrationReleaseDelegatesArgs, ctx: CommandContext | None
 ):
     return await _hierarchy_adapter(
         "integration_release_delegates",

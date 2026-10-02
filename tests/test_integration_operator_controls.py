@@ -150,6 +150,36 @@ async def test_all_operator_controls_share_the_live_supervisor_matrix(db):
             assert (refusal is None) is allowed, command
 
 
+@pytest.mark.parametrize("principal,allowed", [
+    (None, True), (_session("super-p", "p"), True),
+    (_session("super-other", "other"), False),
+    (_session("worker", "p", elevated=False), False),
+])
+async def test_archive_obsolete_delegates_requires_matching_operator_authority(
+    db, monkeypatch, principal, allowed
+):
+    monkeypatch.setattr(db, "get_integration_operation", AsyncMock(return_value={
+        "target_kind": "batch", "batch_id": "batch", "parent_task_id": None,
+    }))
+    monkeypatch.setattr(db, "get_integration_batch", AsyncMock(return_value={"project_id": "p"}))
+    controls = SimpleNamespace(release_delegates=AsyncMock(return_value={
+        "outcome": "released", "archived_delegates": ["obsolete"],
+    }))
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(integration_control_service=controls)
+    with principal_context(principal):
+        result = await handler._cmd_integration_release_delegates({
+            "operation_id": "operation", "archive_obsolete": True,
+        })
+    if allowed:
+        assert result["archived_delegates"] == ["obsolete"]
+        controls.release_delegates.assert_awaited_once_with("operation", archive_obsolete=True)
+    else:
+        assert result["outcome"] == "unauthorized"
+        controls.release_delegates.assert_not_awaited()
+
+
 async def test_release_owner_passes_derived_operator_label_and_dry_run(db, monkeypatch):
     await db.create_repo(
         RepoConfig(
