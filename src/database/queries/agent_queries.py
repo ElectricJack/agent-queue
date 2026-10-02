@@ -76,6 +76,7 @@ class AgentQueryMixin:
         state: AgentState | None = None,
         *,
         include_deleted: bool = False,
+        conn=None,
     ) -> list[Agent]:
         """List agents, optionally filtered by state."""
         stmt = select(agents)
@@ -83,8 +84,11 @@ class AgentQueryMixin:
             stmt = stmt.where(agents.c.deleted_at.is_(None))
         if state:
             stmt = stmt.where(agents.c.state == state.value)
-        async with self._engine.begin() as conn:
+        if conn is not None:
             result = await conn.execute(stmt)
+            return [self._row_to_agent(r) for r in result.mappings().fetchall()]
+        async with self._engine.begin() as owned:
+            result = await owned.execute(stmt)
             return [self._row_to_agent(r) for r in result.mappings().fetchall()]
 
     async def update_agent(self, agent_id: str, **kwargs) -> None:

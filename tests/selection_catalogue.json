@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:8ad77fd9e3cd734db3227114408338967ee9fba4c58468e59648bd927e48090e",
+  "digest": "sha256:6fdbe09a2146e08a4b9c13e69a69c2ee3858888197adccf44e0ee7b81a480419",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11986,6 +11986,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.routing.context",
         "src.routing.planner",
         "src.routing.policy"
       ],
@@ -12012,9 +12013,12 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
         "src.playbooks.invocation",
+        "src.providers",
+        "src.providers.availability",
         "src.routing.sources",
         "src.sessions.harness_parser"
       ],

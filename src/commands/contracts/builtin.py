@@ -419,6 +419,9 @@ class TaskRoutePlanValue(CommandValue):
     """One value for every ``task_route_plan`` outcome (§6.2); unused fields stay empty."""
 
     task_id: str | None = None
+    #: Bounded live observations. Shared headroom is not a reservation.
+    live_context: dict[str, Any] | None = None
+    live_summary: str | None = None
     intelligence_class: str | None = None
     profile_id: str | None = None
     provider: str | None = None

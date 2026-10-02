@@ -9,6 +9,8 @@ touches a database, a clock or a provider.
 from __future__ import annotations
 
 import random
+import json
+from dataclasses import replace
 
 import pytest
 
@@ -21,6 +23,7 @@ from src.routing.planner import (
     Snapshot,
     TaskFacts,
     plan_route,
+    is_candidate,
     reselect,
     worker_classes,
 )
@@ -517,3 +520,49 @@ def test_reselection_drops_unlaunchable_candidates_and_returns_none_when_empty()
     selection = reselect(candidates, _snapshot(out={"codex"}), POLICY.balance)
     assert selection is not None and selection.chosen.profile_id == "standard-high-claude"
     assert reselect(candidates, _snapshot(out={"codex", "claude"}), POLICY.balance) is None
+
+
+@pytest.mark.parametrize("change", [{"provider": "other"}, {"lifecycle": "task"}])
+def test_candidate_eligibility_rejects_changed_provider_or_lifecycle(change):
+    snapshot = _snapshot()
+    plan = _planned(_task(task_type="research"), snapshot)
+    candidate = Candidate.from_dict(plan["candidates"][0])
+    assert is_candidate(candidate, snapshot)
+    changed = replace(snapshot, profiles=tuple(
+        replace(p, **change) if p.id == candidate.profile_id else p
+        for p in snapshot.profiles
+    ))
+    assert not is_candidate(candidate, changed)
+
+
+def test_live_context_is_bounded_and_aggregates_unknown_task_kinds():
+    from src.routing.context import (
+        MAX_PROFILES, MAX_PROVIDERS, MAX_QUOTA_WINDOWS, MAX_SUMMARY_CHARS,
+        live_context, quota_observations, summarize_context,
+    )
+
+    rows = [{"window": f"window-{i}", "scope": "all models", "used_percent": i,
+             "observed_at": 990, "last_seen_at": 995, "source": "/secret/path"}
+            for i in range(50)]
+    quota = quota_observations(rows, now=1000, stale_after=100)
+    profiles = tuple(ProfileFacts(
+        id=f"worker-{i}", harness="codex", provider=f"provider-{i}",
+        lifecycle="task", classes=frozenset({"standard-high"}), slots=2,
+    ) for i in range(100))
+    snapshot = Snapshot(profiles=profiles, providers={
+        p.provider: ProviderFacts(quota=quota) for p in profiles
+    })
+    context = live_context(
+        snapshot, project_id="p", now=1000, started_at=999, supply=[],
+        active_kinds={"research": 2, **{f"private-title-{i}": 1 for i in range(100)}},
+        project_cap=5, project_active=True, global_cap=10, workspace_capacity=5, quarantine={},
+    )
+    assert len(context["profiles"]) == MAX_PROFILES
+    assert len(context["providers"]) == MAX_PROVIDERS
+    assert all(len(p["quota"]) == MAX_QUOTA_WINDOWS for p in context["providers"])
+    assert context["truncated"]
+    assert all(p["quota_truncated"] for p in context["providers"])
+    assert context["active_work"] == {"research": 2, "unknown": 100}
+    assert "/secret/path" not in json.dumps(context)
+    assert "private-title" not in json.dumps(context)
+    assert len(summarize_context(context)) <= MAX_SUMMARY_CHARS

@@ -76,6 +76,7 @@ class ProfileFacts:
     template: bool = False
     read_only: bool = False
     runtime: str = ""
+    needs_workspace: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,10 @@ class ProviderFacts:
     state: str = "available"
     launchable: bool = True
     usage_percent: float | None = None
+    reason_code: str = ""
+    updated_at: float | None = None
+    quota: tuple[Mapping[str, Any], ...] = ()
+    quota_source: str = "provider_usage_snapshots"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +102,8 @@ class Snapshot:
     busy: Mapping[str, int] = field(default_factory=dict)
     #: Routed backlog per profile (``count_routed_backlog_by_profile``).
     backlog: Mapping[str, int] = field(default_factory=dict)
+    #: Bounded observational context; never a capacity reservation or policy input.
+    context: Mapping[str, Any] = field(default_factory=dict)
 
     def profile(self, profile_id: str) -> ProfileFacts | None:
         return next((p for p in self.profiles if p.id == profile_id), None)
@@ -264,6 +271,8 @@ def is_candidate(candidate: Candidate, snapshot: Snapshot) -> bool:
     return (
         profile is not None
         and profile.harness == candidate.harness
+        and profile.provider == candidate.provider
+        and profile.lifecycle == candidate.lifecycle
         and candidate.intelligence_class in worker_classes(profile)
     )
 
