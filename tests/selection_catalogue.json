@@ -219,6 +219,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
         "tests/test_stranded_work.py"
@@ -569,7 +570,9 @@
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
+        "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
@@ -817,6 +820,7 @@
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
+        "tests/test_playbook_v2_integration_policy.py",
         "tests/test_playbook_v2_resolution.py",
         "tests/test_playbook_v2_validation.py"
       ]
@@ -1325,7 +1329,7 @@
       ]
     }
   },
-  "digest": "sha256:5375a246582ce64cb5b01d2029f3026fae8b2722ca7cdd2a6c8df96fe36b058c",
+  "digest": "sha256:f1bcf5c6635b6b555649b1ad5b6288fd7365e78a93ec056fa6beed386680d3ea",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4739,6 +4743,29 @@
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
     },
+    "tests/test_development_subjects.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.ci_producers",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.subjects",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Development policy equivalence and incremental engine ownership on PostgreSQL."
+    },
     "tests/test_development_validation.py": {
       "areas": [
         "development-delivery"
@@ -7435,6 +7462,24 @@
       ],
       "summary": "Integration-mode policy tests."
     },
+    "tests/test_integration_observe.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic facts, unknowns and read-only ports for integration subjects."
+    },
     "tests/test_integration_operational_controls.py": {
       "areas": [
         "integration-controls"
@@ -7697,6 +7742,23 @@
         "parametrize"
       ],
       "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
+    },
+    "tests/test_integration_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.reconciler",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
     },
     "tests/test_integration_repair.py": {
       "areas": [
@@ -10185,6 +10247,27 @@
         "parametrize"
       ],
       "summary": "Operator adoption path for reviewed Playbook V2 artifact bundles."
+    },
+    "tests/test_playbook_v2_integration_policy.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.models",
+        "src.integration.subjects",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.playbooks.proposal",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reviewed subject tables: compiler guards, pure decisions and immutable pins."
     },
     "tests/test_playbook_v2_resolution.py": {
       "areas": [

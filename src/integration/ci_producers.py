@@ -237,7 +237,7 @@ class LocalValidationPlan(BaseModel):
     # An explicit policy-supplied identity, changed only to request a new attempt.
     attempt_id: str = Field(min_length=1)
     commands: tuple[str, ...] = ()
-    queue_seconds: float = Field(default=1800, gt=0)
+    queue_seconds: float = Field(default=1800, ge=0)
     run_seconds: float = Field(default=300, gt=0)
 
 
