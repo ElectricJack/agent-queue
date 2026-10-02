@@ -649,8 +649,17 @@ def build_l2_context_section(config: Any) -> PrimeSection:
 # ---------------------------------------------------------------------------
 
 
-def build_tool_guidance_section() -> PrimeSection:
+#: Harnesses with a ``tool_guidance_<harness>.md`` addendum: how that CLI's own
+#: interaction habits (dialogs, confirmations) meet an unattended AQ session.
+_HARNESS_GUIDANCE = frozenset({"opencode"})
+
+
+def build_tool_guidance_section(harness: str | None = None) -> PrimeSection:
     body = _load_template("tool_guidance.md")
+    if harness in _HARNESS_GUIDANCE:
+        addendum = _load_template(f"tool_guidance_{harness}.md")
+        if addendum:
+            body = f"{body}\n\n{addendum}" if body else addendum
     return PrimeSection(key="tool_guidance", title=SECTION_TITLES["tool_guidance"], body=body)
 
 

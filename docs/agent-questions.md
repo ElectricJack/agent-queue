@@ -6,14 +6,81 @@
 > detail of how a question is *noticed* in a live transcript and who it goes to.
 
 AQ watches native Codex and Claude transcripts for completed assistant turns
-that ask for input while a worker holds an active task. It records the question
-against the exact task claim and session instance. Named supervisor sessions and
-unassigned interactive terminals do not recursively create questions.
+that ask for input while a worker holds an active task, and OpenCode's own
+question dialogs (below). It records the question against the exact task claim
+and session instance. Named supervisor sessions and unassigned interactive
+terminals do not recursively create questions.
 
-Routine factual questions are sent to the global supervisor. Approval requests,
-scope/design decisions, risky actions, and ambiguous questions go to the human.
-The supervisor can escalate a routine question and cannot supply a human-only
-approval. Unanswered supervisor questions escalate after five minutes.
+Every question goes first to the project supervisor (`supervisor-<project>`).
+For a transcript question only routine factual questions are the supervisor's
+to answer; approval requests, scope/design decisions, risky actions and
+ambiguous questions are human-required. The supervisor can escalate a routine
+question and cannot supply a human-only approval: it investigates and runs
+`aq question escalate`, and the human answers through that escalation.
+
+A question the supervisor has neither answered nor escalated within
+`discord.escalation.supervisor_delivery_timeout_minutes` (15 by default) raises
+one operational notice (`source_kind` `question_unanswered`) so a human knows
+the worker is stuck. The question stays the supervisor's: the notice cannot
+answer, approve or re-route it.
+
+## OpenCode question dialogs
+
+OpenCode's `question` tool opens a dialog that blocks the whole session until
+someone answers or dismisses it, and while it is open no nudge can reach the
+composer. OpenCode keeps no transcript file, but it records every tool call in
+its own SQLite store (`$XDG_DATA_HOME/opencode/opencode.db`, by default under
+`~/.local/share`). AQ reads that store, read-only, every 10 seconds for each
+live OpenCode session holding a task
+([`src/sessions/native_questions.py`](../src/sessions/native_questions.py)):
+a `question` call still `running` started after the session's claim is a
+pending dialog, including one a subagent opened. It becomes one durable
+question keyed by session instance, claim and the dialog's call id, so a
+re-read or a daemon restart finds the same row.
+
+- **Who may answer.** A native dialog is the model choosing between options
+  inside its approved task, so scope, design and "should I continue" choices
+  are routed to the supervisor as answerable from that task's context. A
+  request to authorize risk — access, credentials or secrets; destructive,
+  external or delivery actions (push, merge, deploy, publish); rewriting
+  history; the daemon, its database or migrations; skipping checks; widening
+  the task — is human-required, judged on every option rather than the
+  displayed excerpt, and the supervisor's answer to it is refused.
+- **Delivery.** `aq question answer` accepts the answer, then AQ closes *that*
+  dialog: one `Escape` into the exact pane the claim owns. The TUI shows one
+  prompt for the whole session tree (a subagent's permission request before
+  any question), so AQ presses only while this dialog is the tree's sole
+  pending prompt and no tool anywhere in the tree is running, re-reading the
+  store under the claim fence immediately before the key. Presses are counted
+  before they are sent, at most two per question and 30 seconds apart (a quick
+  second `Escape` would read as "interrupt"), and the store must record the
+  dialog as closed before AQ types the usual one-line answer pointer. A dialog
+  someone already dismissed, or undid, gets the pointer alone; one answered in
+  the terminal resolves the question, and an answer it overtook is reported as
+  not delivered.
+- **Human gates.** A human-required dialog is never closed for the supervisor,
+  and it stays open even if someone dismisses it and the worker carries on:
+  only an answer in the terminal, an undo, or the human's answer through the
+  escalation resolves it.
+- **Resume.** A delivered native answer counts once the worker's model starts
+  a new turn. Until then `aq question list` still shows it as `delivered`; with
+  no new turn within the session lease (at least a minute), AQ raises one
+  `question_resume` notice and stops waiting.
+- **Bounded.** An accepted answer that cannot be delivered within the same
+  supervisor timeout — the dialog will not close, the store is unreadable, a
+  draft sits in the composer — raises one `question_delivery` notice. AQ never
+  retries a key past its bound, never restarts the worker to deliver, and never
+  answers or approves an OpenCode permission prompt.
+
+A plain message cannot reach a worker whose dialog is open; answer through the
+question instead. OpenCode workers are also told in `aq prime` not to open
+optional questionnaires or "should I continue" confirmations, and that
+OpenCode's post-compaction "stop and ask for clarification" prompt means
+"continue" under AQ
+([`src/prime/templates/tool_guidance_opencode.md`](../src/prime/templates/tool_guidance_opencode.md)).
+The answer pointer is read with `aq message status`, so an OpenCode worker
+profile must grant `message_status`, as the shipped Claude and Codex worker
+templates do.
 
 There is no separate `aq task ask-human` command. That never-implemented
 gate-plus-message surface was retired to avoid creating a second question
@@ -63,8 +130,9 @@ Terminal input has the same small crash window: if the process dies after input
 is submitted but before its receipt commits, delivery may repeat after recovery.
 Normal retries and competing replies are deduplicated.
 
-This feature handles assistant questions in native conversation transcripts. It
-does not automatically approve harness permission dialogs or grant additional
+This feature handles assistant questions in native conversation transcripts and
+OpenCode question dialogs. It does not answer or approve harness permission
+dialogs or grant additional
 filesystem, network, API, or project access. Ended sessions are not rebound to a
 new worker to deliver historical answers.
 

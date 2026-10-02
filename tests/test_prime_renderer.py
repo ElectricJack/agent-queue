@@ -556,6 +556,47 @@ class TestStaticSections:
         ):
             assert required in body, required
 
+    @pytest.mark.parametrize("harness", ["opencode", "codex"])
+    async def test_opencode_session_is_told_not_to_ask_optional_questions(
+        self, db, config, task, harness
+    ):
+        # OpenCode's native question dialog blocks the whole session, and its
+        # compaction prompt invites one (prime-dune): only OpenCode gets the
+        # addendum, and only for the live session holding the task.
+        await db.create_session(
+            SessionRecord(
+                id="oc-session",
+                project_id="proj-1",
+                profile_id="coder",
+                harness=harness,
+                provider="fake",
+                name="oc-session",
+                lifecycle="pool",
+                work_dir="/tmp/oc-session",
+                epoch="test",
+                instance_token="test-only",
+                started_at=time.time(),
+                task_id="task-1",
+                state="running",
+            )
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", session_id="oc-session")
+        body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].split())
+        addendum = (
+            "Do not ask optional questions",
+            "should I continue/proceed",
+            "Under AQ that means continue",
+            "finish everything that does not depend on it first",
+            "never work around it",
+            "[aq question answered]",
+        )
+        if harness == "opencode":
+            for required in addendum:
+                assert required in body, required
+            assert "aq test" in body  # appended to, never replacing, the shared guidance
+        else:
+            assert not any(required in body for required in addendum)
+
     async def test_completion_protocol_embeds_task_id(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["completion_protocol"]
@@ -785,6 +826,8 @@ class TestPrimeDocumentModel:
 #: gates, or ``None`` for a CLI verb that never reaches the daemon.
 _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq test": None,
+    # The ``[aq question answered]`` marker AQ itself types, not a command.
+    "aq question answered": None,
     "aq git push": "git_push",
     "aq git create-pr": "git_create_pr",
     "aq agent profile-reseed": "profile_reseed",
