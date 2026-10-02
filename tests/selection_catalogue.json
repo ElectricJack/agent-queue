@@ -572,6 +572,7 @@
         "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_root_adapters.py",
+        "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
@@ -1327,7 +1328,7 @@
       ]
     }
   },
-  "digest": "sha256:4f916ce012e5a4147b29384fff0b4f0bf8141474d55a2a622a9cd56806e947fa",
+  "digest": "sha256:96afedc3039a8ec8d859ead3abbd9b2065c9183feb2973d9c3a24a2dddaa4ad6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7799,6 +7800,7 @@
         "src.integration.root_runtime",
         "src.integration.service",
         "src.integration.subjects",
+        "src.models",
         "src.playbooks.integration_policy"
       ],
       "markers": [
@@ -7835,6 +7837,45 @@
         "parametrize"
       ],
       "summary": "A completed train root always gets its pull request, or says why not."
+    },
+    "tests/test_integration_root_scenarios.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_app",
+        "src.git.manager",
+        "src.integration.accepted_repair",
+        "src.integration.candidates",
+        "src.integration.ci",
+        "src.integration.cleanup",
+        "src.integration.engine",
+        "src.integration.main_promotion",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.promotion",
+        "src.integration.release",
+        "src.integration.repair",
+        "src.integration.review_evidence",
+        "src.integration.root_adapters",
+        "src.integration.root_runtime",
+        "src.integration.scheduler",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train."
     },
     "tests/test_integration_schedule.py": {
       "areas": [

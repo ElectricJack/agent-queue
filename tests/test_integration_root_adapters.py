@@ -385,6 +385,32 @@ async def test_cleanup_refuses_a_retention_contract_the_legacy_policy_cannot_hon
     commands.execute.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "cleanup,release,expected",
+    [
+        ("complete", "released", "clean"),
+        ("already_complete", "already_released", "clean"),
+        ("complete", "wait", "pending"),
+        ("advanced", "released", "pending"),
+        ("complete", "invariant_error", "unknown"),
+    ],
+)
+async def test_cleanup_releases_the_request_and_lease_before_closing(
+    root, cleanup, release, expected
+):
+    db, _, subject = root
+    commands = SimpleNamespace(
+        execute=AsyncMock(side_effect=[{"outcome": cleanup}, {"outcome": release}])
+    )
+    result = await RootPrimitiveAdapters(db, commands, None).cleanup(subject, CleanupArgs())
+    assert result.outcome == expected
+    # Primitive 20 folds release in, independent of cleanup progress.
+    assert [call.args[0] for call in commands.execute.await_args_list] == [
+        "integration_cleanup",
+        "integration_release",
+    ]
+
+
 async def test_shared_ci_registration_keeps_the_root_exclusion_and_prewrite(root):
     db, _, subject = root
     subject = await activate(db, subject)
@@ -937,6 +963,147 @@ async def test_counted_attempt_replays_once_and_survives_uncommitted_projection(
     observed = await RootObserver(db, None).observe(subject)
     assert observed.budget.attempts == 1
     assert (await db.get_integration_subject(subject.id))["budget_attempts"] == 0
+
+
+async def _legacy_writer_facts(db, subject, status=WriterStatus.UNKNOWN):
+    observed = facts(subject, writer=WriterLease(status=status, task_id="writer", fence_token=6))
+    observed = observed.model_copy(update={"unknown": ("writer_stop_unproven:writer",)})
+    return await RootObserver(db, None)._legacy_writer(subject, observed)
+
+
+async def _writer_task(db, status, *, session_state=None):
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(t.tasks).values(
+                id="writer", project_id="p", title="writer", description="", status=status,
+                created_at=1, updated_at=1,
+            )
+        )
+    if session_state:
+        from src.models import SessionRecord
+
+        await db.create_session(
+            SessionRecord(
+                id="writer-session", task_id="writer", project_id="p", profile_id="worker",
+                harness="fake", provider="fake", name="writer-session", lifecycle="pool",
+                state=session_state, work_dir="/w", epoch="e", instance_token="writer-token",
+                started_at=5,
+            )
+        )
+
+
+async def test_writer_holding_its_fenced_ref_is_never_projected(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    await _writer_task(db, "FAILED")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.integration_branch_owners)
+            .where(t.integration_branch_owners.c.id == "branch-owner-row")
+            .values(owner_id="writer", owner_role="repair")
+        )
+    projected = await _legacy_writer_facts(db, subject)
+    assert projected.writer.status is WriterStatus.UNKNOWN
+    assert projected.unknown == ("writer_stop_unproven:writer",)
+
+
+async def test_accepted_handoff_stops_the_writer_whose_fence_moved_to_the_collector(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    await _writer_task(db, "IN_PROGRESS", session_state="running")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(t.workspaces).values(
+                id="w", project_id="p", workspace_path="/w", source_type="link", created_at=1
+            )
+        )
+        await conn.execute(
+            insert(t.integration_candidate_resolutions).values(
+                id="accepted", batch_id="batch", revision=0, member_ordinal=0,
+                operation_id="root-op", operation_episode_id="batch", stage_ordinal=0,
+                stage_deadline_at=500, project_id="p", repair_task_id="writer",
+                repair_session_id="writer-session", repair_session_instance_token="writer-token",
+                repair_workspace_id="w", repair_workspace_path="/w", repository_id="repo",
+                branch=BRANCH, target_branch=BRANCH + "-resolution", target_kind="qualified",
+                fence_owner_id="writer", fence_token=6, handoff_owner_id="root-op",
+                handoff_fence_token=7, partial_head_sha=BASE, source_base_sha=BASE,
+                source_head_sha="c" * 40, resolved_head_sha=HEAD, resolved_tree_sha="e" * 40,
+                repair_commit_shas=[HEAD], push_evidence={"remote_sha": HEAD}, state="accepted",
+                created_at=8, updated_at=9,
+            )
+        )
+    projected = await _legacy_writer_facts(db, subject, WriterStatus.WORKING)
+    assert projected.writer.status is WriterStatus.STOPPED and projected.unknown == ()
+    proof = projected.writer.stop_proof["stop_proof"]
+    assert (proof["kind"], proof["successor_owner_id"], proof["successor_fence_token"]) == (
+        "accepted_handoff",
+        "root-op",
+        7,
+    )
+    # A handoff to an owner that no longer holds the ref is not proof.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.integration_branch_owners)
+            .where(t.integration_branch_owners.c.id == "branch-owner-row")
+            .values(owner_id="someone-else")
+        )
+    assert (await _legacy_writer_facts(db, subject)).writer.status is WriterStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("session", ["writer-session", "older-session"])
+async def test_close_receipt_stops_only_the_latest_stopped_writer_session(root, session):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    await _writer_task(db, "COMPLETED", session_state="stopped")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(t.integration_outbox).values(
+                id="closed", dedup_key="closed", project_id="p",
+                event_type="integration.repair_delegate_closed",
+                payload={"task_id": "writer", "session_id": session,
+                         "instance_token": "writer-token", "fence_token": 6},
+                available_at=9, created_at=9,
+            )
+        )
+    projected = await _legacy_writer_facts(db, subject)
+    if session == "writer-session":
+        assert projected.writer.status is WriterStatus.STOPPED
+        assert projected.writer.stop_proof["stop_proof"]["kind"] == "delegate_close"
+    else:
+        assert projected.writer.status is WriterStatus.UNKNOWN
+
+
+async def test_never_claimed_retired_and_consumed_writers_are_no_longer_the_subjects(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    await _writer_task(db, "FAILED")
+    projected = await _legacy_writer_facts(db, subject)
+    assert projected.writer == WriterLease() and projected.unknown == ()
+    # A writer that was ever claimed may hold unpushed work: stop proof only.
+    async with db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == "writer").values(claim_epoch=1))
+    projected = await _legacy_writer_facts(db, subject)
+    assert projected.writer.status is WriterStatus.UNKNOWN and projected.unknown
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.tasks).where(t.tasks.c.id == "writer").values(status="IN_PROGRESS")
+        )
+    assert (await _legacy_writer_facts(db, subject)).writer.task_id == "writer"
+    stopped = {"writer": {"task_id": "writer"}, "writer_status": "stopped"}
+    for kind, outcome in (("decision", None), ("action", "merged")):
+        await db.append_integration_subject_journal(
+            {
+                "subject_id": subject.id, "entry_kind": kind, "mode": "active",
+                "idempotency_key": f"consumed:{kind}", "policy_artifact_sha256": PIN.artifact_sha256,
+                "subject_version": subject.version, "phase": subject.phase.value,
+                "head_sha": subject.head_sha, "generation": subject.generation,
+                "primitive": "git_merge_members", "rule": "writer-stopped",
+                "facts_digest": "sha256:" + "4" * 64, "outcome": outcome,
+                "payload": {"facts": stopped} if kind == "decision" else {"result": {}},
+                "recorded_at": 10,
+            }
+        )
+    assert (await _legacy_writer_facts(db, subject)).writer == WriterLease()
 
 
 async def test_superseded_head_is_not_an_attempt(root):

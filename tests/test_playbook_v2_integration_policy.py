@@ -267,6 +267,55 @@ def test_unclaimed_queue_time_is_not_repair_failure(artifact):
     assert decision.messages
 
 
+def test_a_table_can_eject_the_earliest_conflicting_member_by_derived_path(raw_policy, artifact):
+    from src.integration.subjects import ConflictFacts, EjectArgs
+
+    table = copy.deepcopy(raw_policy)
+    root = table["tables"]["root_batch"]
+    case = next(case for case in root["cases"] if case["rule"] == "writer-unclaimed-expired")
+    case["action"] = "eject-unclaimed"
+    del root["actions"]["capacity"]
+    root["actions"]["eject-unclaimed"] = {
+        "primitive": "eject",
+        "inputs": {
+            "member_task_id": {"type": "binding_ref", "binding": "s", "path": "conflict_member"},
+            "reason": {"type": "literal", "value": "writer-unclaimed-after-budget"},
+        },
+        "outcomes": {
+            "ejected": {"kind": "progress", "phase": "building"},
+            "not_a_member": {"kind": "backoff", "seconds": 30, "ceiling_seconds": 3600},
+            "unknown": {"kind": "backoff", "seconds": 30, "ceiling_seconds": 3600},
+        },
+    }
+    variant = artifact.model_copy(
+        update={"integration_policy": IntegrationPolicy.model_validate(table)}
+    )
+    subject = make_subject(
+        variant,
+        SubjectPhase.REPAIRING,
+        writer=WriterLease(status=WriterStatus.FILED, task_id="repair"),
+        budget=WriterBudget(
+            ordinal=0, intelligence_class="standard-high", started_at=100, deadline_at=150,
+            attempt_limit=3,
+        ),
+    )
+    members = tuple(
+        MemberFacts(task_id=name, head_sha=HEAD, base_sha=BASE, review="approved")
+        for name in ("alpha", "bravo", "charlie")
+    )
+    # Conflicts arrive unordered; the manifest order chooses the member.
+    conflicts = (ConflictFacts(member_task_id="charlie"), ConflictFacts(member_task_id="bravo"))
+    decision = CompiledIntegrationPolicy(variant).evaluate(
+        subject, make_facts(subject, members=members, conflicts=conflicts)
+    )
+    assert decision.request == EjectArgs(
+        member_task_id="bravo", reason="writer-unclaimed-after-budget"
+    )
+    # Without a conflict the line has no member to name; it is never guessed.
+    with pytest.raises(ValueError):
+        CompiledIntegrationPolicy(variant).evaluate(subject, make_facts(subject, members=members))
+
+
 def test_green_decision_preserves_exact_expected_old_fence(artifact):
     subject = make_subject(artifact, SubjectPhase.PROMOTABLE)
     fence = Fence(

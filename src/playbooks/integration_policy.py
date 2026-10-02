@@ -277,6 +277,7 @@ def _check_reads(values: list[Any]) -> None:
                 "merge_members",
                 "tested_head",
                 "next_writer_ordinal",
+                "conflict_member",
             }
             if value.binding == "s" and value.path in derived:
                 continue
@@ -367,6 +368,12 @@ class CompiledIntegrationPolicy:
         binding["next_writer_ordinal"] = facts.budget.ordinal + 1 if facts.budget else 1
         binding["tested_head"] = (
             facts.tested_head.model_dump(mode="json") if facts.tested_head else None
+        )
+        # Lists are not addressable by path; a table that ejects or scopes a
+        # writer names the earliest conflicting member in manifest order.
+        conflicted = {conflict.member_task_id for conflict in facts.conflicts}
+        binding["conflict_member"] = next(
+            (member.task_id for member in facts.members if member.task_id in conflicted), None
         )
         binding["merge_members"] = [
             {"task_id": member.task_id, "head_sha": member.head_sha, "base_sha": member.base_sha}

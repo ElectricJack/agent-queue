@@ -784,6 +784,46 @@ async def test_build_replaces_legacy_squash_candidate_with_reviewed_ancestry(db,
     assert (await service.build("batch")).head_sha == rebuilt.head_sha
 
 
+async def test_rebuild_after_ejection_records_a_further_member_conflict(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.controls import IntegrationControlService
+    from src.integration.repair import RepairService
+
+    origin, _work, base, members = _make_conflicting_origin(
+        tmp_path, texts=("first\n", "second\n", "third\n")
+    )
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        repair_service=RepairService(db),
+        clock=lambda: 100.0,
+    )
+    assert (await service.build("batch")).outcome == "conflict"
+    ejected = await IntegrationControlService(db, clock=lambda: 110.0).eject(
+        "batch", task_id="root-1", reason="unrepaired conflict", operator_id="policy"
+    )
+    assert ejected["outcome"] == "ejected"
+    # The ejection reserved revision 1 and resealed the batch; root-2 now
+    # conflicts in it, and that conflict is recorded rather than lost.
+    rebuilt = await service.build("batch")
+    assert (rebuilt.outcome, rebuilt.revision, rebuilt.member_ordinal) == ("conflict", 1, 1)
+    async with db._engine.connect() as conn:
+        lifecycle = (
+            await conn.execute(
+                select(integration_batches.c.lifecycle).where(integration_batches.c.id == "batch")
+            )
+        ).scalar_one()
+    assert lifecycle == "repairing"
+
+
 async def test_conflict_dispatches_and_rejects_caller_supplied_lineage(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import (

@@ -78,10 +78,17 @@ existing stage dispatches it without restarting its clock. A successor reuses
 the existing timeout/handoff only after stopped-writer proof and its original
 absolute deadline; an unrepresentable request returns a bounded unknown.
 Writer-stop proof and preservation use existing owner recovery, including the
-`keen-stone-14` incident machinery. Generic writer ladders remain the phase-two
-writer owner's work. Cleanup refuses mismatched retention/retry settings and
-uses existing independent cleanup records. Gate choices remain in the pinned
-table; durable resolved gates are scanned so a lost wake only costs latency.
+`keen-stone-14` incident machinery. The root observer also reads the legacy
+stage's own receipts as writer facts: an accepted handoff of the fenced ref, a
+delegate-close or accepted-completion receipt for the latest stopped session,
+adoption by a journalled merged build, and retirement before any claim
+([acceptance scenarios](2026-10-02-root-reconciliation-scenarios.md)). Generic
+writer ladders remain the phase-two writer owner's work. Cleanup refuses
+mismatched retention/retry settings and uses existing independent cleanup
+records. It also releases the batch's request and project lease (release folds
+into primitive 20), so the next request can be sealed. Gate choices remain in the
+pinned table; durable resolved gates are scanned so a lost wake only costs
+latency.
 
 ## Operator cutover and rollback
 

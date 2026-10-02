@@ -880,6 +880,21 @@ class IntegrationObserver:
         ci = []
         if target:
             ci.append(_ci(snapshot, target, subject.task_id, now, candidate=candidate is not None))
+        # Before construction there is no candidate: members relate to the
+        # publication target's observed tip (main for a root batch), not to
+        # an absent head. An unread tip still leaves ancestry unknown.
+        relative_to = (
+            target.sha
+            if target
+            else next(
+                (
+                    head.sha
+                    for head in remote_heads
+                    if head.ref == (subject.target_ref or default_ref)
+                ),
+                None,
+            )
+        )
         observed_members = []
         for member in members:
             state = CIState.NONE
@@ -896,13 +911,13 @@ class IntegrationObserver:
                 if not any(item.head_sha == evidence.head_sha for item in ci):
                     ci.append(evidence)
             ancestry = "unknown"
-            if include_remote and self.git and target and member.head_sha:
+            if include_remote and self.git and relative_to and member.head_sha:
                 try:
                     contained = await self.git.is_ancestor(
-                        snapshot.repository, member.head_sha, target.sha
+                        snapshot.repository, member.head_sha, relative_to
                     )
                     ahead = await self.git.is_ancestor(
-                        snapshot.repository, target.sha, member.head_sha
+                        snapshot.repository, relative_to, member.head_sha
                     )
                     if contained is True:
                         ancestry = "contained"
@@ -915,12 +930,16 @@ class IntegrationObserver:
             if ancestry == "unknown" and member.head_sha:
                 unknown.append("ancestry_unknown:" + member.task_id)
             observed_members.append(member.model_copy(update={"ci": state, "ancestry": ancestry}))
-        holds = _task_holds(snapshot, {member.task_id for member in members} | {subject.task_id})
+        # An unsealed root's frontier is admission input: a paused or rejected
+        # source stays out of the seal and keeps its branch, while the rest of
+        # the train advances. Sealed members and a subject's own task bind it.
+        bound = [] if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id else members
+        holds = _task_holds(snapshot, {member.task_id for member in bound} | {subject.task_id})
         holds += [
             HoldFacts(
                 kind="review_rejected", task_id=member.task_id, reason="exact_head_review_rejected"
             )
-            for member in members
+            for member in bound
             if member.review == "rejected"
         ]
         gate = None

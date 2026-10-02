@@ -743,8 +743,21 @@ class RootPrimitiveAdapters:
             return PrimitiveOutcome.unknown(args.primitive, "cleanup_contract_mismatch")
         result = await self._command("integration_cleanup", batch_id=subject.batch_id)
         code = result.get("outcome")
-        if code in {"complete", "already_complete"}:
+        if code not in {
+            "complete",
+            "already_complete",
+            "advanced",
+            "retryable",
+            "wait",
+            "conflict",
+        }:
+            return self._unknown(args, result)
+        # Primitive 20 folds release in: the published batch frees its request
+        # and project lease from exact main-delivery evidence, independent of
+        # cleanup progress, so the next request can be sealed.
+        released = await self._command("integration_release", batch_id=subject.batch_id)
+        if released.get("outcome") not in {"released", "already_released", "wait"}:
+            return self._unknown(args, released)
+        if code in {"complete", "already_complete"} and released["outcome"] != "wait":
             return self._answer(args, "clean")
-        if code in {"advanced", "retryable", "wait", "conflict"}:
-            return self._answer(args, "pending")
-        return self._unknown(args, result)
+        return self._answer(args, "pending")
