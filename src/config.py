@@ -2269,6 +2269,12 @@ class IntegrationConfig:
     #: Starts disabled so the operator can observe the first backlog releases.
     owner_recovery_sweep: bool = False
 
+    #: Install root subject observations without performing primitives.
+    reconciler_shadow: bool = False
+    #: Visit roots explicitly transferred to the reconciler. This setting
+    #: never transfers ownership; disabling it requires an audited rollback.
+    reconciler_active: bool = False
+
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
     #: doctor reports ERROR and the project supervisor gets one message.
@@ -2280,6 +2286,9 @@ class IntegrationConfig:
         from src.models import INTEGRATION_MODES
 
         errors: list[ConfigError] = []
+        for name in ("reconciler_shadow", "reconciler_active"):
+            if not isinstance(getattr(self, name), bool):
+                errors.append(ConfigError("integration", name, "must be a boolean"))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -4892,6 +4901,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
+            reconciler_shadow=integ.get("reconciler_shadow", False),
+            reconciler_active=integ.get("reconciler_active", False),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),
         )

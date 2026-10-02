@@ -54,7 +54,9 @@ def _field(path: str, before: Any, after: Any) -> dict[str, Any]:
     executable = not bool(parts and (parts[0] in _PRESENTATION_ROOTS or parts[-1] == "label"))
     return {
         "path": path,
-        "before": project_value({"type": "literal", "value": before}) if before is not None else None,
+        "before": project_value({"type": "literal", "value": before})
+        if before is not None
+        else None,
         "after": project_value({"type": "literal", "value": after}) if after is not None else None,
         "executable": executable,
     }
@@ -98,7 +100,9 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
         else:
             changes = _fields(before.model_dump(mode="json"), after.model_dump(mode="json"))
             change = "modified" if changes else "unchanged"
-        old_steps = {key for key, value in base.steps.items() if value.rule == rule_id} if base else set()
+        old_steps = (
+            {key for key, value in base.steps.items() if value.rule == rule_id} if base else set()
+        )
         new_steps = {key for key, value in target.steps.items() if value.rule == rule_id}
         rows.append(
             {
@@ -108,6 +112,32 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
                 "event_type_after": after.trigger.event_type if after else None,
                 "step_ids_added": sorted(new_steps - old_steps),
                 "step_ids_removed": sorted(old_steps - new_steps),
+                "field_changes": changes,
+            }
+        )
+    before_policy = base.integration_policy if base else None
+    after_policy = target.integration_policy
+    changes = _fields(
+        before_policy.model_dump(mode="json", exclude_none=True) if before_policy else None,
+        after_policy.model_dump(mode="json", exclude_none=True) if after_policy else None,
+        "/integration_policy",
+    )
+    if changes:
+        # The current review DTO has rule field changes. Present the optional
+        # subject rule there so a table-only change is visible and requires
+        # executable review without changing any API contract.
+        rows.append(
+            {
+                "rule_id": "integration-policy",
+                "change": "added"
+                if before_policy is None
+                else "removed"
+                if after_policy is None
+                else "modified",
+                "event_type_before": "integration.subject_due" if before_policy else None,
+                "event_type_after": "integration.subject_due" if after_policy else None,
+                "step_ids_added": [],
+                "step_ids_removed": [],
                 "field_changes": changes,
             }
         )

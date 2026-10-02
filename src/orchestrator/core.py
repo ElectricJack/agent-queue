@@ -895,6 +895,16 @@ class Orchestrator(
         )
         return store.load(artifact_sha256)
 
+    async def _root_subject_session_probe(self, session: dict) -> bool | None:
+        from src.sessions.provider import SessionHandle
+
+        provider = self.session_providers.create(session["provider"], self.config)
+        handle = SessionHandle(name=session["name"], provider=session["provider"],
+                               instance_token=session["instance_token"])
+        if await provider.is_running(handle):
+            return True
+        return False if await provider.confirm_stopped(handle) else None
+
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
         """Resolve the agent profile for a task: its own route.
 
@@ -1913,6 +1923,8 @@ class Orchestrator(
         self._development_completion_unsub = self.bus.subscribe(
             "task.completed", self.development_integration.on_task_completed,
         )
+        from src.integration.root_runtime import root_runtime_for
+
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -1941,6 +1953,7 @@ class Orchestrator(
             green_promotion_handler=GreenPromotionReconciler(
                 self.db, promotion=self.root_promotion_service
             ).tick,
+            subject_runtime=root_runtime_for(self),
         )
         self.integration_service.start()
 
