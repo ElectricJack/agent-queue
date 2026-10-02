@@ -570,6 +570,7 @@
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
@@ -1325,7 +1326,7 @@
       ]
     }
   },
-  "digest": "sha256:5375a246582ce64cb5b01d2029f3026fae8b2722ca7cdd2a6c8df96fe36b058c",
+  "digest": "sha256:7c55d7729f2b227645c52c6883f907230b3ef996d22c42fe54cdec251e3ff213",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7697,6 +7698,23 @@
         "parametrize"
       ],
       "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
+    },
+    "tests/test_integration_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.reconciler",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
     },
     "tests/test_integration_repair.py": {
       "areas": [
