@@ -35,6 +35,8 @@ from src.routing.planner import (
     is_candidate,
     plan_route,
     reselect,
+    selection_evidence,
+    selection_reason,
     worker_classes,
 )
 from src.routing.policy import Balance, PolicyError, parse_policy
@@ -298,15 +300,16 @@ class RoutingCommandsMixin:
             in getattr(self.orchestrator, "_pool_quarantine", {}).items()
             if project_id == task.project_id and until > now
         }
+        headroom = {}
         context = live_context(
             snapshot, project_id=task.project_id, now=now, started_at=started,
             supply=supply["supply"], active_kinds=supply["active_kinds"],
             project_cap=project.max_concurrent_agents if project else 0,
             project_active=project is not None and project.status == ProjectStatus.ACTIVE,
             global_cap=self.orchestrator._pool_global_cap(),
-            workspace_capacity=workspace_capacity, quarantine=quarantine,
+            workspace_capacity=workspace_capacity, quarantine=quarantine, headroom_out=headroom,
         )
-        return replace(snapshot, context=context)
+        return replace(snapshot, context=context, headroom=headroom)
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -531,7 +534,12 @@ class RoutingCommandsMixin:
                             "reason": "no candidate of the plan is launchable now"}
                 chosen = selection.chosen
                 adjusted = chosen.profile_id != planned_profile_id
-                reason = str(plan.get("reason") or "")
+                decision = selection_evidence(
+                    valid, selection, snapshot, prefer_harnesses=plan.get("prefer_harnesses") or (),
+                )
+                reason = f"kind {plan.get('task_type')}, rule {plan.get('rule')}; " + selection_reason(
+                    decision
+                )
                 if adjusted:
                     reason = (
                         f"{reason}; adjusted at apply: {chosen.profile_id} "
@@ -564,6 +572,7 @@ class RoutingCommandsMixin:
                     "candidates": [c.as_dict() for c in valid],
                     "scores": [s.as_dict() for s in selection.scores],
                     "reason": reason,
+                    "decision": decision,
                     "policy_sha256": plan.get("policy_sha256"),
                     "benchmark_arm": plan.get("benchmark_arm"),
                     "benchmark_class": plan.get("benchmark_class"),

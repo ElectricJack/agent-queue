@@ -3,7 +3,39 @@
 `task_route_plan` extends the mandatory router's existing `Snapshot` with
 `live_context` and `live_summary`. These describe compatible worker profiles
 and providers without changing policy, provider choice, fleet limits, gates,
-or claim admission. The classifier's existing task-only prompt remains unchanged.
+or claim admission. The classifier remains task-only; provider preference belongs
+to the reviewed policy and deterministic placement.
+
+## Routine hosted preference
+
+An optional `prefer_harnesses` list on a kind (overridable by origin) favors a
+compatible hosted harness after eligible local/design lane preferences. The
+shipped implementation, fix, refactor, test, docs, chore and sync rules prefer
+Codex to conserve Claude capacity. Class fit, exclusions, workspace requirements,
+explicit provider intent, reserved cells and benchmark arms are applied first.
+Research and design retain their own rules. Provider load never raises the class.
+
+Preference requires an available provider, usage at or below that provider's
+existing soft limit (or explicitly unknown), spare profile slots including
+routed backlog, and positive effective headroom when observed. It compares no
+percentages between providers or unequal quota windows. Fresh quota windows
+reduce each provider's own score above its soft limit; stale/reset windows remain
+labelled evidence only. If no preferred hosted candidate qualifies, select a
+compatible alternative with free observed capacity by the existing pressure
+score. With no free candidate, preserve queued routing by pressure. Headroom is
+an observation used to rank preference, never an admission reservation.
+
+Apply recomputes this selection under the existing route lock. Persisted reasons
+and decision evidence name selected class/profile/provider, load and headroom,
+availability, quota freshness/age and snapshot age, including why a preferred
+candidate was bypassed. Caller-supplied context cannot supply these facts.
+
+Historical replay must use exported route evidence, report missing observations
+and distribution changes, and distinguish a counterfactual from measured quota
+savings. Ship source, immutable artifact and manifest together. Import/diff and
+activate the reviewed hash through the playbook commands after replay; retain
+the project's binding or explicitly review a project override. Never edit an
+installed artifact, pin callers, reroute held work or change fleet limits.
 
 The versioned context includes collection start/end and duration, provenance,
 provider state/reason code/update age, and each observed quota window's scope,

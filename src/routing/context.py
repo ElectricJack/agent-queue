@@ -50,6 +50,7 @@ def live_context(
     supply: list[dict], active_kinds: Mapping[str, int], project_cap: int,
     project_active: bool, global_cap: int | None, workspace_capacity: int | None,
     quarantine: Mapping[str, float],
+    headroom_out: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Summarize compatible workers and compute local idle + constrained launch headroom."""
     fleet: dict[str, Counter] = {}
@@ -89,6 +90,8 @@ def live_context(
         # Routed backlog also competes for existing idle and future launch slots.
         backlog = int(snapshot.backlog.get(profile.id, 0))
         headroom = max(0, idle + launch - backlog)
+        if headroom_out is not None:
+            headroom_out[profile.id] = headroom
         profiles.append({
             "profile_id": profile.id[:120], "harness": profile.harness[:80],
             "provider": profile.provider[:80], "lifecycle": profile.lifecycle,
