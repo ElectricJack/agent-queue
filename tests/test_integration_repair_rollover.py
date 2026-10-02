@@ -267,6 +267,13 @@ async def test_service_retries_a_busy_successor_dispatch_without_any_event(env, 
 
     case = await _batch_writer(env, on_exhausted=on_exhausted)
     repair = case.repair
+    # A conclusive attempt lets this stage's deadline escalate. A live writer
+    # without an attempt now defers its deadline instead of allocating debug.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == case.operation,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(attempts=1))
     outcomes = []
 
     async def dispatcher(row):
