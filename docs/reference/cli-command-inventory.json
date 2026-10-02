@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 472,
+    "leaf_commands": 473,
     "registration": {
       "generated": 302,
-      "handwritten": 170
+      "handwritten": 171
     },
     "ownership": {
-      "core": 433,
+      "core": 434,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 471
+      "supported": 472
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 302,
-      "registration": 156
+      "registration": 157
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 412
+      "untested": 413
     }
   },
   "commands": [
@@ -4101,6 +4101,40 @@
           "--write-audit-workflow",
           "--write-ruleset",
           "--check-prs",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration rebind-detached-repair",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_rebind_detached_repair",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "operation_id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--stage",
+          "--remote-head",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"

@@ -88,6 +88,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
+        "integration_rebind_detached_repair",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -346,6 +347,45 @@ class IntegrationRebindRepairValue(CommandValue):
     repair_commit_shas: tuple[str, ...] = ()
     fence_token: int | None = None
     session_id: str | None = None
+    reason: str | None = None
+    next_step: str | None = None
+
+
+class IntegrationRebindDetachedRepairArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_stage: int | None = Field(default=None, ge=0)
+    expected_remote_head_sha: str | None = None
+    reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def apply_requires_proved_identity(self) -> IntegrationRebindDetachedRepairArgs:
+        if self.expected_remote_head_sha is not None and not is_valid_git_oid(
+            self.expected_remote_head_sha
+        ):
+            raise ValueError("expected_remote_head_sha must be a full commit id")
+        if not self.dry_run and (
+            self.expected_stage is None
+            or self.expected_remote_head_sha is None
+            or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires the stage and remote head from dry-run and a reason")
+        return self
+
+
+class IntegrationRebindDetachedRepairValue(CommandValue):
+    operation_id: str | None = None
+    stage: int | None = None
+    repair_task_id: str | None = None
+    intent_id: str | None = None
+    frozen_head_sha: str | None = None
+    remote_head_sha: str | None = None
+    frozen_head_refs: tuple[str, ...] = ()
+    receipt_ids: tuple[str, ...] = ()
+    fence_token: int | None = None
+    deadline_at: float | None = None
+    delegate_status: str | None = None
+    dispatch_outcome: str | None = None
     reason: str | None = None
     next_step: str | None = None
 
@@ -1355,6 +1395,24 @@ INTEGRATION_REBIND_REPAIR = _operational_contract(
     successes=frozenset({"would_rebind", "rebound", "already_reserved"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRebindRepairValue,
+)
+
+REBIND_DETACHED_REPAIR_OUTCOMES = (
+    "would_rebind",
+    "rebound",
+    "already_rebound",
+    "changed",
+    "blocked",
+    "not_found",
+)
+
+INTEGRATION_REBIND_DETACHED_REPAIR = _operational_contract(
+    "integration_rebind_detached_repair",
+    IntegrationRebindDetachedRepairArgs,
+    REBIND_DETACHED_REPAIR_OUTCOMES,
+    successes=frozenset({"would_rebind", "rebound", "already_rebound"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationRebindDetachedRepairValue,
 )
 
 ADOPT_LEGACY_DELIVERIES_OUTCOMES = (
@@ -2882,6 +2940,18 @@ async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: Command
     )
 
 
+async def _rebind_detached_repair_adapter(
+    args: IntegrationRebindDetachedRepairArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_rebind_detached_repair",
+        args,
+        ctx,
+        IntegrationRebindDetachedRepairValue,
+        set(REBIND_DETACHED_REPAIR_OUTCOMES),
+    )
+
+
 async def _adopt_legacy_deliveries_adapter(
     args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
 ):
@@ -3025,6 +3095,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
+        (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
