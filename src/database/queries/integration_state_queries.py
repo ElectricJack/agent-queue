@@ -10,6 +10,7 @@ from src.database.tables import (
     integration_candidate_resolutions,
     integration_operation_artifact_pins,
     integration_parent_episodes,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
     repos,
@@ -363,6 +364,73 @@ class IntegrationStateQueriesMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
         return dict(rows[0]) if len(rows) == 1 else None
+
+    async def get_parent_repair_prime_context(
+        self, repair_task_id: str, *, session_id: str
+    ) -> dict | None:
+        """Read the current conflict and attached fence, never a historical dossier."""
+        async with self._engine.connect() as conn:
+            scope = await self.get_repair_filing_scope(
+                repair_task_id, session_id=session_id, conn=conn
+            )
+            if (
+                not scope or not scope["active"]
+                or scope["target_kind"] != "parent"
+                or scope["writer_kind"] != "repair_delegate"
+            ):
+                return None
+            session = (await conn.execute(
+                select(sessions).where(sessions.c.id == session_id)
+            )).mappings().one()
+            task = (await conn.execute(
+                select(tasks).where(tasks.c.id == repair_task_id)
+            )).mappings().one()
+            if session["lifecycle"] == "pool" and (
+                session["claim_phase"] != "active"
+                or session["last_claim_epoch"] != task["claim_epoch"]
+            ):
+                return None
+            intent = (await conn.execute(
+                select(integration_promotion_intents).where(
+                    integration_promotion_intents.c.id == scope["trigger_id"],
+                    integration_promotion_intents.c.operation_key == scope["operation_id"],
+                    integration_promotion_intents.c.project_id == scope["project_id"],
+                    integration_promotion_intents.c.target_task_id == scope["parent_task_id"],
+                    integration_promotion_intents.c.repository_id == scope["repository_id"],
+                    integration_promotion_intents.c.state.in_(
+                        ("conflict", "resolution_reserved")
+                    ),
+                )
+            )).mappings().one_or_none()
+            subject = scope["current_subject"] or {}
+            if (
+                intent is None
+                or str(intent["target_branch"]).removeprefix("refs/heads/")
+                != str(task["branch_name"]).removeprefix("refs/heads/")
+                or subject.get("kind") != "parent"
+                or not subject.get("head_sha")
+                or subject["head_sha"] not in {
+                    intent["expected_target"], intent["resolution_head_sha"]
+                }
+            ):
+                return None
+            return {
+                "operation_id": scope["operation_id"],
+                "stage": scope["stage"],
+                "intent_id": intent["id"],
+                **{key: intent[key] for key in (
+                    "state", "source_task_id", "source_base", "source_head",
+                    "target_task_id", "expected_target", "conflict_diagnostics",
+                )},
+                "fence": {
+                    "target": {
+                        "repository_id": intent["repository_id"],
+                        "branch": intent["target_branch"],
+                    },
+                    "owner_id": repair_task_id,
+                    "token": scope["fence_token"],
+                },
+            }
 
     async def get_repair_filing_scope(
         self, repair_task_id: str, *, session_id: str | None = None, conn=None

@@ -960,7 +960,9 @@ class IntegrationCommandsMixin:
         _label, refusal = await self._integration_operator_for_operation(operation_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        return await self._integration_control_service().release_delegates(operation_id)
+        return await self._integration_control_service().release_delegates(
+            operation_id, archive_obsolete=bool(args.get("archive_obsolete", False))
+        )
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
         """Recover a durable pushed root-candidate repair."""
@@ -1328,6 +1330,41 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
         return {
             "success": result["outcome"] in {"would_rebind", "rebound", "already_reserved"},
+            **result,
+        }
+
+    async def _cmd_integration_rebind_detached_repair(self, args: dict) -> dict:
+        """Rebind a detached debug stage frozen on an unpublished head to its conflict."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRebindDetachedRepairArgs
+        from src.integration.detached_repair_rebind import DetachedRepairRebind
+        from src.integration.promotion import PromotionError
+
+        try:
+            request = IntegrationRebindDetachedRepairArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("blocked", f"invalid detached repair rebind request: {exc}")
+        principal, refusal = await self._integration_operator_for_operation(
+            request.operation_id
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await DetachedRepairRebind(
+                self._integration_promotion_service(), self._integration_repair_service()
+            ).run(
+                request.operation_id,
+                dry_run=request.dry_run,
+                expected_stage=request.expected_stage,
+                expected_remote_head_sha=request.expected_remote_head_sha,
+                reason=request.reason,
+                principal=principal,
+            )
+        except (PromotionError, GitError, ValueError) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_rebind", "rebound", "already_rebound"},
             **result,
         }
 

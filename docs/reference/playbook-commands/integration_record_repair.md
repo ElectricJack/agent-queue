@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:c5f684d368b31fa9c5216710c99c6aab570bc439db18a772051656616035fa7b` |
+| Contract fingerprint | `sha256:75154a5d38ad5ef28e38b5a7f842f1f0bd547dc77d592179e8d9c788a59ae0d3` |
 
 ## Parameters
 
@@ -27,7 +27,7 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `action` | `"repair" \| "infrastructure_retry" \| "inconclusive" \| "completion_ready" \| "dispatch_debug" \| "block_for_human" \| "duplicate" \| "stale" \| null` | — |
+| `action` | `"repair" \| "infrastructure_retry" \| "inconclusive" \| "completion_ready" \| "dispatch_debug" \| "block_for_human" \| "supervisor_recovery" \| "duplicate" \| "stale" \| null` | — |
 | `attempts` | `integer \| null` | — |
 | `stage` | `integer \| null` | — |
 

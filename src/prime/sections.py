@@ -339,7 +339,9 @@ def _render_spec_ref(config: Any, row: dict) -> str:
     return f"**{ref_path} § {ref_section}:**\n\n{body}"
 
 
-async def build_task_context_section(db: Any, config: Any, task: Any) -> PrimeSection:
+async def build_task_context_section(
+    db: Any, config: Any, task: Any, *, session_id: str | None = None
+) -> PrimeSection:
     """``task_context`` rows incl. inlined ``spec_ref`` + attachments (design §5.2 #4).
 
     ``type='handoff'`` rows are excluded here — they render in section 6
@@ -347,6 +349,23 @@ async def build_task_context_section(db: Any, config: Any, task: Any) -> PrimeSe
     """
     rows = await db.get_task_contexts(task.id)
     blocks: list[str] = []
+    get_repair = getattr(db, "get_parent_repair_prime_context", None)
+    if (
+        getattr(task, "created_by_kind", None) == "integration_repair"
+        and session_id
+        and callable(get_repair)
+    ):
+        repair = await get_repair(task.id, session_id=session_id)
+        if isinstance(repair, dict):
+            blocks.append(
+                "**Current parent conflict repair:**\n"
+                "Live assignment snapshot; refresh `aq prime` if the intent or attachment changes. "
+                "Use this intent_id, operation_id and fence for "
+                "`aq system integration-resolve-conflict`, then the same intent_id and fence for "
+                "`aq system integration-push-conflict-resolution`. These commands revalidate authority; "
+                "this snapshot does not bypass stale-fence checks.\n\n"
+                "```json\n" + json.dumps(repair, indent=2, sort_keys=True) + "\n```"
+            )
     for row in rows:
         ctype = row.get("type")
         if ctype == "handoff":
@@ -630,8 +649,17 @@ def build_l2_context_section(config: Any) -> PrimeSection:
 # ---------------------------------------------------------------------------
 
 
-def build_tool_guidance_section() -> PrimeSection:
+#: Harnesses with a ``tool_guidance_<harness>.md`` addendum: how that CLI's own
+#: interaction habits (dialogs, confirmations) meet an unattended AQ session.
+_HARNESS_GUIDANCE = frozenset({"opencode"})
+
+
+def build_tool_guidance_section(harness: str | None = None) -> PrimeSection:
     body = _load_template("tool_guidance.md")
+    if harness in _HARNESS_GUIDANCE:
+        addendum = _load_template(f"tool_guidance_{harness}.md")
+        if addendum:
+            body = f"{body}\n\n{addendum}" if body else addendum
     return PrimeSection(key="tool_guidance", title=SECTION_TITLES["tool_guidance"], body=body)
 
 

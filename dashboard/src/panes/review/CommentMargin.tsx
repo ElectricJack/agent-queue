@@ -28,10 +28,10 @@ function CommentCard({ comment }: { comment: ReviewComment }) {
 /** Margin companion for comments which still match the displayed revision. */
 export function CommentMargin({ anchored, earlier }: { anchored: ReviewComment[]; earlier: ReviewComment[] }) {
   if (anchored.length === 0 && earlier.length === 0) {
-    return <aside className="hidden w-[260px] shrink-0 border-l border-gray-800 p-3 min-[720px]:block"><p className="text-xs text-gray-600">No comments yet.</p></aside>;
+    return <aside className="hidden w-[260px] shrink-0 border-l border-gray-800 p-3 @min-[1000px]/review:block"><p className="text-xs text-gray-600">No comments yet.</p></aside>;
   }
   return (
-    <aside className="hidden w-[260px] shrink-0 space-y-3 overflow-y-auto border-l border-gray-800 p-3 min-[720px]:block" aria-label="Review comments">
+    <aside className="hidden w-[260px] shrink-0 space-y-3 overflow-y-auto border-l border-gray-800 p-3 @min-[1000px]/review:block" aria-label="Review comments">
       {anchored.map((comment, index) => <CommentCard key={comment.id ?? `comment-${index}`} comment={comment} />)}
       {earlier.length > 0 && (
         <section className="space-y-2 border-t border-gray-800 pt-3">

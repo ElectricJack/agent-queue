@@ -205,7 +205,18 @@ class IntegrationControlService:
             ],
         }
 
-    async def release_delegates(self, operation_id: str) -> dict[str, Any]:
+    async def release_delegates(
+        self, operation_id: str, *, archive_obsolete: bool = False
+    ) -> dict[str, Any]:
+        if archive_obsolete:
+            from src.integration.delegate_release import archive_obsolete_delegates
+
+            if await self.db.get_integration_operation(operation_id) is None:
+                return {"outcome": "not_found", "operation_id": operation_id}
+            result = await archive_obsolete_delegates(self.db, operation_ids=[operation_id])
+            result.pop("next_after")
+            return {"outcome": "released" if result["archived_delegates"] else "nothing_to_release",
+                    "operation_id": operation_id, **result}
         return await self._recovery().release_delegates(operation_id)
 
     async def has_active_work(self, project_id: str) -> bool:

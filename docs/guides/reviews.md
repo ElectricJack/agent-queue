@@ -76,6 +76,16 @@ For workers and the supervisor, plus the `aq task create … --after-review
 <id>` and `aq task edit … --after-review <id>` the daemon uses to gate work,
 see [§ The worker's side](#the-workers-side).
 
+## Download a document
+
+Open a document in **Reviews**, select its revision, and choose **Download
+Markdown** in the revision toolbar. This saves the selected revision's raw
+Markdown as UTF-8, including frontmatter and original line breaks. It works
+for specs, plans and other review documents, including historical and closed
+reviews. Showing a diff does not change the downloaded content. The filename
+uses the review title (or its ID) and revision number with a `.md` extension.
+The action is unavailable while the selected content is loading.
+
 ## Screenshot evidence
 
 Submit the review text first, then attach screenshots to its current revision

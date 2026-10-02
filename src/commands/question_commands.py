@@ -43,6 +43,11 @@ class QuestionCommandsMixin:
         if identity["project_id"] is not None and project_id != identity["project_id"]:
             return {"error": "out of scope: question belongs to another project"}
         questions = await self.db.list_agent_questions(project_id=project_id)
+        # A native dialog's answer counts once the worker acts on it, not when
+        # the pointer is typed: keep it listed (``delivered``) until then.
+        service = getattr(self.orchestrator, "agent_questions", None)
+        if service is not None:
+            questions += await service.awaiting_resume(project_id)
         return {"questions": questions, "count": len(questions)}
 
     async def _cmd_question_answer(self, args):

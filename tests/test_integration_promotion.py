@@ -2873,6 +2873,366 @@ async def test_rebind_repair_refuses_stale_or_unproven_candidate_without_mutatio
         assert dict((await conn.execute(stage_query)).mappings().one()) == before_stage
 
 
+async def _detached_debug_stage(db, case) -> str:
+    """Recreate operation bcab5af6's failure: a debug stage frozen on an unpublished head.
+
+    A retained handoff bound the stopped writer's local HEAD. That commit only
+    reached another branch, so the parent branch still sits at the conflict's
+    expected target and admission refuses the delegate before its claim.
+    """
+    from src.database.tables import task_metadata
+    from src.integration.models import HierarchicalIntegrationPolicy
+
+    work = case["work"]
+    _git(["switch", "-c", "aq/unpublished-progress", case["target"]], work)
+    (work / "progress.txt").write_text("unpublished writer progress\n")
+    _git(["add", "progress.txt"], work)
+    _git(["commit", "-m", "unpublished writer progress"], work)
+    frozen = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "aq/unpublished-progress"], work)
+    _git(["switch", "aq/parent"], work)
+    boundary = HierarchicalIntegrationPolicy.model_validate(_hierarchy_policy()).parent
+    stage_policy = boundary.repair.model_dump(mode="json") | {"on_exhausted": "continue"}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.id == "resolution-op",
+        ).values(
+            active_stage=1, state="escalated",
+            artifact_snapshot=boundary.route.artifact.model_dump(mode="json"),
+            route_playbook_id=boundary.route.playbook_id,
+            route_scope=boundary.route.scope,
+            route_scope_identifier=boundary.route.scope_identifier,
+            route_activation_id=boundary.route.activation_id,
+        ))
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        ).values(
+            repair_task_id="repair-task-0", policy=stage_policy, state="expired",
+            completed_at=4.0,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="resolution-op",
+            ordinal=1,
+            policy=stage_policy,
+            intelligence_class="debug-high",
+            repair_task_id="repair-task",
+            writer_kind="repair_delegate",
+            starting_sha=frozen,
+            trigger_id="stage-exhausted:resolution-op:0",
+            current_subject={"kind": "parent", "generation": 0, "head_sha": frozen},
+            deadline_event_id="repair-deadline-resolution-op-1",
+            started_at=4.0,
+            deadline_at=4_000_000_000.0,
+            attempts=0,
+            dossier={"starting_sha": frozen, "branch_sha": frozen, "repair_commits": [frozen]},
+            state="active",
+        ))
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "repo",
+            integration_branch_owners.c.ref == "aq/parent",
+        ).values(handoff_state="reserved", session_id=None, workspace_id=None))
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+            state="stopped", desired_state="stopped", task_id=None,
+        ))
+        await conn.execute(update(workspaces).where(
+            workspaces.c.id == "resolution-workspace",
+        ).values(locked_by_task_id=None))
+        await conn.execute(update(tasks).where(tasks.c.id == "repair-task").values(
+            status="BLOCKED",
+        ))
+        await conn.execute(insert(task_metadata).values(
+            task_id="repair-task", key="needs_attention", value=json.dumps("slot_reset_failed"),
+        ))
+    return frozen
+
+
+async def _detached_rebind_handler(db, case, command_handler_factory):
+    from src.integration.promotion import PromotionService
+
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager()
+    )
+    return handler
+
+
+def _detached_rebind_supervisor(db_session_id: str = "detached-supervisor"):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.profiles.capabilities import CapabilityPolicy
+
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["integration_rebind_detached_repair"]
+        ),
+        session_id=db_session_id, session_instance_token="supervisor-instance",
+        project_id="project", profile_id="supervisor", elevated=True,
+    )
+
+
+async def _detached_rebind_snapshot(db) -> dict:
+    async with db._engine.connect() as conn:
+        stage = dict((await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 1,
+        ))).mappings().one())
+        owner = dict((await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "repo",
+            integration_branch_owners.c.ref == "aq/parent",
+        ))).mappings().one())
+        operation = dict((await conn.execute(select(integration_repair_operations).where(
+            integration_repair_operations.c.id == "resolution-op",
+        ))).mappings().one())
+    return {
+        "stage": stage,
+        "owner": owner,
+        "operation": operation,
+        "delegate": (await db.get_task("repair-task")).status,
+    }
+
+
+async def test_detached_repair_rebind_reconnects_frozen_stage_to_published_conflict(
+    db, conflict_resolution_case, command_handler_factory
+):
+    """Operation bcab5af6: prove, rebind without new budget, then resolve normally."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.repair import RepairService
+
+    case = conflict_resolution_case
+    frozen = await _detached_debug_stage(db, case)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    before = await _detached_rebind_snapshot(db)
+    with pytest.raises(subprocess.CalledProcessError):
+        _git(["merge-base", "--is-ancestor", frozen, case["target"]], case["work"])
+
+    preview = await handler.execute(
+        "integration_rebind_detached_repair", {"operation_id": "resolution-op"}
+    )
+    assert preview["outcome"] == "would_rebind", preview
+    assert preview["stage"] == 1
+    assert preview["repair_task_id"] == "repair-task"
+    assert preview["intent_id"] == case["intent_id"]
+    assert preview["frozen_head_sha"] == frozen
+    assert preview["remote_head_sha"] == case["target"]
+    assert "refs/remotes/origin/aq/unpublished-progress" in preview["frozen_head_refs"]
+    assert preview["fence_token"] == 3
+    assert preview["delegate_status"] == "BLOCKED"
+    assert await _detached_rebind_snapshot(db) == before
+
+    changed = await handler.execute("integration_rebind_detached_repair", {
+        "operation_id": "resolution-op", "dry_run": False, "expected_stage": 1,
+        "expected_remote_head_sha": frozen, "reason": "frozen head unpublished",
+    })
+    assert changed["outcome"] == "changed"
+    assert await _detached_rebind_snapshot(db) == before
+
+    await db.create_session(SessionRecord(
+        id="detached-supervisor", project_id="project", profile_id="supervisor",
+        harness="fake", provider="fake", name="supervisor-project", lifecycle="named",
+        state="running", desired_state="running", work_dir=str(case["work"]),
+        epoch="epoch", instance_token="supervisor-instance", started_at=3.0,
+    ))
+    with principal_context(_detached_rebind_supervisor()):
+        applied = await handler.execute("integration_rebind_detached_repair", {
+            "operation_id": "resolution-op", "dry_run": False, "expected_stage": 1,
+            "expected_remote_head_sha": preview["remote_head_sha"],
+            "reason": "frozen head unpublished",
+        })
+    assert applied["outcome"] == "rebound", applied
+    assert applied["dispatch_outcome"] == "already_dispatched"
+    assert applied["delegate_status"] == "READY"
+
+    after = await _detached_rebind_snapshot(db)
+    stage = after["stage"]
+    assert stage["starting_sha"] == case["target"]
+    assert stage["trigger_id"] == case["intent_id"]
+    assert stage["current_subject"] == {
+        "kind": "parent", "generation": 0, "head_sha": case["target"],
+    }
+    for unchanged in ("started_at", "deadline_at", "deadline_event_id", "attempts", "state",
+                      "repair_task_id", "writer_kind"):
+        assert stage[unchanged] == before["stage"][unchanged], unchanged
+    record = stage["dossier"]["detached_rebinds"][-1]
+    assert record["previous"]["starting_sha"] == frozen
+    assert record["previous"]["trigger_id"] == "stage-exhausted:resolution-op:0"
+    assert record["previous"]["repair_commits"] == [frozen]
+    assert record["principal"] == "supervisor session:detached-supervisor"
+    assert record["reason"] == "frozen head unpublished"
+    assert stage["dossier"]["repair_commits"] == []
+    assert stage["dossier"]["current_conflict"]["intent_id"] == case["intent_id"]
+    assert after["owner"] == before["owner"]
+    assert after["operation"]["state"] == "escalated"
+    assert after["delegate"] == TaskStatus.READY
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["state"] == "conflict"
+    assert intent["resolution_head_sha"] is None
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == (
+        case["target"]
+    )
+    # Admission now prepares at the published head: it descends from the stage start.
+    _git(["fetch", "origin"], case["work"])
+    _git(["merge-base", "--is-ancestor", stage["starting_sha"], "origin/aq/parent"],
+         case["work"])
+
+    replayed = await handler.execute("integration_rebind_detached_repair", {
+        "operation_id": "resolution-op", "dry_run": False, "expected_stage": 1,
+        "expected_remote_head_sha": case["target"], "reason": "frozen head unpublished",
+    })
+    assert replayed["outcome"] == "already_rebound"
+    assert (await _detached_rebind_snapshot(db))["stage"] == stage
+    # The parent playbook's operation-key replay names the rebound stage; no new budget.
+    assert stage["dossier"]["continuations"][-1]["intent_id"] == case["intent_id"]
+    restarted = await RepairService(db).start("resolution-op", case["target"], "resolution-op")
+    assert restarted["outcome"] == "already_started"
+    assert (await _detached_rebind_snapshot(db))["stage"] == stage
+
+    # The admitted writer resolves and publishes through the ordinary fenced path.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "repo",
+            integration_branch_owners.c.ref == "aq/parent",
+        ).values(
+            handoff_state="attached", session_id="resolution-session",
+            workspace_id="resolution-workspace",
+        ))
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+            state="running", desired_state="running", task_id="repair-task",
+        ))
+        await conn.execute(update(workspaces).where(
+            workspaces.c.id == "resolution-workspace",
+        ).values(locked_by_task_id="repair-task"))
+        await conn.execute(update(tasks).where(tasks.c.id == "repair-task").values(
+            status="IN_PROGRESS",
+        ))
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(_resolution_request(case))
+        with pytest.raises(PromotionTargetMoved, match="authority is stale"):
+            await service.push_resolution(
+                case["intent_id"], Fence(**{**case["resolution_fence"], "token": 2})
+            )
+        await service.push_resolution(case["intent_id"], Fence(**case["resolution_fence"]))
+    await service.reconcile(case["intent_id"])
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == (
+        case["resolved_head"]
+    )
+
+
+@pytest.mark.parametrize(("blocker", "refusal"), [
+    ("worker", "supervisor"),
+    ("human_required", "operation is human_required"),
+    ("expired", "budget is exhausted"),
+    ("attached_owner", "not detached"),
+    ("live_session", "session still holds"),
+    ("unrelated_block", "blocked for another reason"),
+    ("remote_moved", "not the conflict's expected target"),
+    ("unpublished_only", "not reachable from any published ref"),
+    ("not_descendant", "does not descend from the published head"),
+    ("receipt_outside_history", "receipt receipt-unpublished"),
+    ("open_gate", "open gate gate-detached"),
+    ("not_exhausted_trigger", "not a debug continuation"),
+])
+async def test_detached_repair_rebind_refuses_unproven_state_without_mutation(
+    db, conflict_resolution_case, command_handler_factory, monkeypatch, blocker, refusal
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.database.tables import gates, task_gates, task_metadata
+    from src.integration.repair import RepairService
+    from src.profiles.capabilities import CapabilityPolicy
+
+    case = conflict_resolution_case
+    frozen = await _detached_debug_stage(db, case)
+    stage_row = (
+        (integration_repair_stages.c.operation_id == "resolution-op")
+        & (integration_repair_stages.c.ordinal == 1)
+    )
+    owner_row = (
+        (integration_branch_owners.c.repository_id == "repo")
+        & (integration_branch_owners.c.ref == "aq/parent")
+    )
+    async with db.immediate() as conn:
+        if blocker == "human_required":
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == "resolution-op",
+            ).values(state="human_required"))
+        elif blocker == "expired":
+            await conn.execute(update(integration_repair_stages).where(stage_row).values(
+                deadline_at=1.0,
+            ))
+        elif blocker == "attached_owner":
+            await conn.execute(update(integration_branch_owners).where(owner_row).values(
+                handoff_state="attached", session_id="resolution-session",
+                workspace_id="resolution-workspace",
+            ))
+        elif blocker == "live_session":
+            await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                               .values(state="running", task_id="repair-task"))
+        elif blocker == "unrelated_block":
+            await conn.execute(update(task_metadata).where(
+                task_metadata.c.task_id == "repair-task",
+                task_metadata.c.key == "needs_attention",
+            ).values(value=json.dumps("merge_conflict")))
+        elif blocker == "not_descendant":
+            await conn.execute(update(integration_repair_stages).where(stage_row).values(
+                starting_sha=case["source"],
+                current_subject={"kind": "parent", "generation": 0, "head_sha": case["source"]},
+            ))
+        elif blocker == "open_gate":
+            await conn.execute(insert(gates).values(
+                id="gate-detached", project_id="project", gate_type="human",
+                title="Hold repair", question="", status="open", created_at=4.0,
+            ))
+            await conn.execute(insert(task_gates).values(task_id="parent", gate_id="gate-detached"))
+        elif blocker == "not_exhausted_trigger":
+            await conn.execute(update(integration_repair_stages).where(stage_row).values(
+                trigger_id="check-evidence-1",
+            ))
+    if blocker == "remote_moved":
+        _git(["push", "origin", f"{frozen}:refs/heads/aq/parent"], case["work"])
+    elif blocker == "unpublished_only":
+        _git(["push", "origin", "--delete", "aq/unpublished-progress"], case["work"])
+    elif blocker == "receipt_outside_history":
+        original = RepairService._current_receipts_on
+
+        async def receipts(self, conn, operation):
+            return [*await original(self, conn, operation), {
+                "id": "receipt-unpublished", "source_task_id": "child",
+                "disposition": "code", "after_sha": frozen,
+            }]
+
+        monkeypatch.setattr(RepairService, "_current_receipts_on", receipts)
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    before = await _detached_rebind_snapshot(db)
+    request = {
+        "operation_id": "resolution-op", "dry_run": False, "expected_stage": 1,
+        "expected_remote_head_sha": case["target"], "reason": "detached rebind",
+    }
+    if blocker == "worker":
+        worker = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(
+                aq_commands=["integration_rebind_detached_repair"]
+            ),
+            session_id="resolution-session", session_instance_token="resolution-instance",
+            project_id="project", profile_id="repairer", task_id="repair-task",
+        )
+        with principal_context(worker):
+            result = await handler.execute("integration_rebind_detached_repair", request)
+    else:
+        result = await handler.execute("integration_rebind_detached_repair", request)
+
+    assert result["success"] is False, result
+    assert result["outcome"] == ("unauthorized" if blocker == "worker" else "blocked"), result
+    assert refusal in str(result.get("reason") or result.get("error")), result
+    assert await _detached_rebind_snapshot(db) == before
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["state"] == "conflict"
+
+
 @pytest.mark.parametrize("blocker", ["push_started", "remote_moved"])
 async def test_operator_recovery_refuses_ambiguous_resolution(
     db, conflict_resolution_case, blocker

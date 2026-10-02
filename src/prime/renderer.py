@@ -133,7 +133,9 @@ class PrimeRenderer:
                     self.db, task, allow_updates=allow_subtask_updates
                 ),
             ),
-            await _sections.build_task_context_section(self.db, self.config, task),
+            await _sections.build_task_context_section(
+                self.db, self.config, task, session_id=session_id
+            ),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
             await _sections.build_messages_section(
                 self.db,
@@ -148,7 +150,11 @@ class PrimeRenderer:
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
-            _sections.build_tool_guidance_section(),
+            _sections.build_tool_guidance_section(
+                getattr(sess, "harness", None)
+                if getattr(sess, "state", None) in live_states
+                else None
+            ),
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,

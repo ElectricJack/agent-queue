@@ -93,14 +93,14 @@ function TerminalHeader({ title, status, primary, details, onClose, titleId }: {
 }
 
 /** A window and its terminal share one header; portals add transport controls without remounting xterm. */
-export default function TerminalPane({ title, status, details, onClose, titleId, children }: {
-  title: string; status?: ReactNode; details: ReactNode; onClose: () => void; titleId?: string; children: ReactNode;
+export default function TerminalPane({ title, status, primary, details, onClose, titleId, children }: {
+  title: string; status?: ReactNode; primary?: ReactNode; details: ReactNode; onClose: () => void; titleId?: string; children: ReactNode;
 }) {
-  const [primary, setPrimary] = useState<HTMLDivElement | null>(null);
+  const [primaryTarget, setPrimary] = useState<HTMLDivElement | null>(null);
   const [extra, setExtra] = useState<HTMLDivElement | null>(null);
-  return <Chrome.Provider value={{ primary, details: extra }}>
+  return <Chrome.Provider value={{ primary: primaryTarget, details: extra }}>
     <TerminalHeader title={title} status={status} onClose={onClose} titleId={titleId}
-      primary={<div ref={setPrimary} className="flex min-w-0 shrink-0 items-center gap-1" />}
+      primary={<>{primary}<div ref={setPrimary} className="flex min-w-0 shrink-0 items-center gap-1" /></>}
       details={<>{details}<div ref={setExtra} className="space-y-2" /></>} />
     {children}
   </Chrome.Provider>;

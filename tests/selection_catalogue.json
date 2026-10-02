@@ -6,6 +6,7 @@
         "tests/test_agent_flock_questions.py",
         "tests/test_agent_question_end_to_end.py",
         "tests/test_agent_question_events.py",
+        "tests/test_agent_question_native.py",
         "tests/test_agent_question_websocket.py",
         "tests/test_agent_questions.py",
         "tests/test_cli_questions.py"
@@ -1318,7 +1319,7 @@
       ]
     }
   },
-  "digest": "sha256:974d6c9bde721c0174f9a9d4c5f021b24be0965e615e6b907a57f2ddac884358",
+  "digest": "sha256:caa882957437c2d997d0b6aa656ae7fde7bd635565872aef557a9c1b607d50ae",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1941,6 +1942,28 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_agent_question_native.py": {
+      "areas": [
+        "agent-questions"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.event_bus",
+        "src.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.native_questions",
+        "src.sessions.provider",
+        "src.sessions.questions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Native OpenCode question dialogs as durable, supervisor-routed questions (prime-dune)."
     },
     "tests/test_agent_question_websocket.py": {
       "areas": [
@@ -6015,6 +6038,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.git_ops",
         "src.orchestrator.task_checkpoint",
         "src.sessions.harness_parser",
         "src.sessions.spec"
@@ -7114,6 +7138,7 @@
         "src.doctor.models",
         "src.integration.controls",
         "src.integration.delegate_release",
+        "src.integration.repair",
         "src.models"
       ],
       "markers": [
@@ -7537,6 +7562,7 @@
         "src.integration.ownership",
         "src.integration.parent_completion",
         "src.integration.promotion",
+        "src.integration.repair",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -7612,6 +7638,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler"
       ],

@@ -88,11 +88,15 @@ async def test_delegate_retirement_recovers_the_owner_rows_named_by_cleanup(monk
     monkeypatch.setattr(
         "src.integration.delegate_release.release_delegates", AsyncMock(return_value=released)
     )
+    archive = AsyncMock(return_value={"next_after": None})
+    monkeypatch.setattr("src.integration.delegate_release.archive_obsolete_delegates", archive)
     recovery = SimpleNamespace(recover_many=AsyncMock(return_value=[]))
-    service = RepairService(SimpleNamespace(), owner_recovery=recovery)
+    db = SimpleNamespace()
+    service = RepairService(db, owner_recovery=recovery)
 
     assert await service.retire_terminal_delegates(100.0) == ["delegate"]
 
     recovery.recover_many.assert_awaited_once_with(
         ["owner-a", "owner-b"], principal="delegate_retirement"
     )
+    archive.assert_awaited_once_with(db, limit=100, after=None)

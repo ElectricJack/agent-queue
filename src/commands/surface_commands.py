@@ -364,7 +364,7 @@ class SurfaceCommandsMixin:
         try:
             doc = await renderer.render_for_task(
                 task_id,
-                session_id=args.get("session_id"),
+                session_id=scope.get("session_id") or args.get("session_id"),
                 work_dir=args.get("work_dir"),
                 mark_messages_delivered=mark_messages_delivered,
             )

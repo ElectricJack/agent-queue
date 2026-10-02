@@ -537,6 +537,30 @@ class TestPrime:
         workspaces = next(s for s in result["sections"] if s["key"] == "workspaces")
         assert "/work/x" in workspaces["body"]
 
+    async def test_repair_context_uses_authenticated_session(
+        self, prime_handler, db, task, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+        from sqlalchemy import update
+        from src.database.tables import tasks
+
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task.id).values(
+                created_by_kind="integration_repair",
+            ))
+        read = AsyncMock(return_value={"intent_id": "current-conflict", "fence": {"token": 9}})
+        monkeypatch.setattr(db, "get_parent_repair_prime_context", read)
+        prime_handler._current_scope = {
+            "kind": "session", "task_id": task.id, "project_id": task.project_id,
+            "session_id": "authenticated-session",
+        }
+        result = await prime_handler._cmd_prime({
+            "task_id": task.id, "session_id": "caller-selected-session",
+        })
+        assert result["success"] is True
+        read.assert_awaited_once_with(task.id, session_id="authenticated-session")
+        assert '"intent_id": "current-conflict"' in result["body"]
+
     async def test_not_gated_by_memory_pause(self, prime_handler, db, task):
         # `prime` itself is not a memory command — the paused gate must not
         # touch it even though its L1/L2 slots render empty.

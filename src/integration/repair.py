@@ -97,6 +97,7 @@ class RepairService:
         self._confirm_stopped = confirm_stopped
         self._owner_recovery = owner_recovery
         self._reservation_cursor: str | None = None
+        self._archive_cursor: str | None = None
 
     async def pending_dispatches(self, *, after=None, limit=20):
         """Replay incomplete continuous-policy handoffs through the command path."""
@@ -146,6 +147,12 @@ class RepairService:
             await self._owner_recovery.recover_many(
                 owner_row_ids, principal="delegate_retirement"
             )
+        from src.integration.delegate_release import archive_obsolete_delegates
+
+        archived = await archive_obsolete_delegates(
+            self.db, limit=limit, after=self._archive_cursor
+        )
+        self._archive_cursor = archived["next_after"]
         return [row["task_id"] for row in released]
 
     async def reconcile_accepted_delegates(self, now: float, *, limit: int = 100) -> list[str]:
@@ -816,6 +823,10 @@ class RepairService:
                 return self._result_value(
                     "budget_exhausted", "block_for_human", int(stage["attempts"])
                 )
+            if stage is not None and (stage["dossier"] or {}).get("supervisor_recovery"):
+                return self._result_value(
+                    "budget_exhausted", "supervisor_recovery", int(stage["attempts"])
+                )
             if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
                 return self._result_value(
                     "continue", "stale", int(stage["attempts"]) if stage else 0
@@ -879,14 +890,19 @@ class RepairService:
                 if int(stage["ordinal"]) == 0 or RepairPolicy.model_validate(stage["policy"]).on_exhausted == "continue":
                     outcome = "escalate"
                     action = "dispatch_debug"
-                    await self._activate_debug_on(
+                    continued = await self._activate_debug_on(
                         conn,
                         operation=dict(operation),
                         primary=dict(stage) | {"dossier": dossier},
                         attempts=attempts,
                         now=recorded_at,
                     )
-                    result_extra["stage"] = int(stage["ordinal"]) + 1
+                    if continued:
+                        result_extra["stage"] = int(stage["ordinal"]) + 1
+                    else:
+                        outcome = "budget_exhausted"
+                        action = "supervisor_recovery"
+                        result_extra["stage"] = int(stage["ordinal"])
                 else:
                     outcome = "human_required"
                     action = "block_for_human"
@@ -1005,9 +1021,9 @@ class RepairService:
                 tasks.c.id == repair_stage["repair_task_id"]))).scalar_one_or_none()
             if status != "COMPLETED":
                 return stage
-            await self._activate_debug_on(conn, operation=dict(operation), primary=dict(repair_stage),
+            continued = await self._activate_debug_on(conn, operation=dict(operation), primary=dict(repair_stage),
                 attempts=repair_stage["attempts"], now=self.clock())
-            return stage + 1
+            return stage + 1 if continued else stage
 
     async def missing_delegate_reservations(
         self, *, limit: int = 100, after: str | None = None
@@ -1671,6 +1687,10 @@ class RepairService:
             if operation is None or row is None:
                 return self._timeout_value("stale", "ignore", operation_id, stage)
             if row["state"] in {"failed", "expired"}:
+                if (row["dossier"] or {}).get("supervisor_recovery"):
+                    return self._timeout_value(
+                        "already_terminal", "supervisor_recovery", operation_id, stage
+                    )
                 continues = stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
                 return self._timeout_value(
                     "already_terminal",
@@ -1733,7 +1753,7 @@ class RepairService:
                 ):
                     return self._timeout_value("not_due", "wait", operation_id, stage)
             if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
-                await self._activate_debug_on(
+                continued = await self._activate_debug_on(
                     conn,
                     operation=dict(operation),
                     primary=dict(row),
@@ -1742,7 +1762,8 @@ class RepairService:
                     terminal_state="expired",
                 )
                 return self._timeout_value(
-                    "expired", "dispatch_debug", operation_id, stage + 1
+                    "expired", "dispatch_debug" if continued else "supervisor_recovery",
+                    operation_id, stage + 1 if continued else stage
                 )
             transition = await self._human_block_on(
                 conn,
@@ -3180,13 +3201,6 @@ class RepairService:
                 "head_sha": head_sha,
                 "instance_token": instance_token,
             }
-            if operation["target_kind"] == "parent":
-                await self.bind_current_parent_subject_on(
-                    conn,
-                    operation["id"],
-                    head_sha=head_sha,
-                    commit_proof=commit_proof,
-                )
             current_debug = (
                 await conn.execute(
                     select(integration_repair_stages).where(
@@ -3196,6 +3210,18 @@ class RepairService:
                 )
             ).mappings().one()
             debug_dossier = dict(current_debug["dossier"] or {})
+            starting_sha = head_sha
+            if operation["target_kind"] == "parent":
+                # A stopped checkout proves retained work, not publication.
+                # Keep remote admission and later stages anchored on the
+                # published subject; resume local work through its provenance.
+                starting_sha = current_debug["starting_sha"]
+                debug_dossier = self._dossier_with_repair_commits(
+                    debug_dossier,
+                    self._subject_sha(current_debug["current_subject"]),
+                    head_sha,
+                    commit_proof,
+                )
             debug_dossier["receipts"] = await self._current_receipts_on(conn, operation)
             stage_changed = await conn.execute(
                 update(integration_repair_stages)
@@ -3206,7 +3232,7 @@ class RepairService:
                     integration_repair_stages.c.retained_workspace_id.is_(None),
                 )
                 .values(
-                    starting_sha=head_sha,
+                    starting_sha=starting_sha,
                     retained_workspace_id=workspace_id,
                     retained_handoff=provenance,
                     dossier=debug_dossier,
@@ -3221,7 +3247,7 @@ class RepairService:
                         conn,
                         operation,
                         dict(current_debug)
-                        | {"starting_sha": head_sha, "dossier": debug_dossier},
+                        | {"starting_sha": starting_sha, "dossier": debug_dossier},
                     ),
                 )
             )
@@ -3656,13 +3682,30 @@ class RepairService:
         attempts: int,
         now: float,
         terminal_state: str = "failed",
-    ) -> None:
+    ) -> bool:
         policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
         previous_ordinal = int(primary["ordinal"])
         next_ordinal = previous_ordinal + 1
         primary_dossier = dict(primary["dossier"] or {})
         primary_dossier["receipts"] = await self._current_receipts_on(conn, operation)
+        predecessor = None
+        if previous_ordinal > 0:
+            predecessor = (await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == previous_ordinal - 1,
+            ))).mappings().one_or_none()
+            current_sha = self._subject_sha(primary["current_subject"])
+            if (
+                predecessor is None
+                or not is_valid_git_oid(current_sha)
+                or current_sha == self._subject_sha(predecessor["current_subject"])
+            ):
+                await self._supervisor_recovery_on(
+                    conn, operation=operation, stage=primary | {"dossier": primary_dossier},
+                    attempts=attempts, now=now, terminal_state=terminal_state,
+                )
+                return False
         await conn.execute(
             update(integration_repair_stages)
             .where(
@@ -3745,6 +3788,58 @@ class RepairService:
             payload={"operation_id": operation["id"]},
             available_at=now,
         )
+        return True
+
+    async def _supervisor_recovery_on(
+        self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str
+    ) -> None:
+        """End an unchanged-head budget once; preserve its writer and incident."""
+        incident_id = f"repair-no-progress:{operation['id']}:{stage['ordinal']}"
+        dossier = dict(stage["dossier"] or {})
+        dossier["supervisor_recovery"] = {
+            "incident_id": incident_id,
+            "reason": "repair subject has not advanced since the preceding stage",
+            "subject": stage["current_subject"],
+            "stage": int(stage["ordinal"]),
+            "attempts": attempts,
+            "deadline_at": stage["deadline_at"],
+            "repair_task_id": stage["repair_task_id"],
+            "recorded_at": now,
+        }
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation["id"],
+            integration_repair_stages.c.ordinal == stage["ordinal"],
+        ).values(state=terminal_state, attempts=attempts, dossier=dossier, completed_at=now))
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.id == operation["id"],
+        ).values(state="escalated", updated_at=now))
+        project_id = await self._operation_project_id_on(conn, operation)
+        owners = [dict(row) for row in (await conn.execute(
+            select(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == stage["repair_task_id"],
+                integration_branch_owners.c.handoff_state != "released",
+            )
+        )).mappings()]
+        await conn.execute(pg_insert(messages).values(
+            id=f"msg-{incident_id}", project_id=project_id,
+            from_kind="system", from_id="integration-repair", to_kind="session",
+            to_id=f"supervisor-{project_id}",
+            subject=f"Repair {operation['id']} stopped without progress",
+            body=(f"Incident {incident_id}: no further automatic repair stage was allocated. "
+                  f"Operation {operation['id']} remains escalated; target "
+                  f"{operation['parent_task_id'] or operation['batch_id']}, "
+                  f"subject {stage['current_subject']}, delegate {stage['repair_task_id']}, "
+                  f"attempts {attempts}, deadline {stage['deadline_at']}. "
+                  f"Stage history: {operation['id']} ordinals 0..{stage['ordinal']}. "
+                  f"Dossier and retained owners: {dossier}; {owners}. "
+                  "Reconcile the conflict/fence and preserved writer through supported "
+                  "integration controls before authorizing further work. Human gates, "
+                  "branches and workspace authority remain preserved. Archive only obsolete "
+                  f"delegates with aq integration release-delegates {operation['id']} "
+                  "--archive-obsolete."),
+            created_at=now, priority=50, archive_after_inject=1,
+            body_kind="integration_repair_no_progress",
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def _human_block_on(
         self,
