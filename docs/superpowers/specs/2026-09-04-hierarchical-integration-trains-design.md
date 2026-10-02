@@ -755,6 +755,13 @@ to the free pool. Scheduler preparation must select that exact workspace and mus
 its contents. Failed proof or CAS remains busy and never admits a second writer. This exception is
 specific to the two repair stages and does not weaken worker, collector, or verifier handoffs.
 
+For a retained parent checkout, the stopped writer's local HEAD is workspace provenance, not
+publication evidence. Keep the stage's frozen starting SHA and current parent subject unchanged;
+record the retained HEAD and exact local repair range in the handoff dossier. Pool admission still
+proves remote ancestry from the published starting SHA, then resumes the exact retained checkout
+without overwriting its local work. Later stages inherit the published subject until an ordinary
+publication-backed subject update advances it. Retention alone does not advance CI identity.
+
 The retained exception applies only while the primary is still attached. A primary that closed
 successfully is already stopped, detached, and holding a `reserved` reservation in its own `repair`
 role, so the debug stage transfers from it without further evidence, exactly as it would from a

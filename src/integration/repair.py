@@ -3180,13 +3180,6 @@ class RepairService:
                 "head_sha": head_sha,
                 "instance_token": instance_token,
             }
-            if operation["target_kind"] == "parent":
-                await self.bind_current_parent_subject_on(
-                    conn,
-                    operation["id"],
-                    head_sha=head_sha,
-                    commit_proof=commit_proof,
-                )
             current_debug = (
                 await conn.execute(
                     select(integration_repair_stages).where(
@@ -3196,6 +3189,18 @@ class RepairService:
                 )
             ).mappings().one()
             debug_dossier = dict(current_debug["dossier"] or {})
+            starting_sha = head_sha
+            if operation["target_kind"] == "parent":
+                # A stopped checkout proves retained work, not publication.
+                # Keep remote admission and later stages anchored on the
+                # published subject; resume local work through its provenance.
+                starting_sha = current_debug["starting_sha"]
+                debug_dossier = self._dossier_with_repair_commits(
+                    debug_dossier,
+                    self._subject_sha(current_debug["current_subject"]),
+                    head_sha,
+                    commit_proof,
+                )
             debug_dossier["receipts"] = await self._current_receipts_on(conn, operation)
             stage_changed = await conn.execute(
                 update(integration_repair_stages)
@@ -3206,7 +3211,7 @@ class RepairService:
                     integration_repair_stages.c.retained_workspace_id.is_(None),
                 )
                 .values(
-                    starting_sha=head_sha,
+                    starting_sha=starting_sha,
                     retained_workspace_id=workspace_id,
                     retained_handoff=provenance,
                     dossier=debug_dossier,
@@ -3221,7 +3226,7 @@ class RepairService:
                         conn,
                         operation,
                         dict(current_debug)
-                        | {"starting_sha": head_sha, "dossier": debug_dossier},
+                        | {"starting_sha": starting_sha, "dossier": debug_dossier},
                     ),
                 )
             )
