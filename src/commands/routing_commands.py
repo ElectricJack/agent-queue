@@ -36,6 +36,7 @@ from src.routing.planner import (
     worker_classes,
 )
 from src.routing.policy import Balance, PolicyError, parse_policy
+from src.routing.readiness import orchestrator_ready_projects
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROLE_PROFILE_IDS, ROUTER, UNROUTED
 from src.sessions.spec import _infer_provider_from_harness
 
@@ -319,11 +320,14 @@ class RoutingCommandsMixin:
         project = await self.db.get_project(task.project_id)
         facts = await self._routing_task_facts(task, project)
         profiles, providers = await self._routing_static_facts(task.project_id, policy.class_order)
+        ready_project_ids = await orchestrator_ready_projects(self.orchestrator)
+        _backlog = await self.db.count_routed_backlog_by_profile(ready_project_ids=ready_project_ids)
         snapshot = Snapshot(
             profiles=profiles,
             providers=providers,
             busy=await self.db.count_busy_sessions_by_profile(),
-            backlog=await self.db.count_routed_backlog_by_profile(),
+            backlog={k: v["eligible"] for k, v in _backlog.items()},
+            blocked={k: v["blocked"] for k, v in _backlog.items()},
         )
         if len(facts.benchmark_arms) == 1:
             arm_name = facts.benchmark_arms[0]
@@ -429,6 +433,7 @@ class RoutingCommandsMixin:
             task.project_id, sorted({c.intelligence_class for c in candidates})
         )
         planned_profile_id = plan.get("profile_id")
+        ready_project_ids = await orchestrator_ready_projects(self.orchestrator)
         try:
             async with self.db.routing_apply_lock() as conn:
                 fresh = await self.db.get_task_on(conn, task.id)
@@ -441,11 +446,15 @@ class RoutingCommandsMixin:
                 ) != plan["requested_model"]:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": "benchmark requested model mapping changed"}
+                _backlog = await self.db.count_routed_backlog_by_profile(
+                    ready_project_ids=ready_project_ids, conn=conn
+                )
                 snapshot = Snapshot(
                     profiles=profiles,
                     providers=providers,
                     busy=await self.db.count_busy_sessions_by_profile(conn=conn),
-                    backlog=await self.db.count_routed_backlog_by_profile(conn=conn),
+                    backlog={k: v["eligible"] for k, v in _backlog.items()},
+                    blocked={k: v["blocked"] for k, v in _backlog.items()},
                 )
                 valid = [c for c in candidates if is_candidate(c, snapshot)]
                 selection = reselect(valid, snapshot, balance)

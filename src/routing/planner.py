@@ -19,7 +19,10 @@ The steps, as the spec numbers them:
    but stays in ``candidates``; nothing launchable is ``held``.
 4. **Classification needed?** — only when the answer could change the route.
 5. **Load score** — ``pressure = (load + 1) / (slots × weight × usage ×
-   availability)``.
+   availability)``; ``load = busy + eligible backlog``.  Blocked, unclaimable
+   routed work (dependency, hold, origin, container, gate, already-assigned)
+   is evidenced but never load: a worker cannot run it, so it must not
+   consume a slot.
 6. **Choice** — a preferred-tier profile with a free slot, else the lowest
    pressure overall; ties go to candidate order.
 7. **Reason** — one sentence naming what decided.
@@ -95,8 +98,13 @@ class Snapshot:
     providers: Mapping[str, ProviderFacts] = field(default_factory=dict)
     #: Live busy sessions per profile, fleet-wide.
     busy: Mapping[str, int] = field(default_factory=dict)
-    #: Routed backlog per profile (``count_routed_backlog_by_profile``).
+    #: Routed backlog the planner's load admits: routed, READY work that passes
+    #: the claim frontier (``count_routed_backlog_by_profile``'s ``eligible``).
     backlog: Mapping[str, int] = field(default_factory=dict)
+    #: Routed work that is not currently claimable (the same query's
+    #: ``blocked``): dependency-, hold-, origin-, container- or gate-blocked,
+    #: plus already-assigned.  Evidenced in the reason, never load.
+    blocked: Mapping[str, int] = field(default_factory=dict)
 
     def profile(self, profile_id: str) -> ProfileFacts | None:
         return next((p for p in self.profiles if p.id == profile_id), None)
@@ -168,6 +176,7 @@ class Score:
     slots: int
     busy: int
     backlog: int
+    blocked: int
     load: int
     usage_percent: float | None
     usage_factor: float
@@ -530,13 +539,15 @@ def score(candidate: Candidate, snapshot: Snapshot, balance: Balance) -> Score |
     facts = snapshot.provider(candidate.provider)
     busy = int(snapshot.busy.get(candidate.profile_id, 0))
     backlog = int(snapshot.backlog.get(candidate.profile_id, 0))
+    blocked = int(snapshot.blocked.get(candidate.profile_id, 0))
     usage_factor = _usage_factor(facts.usage_percent, balance)
     avail_factor = balance.degraded_factor if facts.state == "degraded" else 1.0
     weight = balance.weight(candidate.harness)
     pressure = (busy + backlog + 1) / (slots * weight * usage_factor * avail_factor)
     return Score(
         profile_id=candidate.profile_id, intelligence_class=candidate.intelligence_class,
-        tier=candidate.tier, slots=slots, busy=busy, backlog=backlog, load=busy + backlog,
+        tier=candidate.tier, slots=slots, busy=busy, backlog=backlog, blocked=blocked,
+        load=busy + backlog,
         usage_percent=facts.usage_percent, usage_factor=round(usage_factor, 4),
         avail_factor=avail_factor, weight=weight, pressure=round(pressure, 4),
     )
