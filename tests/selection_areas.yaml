@@ -370,6 +370,7 @@ areas:
       - tests/test_integration_completion_recovery.py
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
+      - tests/test_integration_ci_producers.py
       - tests/test_integration_cleanup.py
       - tests/test_attestation_check_run_id.py
       - tests/test_hosted_attestation.py

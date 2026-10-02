@@ -562,6 +562,7 @@
         "tests/test_integration_attestation.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
+        "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
@@ -1323,7 +1324,7 @@
       ]
     }
   },
-  "digest": "sha256:f90ced791f36459344f002018fc331f138287ca0bb0f7d561aa9cb9c83301e1a",
+  "digest": "sha256:09ecac09be75254f1f4f470aa3c99488e95e799fbfa427aeb6c845f85086fd2e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7073,6 +7074,34 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_integration_ci_producers.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.ci",
+        "src.integration.ci_adapters",
+        "src.integration.ci_producers",
+        "src.integration.main_promotion",
+        "src.integration.subjects",
+        "src.jobs.adapters",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared exact-head facts, replay, App trust and detached validation isolation."
     },
     "tests/test_integration_cleanup.py": {
       "areas": [
