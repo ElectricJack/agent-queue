@@ -2013,17 +2013,19 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReleaseArgs
+        from src.integration.scheduler import empty_seal_request
 
         try:
             request = IntegrationReleaseArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("runtime_error", f"invalid integration release request: {exc}")
         batch = await self.db.get_integration_batch(request.batch_id)
-        if batch is None:
+        # An empty seal keeps no row; its id names the project it swept.
+        empty_seal = empty_seal_request(request.batch_id) if batch is None else None
+        if batch is None and empty_seal is None:
             return _failure("stale", "integration batch does not exist")
-        if not await self._integration_delivery_authorized(
-            batch["project_id"], "integration_release"
-        ):
+        project_id = batch["project_id"] if batch is not None else empty_seal[0]
+        if not await self._integration_delivery_authorized(project_id, "integration_release"):
             return _failure("unauthorized", "caller cannot release this root batch")
         result = await self._integration_release_service().release(
             request.batch_id, time.time()

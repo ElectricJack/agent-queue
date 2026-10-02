@@ -2266,8 +2266,10 @@ class IntegrationConfig:
     merge_require_up_to_date: bool = True
 
     #: Whether to periodically release branch owners whose writers are proven gone.
-    #: Starts disabled so the operator can observe the first backlog releases.
-    owner_recovery_sweep: bool = False
+    #: On by default: stranded-owner recovery is routine, and every release is
+    #: still refused while a writer is live or its branch is not safe on origin.
+    #: An explicit ``false`` keeps the sweep off.
+    owner_recovery_sweep: bool = True
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -4273,6 +4275,17 @@ _SCALAR_COERCIONS: dict[str, Callable[[object], object]] = {
 _CONTAINER_ANNOTATION = re.compile(r"(tuple|list)\[(\w+)(?:, \.\.\.)?\]")
 
 
+def _switch(value: object) -> bool:
+    """A boolean setting where an explicit off must stay off.
+
+    ``bool()`` reads the string ``"false"`` -- what a ``${VAR}`` substitution
+    yields -- as true, which would turn an operator's disable into an enable.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def _coerce_field(annotation: str, value: object) -> object:
     """Coerce one YAML value to the type its dataclass field declares.
 
@@ -4891,7 +4904,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             github_app=github_app,
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
-            owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
+            owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),
         )

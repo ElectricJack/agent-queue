@@ -1321,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:b43ff47b4cd666dd0b62f202d5efdf59d19598f7563dcf99f9abd15d9b25b18e",
+  "digest": "sha256:3ca72f633560a1738b79a3e86dfdce9b8b2b07c86172f698966db734a756a52b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7477,6 +7477,7 @@
         "src.integration.ownership",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.core",
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.provider",
@@ -7803,6 +7804,7 @@
         "src.integration.epic_dependencies",
         "src.integration.migration_heads",
         "src.integration.models",
+        "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models",
@@ -10492,7 +10494,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "The CI gate on ``pr_merge`` — src/git/ci_gate.py + _check_ci_before_merge."
     },
@@ -11940,6 +11943,7 @@
         "src.integration.candidates",
         "src.integration.main_promotion",
         "src.integration.release",
+        "src.integration.scheduler",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",

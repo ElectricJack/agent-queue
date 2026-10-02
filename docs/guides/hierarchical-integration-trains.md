@@ -556,10 +556,14 @@ schedule interval; changing it sets the next due time to the mutation time plus
 the new interval without dropping an outstanding or coalesced request. The
 option is invalid outside train mode and cannot cancel an active drain. Use
 `flush` for an explicit sweep and never edit the schedule row directly. One
-project cannot have overlapping active trains. Every nonempty batch uses an
-ephemeral integration branch, including a singleton batch. Main promotion is
-permitted only for the exact candidate OID already proven by the configured CI
-producer; there is no post-main audit run. Ordinary task PRs retain the full-CI
+project cannot have overlapping active trains. A sweep whose frontier is
+empty is not a train: the seal consumes its request and inserts no batch row,
+answering `empty` with the `batch_id` `integration-empty:<request_id>`, which
+`integration_release` confirms from the schedule (a replay of that seal answers
+the same, even while a later train holds the project lease). Every nonempty
+batch uses an ephemeral integration branch, including a singleton batch. Main
+promotion is permitted only for the exact candidate OID already proven by the
+configured CI producer; there is no post-main audit run. Ordinary task PRs retain the full-CI
 fallback.
 
 Successful integration/source branches are deleted by the default cleanup
