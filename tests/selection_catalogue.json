@@ -568,7 +568,9 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
+        "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_parent_subjects.py",
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_schedule.py",
@@ -722,6 +724,7 @@
         "tests/test_migration_json_columns.py",
         "tests/test_migration_metadata.py",
         "tests/test_migration_parent_collection.py",
+        "tests/test_migration_parent_subjects.py",
         "tests/test_migration_playbook_blocked_lifecycle.py",
         "tests/test_migration_playbook_v2.py",
         "tests/test_migration_postgres_upgrade_head.py",
@@ -1325,7 +1328,7 @@
       ]
     }
   },
-  "digest": "sha256:9421656e14755ff52af2a19ff18989ee9e3a07ccedd7c27450a0ddfe17f16f6a",
+  "digest": "sha256:50f31861b78e80e48bdf034f711aa7188de778d3a5ee20f86b5410415401c95b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7385,6 +7388,24 @@
       ],
       "summary": "Integration-mode policy tests."
     },
+    "tests/test_integration_observe.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic facts, unknowns and read-only ports for integration subjects."
+    },
     "tests/test_integration_operational_controls.py": {
       "areas": [
         "integration-controls"
@@ -7558,6 +7579,24 @@
         "parametrize"
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
+    },
+    "tests/test_integration_parent_subjects.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.failed_verification_recovery",
+        "src.integration.parent_subjects",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Parent subjects retain exact lineage through failures, lost events and reopen."
     },
     "tests/test_integration_pr_delivery.py": {
       "areas": [
@@ -9206,6 +9245,20 @@
         "migration"
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
+    },
+    "tests/test_migration_parent_subjects.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Additive episode binding migration on disposable PostgreSQL."
     },
     "tests/test_migration_playbook_blocked_lifecycle.py": {
       "areas": [

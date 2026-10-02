@@ -365,6 +365,8 @@ areas:
       - tests/test_integration_contracts.py
       - tests/test_integration_subjects.py
       - tests/test_integration_records_and_gates.py
+      - tests/test_integration_observe.py
+      - tests/test_integration_parent_subjects.py
       - tests/test_integration_mode.py
       - tests/test_integration_hierarchy.py
       - tests/test_integration_resume_metadata.py

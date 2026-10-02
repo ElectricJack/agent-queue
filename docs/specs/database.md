@@ -2110,6 +2110,7 @@ drives it yet, and every subject defaults to the `legacy` engine. Typed model:
 | `policy_artifact_sha256` | TEXT | NOT NULL, FK `playbook_artifacts` RESTRICT, immutable | Pinned compiled policy; a new activation never changes a running subject, and artifact collection keeps it |
 | `task_id` | TEXT | nullable, immutable | Source or parent task; NULL exactly for a root batch |
 | `batch_id` | TEXT | nullable, unique when set, immutable once set | Legacy `integration_batches` row a sealed root subject maps onto |
+| `parent_episode_id` | TEXT | nullable, unique when set, immutable once bound; parent/task FK RESTRICT | Additive parent bridge (revision 58); binds the exact episode independently of the moving collection generation and validates repository identity |
 | `target_ref` | TEXT | nullable | Ref the head belongs to; required with `head_sha` |
 | `head_sha` | TEXT | nullable, 40 hex | Exact head the current phase refers to |
 | `base_sha` | TEXT | nullable, 40 hex | Base of that head |

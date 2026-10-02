@@ -1,0 +1,1147 @@
+"""Read-only facts for integration subjects (review revision 2, primitive 1).
+
+The reader takes a consistent snapshot of existing rows; Git probes happen
+after that transaction closes. Neither port can file work, record CI, recover
+owners, fetch objects or change a ref. Unknown evidence remains explicit.
+This module adds no command surface and does not activate the reconciler.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from sqlalchemy import or_, select, text
+
+from src.database import tables as t
+from src.git.manager import GitManager, RemoteRefState
+from src.integration.models import BranchKey, Fence
+from src.integration.subjects import (
+    CIEvidence,
+    CIState,
+    ConflictFacts,
+    GateFacts,
+    HeadIdentity,
+    HoldFacts,
+    MemberFacts,
+    ObserveSubjectArgs,
+    Primitive,
+    PrimitiveOutcome,
+    RemoteHead,
+    Subject,
+    SubjectFacts,
+    SubjectKind,
+    UnresolvedWrite,
+    WriterBudget,
+    WriterLease,
+    WriterStatus,
+)
+
+Row = Mapping[str, Any]
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ObservationRows:
+    """Snapshot seam for deterministic fixtures and future observation adapters.
+
+    Keys in ``rows`` are existing SQL table names, with unmodified row values.
+    Missing tables mean no rows, not an unavailable database. An unavailable
+    snapshot raises; the primitive then returns ``unknown(snapshot_unavailable)``.
+    """
+
+    subject: Subject
+    project: Row
+    repository: Row
+    rows: Mapping[str, tuple[Row, ...]] = field(default_factory=dict)
+
+    def all(self, table: str) -> tuple[Row, ...]:
+        return self.rows.get(table, ())
+
+
+class SubjectReadPort(Protocol):
+    async def read(self, subject_id: str) -> ObservationRows | None: ...
+
+
+class GitReadPort(Protocol):
+    async def remote_head(self, repository: Row, ref: str) -> RemoteHead: ...
+
+    async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None: ...
+
+
+SessionProbe = Callable[[Row], Awaitable[bool | None]]
+
+
+class GitObservationReader:
+    """GitManager's strict async reads only; missing objects are unknown.
+
+    A caller may supply its authorized checkout resolver. The default uses the
+    repository's base checkout. Full refs are converted to branch names for
+    GitManager's ``als_remote_ref`` branch API.
+    """
+
+    def __init__(
+        self, git: GitManager, *, checkout: Callable[[Row], str | None] | None = None
+    ) -> None:
+        self.git = git
+        self.checkout = checkout or (lambda repository: repository.get("checkout_base_path"))
+
+    async def remote_head(self, repository: Row, ref: str) -> RemoteHead:
+        path = self.checkout(repository)
+        if not path or not ref.startswith("refs/heads/"):
+            return RemoteHead(ref=ref, state="unknown")
+        result = await self.git.als_remote_ref(
+            path, ref.removeprefix("refs/heads/"), repository_url=repository["url"]
+        )
+        if result.state is RemoteRefState.PRESENT:
+            return RemoteHead(ref=ref, state="present", sha=result.oid)
+        return RemoteHead(
+            ref=ref, state="absent" if result.state is RemoteRefState.ABSENT else "unknown"
+        )
+
+    async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None:
+        path = self.checkout(repository)
+        if path is None:
+            return None
+        return await self.git.ais_ancestor(path, ancestor, descendant, strict=True)
+
+
+class DatabaseObservationReader:
+    """Project/repository scoped SELECTs over the existing integration tables.
+
+    PostgreSQL enforces a read-only repeatable-read transaction. No row locks
+    are taken, and a held subject is observed even when it has no due time.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+
+    async def read(self, subject_id: str) -> ObservationRows | None:
+        async with self.db._engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="REPEATABLE READ")
+            async with conn.begin():
+                await conn.execute(text("SET TRANSACTION READ ONLY"))
+
+                async def read(table, *conditions) -> tuple[Row, ...]:
+                    result = await conn.execute(select(table).where(*conditions))
+                    return tuple(dict(row) for row in result.mappings())
+
+                subjects = await read(
+                    t.integration_subjects, t.integration_subjects.c.id == subject_id
+                )
+                if not subjects:
+                    return None
+                subject = Subject.from_row(subjects[0])
+                project = await read(t.projects, t.projects.c.id == subject.project_id)
+                repository = await read(t.repos, t.repos.c.id == subject.repository_id)
+                if not project or not repository:
+                    raise ValueError("subject project or repository is missing")
+                rows: dict[str, tuple[Row, ...]] = {}
+
+                async def keep(table, *conditions):
+                    rows[table.name] = await read(table, *conditions)
+                    return rows[table.name]
+
+                if subject.batch_id:
+                    for table in (
+                        t.integration_batches,
+                        t.integration_batch_members,
+                        t.integration_candidate_revisions,
+                        t.integration_candidate_member_results,
+                        t.integration_candidate_ref_mutations,
+                        t.integration_candidate_resolutions,
+                    ):
+                        column = table.c.id if table is t.integration_batches else table.c.batch_id
+                        await keep(table, column == subject.batch_id)
+                # A root's admitting frontier is facts, not an admission decision.
+                task_rows = await keep(t.tasks, t.tasks.c.project_id == subject.project_id)
+                task_ids = sorted(
+                    {row["id"] for row in task_rows}
+                    | {row["task_id"] for row in rows.get("integration_batch_members", ())}
+                )
+                await keep(t.task_metadata, t.task_metadata.c.task_id.in_(task_ids))
+                await keep(
+                    t.task_integration_checkpoints,
+                    t.task_integration_checkpoints.c.task_id.in_(task_ids),
+                    t.task_integration_checkpoints.c.repository_id == subject.repository_id,
+                )
+                await keep(
+                    t.task_branch_origins,
+                    t.task_branch_origins.c.task_id.in_(task_ids),
+                    t.task_branch_origins.c.repository_id == subject.repository_id,
+                )
+                await keep(
+                    t.integration_review_evidence,
+                    t.integration_review_evidence.c.source_task_id.in_(task_ids),
+                    t.integration_review_evidence.c.repository_id == subject.repository_id,
+                )
+                await keep(
+                    t.integration_source_ci,
+                    t.integration_source_ci.c.task_id.in_(task_ids),
+                    t.integration_source_ci.c.repository_id == subject.repository_id,
+                )
+                if subject.kind is SubjectKind.PARENT_EPISODE:
+                    await keep(
+                        t.integration_parent_episodes,
+                        t.integration_parent_episodes.c.parent_task_id == subject.task_id,
+                        t.integration_parent_episodes.c.repository_id == subject.repository_id,
+                    )
+                    await keep(
+                        t.integration_child_dispositions,
+                        t.integration_child_dispositions.c.parent_task_id == subject.task_id,
+                    )
+                operations = (
+                    await keep(
+                        t.integration_repair_operations,
+                        t.integration_repair_operations.c.batch_id == subject.batch_id
+                        if subject.batch_id
+                        else t.integration_repair_operations.c.parent_task_id == subject.task_id,
+                    )
+                    if subject.batch_id or subject.kind is SubjectKind.PARENT_EPISODE
+                    else ()
+                )
+                operation_ids = [row["id"] for row in operations]
+                stages = await keep(
+                    t.integration_repair_stages,
+                    t.integration_repair_stages.c.operation_id.in_(operation_ids),
+                )
+                await keep(
+                    t.integration_check_evidence,
+                    or_(
+                        t.integration_check_evidence.c.batch_id == subject.batch_id
+                        if subject.batch_id
+                        else False,
+                        t.integration_check_evidence.c.parent_task_id.in_(task_ids),
+                    ),
+                )
+                writer_ids = {
+                    stage["repair_task_id"] for stage in stages if stage["repair_task_id"]
+                }
+                if subject.writer.task_id:
+                    writer_ids.add(subject.writer.task_id)
+                writer_ids.update(
+                    row["verifier_task_id"]
+                    for row in operations
+                    if row.get("verifier_task_id")
+                )
+                writer_ids.update(
+                    row["repair_task_id"]
+                    for row in rows["integration_source_ci"]
+                    if row.get("repair_task_id") and row["task_id"] == subject.task_id
+                )
+                await keep(
+                    t.sessions,
+                    t.sessions.c.project_id == subject.project_id,
+                    t.sessions.c.task_id.in_(writer_ids),
+                )
+                await keep(
+                    t.workspaces,
+                    t.workspaces.c.project_id == subject.project_id,
+                    t.workspaces.c.locked_by_task_id.in_(writer_ids),
+                )
+                await keep(
+                    t.integration_branch_owners,
+                    t.integration_branch_owners.c.repository_id == subject.repository_id,
+                )
+                await keep(
+                    t.integration_owner_recoveries,
+                    t.integration_owner_recoveries.c.repository_id == subject.repository_id,
+                    t.integration_owner_recoveries.c.task_id.in_(writer_ids),
+                )
+                await keep(
+                    t.integration_promotion_intents,
+                    t.integration_promotion_intents.c.repository_id == subject.repository_id,
+                    or_(
+                        t.integration_promotion_intents.c.root_batch_id == subject.batch_id
+                        if subject.batch_id
+                        else False,
+                        t.integration_promotion_intents.c.source_task_id == subject.task_id
+                        if subject.task_id
+                        else False,
+                        t.integration_promotion_intents.c.target_task_id == subject.task_id
+                        if subject.task_id
+                        else False,
+                    ),
+                )
+                await keep(
+                    t.integration_subject_journal,
+                    t.integration_subject_journal.c.subject_id == subject.id,
+                )
+                await keep(
+                    t.gates,
+                    t.gates.c.project_id == subject.project_id,
+                    t.gates.c.id == subject.schedule.gate_id,
+                )
+                return await self.augment_on(
+                    conn, ObservationRows(subject, project[0], repository[0], rows)
+                )
+
+    async def augment_on(self, conn, snapshot: ObservationRows) -> ObservationRows:
+        """Extend a snapshot inside the same read-only repeatable-read transaction."""
+        return snapshot
+
+
+def _latest(rows, time_key="created_at") -> Row | None:
+    return max(rows, key=lambda row: (row.get(time_key) or 0, str(row.get("id", ""))), default=None)
+
+
+def _ref(value: str) -> str:
+    return value if value.startswith("refs/") else "refs/heads/" + value
+
+
+def _operation(snapshot: ObservationRows) -> Row | None:
+    episodes = {
+        row["id"]
+        for row in snapshot.all("integration_parent_episodes")
+        if (
+            row["id"] == snapshot.subject.parent_episode_id
+            if snapshot.subject.parent_episode_id
+            else row["generation"] == snapshot.subject.generation
+        )
+        and row["parent_task_id"] == snapshot.subject.task_id
+    }
+    return _latest(
+        row
+        for row in snapshot.all("integration_repair_operations")
+        if snapshot.subject.kind is not SubjectKind.PARENT_EPISODE
+        or row.get("episode_id") in episodes
+    )
+
+
+def _task_holds(snapshot: ObservationRows, task_ids: set[str]) -> list[HoldFacts]:
+    holds = []
+    if snapshot.project.get("status") != "ACTIVE":
+        holds.append(HoldFacts(kind="project_inactive", reason=str(snapshot.project.get("status"))))
+    for row in snapshot.all("task_metadata"):
+        if row["task_id"] in task_ids and row["key"] == "manual_pause":
+            holds.append(
+                HoldFacts(kind="manual_pause", task_id=row["task_id"], reason="manual_pause")
+            )
+    for row in snapshot.all("integration_batches"):
+        if row.get("human_abort_reason"):
+            holds.append(HoldFacts(kind="operator_hold", reason=row["human_abort_reason"]))
+    return holds
+
+
+def _members(snapshot: ObservationRows) -> tuple[list[MemberFacts], dict[str, str]]:
+    subject = snapshot.subject
+    checkpoints = {row["task_id"]: row for row in snapshot.all("task_integration_checkpoints")}
+    origins = {
+        row["task_id"]: row
+        for row in snapshot.all("task_branch_origins")
+        if row.get("retired_at") is None
+    }
+    reviews = snapshot.all("integration_review_evidence")
+    tasks = {row["id"]: row for row in snapshot.all("tasks")}
+    batch_members = snapshot.all("integration_batch_members")
+    revisions = snapshot.all("integration_candidate_revisions")
+    revision = next((row for row in revisions if row["revision"] == subject.generation), None)
+    manifest = revision.get("source_manifest") if revision else None
+    active_ids = {row["task_id"] for row in manifest} if isinstance(manifest, list) else None
+    if subject.batch_id:
+        identities = [
+            (row["task_id"], row) for row in sorted(batch_members, key=lambda r: r["ordinal"])
+        ]
+    elif subject.kind is SubjectKind.SOURCE:
+        identities = [(subject.task_id, {})]
+    else:
+        identities = [
+            (task_id, {})
+            for task_id, task in sorted(tasks.items())
+            if task.get("parent_task_id") == subject.task_id
+            and (task_id in checkpoints or subject.kind is SubjectKind.PARENT_EPISODE)
+        ]
+    held_ids = {hold.task_id for hold in _task_holds(snapshot, {key for key, _ in identities})}
+    members, refs = [], {}
+    for task_id, member in identities:
+        checkpoint, origin = checkpoints.get(task_id, {}), origins.get(task_id, {})
+        sha = member.get("reviewed_head_sha") or checkpoint.get("checkpoint_sha")
+        sealed_review = member.get("review_evidence") or {}
+        generation = sealed_review.get("generation", checkpoint.get("generation", 0))
+        if member.get("review_evidence_id"):
+            sealed = next(
+                (row for row in reviews if row["id"] == member["review_evidence_id"]), None
+            )
+            if sealed:
+                generation = sealed["generation"]
+        if subject.kind is SubjectKind.SOURCE:
+            sha, generation = subject.head_sha or sha, subject.generation
+        base = member.get("source_base_sha") or origin.get("base_sha")
+        if subject.kind is SubjectKind.SOURCE:
+            base = subject.base_sha or base
+        review = _latest(
+            row
+            for row in reviews
+            if row["source_task_id"] == task_id
+            and row.get("reviewed_head_sha") == sha
+            and row.get("source_base") == base
+            and row.get("generation") == generation
+        )
+        verdict = review.get("verdict") if review else "none"
+        state = {
+            "approved": "approved",
+            "rejected": "rejected",
+            "pending": "pending",
+        }.get(verdict, "none")
+        dispositions = [
+            row
+            for row in snapshot.all("integration_child_dispositions")
+            if row["child_task_id"] == task_id
+            and any(
+                episode["id"] == row["parent_episode_id"]
+                and (
+                    episode["id"] == subject.parent_episode_id
+                    if subject.parent_episode_id
+                    else episode["generation"] == subject.generation
+                )
+                for episode in snapshot.all("integration_parent_episodes")
+            )
+        ]
+        ejected = (active_ids is not None and task_id not in active_ids) or any(
+            row.get("disposition") in {"skipped", "ineligible"} for row in dispositions
+        )
+        members.append(
+            MemberFacts(
+                task_id=task_id,
+                head_sha=sha,
+                base_sha=base,
+                generation=generation,
+                review=state,
+                held=task_id in held_ids,
+                ejected=ejected,
+            )
+        )
+        ref = member.get("source_ref") or checkpoint.get("branch") or origin.get("branch_name")
+        if ref:
+            refs[task_id] = _ref(ref)
+    return members, refs
+
+
+def _required(snapshot: ObservationRows) -> Row:
+    boundary = "parent" if snapshot.subject.kind is SubjectKind.PARENT_EPISODE else "root"
+    batches = snapshot.all("integration_batches")
+    operation = _operation(snapshot)
+    policy = (batches[0].get("policy_snapshot") if batches else None) or (
+        operation.get("policy_snapshot") if operation else None
+    )
+    # Legacy sources pin their CI policy generation in integration_source_ci.
+    if policy is None:
+        policy = snapshot.project.get("hierarchical_integration_policy", {})
+    return (policy or {}).get(boundary, {}).get("required_checks", {})
+
+
+def _ci(
+    snapshot: ObservationRows,
+    identity: HeadIdentity,
+    task_id: str | None,
+    now: float,
+    *,
+    candidate: bool = False,
+) -> CIEvidence:
+    required = _required(snapshot)
+    matching = []
+    for row in snapshot.all("integration_check_evidence"):
+        if candidate:
+            exact = row.get("batch_id") == snapshot.subject.batch_id and (
+                row.get("candidate_revision") == identity.generation
+            )
+        else:
+            exact = (
+                row.get("parent_task_id") == task_id
+                and row.get("parent_generation") == identity.generation
+                and row.get("parent_head_sha") == identity.sha
+            )
+        if exact:
+            if (
+                snapshot.subject.parent_episode_id
+                and task_id == snapshot.subject.task_id
+                and (operation := _operation(snapshot)) is not None
+                and row.get("operation_id") != operation["id"]
+            ):
+                continue
+            matching.append(row)
+    row = _latest(matching, "observed_at")
+    if candidate:
+        revision = next(
+            (
+                item
+                for item in snapshot.all("integration_candidate_revisions")
+                if item["revision"] == identity.generation and item["head_sha"] == identity.sha
+            ),
+            None,
+        )
+        # A successful aggregate is bound by the candidate row, written by the
+        # authenticated CI adapter with a CAS on the candidate's exact SHA.
+        green_id = revision.get("ci_evidence_id") if revision else None
+        aggregate = next((item for item in matching if item["id"] == green_id), None)
+        if aggregate and (row is None or aggregate["observed_at"] >= row["observed_at"]):
+            row = aggregate
+    source = next(
+        (
+            row
+            for row in snapshot.all("integration_source_ci")
+            if row["task_id"] == task_id
+            and row["repository_id"] == identity.repository_id
+            and row["source_head"] == identity.sha
+            and row["generation"] == identity.generation
+            and row["source_base"] == identity.base_sha
+        ),
+        None,
+    )
+    if source is not None and (row is None or source["observed_at"] > row["observed_at"]):
+        evidence = source.get("evidence") or {}
+        checks = {
+            check["name"]: check.get("conclusion") or "missing"
+            for check in evidence.get("checks", ())
+        }
+        trusted = (
+            source.get("policy_generation")
+            == snapshot.project.get("hierarchical_integration_generation")
+            and evidence.get("head_sha") == identity.sha
+            and evidence.get("producer_id") == required.get("producer_id")
+            and evidence.get("required_checks_version") == required.get("version")
+            and set(evidence.get("required_checks", ())) == set(required.get("names", ()))
+        )
+        conclusion = {"green": "success", "red": "failure", "cancelled": "cancelled"}.get(
+            source["state"], "pending"
+        )
+        observed, evidence_id, producer = source["observed_at"], None, evidence.get("producer_id")
+    elif row is not None:
+        checks, conclusion = row["checks"], row["conclusion"]
+        trusted = (
+            row["producer_id"] == required.get("producer_id")
+            and row["required_check_version"] == required.get("version")
+            and row.get("classification") in {"conclusive", "full_suite_fallback"}
+        )
+        observed, evidence_id, producer = row["observed_at"], row["id"], row["producer_id"]
+    else:
+        requests = [
+            item
+            for item in snapshot.all("integration_subject_journal")
+            if item["primitive"] == Primitive.CI_REQUEST
+            and item["mode"] == "active"
+            and item["head_sha"] == identity.sha
+            and item["generation"] == identity.generation
+            and item.get("outcome") in {"requested", "already_running"}
+        ]
+        request = _latest(requests, "recorded_at")
+        requested = request["recorded_at"] if request else None
+        return CIEvidence(
+            head_sha=identity.sha,
+            state=CIState.PENDING if request else CIState.NONE,
+            requested_at=requested,
+            age_seconds=max(0, now - requested) if requested is not None else None,
+        )
+    names = set(required.get("names", ()))
+    if not trusted or not names:
+        state = CIState.UNTRUSTED
+    elif conclusion == "pending":
+        state = CIState.PENDING
+    elif conclusion in {"cancelled", "inconclusive"}:
+        state = CIState.INFRA
+    elif conclusion == "failure" and any(checks.get(name) == "failure" for name in names):
+        state = CIState.RED
+    elif (
+        conclusion == "success"
+        and all(checks.get(name) == "success" for name in names)
+        and (not candidate or row is not None and row["id"] == green_id)
+    ):
+        state = CIState.GREEN
+    else:
+        state = CIState.UNTRUSTED
+    return CIEvidence(
+        head_sha=identity.sha,
+        state=state,
+        evidence_id=evidence_id,
+        producer=producer,
+        observed_at=observed,
+        age_seconds=max(0, now - observed),
+    )
+
+
+def _writer(
+    snapshot: ObservationRows,
+    unknown: list[str],
+    writer_ref: str | None,
+    liveness: Mapping[str, bool | None],
+) -> tuple[WriterLease, WriterBudget | None]:
+    subject = snapshot.subject
+    operation = _operation(snapshot)
+    stage = next(
+        (
+            row
+            for row in snapshot.all("integration_repair_stages")
+            if operation
+            and row["operation_id"] == operation["id"]
+            and row["ordinal"] == operation["active_stage"]
+        ),
+        None,
+    )
+    verifier_id = (
+        operation.get("verifier_task_id")
+        if operation and subject.kind is SubjectKind.PARENT_EPISODE
+        else None
+    )
+    task_id = subject.writer.task_id or verifier_id or (stage.get("repair_task_id") if stage else None)
+    if task_id is None and subject.kind is SubjectKind.SOURCE:
+        source_ci = next(
+            (
+                row
+                for row in snapshot.all("integration_source_ci")
+                if row["task_id"] == subject.task_id
+                and row["source_head"] == subject.head_sha
+                and row["generation"] == subject.generation
+            ),
+            None,
+        )
+        task_id = source_ci.get("repair_task_id") if source_ci else None
+    budget = subject.budget
+    if budget is None and stage and stage.get("started_at") is not None:
+        data = (stage.get("dossier") or {}).get("budget", {})
+        if stage.get("intelligence_class") and stage.get("deadline_at") is not None:
+            budget = WriterBudget(
+                ordinal=stage["ordinal"],
+                intelligence_class=stage["intelligence_class"],
+                started_at=stage["started_at"],
+                deadline_at=stage["deadline_at"],
+                attempts=stage["attempts"],
+                attempt_limit=data.get("attempt_limit"),
+            )
+    if task_id is None:
+        return WriterLease(), budget
+    owner = _latest(
+        row
+        for row in snapshot.all("integration_branch_owners")
+        if row["owner_id"] == task_id and _ref(row["ref"]) == writer_ref
+    )
+    sessions = [row for row in snapshot.all("sessions") if row.get("task_id") == task_id]
+    attached = [row for row in sessions if row.get("state") != "stopped"]
+    live = _latest(
+        (row for row in attached if liveness.get(row["id"]) is True),
+        "started_at",
+    )
+    session_id = live["id"] if live else subject.writer.session_id
+    fence = owner["fence_token"] if owner else subject.writer.fence_token
+    claimed = live.get("started_at") if live else subject.writer.claimed_at
+    pushes = [
+        row
+        for row in snapshot.all("integration_promotion_intents")
+        if row.get("resolution_task_id") == task_id and row.get("resolution_push_evidence")
+    ]
+    pushes += [
+        row
+        for row in snapshot.all("integration_candidate_resolutions")
+        if row.get("repair_task_id") == task_id and row.get("push_evidence")
+    ]
+    push_times = []
+    for row in pushes:
+        receipt = row.get("resolution_push_evidence") or row.get("push_evidence") or {}
+        if receipt.get("pushed_at") is not None:
+            push_times.append(receipt["pushed_at"])
+    last_push = max(push_times + [subject.writer.last_push_at or 0]) or None
+    audit = _latest(
+        row
+        for row in snapshot.all("integration_owner_recoveries")
+        if row.get("task_id") == task_id
+        and _ref(row["ref"]) == writer_ref
+        and row["outcome"] in {"released", "preserved_and_released"}
+        and (owner is None or row["owner_row_id"] == owner["id"])
+    )
+    workspaces = [
+        row for row in snapshot.all("workspaces") if row.get("locked_by_task_id") == task_id
+    ]
+    proof = (audit.get("evidence") if audit else None) or subject.writer.stop_proof
+    proof_at = (
+        audit["created_at"]
+        if audit
+        else ((proof or {}).get("stop_proof") or {}).get("confirmed_at", 0)
+    )
+    latest_start = max((row.get("started_at") or 0 for row in sessions), default=0)
+    if live:
+        status, proof = (
+            (WriterStatus.WORKING if last_push or pushes else WriterStatus.CLAIMED),
+            None,
+        )
+    elif attached and any(liveness.get(row["id"]) is not False for row in attached):
+        status = WriterStatus.UNKNOWN
+        unknown.append("writer_liveness_unknown:" + task_id)
+    elif (
+        proof
+        and proof.get("stop_proof")
+        and not workspaces
+        and (owner is None or owner["handoff_state"] == "released")
+        and (audit is None or owner is None or audit["created_at"] >= owner["updated_at"])
+        and proof_at >= latest_start
+        and proof_at >= (last_push or 0)
+    ):
+        status = WriterStatus.STOPPED
+    elif (
+        not sessions
+        and not subject.writer.session_id
+        and not workspaces
+        and (owner is None or owner["handoff_state"] in {"reserved", "released"})
+        and any(
+            row["id"] == task_id and row["status"] in {"DEFINED", "READY", "PAUSED"}
+            for row in snapshot.all("tasks")
+        )
+    ):
+        status = WriterStatus.FILED
+    else:
+        status = WriterStatus.UNKNOWN
+        unknown.append("writer_stop_unproven:" + task_id)
+    return WriterLease(
+        status=status,
+        task_id=task_id,
+        session_id=session_id,
+        fence_token=fence,
+        claimed_at=claimed,
+        last_push_at=last_push,
+        stop_proof=proof,
+    ), budget
+
+
+def _writes(snapshot: ObservationRows) -> tuple[UnresolvedWrite, ...]:
+    writes = []
+    for row in snapshot.all("integration_promotion_intents"):
+        if row["state"] in {"committed", "conflict", "superseded"}:
+            continue
+        writes.append(
+            UnresolvedWrite(
+                journal_id=row["id"],
+                kind="promotion",
+                target_ref=_ref(row["target_branch"]),
+                expected_old_sha=row["expected_target"],
+                desired_sha=row.get("prepared_sha"),
+                state=row["state"],
+                started_at=row.get("created_at"),
+            )
+        )
+    for row in snapshot.all("integration_candidate_ref_mutations"):
+        if row["state"] == "reserved":
+            writes.append(
+                UnresolvedWrite(
+                    journal_id=row["id"],
+                    kind=row["purpose"],
+                    target_ref=_ref(row["target_branch"]),
+                    expected_old_sha=row.get("expected_old_sha"),
+                    desired_sha=row["desired_sha"],
+                    state=row["state"],
+                    started_at=row.get("prewrite_at"),
+                )
+            )
+    # The foundation journal is append-only. A later entry for the same write
+    # supersedes the earlier observation, never the stored audit itself.
+    journal = {}
+    for row in sorted(snapshot.all("integration_subject_journal"), key=lambda row: row["seq"]):
+        if row["primitive"] != Primitive.GIT_PUBLISH or row["mode"] != "active":
+            continue
+        payload = row.get("payload") or {}
+        if payload.get("target_ref"):
+            journal[payload.get("journal_id", row["idempotency_key"])] = row
+    for key, row in journal.items():
+        if row.get("outcome") in {"published", "target_moved"}:
+            continue
+        payload = row["payload"]
+        writes.append(
+            UnresolvedWrite(
+                journal_id=str(key),
+                kind="git_publish",
+                target_ref=_ref(payload["target_ref"]),
+                expected_old_sha=payload.get("expected_old_sha"),
+                desired_sha=payload.get("desired_sha") or row.get("head_sha"),
+                state=row.get("outcome") or "journalled",
+                started_at=row["recorded_at"],
+            )
+        )
+    return tuple(sorted(writes, key=lambda write: (write.started_at or 0, write.journal_id)))
+
+
+def _conflict_files(diagnostics: Row) -> tuple[str, ...]:
+    files = set(diagnostics.get("files", diagnostics.get("paths", ())))
+    for line in str(diagnostics.get("detail", "")).splitlines():
+        if "\t" in line:
+            files.add(line.rsplit("\t", 1)[1].strip())
+    return tuple(sorted(path for path in files if path))
+
+
+def _publisher_fence(snapshot: ObservationRows, ref: str, now: float) -> Fence | None:
+    """Read the publish target's authority, never remap another ref's fence.
+
+    A publisher owner may serve multiple subjects on its repository. A
+    collector owner must belong to this subject's operation/batch. Repair and
+    worker leases, unresolved handoffs and expired reservations are excluded.
+    The executing adapter still rechecks the fence under its write lock.
+    """
+    subject = snapshot.subject
+    operation = _operation(snapshot)
+    collector_ids = {subject.id, subject.batch_id, operation["id"] if operation else None}
+    owners = [
+        row
+        for row in snapshot.all("integration_branch_owners")
+        if row["repository_id"] == subject.repository_id
+        and _ref(row["ref"]) == ref
+        and row["handoff_state"] == "reserved"
+        and not row.get("session_id")
+        and not row.get("workspace_id")
+        and (row.get("expires_at") is None or row["expires_at"] > now)
+        and row.get("owner_id")
+        and row.get("fence_token", -1) >= 0
+        and (
+            row["owner_role"] == "publisher"
+            or row["owner_role"] == "collector"
+            and row["owner_id"] in collector_ids
+        )
+    ]
+    if len(owners) != 1:
+        return None
+    owner = owners[0]
+    return Fence(
+        target=BranchKey(repository_id=subject.repository_id, branch=ref),
+        owner_id=owner["owner_id"],
+        token=owner["fence_token"],
+    )
+
+
+class IntegrationObserver:
+    """Collect facts or implement the foundation's observe primitive port.
+
+    ``session_probe`` is a read-only runtime liveness probe. Without it, a
+    stored running/sleeping/quarantined state cannot establish a live writer.
+    A dead process still needs a durable stop-and-preservation receipt.
+
+    ``facts_type`` accepts a shared-compatible SubjectFacts extension, such
+    as the policy owner's IntegrationPolicyFacts. If that type declares
+    ``publisher_fence``, the observer fills it from the real publish-target
+    owner. It has no dependency on the policy evaluator's module.
+    """
+
+    def __init__(
+        self,
+        reader: SubjectReadPort,
+        git: GitReadPort | None = None,
+        *,
+        clock: Callable[[], float] = time.time,
+        session_probe: SessionProbe | None = None,
+        facts_type: type[SubjectFacts] = SubjectFacts,
+    ) -> None:
+        if not issubclass(facts_type, SubjectFacts):
+            raise TypeError("facts_type must extend SubjectFacts")
+        self.reader, self.git, self.clock = reader, git, clock
+        self.session_probe = session_probe
+        self.facts_type = facts_type
+
+    async def observe(self, subject: Subject) -> SubjectFacts:
+        """The reconciler callable: current facts for its supplied subject.
+
+        The loop owns timeout and id/version validation. A disappeared row
+        raises so its existing isolated observation-failure path can retry.
+        """
+        facts = await self.observe_subject(subject.id)
+        if facts is None:
+            raise LookupError("integration subject not found: " + subject.id)
+        return facts
+
+    async def __call__(self, subject: Subject, args: ObserveSubjectArgs, /) -> PrimitiveOutcome:
+        try:
+            facts = await self.observe_subject(subject.id, include_remote=args.include_remote)
+        except Exception:
+            logger.debug("Subject snapshot unavailable", exc_info=True)
+            return PrimitiveOutcome.unknown(Primitive.OBSERVE_SUBJECT, "snapshot_unavailable")
+        if facts is None:
+            return PrimitiveOutcome(primitive=Primitive.OBSERVE_SUBJECT, outcome="not_found")
+        return PrimitiveOutcome(
+            primitive=Primitive.OBSERVE_SUBJECT,
+            outcome="observed",
+            detail={"facts": facts.model_dump(mode="json")},
+        )
+
+    async def observe_subject(
+        self, subject_id: str, *, include_remote: bool = True
+    ) -> SubjectFacts | None:
+        snapshot = await self.reader.read(subject_id)
+        if snapshot is None:
+            return None
+        subject, now = snapshot.subject, self.clock()
+        unknown: list[str] = []
+        members, member_refs = _members(snapshot)
+        unknown.extend(
+            "member_head_missing:" + member.task_id for member in members if member.head_sha is None
+        )
+        candidate_row = next(
+            (
+                row
+                for row in snapshot.all("integration_candidate_revisions")
+                if row["revision"] == subject.generation
+            ),
+            None,
+        )
+        batch = next(iter(snapshot.all("integration_batches")), {})
+        candidate = None
+        if candidate_row and candidate_row.get("head_sha") and batch.get("integration_branch"):
+            candidate = HeadIdentity(
+                repository_id=subject.repository_id,
+                ref=_ref(batch["integration_branch"]),
+                sha=candidate_row["head_sha"],
+                generation=candidate_row["revision"],
+                base_sha=candidate_row["construction_base_sha"],
+            )
+        if subject.batch_id and batch.get("current_revision") != subject.generation:
+            unknown.append("subject_generation_moved")
+        default_ref = _ref(snapshot.repository["default_branch"])
+        refs = {default_ref, *member_refs.values()}
+        if subject.target_ref:
+            refs.add(subject.target_ref)
+        if candidate:
+            refs.add(candidate.ref)
+        remote_heads = []
+        for ref in sorted(refs):
+            if not include_remote or self.git is None:
+                remote = RemoteHead(ref=ref, state="unknown")
+            else:
+                try:
+                    remote = await self.git.remote_head(snapshot.repository, ref)
+                    if remote.ref != ref:
+                        raise ValueError("remote answered a different ref")
+                except Exception:
+                    logger.debug("Subject remote head unavailable", exc_info=True)
+                    remote = RemoteHead(ref=ref, state="unknown")
+            remote_heads.append(remote)
+            if remote.state == "unknown":
+                unknown.append("remote_unknown:" + ref)
+        default = next(head.sha for head in remote_heads if head.ref == default_ref)
+        target = candidate or subject.head
+        ci = []
+        if target:
+            ci.append(_ci(snapshot, target, subject.task_id, now, candidate=candidate is not None))
+        observed_members = []
+        for member in members:
+            state = CIState.NONE
+            if member.head_sha:
+                identity = HeadIdentity(
+                    repository_id=subject.repository_id,
+                    ref=member_refs.get(member.task_id, default_ref),
+                    sha=member.head_sha,
+                    generation=member.generation,
+                    base_sha=member.base_sha,
+                )
+                evidence = _ci(snapshot, identity, member.task_id, now)
+                state = evidence.state
+                if not any(item.head_sha == evidence.head_sha for item in ci):
+                    ci.append(evidence)
+            ancestry = "unknown"
+            if include_remote and self.git and target and member.head_sha:
+                try:
+                    contained = await self.git.is_ancestor(
+                        snapshot.repository, member.head_sha, target.sha
+                    )
+                    ahead = await self.git.is_ancestor(
+                        snapshot.repository, target.sha, member.head_sha
+                    )
+                    if contained is True:
+                        ancestry = "contained"
+                    elif contained is False and ahead is True:
+                        ancestry = "ahead"
+                    elif contained is False and ahead is False:
+                        ancestry = "diverged"
+                except Exception:
+                    logger.debug("Subject ancestry unavailable", exc_info=True)
+            if ancestry == "unknown" and member.head_sha:
+                unknown.append("ancestry_unknown:" + member.task_id)
+            observed_members.append(member.model_copy(update={"ci": state, "ancestry": ancestry}))
+        holds = _task_holds(snapshot, {member.task_id for member in members} | {subject.task_id})
+        holds += [
+            HoldFacts(
+                kind="review_rejected", task_id=member.task_id, reason="exact_head_review_rejected"
+            )
+            for member in members
+            if member.review == "rejected"
+        ]
+        gate = None
+        if subject.schedule.gate_id:
+            row = next(
+                (row for row in snapshot.all("gates") if row["id"] == subject.schedule.gate_id),
+                None,
+            )
+            gate = (
+                GateFacts(gate_id=subject.schedule.gate_id, status="missing")
+                if row is None
+                else (
+                    GateFacts(
+                        gate_id=row["id"],
+                        status={"resolved": "answered"}.get(row["status"], row["status"]),
+                        question=row["question"],
+                        answer=row.get("resolution"),
+                        timeout_at=row.get("timeout_at"),
+                        no_default=row.get("timeout_at") is None,
+                    )
+                )
+            )
+            if gate.status == "missing":
+                unknown.append("gate_missing:" + gate.gate_id)
+            if gate.status == "open" or gate.answer in {"hold", "reject", "abort"}:
+                holds.append(HoldFacts(kind="operator_hold", reason="gate:" + gate.gate_id))
+            config = _latest(
+                (
+                    row
+                    for row in snapshot.all("integration_subject_journal")
+                    if row["primitive"] == Primitive.GATE
+                    and (row.get("payload") or {}).get("gate_id") == gate.gate_id
+                ),
+                "seq",
+            )
+            if config:
+                payload = config["payload"]
+                gate = gate.model_copy(
+                    update={
+                        key: payload[key]
+                        for key in ("choices", "default_choice", "no_default")
+                        if key in payload
+                    }
+                )
+        conflicts = []
+        by_ordinal = {
+            row["ordinal"]: row["task_id"] for row in snapshot.all("integration_batch_members")
+        }
+        for row in snapshot.all("integration_candidate_member_results"):
+            if row["revision"] == subject.generation and row["result"] == "conflict":
+                diagnostics = row.get("conflict_evidence") or {}
+                conflicts.append(
+                    ConflictFacts(
+                        member_task_id=by_ordinal[row["member_ordinal"]],
+                        files=_conflict_files(diagnostics),
+                    )
+                )
+        for row in snapshot.all("integration_promotion_intents"):
+            if row["state"] == "conflict" and row.get("source_task_id"):
+                conflicts.append(
+                    ConflictFacts(
+                        member_task_id=row["source_task_id"],
+                        files=_conflict_files(row.get("conflict_diagnostics") or {}),
+                    )
+                )
+        for member in members:
+            if any(
+                row["task_id"] == member.task_id
+                and row["repository_id"] == subject.repository_id
+                and row["source_head"] == member.head_sha
+                and row["source_base"] == member.base_sha
+                and row["generation"] == member.generation
+                and row["state"] == "conflict"
+                for row in snapshot.all("integration_source_ci")
+            ):
+                conflicts.append(ConflictFacts(member_task_id=member.task_id))
+        liveness = {}
+        for session in snapshot.all("sessions"):
+            if session.get("state") == "stopped":
+                continue
+            try:
+                liveness[session["id"]] = (
+                    await self.session_probe(session) if self.session_probe else None
+                )
+            except Exception:
+                logger.debug("Subject writer liveness unavailable", exc_info=True)
+                liveness[session["id"]] = None
+        writer, budget = _writer(
+            snapshot, unknown, target.ref if target else subject.target_ref, liveness
+        )
+        operation = _operation(snapshot)
+        stages = [
+            row
+            for row in snapshot.all("integration_repair_stages")
+            if operation and row["operation_id"] == operation["id"]
+        ]
+        if writer.status is WriterStatus.CLAIMED and target and self.git and include_remote:
+            owner = next(
+                (
+                    row
+                    for row in snapshot.all("integration_branch_owners")
+                    if row["owner_id"] == writer.task_id
+                    and _ref(row["ref"]) == target.ref
+                    and row.get("session_id") == writer.session_id
+                    and row["handoff_state"] == "attached"
+                ),
+                None,
+            )
+            stage = next(
+                (
+                    row
+                    for row in stages
+                    if row["repair_task_id"] == writer.task_id
+                    and row["ordinal"] == operation["active_stage"]
+                ),
+                None,
+            )
+            published = next((row.sha for row in remote_heads if row.ref == target.ref), None)
+            if owner and stage and published and published != stage["starting_sha"]:
+                try:
+                    advanced = await self.git.is_ancestor(
+                        snapshot.repository, stage["starting_sha"], published
+                    )
+                except Exception:
+                    logger.debug("Subject writer push ancestry unavailable", exc_info=True)
+                    advanced = None
+                if advanced is True:
+                    # The fenced live writer owns the ref and its frozen start
+                    # is an ancestor. We know a push happened, not its timestamp.
+                    writer = writer.model_copy(update={"status": WriterStatus.WORKING})
+                elif advanced is None:
+                    unknown.append("writer_push_ancestry_unknown:" + writer.task_id)
+        no_progress = False
+        for stage in stages:
+            incident = (stage.get("dossier") or {}).get("supervisor_recovery") or {}
+            identity = incident.get("subject") or {}
+            incident_head = identity.get("candidate_sha") or identity.get("head_sha")
+            if (
+                target
+                and incident_head == target.sha
+                and incident.get("attempts") == (budget.attempts if budget else stage["attempts"])
+            ):
+                no_progress = True
+        # A ladder's length is policy. Only an explicitly recorded exhaustion
+        # fact is reported; the observer never invents a new ordinal/limit.
+        ladder_exhausted = any(
+            stage["ordinal"] == operation["active_stage"]
+            and (stage.get("dossier") or {}).get("ladder_exhausted") is True
+            for stage in stages
+        )
+        base = target.base_sha if target else subject.base_sha
+        extra = {}
+        if "publisher_fence" in self.facts_type.model_fields:
+            publish_ref = (
+                default_ref if subject.kind is SubjectKind.ROOT_BATCH else subject.target_ref
+            )
+            extra["publisher_fence"] = (
+                _publisher_fence(snapshot, publish_ref, now) if publish_ref else None
+            )
+            if extra["publisher_fence"] is None:
+                unknown.append("publisher_fence_unavailable")
+        return self.facts_type(
+            subject_id=subject.id,
+            subject_version=subject.version,
+            kind=subject.kind,
+            phase=subject.phase,
+            observed_at=now,
+            head=subject.head,
+            candidate=candidate,
+            default_branch_head=default,
+            remote_heads=tuple(remote_heads),
+            members=tuple(observed_members),
+            ci=tuple(ci),
+            conflicts=tuple(conflicts),
+            writer=writer,
+            budget=budget,
+            unresolved_writes=_writes(snapshot),
+            gate=gate,
+            holds=tuple(
+                sorted(holds, key=lambda hold: (hold.kind, hold.task_id or "", hold.reason))
+            ),
+            base_moved=default is not None and base is not None and default != base,
+            wait_overdue=subject.wait_overdue(now),
+            no_progress=no_progress,
+            ladder_exhausted=ladder_exhausted,
+            unknown=tuple(sorted(set(unknown))),
+            **extra,
+        )

@@ -4837,6 +4837,24 @@ integration_subjects = Table(
     Column("task_id", Text, nullable=True),
     # The legacy ``integration_batches`` row a root subject maps onto, once sealed.
     Column("batch_id", Text, nullable=True),
+    # Additive parent bridge: nullable for pre-cutover rows, pinned once bound.
+    Column("parent_episode_id", Text, nullable=True),
+    ForeignKeyConstraint(
+        ["task_id", "parent_episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_subjects_parent_episode",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "parent_episode_id IS NULL OR kind = 'parent_episode'",
+        name="ck_integration_subjects_parent_episode",
+    ),
+    Index(
+        "uq_integration_subjects_parent_episode",
+        "parent_episode_id",
+        unique=True,
+        postgresql_where=text("parent_episode_id IS NOT NULL"),
+    ),
     # Exact head/generation identity of what the current phase refers to.
     Column("target_ref", Text, nullable=True),
     Column("head_sha", Text, nullable=True),
