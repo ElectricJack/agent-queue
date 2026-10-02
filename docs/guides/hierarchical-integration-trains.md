@@ -60,6 +60,23 @@ left as they were. The same delegate is then readied, and it resolves the
 conflict through the normal fenced publication path. Design:
 [detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
 
+If a debug stage has already expired without progress, but its stopped writer
+completed a resolution that `release-owner` preserved, preview that exact commit:
+
+```bash
+aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
+```
+
+Run the returned `apply_command` after inspecting its source, target, parents,
+tree, released fence and remaining attempts. Apply requires `--stage`,
+`--released-fence` and `--reason`; it repeats every proof and publishes with an
+expected-old compare-and-swap under a fresh collector fence. It consumes only
+the audited two-parent merge. The expired deadline and consumed attempts remain
+unchanged, the former delegate stays blocked, and normal parent verification is
+still required. An exhausted attempt budget or human gate returns a specific
+blocker. An interrupted push with an unchanged target is ambiguous and is never
+blindly retried. See [preserved repair recovery](../superpowers/specs/2026-10-01-preserved-repair-recovery-design.md).
+
 The command synopsis used below is:
 
 ```text

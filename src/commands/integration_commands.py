@@ -1333,6 +1333,32 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_recover_preserved_repair(self, args: dict) -> dict:
+        """Consume an audited completed candidate without renewing repair authority."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecoverPreservedRepairArgs
+        from src.integration.preserved_repair import PreservedRepairRecovery
+        from src.integration.promotion import PromotionError
+
+        try:
+            request = IntegrationRecoverPreservedRepairArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("blocked", str(exc))
+        principal, refusal = await self._integration_operator_for_operation(request.operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await PreservedRepairRecovery(
+                self._integration_promotion_service(), self._integration_repair_service()
+            ).run(request, principal=principal)
+        except (PromotionError, GitError, ValueError, BranchBusy, StaleFence) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_recover", "recovered", "already_recovered"},
+            **result,
+        }
+
     async def _cmd_integration_rebind_detached_repair(self, args: dict) -> dict:
         """Rebind a detached debug stage frozen on an unpublished head to its conflict."""
         from pydantic import ValidationError
