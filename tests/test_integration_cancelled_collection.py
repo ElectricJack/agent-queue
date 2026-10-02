@@ -21,12 +21,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     agents,
     archived_tasks,
     events,
+    gates,
     integration_branch_owners,
     integration_check_evidence,
     integration_outbox,
@@ -35,9 +36,11 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     projects,
+    task_completion_records,
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_gates,
     tasks,
 )
 from src.git.manager import GitManager
@@ -49,6 +52,7 @@ from src.integration.child_delivery import ChildDelivery
 from src.integration.collection import CollectionService
 from src.integration.delegate_release import archive_obsolete_delegates
 from src.integration.development import DevelopmentIntegration
+from src.integration.failed_verification_recovery import RECOVERY_EVENT, FailedVerificationRecovery
 from src.integration.hierarchy import HierarchyIntegration
 from src.integration.models import (
     ArtifactSnapshot,
@@ -61,6 +65,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.promotion import PromotionConflict, PromotionService
+from src.integration.ownership import BranchOwnership, StaleFence
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
@@ -101,6 +106,7 @@ def _policy() -> tuple[dict, ArtifactSnapshot]:
             artifact=artifact,
         ),
         primary_intelligence_class="standard",
+        verifier_intelligence_class="high",
     )
     policy = HierarchicalIntegrationPolicy(
         parent=boundary, root=boundary, branchless_parent="verifier", on_failed_child="block"
@@ -253,6 +259,266 @@ async def _promote_next(case, now: float):
 async def _rows(db, table, *where) -> list[dict]:
     async with db._engine.connect() as conn:
         return [dict(row) for row in (await conn.execute(select(table).where(*where))).mappings()]
+
+
+async def _failed_aggregate(case):
+    """Two receipted children, a settled red verifier and one completed new fix."""
+    head_two = _commit_on(case.work, "aq/two-clean", case.base, "two.txt", "two\n")
+    child_two = await case.db.get_task("epic.2")
+    _git(["push", "origin", f"{head_two}:refs/heads/{child_two.branch_name}", "--force"], case.work)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints)
+                           .where(task_integration_checkpoints.c.task_id == "epic.2")
+                           .values(checkpoint_sha=head_two))
+    assert await _promote_next(case, 10.0) is not None
+    assert await _promote_next(case, 11.0) is not None
+    red_head = _remote_tip(case)
+    verifier_id = f"verify-{case.operation_id}"
+    await case.db.create_task(Task(
+        id=verifier_id, project_id="p", repo_id="repo", branch_name="aq/epic",
+        title="failed aggregate verifier", description="found a real scope-contract failure",
+        status=TaskStatus.FAILED,
+    ))
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints)
+                           .where(task_integration_checkpoints.c.task_id == "epic")
+                           .values(state="verifying", checkpoint_sha=red_head))
+        await conn.execute(update(integration_repair_operations)
+                           .where(integration_repair_operations.c.id == case.operation_id)
+                           .values(state="escalated", verifier_task_id=verifier_id))
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.ref == "aq/epic")
+                           .values(owner_id=verifier_id, owner_role="verifier"))
+        await conn.execute(insert(task_completion_records).values(
+            id="failed-completion", task_id=verifier_id, outcome="fail", branch="aq/epic",
+            commits=json.dumps([red_head]), summary="two scope failures", completed_at=2e10,
+        ))
+    # The fix becomes complete only after aggregate verification failed.
+    _git(["fetch", "origin", "aq/epic"], case.work)
+    fix = _commit_on(case.work, "aq/fix", red_head, "fix.txt", "scope fix\n")
+    child_three = await case.db.get_task("epic.3")
+    _git(["push", "origin", f"{fix}:refs/heads/{child_three.branch_name}"], case.work)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.3")
+                           .values(status="COMPLETED"))
+        await conn.execute(update(task_integration_checkpoints)
+                           .where(task_integration_checkpoints.c.task_id == "epic.3")
+                           .values(checkpoint_sha=fix))
+    return red_head, verifier_id
+
+
+async def test_failed_verification_reopens_then_receipts_fix_and_wakes_fresh_verifier(case):
+    red_head, old_verifier = await _failed_aggregate(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    old_receipts = await _rows(case.db, task_delivery_receipts)
+    old_owner = await _owner(case)
+    old_checkpoint = await case.db.get_integration_checkpoint("epic")
+    blocked = await ChildDelivery(case.db, case.promotion).diagnose("epic.3")
+    assert blocked["outcome"] == "blocked"
+    assert "not awaiting children" in blocked["reason"]
+    diagnosis = await recovery.run("epic")
+    assert diagnosis["outcome"] == "would_reopen", diagnosis
+    assert diagnosis["head_sha"] == red_head
+    assert await _owner(case) == old_owner
+    applied = await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                                 reason="collect completed scope fix", operator_id="operator")
+    assert applied["outcome"] == "reopened", applied
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    assert checkpoint["generation"] == old_checkpoint["generation"] + 1
+    assert checkpoint["episode_id"] == old_checkpoint["episode_id"]
+    assert checkpoint["checkpoint_sha"] == red_head
+    assert checkpoint["state"] == "awaiting_children"
+    assert checkpoint["current_verification_id"] is None
+    assert (await _owner(case))["fence_token"] == old_owner["fence_token"] + 1
+    assert (await _operation(case))["verifier_task_id"] is None
+    assert await _rows(case.db, task_delivery_receipts) == old_receipts
+    [audit] = await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT)
+    payload = json.loads(audit["payload"])
+    assert payload["previous_verifier_task_id"] == old_verifier
+    assert payload["failure_completion_id"] == "failed-completion"
+    assert payload["receipts"] == [r["id"] for r in old_receipts]
+    # Old generation and old writer can no longer certify or mutate the aggregate.
+    stale = await case.hierarchy.parent_completion.verify_parent(
+        "epic", old_checkpoint["generation"], red_head, ["old-evidence"])
+    assert stale["outcome"] == "stale_generation"
+    with pytest.raises(StaleFence):
+        async with case.db.immediate() as conn:
+            await BranchOwnership(case.db).transfer_detached_on(
+                conn, Fence(target={"repository_id": "repo", "branch": "aq/epic"},
+                            owner_id=old_verifier, token=old_owner["fence_token"]),
+                "old-writer", "verifier")
+    assert await _promote_next(case, 30.0) is not None
+    receipts = await _rows(case.db, task_delivery_receipts)
+    assert len(receipts) == 3
+    fix_receipt = next(r for r in receipts if r["source_task_id"] == "epic.3")
+    assert fix_receipt["parent_operation_id"] == case.operation_id
+    assert fix_receipt["parent_episode_id"] == old_checkpoint["episode_id"]
+    new_head = _remote_tip(case)
+    assert new_head != red_head
+    async with case.db.immediate() as conn:
+        ready = await case.hierarchy.parent_completion.mark_ready_on(conn, "epic")
+    assert ready["outcome"] == "ready", ready
+    new_verifier = (await _operation(case))["verifier_task_id"]
+    assert new_verifier != old_verifier
+    assert (await case.db.get_task(old_verifier)).status == TaskStatus.FAILED
+    owner = await _owner(case)
+    async with case.db.immediate() as conn:
+        fence = await BranchOwnership(case.db).transfer_detached_on(
+            conn, Fence(target={"repository_id": "repo", "branch": "aq/epic"},
+                        owner_id=owner["owner_id"], token=owner["fence_token"]),
+            new_verifier, "verifier")
+    await case.hierarchy.parent_completion.wake_verifier("epic", fence)
+    assert (await case.db.get_task(new_verifier)).status == TaskStatus.READY
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    assert checkpoint["state"] == "verifying"
+    assert checkpoint["checkpoint_sha"] == new_head
+    assert checkpoint["verified_sha"] is None
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(
+            id="fresh-green", operation_id=case.operation_id, parent_task_id="epic",
+            parent_generation=checkpoint["generation"], parent_head_sha=new_head,
+            producer_id="forge", workflow_id="aggregate", run_id="fresh", attempt=1,
+            required_check_version="test", checks={"unit": "success"},
+            conclusion="success", classification="conclusive", observed_at=2e10,
+        ))
+    verified = await case.hierarchy.parent_completion.verify_parent(
+        "epic", checkpoint["generation"], new_head, ["fresh-green"])
+    assert verified["outcome"] == "verified", verified
+    completed = await case.hierarchy.parent_completion.complete_parent(
+        "epic", checkpoint["generation"], new_head)
+    assert completed["outcome"] == "completed", completed
+
+
+@pytest.mark.parametrize("blocker", [
+    "attached_owner", "wrong_owner", "remote_moved", "failure_missing", "failure_head",
+    "manual_hold", "no_fix", "mutation", "repair_writer",
+])
+async def test_failed_verification_recovery_refuses_ambiguous_state(case, blocker):
+    red_head, verifier = await _failed_aggregate(case)
+    async with case.db.immediate() as conn:
+        if blocker in {"attached_owner", "wrong_owner"}:
+            values = ({"session_id": "writer", "handoff_state": "attached"}
+                      if blocker == "attached_owner" else {"owner_id": "another-operation"})
+            await conn.execute(update(integration_branch_owners).values(**values))
+        elif blocker == "failure_missing":
+            await conn.execute(delete(task_completion_records))
+        elif blocker == "failure_head":
+            await conn.execute(update(task_completion_records).values(commits=json.dumps([case.base])))
+        elif blocker == "manual_hold":
+            from src.database.tables import task_metadata
+
+            await conn.execute(insert(task_metadata).values(
+                task_id="epic", key="manual_pause", value="true"))
+        elif blocker == "no_fix":
+            await conn.execute(update(tasks).where(tasks.c.id == "epic.3").values(status="READY"))
+        elif blocker == "mutation":
+            await conn.execute(update(integration_promotion_intents)
+                               .where(integration_promotion_intents.c.source_task_id == "epic.2")
+                               .values(state="prepared"))
+        elif blocker == "repair_writer":
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id=case.operation_id, ordinal=0, intelligence_class="high",
+                policy={}, trigger_id="red", starting_sha=red_head, current_subject={}, attempts=1,
+                deadline_at=2e10, deadline_event_id="deadline", state="active",
+                repair_task_id=verifier, writer_kind="existing_verifier",
+            ))
+    if blocker == "remote_moved":
+        _git(["push", "origin", f"{case.heads['epic.1']}:refs/heads/aq/epic", "--force"], case.work)
+    owner = await _owner(case)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    result = await FailedVerificationRecovery(case.db, case.promotion).run(
+        "epic", dry_run=False, expected_head_sha=red_head, reason="attempt recovery")
+    assert result["outcome"] in {"blocked", "ambiguous"}, result
+    assert await _owner(case) == owner
+    assert await case.db.get_integration_checkpoint("epic") == checkpoint
+
+
+async def test_failed_verification_recovery_preserves_stage_budgets_and_human_gates(case):
+    red_head, _ = await _failed_aggregate(case)
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=case.operation_id, ordinal=1, policy={"attempt_limit": 3},
+            intelligence_class="high", starting_sha=red_head, attempts=3,
+            started_at=20.0, deadline_at=30.0, deadline_event_id="original-deadline",
+            state="passed", completed_at=29.0, dossier={"original": "evidence"},
+        ))
+        await conn.execute(update(integration_repair_operations).values(active_stage=1))
+        await conn.execute(insert(gates).values(
+            id="rollout-gate", project_id="p", gate_type="human", title="Phase 2 rollout",
+            status="open", created_at=20.0,
+        ))
+        await conn.execute(insert(task_gates).values(task_id="epic", gate_id="rollout-gate"))
+    stages = await _rows(case.db, integration_repair_stages)
+    frozen_policy = (await _operation(case))["policy_snapshot"]
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    diagnosis = await recovery.run("epic")
+    assert diagnosis["outcome"] == "would_reopen", diagnosis
+    assert diagnosis["human_gates"] == ["rollout-gate"]
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head, reason="fix")
+    assert result["outcome"] == "reopened"
+    assert await _rows(case.db, integration_repair_stages) == stages
+    operation = await _operation(case)
+    assert operation["active_stage"] == 1
+    assert operation["policy_snapshot"] == frozen_policy
+    [gate] = await _rows(case.db, gates)
+    assert gate["status"] == "open"
+    [audit] = await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT)
+    assert json.loads(audit["payload"])["stages"] == stages
+
+
+@pytest.mark.parametrize("context", ["session_close_hard_failure", "max_retries"])
+async def test_failed_verification_recovery_accepts_terminal_failed_close_without_reset(case, context):
+    red_head, verifier = await _failed_aggregate(case)
+    await case.db.transition_task(verifier, TaskStatus.BLOCKED, context=context, force=True)
+    await case.db.update_task(verifier, retry_count=3)
+    original = await case.db.get_task(verifier)
+    result = await FailedVerificationRecovery(case.db, case.promotion).run(
+        "epic", dry_run=False, expected_head_sha=red_head, reason="collect scope fix")
+    assert result["outcome"] == "reopened", result
+    assert await case.db.get_task(verifier) == original
+    assert await case.db.get_task_meta(verifier, "blocked_terminal") == context
+
+
+async def test_failed_verification_cannot_reverify_unchanged_red_head(case):
+    red_head, _ = await _failed_aggregate(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    applied = await recovery.run("epic", dry_run=False, expected_head_sha=red_head, reason="fix")
+    assert applied["outcome"] == "reopened"
+    # A child delivery that changes no parent commit cannot re-arm the red aggregate.
+    receipts = await _rows(case.db, task_delivery_receipts)
+    child = await case.db.get_integration_checkpoint("epic.3")
+    receipt = dict(receipts[-1], id="unchanged-fix", domain_key="unchanged-fix",
+                   source_task_id="epic.3", reviewed_head_sha=child["checkpoint_sha"],
+                   before_sha=red_head, squash_sha=red_head, after_sha=red_head,
+                   created_at=max(r["created_at"] for r in receipts) + 1)
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(task_delivery_receipts).values(**receipt))
+        result = await case.hierarchy.parent_completion.mark_ready_on(conn, "epic")
+    assert result["outcome"] == "waiting", result
+    assert {"task_id": "epic", "reason": "failed_aggregate_head_unchanged"} in result["blockers"]
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    result = await case.hierarchy.parent_completion.verify_parent(
+        "epic", checkpoint["generation"], red_head, ["new-check-evidence"])
+    assert result["outcome"] == "waiting"
+    assert (await _operation(case))["verifier_task_id"] is None
+    assert await case.db.get_integration_checkpoint("epic") == checkpoint
+
+
+async def test_failed_verification_rechecks_remote_after_diagnosis(case, monkeypatch):
+    red_head, _ = await _failed_aggregate(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    original = recovery._diagnose
+
+    async def move_after_proof(task_id):
+        result = await original(task_id)
+        _git(["push", "origin", f"{case.heads['epic.1']}:refs/heads/aq/epic", "--force"], case.work)
+        return result
+
+    monkeypatch.setattr(recovery, "_diagnose", move_after_proof)
+    owner = await _owner(case)
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head, reason="recover")
+    assert result["outcome"] == "changed", result
+    assert await _owner(case) == owner
 
 
 async def _operation(case) -> dict:

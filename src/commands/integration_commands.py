@@ -1270,11 +1270,12 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
-        """Reopen a parent collection ``cancel-preserving`` stopped, in its own episode."""
+        """Reopen a cancelled collection or one stopped by a settled failed verifier."""
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReopenCollectionArgs
         from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
+        from src.integration.failed_verification_recovery import FailedVerificationRecovery
 
         try:
             request = IntegrationReopenCollectionArgs.model_validate(args)
@@ -1291,7 +1292,13 @@ class IntegrationCommandsMixin:
         async def dispatch(operation_id: str, stage: int) -> dict:
             return await repair.dispatch(operation_id, stage)
 
-        result = await CancelledCollectionRecovery(
+        checkpoint = await self.db.get_integration_checkpoint(request.task_id)
+        recovery_type = (
+            FailedVerificationRecovery
+            if checkpoint is not None and checkpoint["state"] in {"verifying", "integration_ready"}
+            else CancelledCollectionRecovery
+        )
+        result = await recovery_type(
             self.db, self._integration_promotion_service(), dispatch=dispatch
         ).run(
             request.task_id,
