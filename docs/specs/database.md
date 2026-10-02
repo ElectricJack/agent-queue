@@ -2215,7 +2215,7 @@ that will be built into a candidate and promoted to `main` together.
 | `trigger` | TEXT | nullable | periodic / manual |
 | `source_manifest_digest` | TEXT | NOT NULL | Digest of the sealed member set |
 | `base_sha` | TEXT | nullable | `main` at seal time; NULL only when `lifecycle = 'empty'` (`ck_integration_batches_empty_identity`) |
-| `lifecycle` | TEXT | NOT NULL | One of: sealing, sealed, building, testing, repairing, human_blocked, promoting, cleanup_pending, promoted, aborted, failed, empty. Cannot return to `sealing`; identity columns are immutable after sealing (triggers) |
+| `lifecycle` | TEXT | NOT NULL | One of: sealing, sealed, building, testing, repairing, human_blocked, promoting, cleanup_pending, promoted, aborted, failed, empty. Cannot return to `sealing`; identity columns are immutable after sealing (triggers). `empty` rows are history only: an empty frontier now consumes its request without inserting a row (`TrainService` answers `batch_id` `integration-empty:<request_id>`) |
 | `current_revision` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Latest candidate revision; monotone (trigger) |
 | `integration_branch` | TEXT | nullable | Candidate branch; NULL only when empty |
 | `pr_url` | TEXT | nullable | Audit PR for the candidate |

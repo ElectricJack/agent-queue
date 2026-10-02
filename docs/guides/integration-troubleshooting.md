@@ -579,21 +579,23 @@ Nothing about the task changes. The stopped session keeps its claim, checkout an
 binding, so this owner recovery, run by hand or by the sweep below, passes the
 writer check, snapshots unpushed work and then releases the branch.
 
-**Automatic sweep.** Set `integration.owner_recovery_sweep: true` in
-`config.yaml` to have the daemon run this same guarded recovery every 300 s
-against every candidate row quiet for at least 600 s. It ships off by
-default because a live writer holding a row will be refused with
-`writer_live` on every sweep tick, and a failed push (origin unreachable) will
-refuse every sweep tick — both are noisy and unnecessary when no one has asked
-for a release. Once the writer is stopped and the branch is genuinely safe the
-sweep succeeds within one tick and the row appears in
-`integration_owner_recoveries` under principal `sweep`. Enable it alongside
-supervision: `doctor` and the manual command remain available regardless.
+**Automatic sweep.** The daemon runs this same guarded recovery every 300 s
+against every candidate row quiet for at least 600 s. It ships on by default
+(`integration.owner_recovery_sweep: true`): stranded-owner recovery is routine,
+and the sweep takes no shortcut the manual command does not. A candidate's
+session must be stopped, a live writer is refused with `writer_live`, a live
+checkout with `checkout_in_use`, and an unreachable origin with
+`origin_unreachable`; a refusal repeating its reason is recorded once per
+throttle window. Once the writer is stopped and the branch is genuinely safe
+the sweep succeeds within one tick and the row appears in
+`integration_owner_recoveries` under principal `sweep`. Set it to `false` to
+release stranded owners only by hand: an explicit `false` always stays off, and
+`doctor` and the manual command remain available regardless.
 
 ```yaml
 # config.yaml
 integration:
-  owner_recovery_sweep: true
+  owner_recovery_sweep: false   # release stranded owners by hand only
 ```
 
 **Reading the audit trail.**
