@@ -360,7 +360,11 @@ class SurfaceCommandsMixin:
         messages_cfg = getattr(self.config, "messages", None)
         mark_messages_delivered = bool(getattr(messages_cfg, "enabled", False))
 
-        renderer = PrimeRenderer(self.db, self.config)
+        renderer = PrimeRenderer(
+            self.db,
+            self.config,
+            harness_registry=getattr(self.orchestrator, "harness_registry", None),
+        )
         try:
             doc = await renderer.render_for_task(
                 task_id,
