@@ -1327,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:f43e60bcdbd737cce17b39345ec645da67ef1570994e08fadf551019234f6f67",
+  "digest": "sha256:54defd3f282df8e7adda25b9726d056fd6709bc076a37bab352dc87ccd69b9bc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7661,6 +7661,7 @@
         "src.claim_file",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
@@ -7679,7 +7680,10 @@
         "src.orchestrator.workspace",
         "src.prime.sections",
         "src.profiles.capabilities",
-        "src.scheduler"
+        "src.scheduler",
+        "src.sessions.fake",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
       ],
       "markers": [
         "parametrize"
