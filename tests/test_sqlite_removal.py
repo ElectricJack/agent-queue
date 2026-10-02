@@ -25,6 +25,14 @@ SRC = ROOT / "src"
 #: release.  It is scheduled for deletion — see its module docstring.
 ALLOWED = {SRC / "database" / "legacy_sqlite_import.py"}
 
+#: Modules that read *another program's* SQLite file.  AQ persists to
+#: PostgreSQL alone, but OpenCode records its tool calls -- its native question
+#: dialog included -- only in its own ``opencode.db``, which
+#: :mod:`src.sessions.native_questions` reads for question evidence.  Such a
+#: reader may import the stdlib driver and name the file, nothing more, and
+#: must open it read-only (``test_foreign_store_readers_open_read_only``).
+FOREIGN_STORE_READERS = {SRC / "sessions" / "native_questions.py"}
+
 #: SQLite *usage*, not the word.  Prose that explains why the backend is gone
 #: is wanted, not forbidden — the ratchet exists to stop the code coming back,
 #: not the history of it.
@@ -41,6 +49,10 @@ _SQLITE_USE = re.compile(
     """,
     re.VERBOSE,
 )
+#: The only SQLite use a foreign-store reader is allowed: the stdlib import and
+#: a quoted file name.  Removed from a line before ``_SQLITE_USE`` sees it, so an
+#: async driver, a SQLAlchemy URL or the deleted adapter still fails.
+_FOREIGN_STORE_READ = re.compile(r"""^\s*import\s+sqlite3\s*$|["'][\w.-]+\.db["']""")
 _DIALECT_BRANCH = re.compile(r"dialect\.name\s*[=!]=")
 
 
@@ -53,14 +65,27 @@ def test_nothing_uses_sqlite_outside_the_legacy_importer():
     for path in _python_sources():
         if path in ALLOWED:
             continue
+        foreign = path in FOREIGN_STORE_READERS
         hits = [
             f"{path.relative_to(ROOT)}:{n}"
             for n, line in enumerate(path.read_text().splitlines(), 1)
-            if _SQLITE_USE.search(line)
+            if _SQLITE_USE.search(_FOREIGN_STORE_READ.sub("", line) if foreign else line)
         ]
         if hits:
             offenders[path.name] = hits
     assert not offenders, f"SQLite crept back into src/: {offenders}"
+
+
+def test_foreign_store_readers_open_read_only():
+    """The allowance covers reading another program's file, never writing one."""
+    for path in FOREIGN_STORE_READERS:
+        assert path.is_file(), f"stale foreign-store allowance: {path.relative_to(ROOT)}"
+        text = path.read_text()
+        connects = text.count("sqlite3.connect(")
+        assert connects, f"{path.relative_to(ROOT)} no longer reads SQLite; drop its allowance"
+        assert text.count("?mode=ro") == connects, (
+            f"{path.relative_to(ROOT)} must open every foreign store with ?mode=ro"
+        )
 
 
 def test_the_sqlite_adapter_and_connection_shim_are_gone():
