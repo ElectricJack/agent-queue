@@ -28,9 +28,9 @@ from src.playbooks.definition import granted_aq_commands
 from src.playbooks.invocation import _invocation_context, current_invocation
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
 from tests.test_routing_planner import SHIPPED_POLICY
-from tests.assignment_routing_helpers import route_source_for
 
 ROUTER_ID = "default-assignment-routing"
 CLASSES = {
@@ -441,7 +441,10 @@ async def test_a_burst_planned_against_one_snapshot_spreads_by_pressure(
     adjusted = next(result for result in results if result["adjusted_at_apply"])
     assert "adjusted at apply" in adjusted["reason"]
     backlog = await orch.db.count_routed_backlog_by_profile()
-    assert backlog == {"standard-high-codex": 3, "standard-high-claude": 3}
+    assert backlog == {
+        "standard-high-codex": {"eligible": 3, "blocked": 0},
+        "standard-high-claude": {"eligible": 3, "blocked": 0},
+    }
 
 
 # -- the routing lock and the load queries -------------------------------------------------
@@ -470,10 +473,66 @@ async def test_backlog_counts_ready_and_assigned_routed_work_fleet_wide(orch):
                   status=TaskStatus.BLOCKED)
     await _create(orch.db, "unrouted")
     assert await orch.db.count_routed_backlog_by_profile() == {
-        "standard-high-codex": 2, "standard-high-claude": 1,
+        "standard-high-codex": {"eligible": 1, "blocked": 1},
+        "standard-high-claude": {"eligible": 1, "blocked": 0},
     }
     assert await orch.db.count_busy_sessions_by_profile() == {}
 
+
+async def test_unclaimable_ready_work_is_blocked_not_eligible(orch):
+    """A task that fails any claim-frontier rule routes to *blocked*.
+
+    Regression: one unclaimable verifier in a one-slot pool must not block a
+    narrow task routed to that pool.  The eligible/blocked split is what
+    makes the planner's load admit only work a pool worker could actually
+    claim — the blocked ones are evidence, not a gate.
+    """
+    # dependency-blocked
+    await _create(orch.db, "dep", profile_id="standard-high-codex")
+    await orch.db.update_task("dep", is_blocked=1)
+    # hold-labelled
+    await _create(orch.db, "hold", profile_id="standard-high-codex")
+    await orch.db.add_task_label("hold", "hold:operator")
+    # already-assigned → ASSIGNED
+    await _create(
+        orch.db, "assigned", profile_id="standard-high-codex", status=TaskStatus.ASSIGNED,
+    )
+    agent = Agent(id="worker-1", name="w", profile_id="standard-high-codex")
+    await orch.db.create_agent(agent)
+    await orch.db.update_task("assigned", assigned_agent_id="worker-1")
+    # plan-subtask (child of a plan; the frontier excludes plan subtasks)
+    await _create(orch.db, "sub", profile_id="standard-high-codex")
+    await orch.db.update_task("sub", is_plan_subtask=1)
+    # a plain, claimable READY routed task
+    await _create(orch.db, "plain", profile_id="standard-high-codex")
+
+    backlog = await orch.db.count_routed_backlog_by_profile()
+    counts = backlog["standard-high-codex"]
+    assert counts == {"eligible": 1, "blocked": 4}, backlog
+
+
+async def test_blocked_verifier_does_not_gate_a_narrow_route(orch):
+    """The regression that motivated the split.
+
+    A pool with 0 live workers and one routed READY verifier that has been
+    assigned but is now blocked on a parent's gate — the verifier must show
+    up in *blocked*, not *backlog*, so the planner is free to route an
+    eligible narrow task to that pool.
+    """
+    await _create(
+        orch.db, "verifier", profile_id="standard-high-claude", status=TaskStatus.ASSIGNED,
+    )
+    await orch.db.update_task("verifier", is_blocked=1)
+    agent = Agent(id="verifier-w", name="v", profile_id="standard-high-claude")
+    await orch.db.create_agent(agent)
+    await orch.db.update_task("verifier", assigned_agent_id="verifier-w")
+
+    # The blocked verifier is not eligible load, and is not busy either (no
+    # live session), so the one Claude pool slot is free for the next routed
+    # task.
+    backlog = await orch.db.count_routed_backlog_by_profile()
+    assert backlog["standard-high-claude"] == {"eligible": 0, "blocked": 1}, backlog
+    assert await orch.db.count_busy_sessions_by_profile() == {}
 
 # -- task.route_needed carries the router and the class hint ------------------------------
 
