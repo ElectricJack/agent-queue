@@ -556,13 +556,21 @@ class TestStaticSections:
         ):
             assert required in body, required
 
-    @pytest.mark.parametrize("harness", ["opencode", "codex"])
+    @pytest.mark.parametrize("harness", ["opencode", "opencode-zen", "codex"])
     async def test_opencode_session_is_told_not_to_ask_optional_questions(
         self, db, config, task, harness
     ):
         # OpenCode's native question dialog blocks the whole session, and its
         # compaction prompt invites one (prime-dune): only OpenCode gets the
-        # addendum, and only for the live session holding the task.
+        # addendum, and only for the live session holding the task.  The
+        # addendum is the CLI's: ``opencode-zen`` runs the same executable
+        # against OpenCode Zen and gets it too (noble-delta-40).
+        from src.sessions.harness_parser import Harness
+        from src.sessions.harness_registry import HarnessRegistry
+
+        registry = HarnessRegistry()
+        registry.upsert(Harness(id="opencode-zen", command="/opt/harness-bin/opencode"))
+        registry.upsert(Harness(id="codex", command="codex"))
         await db.create_session(
             SessionRecord(
                 id="oc-session",
@@ -580,7 +588,9 @@ class TestStaticSections:
                 state="running",
             )
         )
-        doc = await PrimeRenderer(db, config).render_for_task("task-1", session_id="oc-session")
+        doc = await PrimeRenderer(db, config, harness_registry=registry).render_for_task(
+            "task-1", session_id="oc-session"
+        )
         body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].split())
         addendum = (
             "Do not ask optional questions",
@@ -590,7 +600,7 @@ class TestStaticSections:
             "never work around it",
             "[aq question answered]",
         )
-        if harness == "opencode":
+        if harness.startswith("opencode"):
             for required in addendum:
                 assert required in body, required
             assert "aq test" in body  # appended to, never replacing, the shared guidance

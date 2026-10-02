@@ -1327,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:54defd3f282df8e7adda25b9726d056fd6709bc076a37bab352dc87ccd69b9bc",
+  "digest": "sha256:086c749b16f34be9a7c50fc752fab5a1a7b539a76cfd90311f8fd6082d503632",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1964,6 +1964,8 @@
         "src.models",
         "src.sessions",
         "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
         "src.sessions.native_questions",
         "src.sessions.provider",
         "src.sessions.questions"
@@ -10573,7 +10575,9 @@
         "src.prime",
         "src.prime.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry"
       ],
       "markers": [
         "asyncio",
