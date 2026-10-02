@@ -107,7 +107,10 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
 - **Plugin CLI extensions** register `aq <plugin-name> …` via the `aq.plugins` entry
   point group; saved plugin config is fetched only when that group is invoked, read-only
   and bounded. Import, help, version, schema and `aq test` discovery must never initialize
-  or migrate a database.
+  or migrate a database. A plugin never shadows a core command: a colliding entry point
+  is skipped with a warning naming its distribution, except the (name, distribution)
+  pairs in `_CORE_SURFACED_PLUGIN_ENTRY_POINTS` (aq-memory's `memory`), which core
+  surfaces itself and the CLI never imports.
 
 ## Conventions
 
