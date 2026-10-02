@@ -2630,6 +2630,7 @@ async def _hierarchy_adapter(
     ctx: CommandContext | None,
     value_model: type[CommandValue],
     outcomes: set[str],
+    aliases: dict[str, str] | None = None,
 ) -> CommandResult:
     from src.commands.contracts.builtin import _handler
 
@@ -2640,6 +2641,11 @@ async def _hierarchy_adapter(
         with principal_context(ctx):
             raw = await _handler().execute(command, payload)
     outcome = raw.get("outcome")
+    if aliases and outcome in aliases:
+        # A handler outcome newer than the frozen contract maps onto a declared
+        # one with the same routing; the exact reason stays in the summary.
+        raw = raw | {"error": raw.get("reason") or raw.get("error") or outcome}
+        outcome = aliases[outcome]
     if outcome not in outcomes | {"unauthorized", "runtime_error"}:
         return CommandResult(
             outcome="contract_violation",
@@ -2772,6 +2778,9 @@ async def _repair_dispatch_adapter(
             "stale",
             "human_required",
         },
+        # ``unknown`` is a mechanical, retryable refusal.  Reviewed playbooks
+        # pin this contract's fingerprint, so it reaches them as ``busy``.
+        aliases={"unknown": "busy"},
     )
 
 
