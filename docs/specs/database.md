@@ -878,6 +878,8 @@ are never rewritten.
 
 `ck_transcript_usage_calls_nonnegative` enforces the bounds. Downgrading drops
 the table and restores per-row charging; ledger rows survive.
+The legacy SQLite importer excludes this table because it was introduced after
+SQLite removal.
 
 ### Table: `benchmark_stage_spans`
 

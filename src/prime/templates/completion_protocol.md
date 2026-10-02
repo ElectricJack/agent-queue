@@ -59,4 +59,4 @@ For changed requirements read the full description first and update with
 `aq task set {task_id} --description "..." --expected-description "<read value>"`;
 preserve the goal/acceptance criteria and merge conflicts by rereading. No secrets.
 Comments are durable evidence, not approval or notification. For a blocking human decision,
-use `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: ..."`.
+use `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.
