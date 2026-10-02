@@ -566,6 +566,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
         "tests/test_integration_outbox.py",
@@ -1324,7 +1325,7 @@
       ]
     }
   },
-  "digest": "sha256:09ecac09be75254f1f4f470aa3c99488e95e799fbfa427aeb6c845f85086fd2e",
+  "digest": "sha256:5375a246582ce64cb5b01d2029f3026fae8b2722ca7cdd2a6c8df96fe36b058c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7245,6 +7246,28 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_gitops.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.cleanup",
+        "src.integration.development",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git/PostgreSQL invariants for the shared retained-clone primitives."
     },
     "tests/test_integration_hierarchy.py": {
       "areas": [
