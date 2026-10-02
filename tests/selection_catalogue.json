@@ -102,6 +102,7 @@
         "tests/test_cli_formatters.py",
         "tests/test_cli_global_options.py",
         "tests/test_cli_inventory.py",
+        "tests/test_cli_knowledge.py",
         "tests/test_cli_logs.py",
         "tests/test_cli_menus.py",
         "tests/test_cli_module_entry.py",
@@ -598,9 +599,12 @@
     "knowledge-records": {
       "description": "Durable record identities, knowledge schema and immutable revision integrity.",
       "modules": [
+        "tests/test_api_knowledge.py",
         "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_commands.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_service.py",
+        "tests/test_record_contracts.py",
         "tests/test_record_links.py",
         "tests/test_record_queries.py",
         "tests/test_record_schema.py"
@@ -1330,7 +1334,7 @@
       ]
     }
   },
-  "digest": "sha256:df237e637331572c9ace1bd3eb3295b1b9daa9bad4f10e6572902dbb3d376df1",
+  "digest": "sha256:79e1191f2f8b17374c84043ff7fe1cd9746e8a7d5f17b33eea7ba44465dcf87f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2358,6 +2362,22 @@
       ],
       "summary": "Layout endpoints (spatial-layout design §5)."
     },
+    "tests/test_api_knowledge.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.codegen",
+        "src.api.dependencies"
+      ],
+      "markers": [
+        "parametrize",
+        "usefixtures"
+      ],
+      "summary": "Typed HTTP surface for the K03 knowledge/record commands."
+    },
     "tests/test_api_messages.py": {
       "areas": [
         "messages"
@@ -3204,6 +3224,17 @@
       ],
       "markers": [],
       "summary": "Maintained inventory and plugin-extension startup guards for ``aq``."
+    },
+    "tests/test_cli_knowledge.py": {
+      "areas": [
+        "cli-framework"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "CLI surface tests for the 14 K03 knowledge_* and record_* auto-generated commands."
     },
     "tests/test_cli_logs.py": {
       "areas": [
@@ -8250,6 +8281,19 @@
       ],
       "summary": "Core access remains fail closed with legacy capability enforcement disabled."
     },
+    "tests/test_knowledge_commands.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config"
+      ],
+      "markers": [
+        "usefixtures"
+      ],
+      "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
     "tests/test_knowledge_migrations.py": {
       "areas": [
         "knowledge-records"
@@ -11362,6 +11406,22 @@
         "asyncio"
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
+    },
+    "tests/test_record_contracts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.contracts.models",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pure contract-shape tests for the K03 knowledge/record command set."
     },
     "tests/test_record_links.py": {
       "areas": [

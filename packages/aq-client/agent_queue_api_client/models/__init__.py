@@ -607,12 +607,51 @@ from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
 from .job_submit_args import JobSubmitArgs
+from .knowledge_create_request import KnowledgeCreateRequest
+from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
+from .knowledge_create_response import KnowledgeCreateResponse
+from .knowledge_create_response_422 import KnowledgeCreateResponse422
+from .knowledge_diff_request import KnowledgeDiffRequest
+from .knowledge_diff_response import KnowledgeDiffResponse
+from .knowledge_diff_response_422 import KnowledgeDiffResponse422
+from .knowledge_diff_response_changes_item import KnowledgeDiffResponseChangesItem
+from .knowledge_history_request import KnowledgeHistoryRequest
+from .knowledge_history_response import KnowledgeHistoryResponse
+from .knowledge_history_response_422 import KnowledgeHistoryResponse422
+from .knowledge_history_response_revisions_item import KnowledgeHistoryResponseRevisionsItem
+from .knowledge_lifecycle_response import KnowledgeLifecycleResponse
+from .knowledge_list_request import KnowledgeListRequest
+from .knowledge_list_response import KnowledgeListResponse
+from .knowledge_list_response_422 import KnowledgeListResponse422
+from .knowledge_list_response_items_item import KnowledgeListResponseItemsItem
+from .knowledge_restore_request import KnowledgeRestoreRequest
+from .knowledge_restore_response_422 import KnowledgeRestoreResponse422
+from .knowledge_retire_request import KnowledgeRetireRequest
+from .knowledge_retire_response_422 import KnowledgeRetireResponse422
+from .knowledge_show_request import KnowledgeShowRequest
+from .knowledge_show_response import KnowledgeShowResponse
+from .knowledge_show_response_422 import KnowledgeShowResponse422
+from .knowledge_show_response_snapshot import KnowledgeShowResponseSnapshot
+from .knowledge_update_request import KnowledgeUpdateRequest
+from .knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
+from .knowledge_update_response import KnowledgeUpdateResponse
+from .knowledge_update_response_422 import KnowledgeUpdateResponse422
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
 from .layout_rect import LayoutRect
 from .layout_stub import LayoutStub
 from .layout_worker import LayoutWorker
+from .link_create_request import LinkCreateRequest
+from .link_create_response_422 import LinkCreateResponse422
+from .link_list_request import LinkListRequest
+from .link_list_response import LinkListResponse
+from .link_list_response_422 import LinkListResponse422
+from .link_list_response_links_item import LinkListResponseLinksItem
+from .link_mutation_response import LinkMutationResponse
+from .link_mutation_response_links_item import LinkMutationResponseLinksItem
+from .link_remove_request import LinkRemoveRequest
+from .link_remove_response_422 import LinkRemoveResponse422
 from .list_active_tasks_all_projects_request import ListActiveTasksAllProjectsRequest
 from .list_active_tasks_all_projects_response import ListActiveTasksAllProjectsResponse
 from .list_active_tasks_all_projects_response_422 import ListActiveTasksAllProjectsResponse422
@@ -1134,9 +1173,21 @@ from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
+from .record_capabilities_request import RecordCapabilitiesRequest
+from .record_capabilities_response import RecordCapabilitiesResponse
+from .record_capabilities_response_422 import RecordCapabilitiesResponse422
+from .record_capabilities_response_capabilities import RecordCapabilitiesResponseCapabilities
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
+from .record_search_request import RecordSearchRequest
+from .record_search_response import RecordSearchResponse
+from .record_search_response_422 import RecordSearchResponse422
+from .record_search_response_items_item import RecordSearchResponseItemsItem
+from .record_show_request import RecordShowRequest
+from .record_show_response import RecordShowResponse
+from .record_show_response_422 import RecordShowResponse422
+from .record_show_response_snapshot import RecordShowResponseSnapshot
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
@@ -2227,12 +2278,51 @@ __all__ = (
     "JobResultResponse",
     "JobResultResponseResultType0",
     "JobSubmitArgs",
+    "KnowledgeCreateRequest",
+    "KnowledgeCreateRequestMetadataType0",
+    "KnowledgeCreateResponse",
+    "KnowledgeCreateResponse422",
+    "KnowledgeDiffRequest",
+    "KnowledgeDiffResponse",
+    "KnowledgeDiffResponse422",
+    "KnowledgeDiffResponseChangesItem",
+    "KnowledgeHistoryRequest",
+    "KnowledgeHistoryResponse",
+    "KnowledgeHistoryResponse422",
+    "KnowledgeHistoryResponseRevisionsItem",
+    "KnowledgeLifecycleResponse",
+    "KnowledgeListRequest",
+    "KnowledgeListResponse",
+    "KnowledgeListResponse422",
+    "KnowledgeListResponseItemsItem",
+    "KnowledgeRestoreRequest",
+    "KnowledgeRestoreResponse422",
+    "KnowledgeRetireRequest",
+    "KnowledgeRetireResponse422",
+    "KnowledgeShowRequest",
+    "KnowledgeShowResponse",
+    "KnowledgeShowResponse422",
+    "KnowledgeShowResponseSnapshot",
+    "KnowledgeUpdateRequest",
+    "KnowledgeUpdateRequestMetadataType0",
+    "KnowledgeUpdateResponse",
+    "KnowledgeUpdateResponse422",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",
     "LayoutRect",
     "LayoutStub",
     "LayoutWorker",
+    "LinkCreateRequest",
+    "LinkCreateResponse422",
+    "LinkListRequest",
+    "LinkListResponse",
+    "LinkListResponse422",
+    "LinkListResponseLinksItem",
+    "LinkMutationResponse",
+    "LinkMutationResponseLinksItem",
+    "LinkRemoveRequest",
+    "LinkRemoveResponse422",
     "ListActiveTasksAllProjectsRequest",
     "ListActiveTasksAllProjectsResponse",
     "ListActiveTasksAllProjectsResponse422",
@@ -2748,9 +2838,21 @@ __all__ = (
     "ReadyTask",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
+    "RecordCapabilitiesRequest",
+    "RecordCapabilitiesResponse",
+    "RecordCapabilitiesResponse422",
+    "RecordCapabilitiesResponseCapabilities",
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
+    "RecordSearchRequest",
+    "RecordSearchResponse",
+    "RecordSearchResponse422",
+    "RecordSearchResponseItemsItem",
+    "RecordShowRequest",
+    "RecordShowResponse",
+    "RecordShowResponse422",
+    "RecordShowResponseSnapshot",
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",
