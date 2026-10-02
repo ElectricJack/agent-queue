@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-155 commands are registered.
+157 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -162,6 +162,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
+| [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
 | [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |
 | [`knowledge_list`](knowledge_list.md) | Knowledge List | List authorized knowledge metadata with a page cursor. |
 | [`knowledge_restore`](knowledge_restore.md) | Knowledge Restore | Restore a knowledge finding to a retained revision. |
@@ -185,6 +186,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
 | [`record_capabilities`](record_capabilities.md) | Record Capabilities | Describe what this caller may do with records. |
+| [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |

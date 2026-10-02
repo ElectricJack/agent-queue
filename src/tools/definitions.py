@@ -314,9 +314,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "knowledge_diff": "knowledge",
     "knowledge_retire": "knowledge",
     "knowledge_restore": "knowledge",
+    "knowledge_export": "knowledge",
     "record_show": "record",
     "record_search": "record",
     "record_capabilities": "record",
+    "record_repair": "record",
     "link_create": "record",
     "link_list": "record",
     "link_remove": "record",
@@ -8171,6 +8173,43 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "cursor": {"type": "string"},
                 },
                 "required": ["project_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_export",
+            "description": (
+                "Export an authorized knowledge revision as Markdown bytes; "
+                "no daemon destination path."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "record_repair",
+            "description": (
+                "Local operator only: dry-run task mapping backfill or selected "
+                "outbox replay before explicit apply."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"type": "string", "enum": [
+                        "backfill-task-mappings", "replay-outbox",
+                    ]},
+                    "dry_run": {"type": "boolean", "default": True},
+                    "event_id": {"type": "string"},
+                    "max_batches": {"type": "integer", "minimum": 1, "maximum": 20, "default": 2},
+                },
+                "required": ["operation"],
                 "type": "object",
             },
         },

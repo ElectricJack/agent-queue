@@ -45,6 +45,14 @@ class LinkMutationResponse(RecordEnvelope):
     links: list[dict] = []
 
 
+class RecordRepairResponse(RecordEnvelope):
+    dry_run: bool = True
+    inventory: dict | None = None
+    batches: list[dict] | None = None
+    done: bool | None = None
+    eligible: bool | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "record_show": RecordShowResponse,
     "record_search": RecordSearchResponse,
@@ -52,4 +60,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "link_create": LinkMutationResponse,
     "link_list": LinkListResponse,
     "link_remove": LinkMutationResponse,
+    "record_repair": RecordRepairResponse,
 }

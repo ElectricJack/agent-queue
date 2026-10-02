@@ -604,8 +604,12 @@
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_service.py",
+        "tests/test_record_backfill.py",
         "tests/test_record_contracts.py",
+        "tests/test_record_doctor.py",
+        "tests/test_record_exports.py",
         "tests/test_record_links.py",
+        "tests/test_record_outbox.py",
         "tests/test_record_queries.py",
         "tests/test_record_schema.py"
       ]
@@ -1334,7 +1338,7 @@
       ]
     }
   },
-  "digest": "sha256:79e1191f2f8b17374c84043ff7fe1cd9746e8a7d5f17b33eea7ba44465dcf87f",
+  "digest": "sha256:33bc06c3be5556da852d25fdd905326ced9fe7ea21ac4d62109df60d325a15e2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5081,6 +5085,7 @@
         "src.doctor.profile_checks",
         "src.doctor.project_checks",
         "src.doctor.provider_checks",
+        "src.doctor.record_checks",
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.routing_checks",
@@ -11407,6 +11412,21 @@
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
     },
+    "tests/test_record_backfill.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.records.backfill",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Operator-only mapping repair has independent durable source cursors."
+    },
     "tests/test_record_contracts.py": {
       "areas": [
         "knowledge-records"
@@ -11422,6 +11442,49 @@
         "parametrize"
       ],
       "summary": "Pure contract-shape tests for the K03 knowledge/record command set."
+    },
+    "tests/test_record_doctor.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.doctor.runner",
+        "src.knowledge.service",
+        "src.models",
+        "src.records.export",
+        "src.records.outbox",
+        "src.records.service"
+      ],
+      "markers": [],
+      "summary": "Read-only diagnostics remain useful without optional memory plugins."
+    },
+    "tests/test_record_exports.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records",
+        "src.records.export",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Confined files, exact recovery bytes, stale events and authorization."
     },
     "tests/test_record_links.py": {
       "areas": [
@@ -11439,6 +11502,25 @@
         "parametrize"
       ],
       "summary": "Informational links have their own ownership, history and concurrency fences."
+    },
+    "tests/test_record_outbox.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [],
+      "summary": "Record commits and isolated at-least-once delivery survive lost workers."
     },
     "tests/test_record_queries.py": {
       "areas": [

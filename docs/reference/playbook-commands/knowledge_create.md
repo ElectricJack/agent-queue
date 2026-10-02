@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:141914c4b5a91da0fbabceab5f162eea9f6c1f3cefae7c0dd3a285095142c03a` |
+| Contract fingerprint | `sha256:521c2e48989fd2673c4e337f2918602b0e0745a3fa99bd94e7be6a688c16cc77` |
 
 ## Parameters
 
@@ -49,6 +49,9 @@
 | `items` | `object[] \| null` | — |
 | `next_cursor` | `string \| null` | — |
 | `changes` | `object[] \| null` | — |
+| `content` | `string \| null` | — |
+| `export_sha256` | `string \| null` | — |
+| `format_version` | `integer \| null` | — |
 
 ## Outcomes
 

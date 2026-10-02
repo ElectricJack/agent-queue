@@ -208,9 +208,11 @@ _KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
     "knowledge_diff",
     "knowledge_retire",
     "knowledge_restore",
+    "knowledge_export",
     "record_show",
     "record_search",
     "record_capabilities",
+    "record_repair",
     "link_create",
     "link_list",
     "link_remove",
@@ -227,6 +229,8 @@ _ERROR_STATUS_BY_CODE: dict[str, int] = {
     "record.revision_redacted": 410,
     "record.precondition_required": 428,
     "record.retryable": 503,
+    "record.hash_divergence": 503,
+    "record.integrity_conflict": 409,
 }
 
 ERROR_STATUS.update(

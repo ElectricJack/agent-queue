@@ -603,6 +603,7 @@ class Orchestrator(
         self.playbook_manager = None
         self.integration_scheduler = None
         self.integration_outbox = None
+        self.record_outbox = None
         self.integration_service = None
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
@@ -1944,6 +1945,21 @@ class Orchestrator(
         )
         self.integration_service.start()
 
+        # Record intents have their own bounded lifecycle and concurrency.
+        # No scheduling cascade, integration lease, or optional plugin owns
+        # their progress. Live config controls pause delivery without dropping
+        # committed intents; disabled startup performs no record database work.
+        from src.records.export import RecordExporter
+        from src.records.outbox import RecordOutbox
+
+        record_exporter = RecordExporter(
+            self.db, lambda: self.config.knowledge, lambda: self.config.vault_root
+        )
+        self.record_outbox = RecordOutbox(
+            self.db, lambda: self.config.knowledge, exporter=record_exporter
+        )
+        self.record_outbox.start()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -2737,6 +2753,8 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        if self.record_outbox:
+            await self.record_outbox.stop()
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None

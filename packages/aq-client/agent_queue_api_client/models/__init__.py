@@ -615,6 +615,9 @@ from .knowledge_diff_request import KnowledgeDiffRequest
 from .knowledge_diff_response import KnowledgeDiffResponse
 from .knowledge_diff_response_422 import KnowledgeDiffResponse422
 from .knowledge_diff_response_changes_item import KnowledgeDiffResponseChangesItem
+from .knowledge_export_request import KnowledgeExportRequest
+from .knowledge_export_response import KnowledgeExportResponse
+from .knowledge_export_response_422 import KnowledgeExportResponse422
 from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
 from .knowledge_history_response_422 import KnowledgeHistoryResponse422
@@ -1180,6 +1183,11 @@ from .record_capabilities_response_capabilities import RecordCapabilitiesRespons
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
+from .record_repair_request import RecordRepairRequest
+from .record_repair_response import RecordRepairResponse
+from .record_repair_response_422 import RecordRepairResponse422
+from .record_repair_response_batches_type_0_item import RecordRepairResponseBatchesType0Item
+from .record_repair_response_inventory_type_0 import RecordRepairResponseInventoryType0
 from .record_search_request import RecordSearchRequest
 from .record_search_response import RecordSearchResponse
 from .record_search_response_422 import RecordSearchResponse422
@@ -2286,6 +2294,9 @@ __all__ = (
     "KnowledgeDiffResponse",
     "KnowledgeDiffResponse422",
     "KnowledgeDiffResponseChangesItem",
+    "KnowledgeExportRequest",
+    "KnowledgeExportResponse",
+    "KnowledgeExportResponse422",
     "KnowledgeHistoryRequest",
     "KnowledgeHistoryResponse",
     "KnowledgeHistoryResponse422",
@@ -2845,6 +2856,11 @@ __all__ = (
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
+    "RecordRepairRequest",
+    "RecordRepairResponse",
+    "RecordRepairResponse422",
+    "RecordRepairResponseBatchesType0Item",
+    "RecordRepairResponseInventoryType0",
     "RecordSearchRequest",
     "RecordSearchResponse",
     "RecordSearchResponse422",

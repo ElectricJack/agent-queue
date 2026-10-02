@@ -62,6 +62,12 @@ class KnowledgeLifecycleResponse(KnowledgeEnvelope):
     version: int | None = None
 
 
+class KnowledgeExportResponse(KnowledgeEnvelope):
+    content: str = ""
+    export_sha256: str | None = None
+    format_version: int = 1
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_create": KnowledgeCreateResponse,
     "knowledge_list": KnowledgeListResponse,
@@ -71,4 +77,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_diff": KnowledgeDiffResponse,
     "knowledge_retire": KnowledgeLifecycleResponse,
     "knowledge_restore": KnowledgeLifecycleResponse,
+    "knowledge_export": KnowledgeExportResponse,
 }

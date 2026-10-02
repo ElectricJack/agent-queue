@@ -31,6 +31,7 @@ from src.doctor.pool_checks import pool_checks
 from src.doctor.profile_checks import profile_checks
 from src.doctor.project_checks import project_checks
 from src.doctor.provider_checks import provider_checks
+from src.doctor.record_checks import record_checks
 from src.doctor.resource_checks import resource_checks
 from src.doctor.review_checks import review_checks
 from src.doctor.routing_checks import routing_checks
@@ -65,6 +66,7 @@ __all__ = [
     "profile_checks",
     "project_checks",
     "provider_checks",
+    "record_checks",
     "resource_checks",
     "routing_checks",
     "run_doctor",
@@ -129,5 +131,7 @@ def default_registry() -> DoctorRegistry:
     for check in routing_checks():
         registry.register(check)
     for check in service_checks():
+        registry.register(check)
+    for check in record_checks():
         registry.register(check)
     return registry

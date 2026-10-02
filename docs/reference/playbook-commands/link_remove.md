@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:f6042b350ac009c0f55153e45ae9047784cea3b8be042a5e483849ee42f3baad` |
+| Contract fingerprint | `sha256:6550db6343f19389ef8ca5ebd334d0a47a74f0f62171547ec14062dedede8827` |
 
 ## Parameters
 
@@ -49,6 +49,11 @@
 | `links_in` | `object[] \| null` | — |
 | `changed` | `string[] \| null` | — |
 | `capabilities` | `object \| null` | — |
+| `dry_run` | `boolean \| null` | — |
+| `inventory` | `object \| null` | — |
+| `batches` | `object[] \| null` | — |
+| `done` | `boolean \| null` | — |
+| `eligible` | `boolean \| null` | — |
 
 ## Outcomes
 

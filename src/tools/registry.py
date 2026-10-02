@@ -105,7 +105,7 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "knowledge": CategoryMeta(
         name="knowledge",
         description=(
-            "Knowledge records — create, list, show, update, history, diff, retire, restore"
+            "Knowledge records — create, list, show, update, history, diff, retire, restore, export"
         ),
     ),
     "record": CategoryMeta(

@@ -18,6 +18,55 @@ def _error(code, message):
 
 
 class KnowledgeCommandsMixin:
+    async def _cmd_knowledge_export(self, args):
+        from src.records.export import RecordExporter
+
+        try:
+            exporter = getattr(self, "_record_exporter_instance", None)
+            if exporter is None:
+                exporter = RecordExporter(
+                    self.db, lambda: self.config.knowledge, lambda: self.config.vault_root
+                )
+                self._record_exporter_instance = exporter
+            return await exporter.manual(
+                identity=args.get("identity"),
+                principal=current_principal(),
+                project_id=args.get("project_id"),
+                revision_id=args.get("revision_id"),
+            )
+        except RecordError as exc:
+            return exc.result()
+
+    async def _cmd_record_repair(self, args):
+        from src.commands.principal import PrincipalKind
+        from src.records.backfill import TaskRecordBackfill
+        from src.records.identity import RecordIntegrityError
+        from src.records.models import uuid_value
+        from src.records.outbox import RecordOutbox
+
+        # An elevated supervisor is still not the local operator. Applying
+        # backfill/replay is an explicit operator action, never a worker grant.
+        principal = current_principal()
+        if principal is None or principal.kind != PrincipalKind.LOCAL:
+            return _error("record.forbidden", "Record repair requires the local operator")
+        dry_run = args.get("dry_run", True)
+        if not dry_run and not self.config.knowledge.enabled:
+            return _error("knowledge.disabled", "Enable core records before applying repair")
+        try:
+            if args.get("operation") == "backfill-task-mappings":
+                return await TaskRecordBackfill(self.db).run(
+                    dry_run=dry_run, max_batches=args.get("max_batches", 2)
+                )
+            if args.get("operation") == "replay-outbox":
+                return await RecordOutbox(self.db, self.config.knowledge).replay(
+                    event_id=uuid_value(args.get("event_id"), "event_id"), dry_run=dry_run
+                )
+            return _error("record.invalid_input", "Unknown record repair operation")
+        except RecordError as exc:
+            return exc.result()
+        except (RecordIntegrityError, ValueError) as exc:
+            return _error("record.integrity_conflict", exc)
+
     def _knowledge_service(self):
         service = getattr(self, "_knowledge_service_instance", None)
         if service is None:
@@ -92,7 +141,9 @@ class KnowledgeCommandsMixin:
     # -- knowledge: update / history / diff ----------------------------------
 
     async def _cmd_knowledge_update(self, args):
-        patch = {key: value for key, value in args.items() if key in EDIT_FIELDS and value is not None}
+        patch = {
+            key: value for key, value in args.items() if key in EDIT_FIELDS and value is not None
+        }
         try:
             return await self._knowledge_service().update(
                 identity=args.get("identity"),
