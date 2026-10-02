@@ -5,6 +5,8 @@ import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { ProgressBar } from "./ProgressBar";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
+import { EpicDeliveryBadge } from "../../components/EpicDelivery";
+import { deliveryCardStatus } from "../../components/epicDeliveryFormat";
 
 export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
@@ -36,8 +38,17 @@ interface CardProps {
  *  so the copy-id button in its header can nest inside it validly. */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
   const { task, gates, hierarchy, onOpenTask, onFocus, subtasks, phase } = data;
+  // An epic's delivery projection, when the daemon sent one: its status word
+  // and tone replace the stored lifecycle (an integration hold is PAUSED in
+  // storage but is not a pause anyone chose).
+  const delivery = data.delivery ?? null;
   const blocked = isTaskBlocked(task);
-  const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
+  const tone = STATUS_TONE[deliveryCardStatus(delivery, task.status)] ?? STATUS_TONE.DEFINED;
+  const statusWord = delivery ? delivery.display_status : task.status.replace(/_/g, " ");
+  const working = delivery ? delivery.state === "integrating" || delivery.state === "verifying" : task.status === "IN_PROGRESS";
+  const statusTitle = delivery
+    ? `${delivery.display_status} · task status ${task.status}${delivery.hold === "integration" ? " (held by integration, not paused by anyone)" : ""}`
+    : blocked ? `${task.status} · blocked by dependencies or gates` : task.status;
   const priority = task.priority ?? 100;
   const urgent = priority <= 20 ? "ring-2 ring-red-400" : priority <= 50 ? "ring-1 ring-amber-400" : "";
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
@@ -82,9 +93,9 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             <span className="truncate font-mono text-[10px] opacity-70" title={task.id}>{task.id.slice(0, 8)}</span>
             <CopyTaskIdButton taskId={task.id} className="nodrag nopan opacity-70 hover:bg-white/10 hover:text-inherit hover:opacity-100" />
           </span>
-          <span className="flex shrink-0 items-center gap-1 text-[9px] tracking-wide" title={blocked ? `${task.status} · blocked by dependencies or gates` : task.status}>
-            {task.status === "IN_PROGRESS" && <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-indigo-300 motion-reduce:animate-none" />}
-            {task.status.replace(/_/g, " ")}
+          <span className="flex shrink-0 items-center gap-1 text-[9px] tracking-wide" title={statusTitle}>
+            {working && <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-indigo-300 motion-reduce:animate-none" />}
+            {statusWord}
             {blocked && task.status !== "BLOCKED" && <ExclamationTriangleIcon aria-label="Blocked by dependencies or gates" className="h-3 w-3 text-amber-300" />}
           </span>
         </span>
@@ -95,15 +106,23 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
         )}
         <span className="mt-1 line-clamp-2 w-full font-medium leading-4" title={task.title}>{task.title}</span>
         <span className="mt-1 flex w-full items-center gap-1 overflow-hidden text-[10px] opacity-80">
-          {task.profile_id && <span className="truncate rounded bg-white/5 px-1" title={task.profile_id}>{task.profile_id}</span>}
-          {task.intelligence_class && <span className="truncate rounded bg-white/5 px-1" title={task.intelligence_class}>{task.intelligence_class}</span>}
+          {delivery && delivery.state !== "implementing" ? (
+            <EpicDeliveryBadge delivery={delivery} />
+          ) : (
+            <>
+              {task.profile_id && <span className="truncate rounded bg-white/5 px-1" title={task.profile_id}>{task.profile_id}</span>}
+              {task.intelligence_class && <span className="truncate rounded bg-white/5 px-1" title={task.intelligence_class}>{task.intelligence_class}</span>}
+            </>
+          )}
           {openGates.length > 0 && <span className="shrink-0" title={openGates.map((gate) => gate.gate_type).join(", ")}>{openGates.length} gate{openGates.length === 1 ? "" : "s"}</span>}
         </span>
         {(hierarchy.descendantCount > 0 || (subtasks?.total ?? 0) > 0) && (
           <span className="mt-auto block w-full space-y-1 pt-1 text-[10px]">
             {hierarchy.descendantCount > 0 && (
               <span className="block">
-                <span>{hierarchy.completedCount}/{hierarchy.descendantCount} descendants completed</span>
+                <span title="Implementation progress">
+                  {hierarchy.completedCount}/{hierarchy.descendantCount} {delivery ? "tasks complete" : "descendants completed"}
+                </span>
                 <ProgressBar
                   className="mt-0.5"
                   done={hierarchy.completedCount}

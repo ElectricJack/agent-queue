@@ -603,6 +603,23 @@ at least one such receipt the outcome is `delivered`; otherwise it stays
 `working` with no receipts. A receipt for an older head or generation is never
 counted, and the projection only reads; it never writes or rewrites receipts.
 
+### Epic delivery in the dashboard
+
+Epic cards and the task detail views show implementation progress
+(`5/5 tasks complete`) apart from delivery. The delivery badge comes from a
+read-only projection (`src/integration/epic_delivery.py`, design:
+[epic delivery status](../superpowers/specs/2026-10-02-epic-delivery-status-design.md))
+built on collection readiness, claim eligibility, live operations, branch
+reservations and root receipts. *Integrating* and *Verifying* need a live
+session with recent activity. *Delivered* needs a receipt binding the epic's
+current head. *Paused* means an operator hold. A managed parent that integration
+keeps `PAUSED` shows its delivery state instead, for example
+`Integration blocked - final fix not collected` or
+`Verification blocked - branch handoff required`. The badge names the blocker,
+who has to act and when progress last happened. `get_task` returns the same
+answer as `delivery_status`. Pause, resume and the integration controls still
+act on the stored status.
+
 ### Candidate-member conflict repair
 
 Batch formation inspects added Alembic migrations at the exact reviewed heads.

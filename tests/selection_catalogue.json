@@ -329,6 +329,7 @@
         "tests/test_batch_ci_repair_adoption.py",
         "tests/test_batch_ci_repair_rebuild.py",
         "tests/test_epic_branch.py",
+        "tests/test_epic_delivery.py",
         "tests/test_epic_dependencies.py",
         "tests/test_epic_pr.py",
         "tests/test_epic_pr_review_evidence.py",
@@ -1327,7 +1328,7 @@
       ]
     }
   },
-  "digest": "sha256:086c749b16f34be9a7c50fc752fab5a1a7b539a76cfd90311f8fd6082d503632",
+  "digest": "sha256:255090acd6e3ab6ff6e3a96e17dc846e04789f5bd99dd69d0f1e7d65031bcc62",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2349,6 +2350,7 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.epic_delivery",
         "src.models",
         "src.task_graph.layout.driver"
       ],
@@ -5394,6 +5396,23 @@
       ],
       "markers": [],
       "summary": "Epic branch names are legible slugs, reserved once per repository."
+    },
+    "tests/test_epic_delivery.py": {
+      "areas": [
+        "epic-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.models.task",
+        "src.commands.handler",
+        "src.database.tables",
+        "src.integration.epic_delivery",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Epic implementation progress kept apart from delivery (noble-nexus-42)."
     },
     "tests/test_epic_dependencies.py": {
       "areas": [

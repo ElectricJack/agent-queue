@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
 import { rememberTaskPreview } from "../preview";
 import type { Task } from "../../../api/hooks";
+import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
 const mockUseAgentFlock = vi.fn();
 vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock() }));
@@ -348,6 +349,43 @@ describe("TaskDetailPane — metadata, PR link, relationships", () => {
     renderWithRouter(<TaskDetailPane {...noopProps()} />);
     screen.getByText("Sub one").click();
     expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "t2" });
+  });
+});
+
+describe("TaskDetailPane — epic implementation and delivery", () => {
+  const epic = (delivery: Task["delivery_status"]): Task => ({
+    ...fixtureTask,
+    id: "calm-grove-25",
+    title: "Phase 1 epic",
+    status: "PAUSED",
+    delivery_status: delivery,
+  });
+
+  it("separates 5/5 implementation from an integration-held, blocked delivery", () => {
+    mockUseTask.mockReturnValue({ data: epic(EPIC_DELIVERY.missingReceipt), isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getByText("Delivery blocked")).toBeInTheDocument();
+    expect(screen.getByText("held by integration")).toBeInTheDocument();
+    expect(screen.queryByText(/^paused$/i)).not.toBeInTheDocument();
+    // The raw lifecycle field still shows the stored value, with whose hold it is.
+    expect(screen.getByText("PAUSED (integration hold)")).toBeInTheDocument();
+    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    expect(screen.getAllByText("Integration blocked - final fix not collected").length).toBeGreaterThan(0);
+    expect(screen.getByText("aq integration reopen-collection calm-grove-25")).toBeInTheDocument();
+  });
+
+  it("opens the task a delivery blocker names in the pane", () => {
+    mockUseTask.mockReturnValue({ data: epic(EPIC_DELIVERY.strandedReservation), isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Repair stage 13" }));
+    expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "repair-op-13" });
+  });
+
+  it("keeps the stored status badge and no delivery section for a leaf task", () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getByText("WAITING INPUT")).toBeInTheDocument();
+    expect(screen.queryByTestId("epic-delivery")).not.toBeInTheDocument();
   });
 });
 
