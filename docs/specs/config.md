@@ -700,13 +700,19 @@ override → project policy `projects.integration_mode` → this).
 | `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
 | `owner_recovery_sweep` | `bool` | `false` | Whether the daemon periodically releases branch owners whose writers are proven gone. Ships off so the first releases of an existing backlog are deliberate. |
 | `publisher_stall_after` | `int` | `5` | Consecutive identical unsuccessful evaluations after which the development publisher ends a skipped candidate's attempt as `stalled`: one error log, one `supervisor-<project>` message and doctor ERROR (`integration.development_publisher_stalled`). An evaluation is identical when task, latest completion, reason, related task, target repository/ref and the relevant git evidence are unchanged. Idle ticks, daemon downtime and waits on a live repair do not count; new evidence or an explicit `aq integration sweep --retry` / `--recover-child` starts a new attempt. |
+| `service_source_timeout_seconds` | `float` | `300` | Wall-clock budget for one source callback of the integration reconciliation service (one bounded page of one source: GitHub PR reviews, candidate CI, the outbox, …). A source past its budget is cancelled and the pass continues with the other sources; its durable rows stay retryable. A callback that refuses cancellation is left to unwind and its source is skipped, never run twice at once, until it has. The slowest sources observed on a busy install take about two minutes. |
+| `service_item_timeout_seconds` | `float` | `60` | Budget for one item of a page the service iterates itself (a due schedule, a repair deadline, a repair dispatch, a candidate CI row, a promotion intent, a cleanup item). A hung item is cancelled and the later items of the page still run. |
+| `service_source_timeouts` | `dict[str, float]` | `{}` | Per-source overrides of `service_source_timeout_seconds`, keyed by the source name the daemon logs (`integration slow source=<name>`), e.g. `{"GitHub PR reviews": 600}`. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
 `INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
 one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
 `src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
 strings; `merge_require_up_to_date` is coerced to a boolean;
-`publisher_stall_after` must be a positive integer.
+`publisher_stall_after` must be a positive integer;
+`service_source_timeout_seconds` and `service_item_timeout_seconds` must be
+positive numbers and `service_source_timeouts` a mapping of non-empty source
+names to positive numbers.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30

@@ -3012,8 +3012,10 @@ async def test_green_handoff_refuses_every_inexact_or_live_writer(prepared_db, b
 
 
 @pytest.mark.asyncio
-async def test_promotable_green_batch_retries_with_bounded_backoff(prepared_db, monkeypatch):
-    """A spent wakeup is re-emitted with backoff, never more than the cap."""
+async def test_promotable_green_batch_retries_with_capped_backoff_and_never_gives_up(
+    prepared_db, monkeypatch
+):
+    """A spent wakeup is re-emitted with backoff capped at one hour, without a cap on tries."""
     import src.integration.green_continuation as continuation
 
     db, data_dir = prepared_db
@@ -3028,7 +3030,8 @@ async def test_promotable_green_batch_retries_with_bounded_backoff(prepared_db, 
     emitted = []
     now = 100.0
     outcomes = []
-    for _ in range(200):
+    step = 60.0
+    for _ in range(int(9 * 3600 / step)):
         result = await reconciler.reconcile("batch", now=now)
         outcomes.append(result["outcome"])
         if result["outcome"] in {"handed_off", "continued"}:
@@ -3040,23 +3043,37 @@ async def test_promotable_green_batch_retries_with_bounded_backoff(prepared_db, 
                     .values(delivered_at=now)
                 )
             emitted.append(now)
-        if result["outcome"] == "exhausted":
-            break
-        now += 30.0
+        now += step
     assert outcomes[0] == "handed_off"
-    assert outcomes[-1] == "exhausted"
-    assert len(emitted) == continuation.MAX_GENERATIONS
+    assert "exhausted" not in outcomes
+    # Past the old six-try cap the batch is still re-driven, at most an hour apart.
+    assert len(emitted) > 10
     gaps = [later - earlier for earlier, later in itertools.pairwise(emitted)]
     assert gaps == sorted(gaps) and gaps[0] >= continuation.RETRY_BASE_SECONDS
+    assert max(gaps) <= continuation.MAX_BACKOFF_SECONDS + step
+    assert gaps[-1] >= continuation.MAX_BACKOFF_SECONDS
     events = [
         row for row in await _rows(db, integration_outbox)
         if row["id"].startswith("integration-green-continuation-")
     ]
-    assert len(events) == continuation.MAX_GENERATIONS
+    assert len(events) == len(emitted)
     # A stale revision ends the series at once.
     async with db.immediate() as conn:
         await conn.execute(update(integration_batches).values(current_revision=1))
     assert await reconciler.candidate_batches(limit=10) == []
+
+
+def test_green_continuation_delay_doubles_to_an_hour_and_stays_finite():
+    from src.integration.green_continuation import (
+        MAX_BACKOFF_SECONDS,
+        RETRY_BASE_SECONDS,
+        continuation_delay,
+    )
+
+    assert [continuation_delay(n) for n in range(1, 8)] == [
+        RETRY_BASE_SECONDS * 2**k for k in range(6)
+    ] + [MAX_BACKOFF_SECONDS]
+    assert continuation_delay(10_000) == MAX_BACKOFF_SECONDS
 
 
 @pytest.mark.asyncio

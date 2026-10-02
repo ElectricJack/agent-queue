@@ -2275,6 +2275,20 @@ class IntegrationConfig:
     #: Idle ticks and downtime do not count; changed evidence starts over.
     publisher_stall_after: int = 5
 
+    #: Wall-clock budget, in seconds, for one source callback of the
+    #: integration reconciliation service (one bounded page of one source).
+    #: A source past it is cancelled and the pass moves on to the others; its
+    #: durable work stays retryable.  The slowest sources seen on a busy
+    #: install take about two minutes (GitHub PR reviews, the outbox).
+    service_source_timeout_seconds: float = 300.0
+    #: Budget for one item of a page the service iterates itself (a due
+    #: schedule, a repair deadline, a candidate CI row, an intent, a cleanup).
+    service_item_timeout_seconds: float = 60.0
+    #: Per-source overrides of ``service_source_timeout_seconds``, keyed by the
+    #: source name the daemon logs (``integration slow source=<name>``), e.g.
+    #: ``{"GitHub PR reviews": 600}``.
+    service_source_timeouts: dict[str, float] = field(default_factory=dict)
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
@@ -2318,11 +2332,29 @@ class IntegrationConfig:
                     "must be a positive integer",
                 )
             )
+        for name in ("service_source_timeout_seconds", "service_item_timeout_seconds"):
+            if not _positive_number(getattr(self, name)):
+                errors.append(ConfigError("integration", name, "must be a positive number"))
+        if not isinstance(self.service_source_timeouts, dict) or any(
+            not isinstance(source, str) or not source.strip() or not _positive_number(value)
+            for source, value in self.service_source_timeouts.items()
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "service_source_timeouts",
+                    "must map source names to positive numbers of seconds",
+                )
+            )
         if self.github_app is not None:
             errors.extend(self.github_app.validate())
         if self.scratch_probe is not None:
             errors.extend(self.scratch_probe.validate(self.github_app))
         return errors
+
+
+def _positive_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float) and value > 0
 
 
 def _opt_int(value) -> int | None:
@@ -4894,6 +4926,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),
+            service_source_timeout_seconds=integ.get("service_source_timeout_seconds", 300.0),
+            service_item_timeout_seconds=integ.get("service_item_timeout_seconds", 60.0),
+            service_source_timeouts=integ.get("service_source_timeouts") or {},
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

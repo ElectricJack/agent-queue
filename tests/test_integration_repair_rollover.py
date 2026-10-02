@@ -31,14 +31,14 @@ from tests.test_integration_repair import _artifact, _policy
 env = owner_tests.env
 
 
-async def _batch_writer(env, *, dirty=False):
+async def _batch_writer(env, *, dirty=False, on_exhausted="continue"):
     db = env.db
     branch = "aq/integration/batch"
     partial = env.branch(branch)
     sources = [env.branch(f"source-{n}") for n in range(2)]
     artifact = _artifact()
     policy = _policy()
-    policy["root"]["repair"].update(conflict_scope="batch", on_exhausted="continue")
+    policy["root"]["repair"].update(conflict_scope="batch", on_exhausted=on_exhausted)
     await db.update_project(
         "p", hierarchical_integration_mode="train", hierarchical_integration_policy=policy
     )
@@ -235,6 +235,58 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
                 if r["outcome"] == "preserved_and_released"]) == 1
     assert await _stage(case, 1) == after
     assert remote_sha(env.origin, case.target.branch) == case.partial
+
+
+@pytest.mark.parametrize("on_exhausted", ["human", "continue"])
+async def test_service_retries_a_busy_successor_dispatch_without_any_event(env, on_exhausted):
+    """The lost ``repair_exhausted`` run and a ``busy`` refusal both still advance.
+
+    No playbook runs here: the deadline pass allocates the debug stage, the
+    service's dispatch source finds it under either policy, the attached
+    predecessor makes the first dispatch answer ``busy``, and the paced retry
+    hands the stage to its delegate once the old writer has stopped.
+    """
+    import src.integration.service as service_module
+
+    case = await _batch_writer(env, on_exhausted=on_exhausted)
+    repair = case.repair
+    outcomes = []
+
+    async def dispatcher(row):
+        result = await repair.dispatch(row["operation_id"], int(row["ordinal"]))
+        outcomes.append(result["outcome"])
+        return result
+
+    now = [130.0]
+    # Only the deadline and dispatch sources: the reservation reconciler would
+    # also hand a stopped writer's branch over and hide the retry under test.
+    service = IntegrationService(
+        case.db, SimpleNamespace(mark_due=AsyncMock()),
+        SimpleNamespace(expire=repair.expire, pending_dispatches=repair.pending_dispatches),
+        SimpleNamespace(dispatch_due=AsyncMock()),
+        repair_dispatcher=dispatcher, clock=lambda: now[0],
+    )
+    await service.tick(130.0)
+    stage = await _stage(case, 1)
+    assert stage["state"] == "active" and outcomes == ["busy"]
+    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.PAUSED
+
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    now[0] = 131.0
+    await service.tick(131.0)
+    assert outcomes == ["busy"]  # paced: the retry is not due yet
+
+    now[0] = 130.0 + service_module.DISPATCH_RETRY_BASE_SECONDS
+    await service.tick(now[0])
+    assert outcomes == ["busy", "dispatched"]
+    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.READY
+    owner = await BranchOwnership(case.db).get_owner(case.target)
+    assert owner["owner_id"] == stage["repair_task_id"] and owner["handoff_state"] == "reserved"
+
+    now[0] += 1000.0
+    await service.tick(now[0])
+    assert outcomes == ["busy", "dispatched"]  # a launched writer leaves the selection
 
 
 @pytest.mark.parametrize("corruption", ["manifest", "ref", "lineage"])

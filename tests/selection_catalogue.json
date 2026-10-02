@@ -1321,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:b43ff47b4cd666dd0b62f202d5efdf59d19598f7563dcf99f9abd15d9b25b18e",
+  "digest": "sha256:4137f73a2b23bda5ef8dac96ca19af98fa8a784a90966b04f1dfd4bd614db674",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7579,6 +7579,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.contracts.integration",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.config",
         "src.database.tables",
@@ -7591,6 +7592,7 @@
         "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.parent_intents",
         "src.integration.preserved_repair",
         "src.integration.promotion",
         "src.integration.repair",
@@ -7819,11 +7821,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.database.tables",
         "src.integration.models",
         "src.integration.scheduler",
         "src.integration.service",
-        "src.integration.settling"
+        "src.integration.settling",
+        "src.models"
       ],
       "markers": [
         "parametrize"
