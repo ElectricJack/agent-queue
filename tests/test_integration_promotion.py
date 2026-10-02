@@ -3485,3 +3485,333 @@ async def test_unwritten_resolution_recovery_refuses_live_writer(db, conflict_re
         await service.reserve_resolution(_resolution_request(case))
     with pytest.raises(PromotionInvariantError, match="not quiescent"):
         await service.recover_unwritten_resolution(case["intent_id"])
+
+
+async def _preserved_no_progress_case(db, case):
+    """Expired stage9 shape: exact completed merge, stopped/released writer, audit."""
+    from src.database.tables import integration_owner_recoveries
+
+    await _detached_debug_stage(db, case)
+    candidate = _git([
+        "commit-tree", case["resolved_tree"], "-p", case["target"], "-p", case["source"],
+        "-m", "preserved completed resolution",
+    ], case["work"])
+    async with db.immediate() as conn:
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.ref == "aq/parent",
+        ))).mappings().one()
+        ref = f"aq/preserved/{owner['id']}"
+        subject = {"kind": "parent", "generation": 0, "head_sha": case["target"]}
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 1,
+        ).values(
+            starting_sha=case["target"], current_subject=subject,
+            deadline_at=10.0, attempts=0, state="expired", completed_at=11.0,
+            dossier={"supervisor_recovery": {
+                "incident_id": "repair-no-progress:resolution-op:1",
+                "subject": subject, "repair_task_id": "repair-task",
+            }},
+        ))
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+            desired_state="stopped",
+        ))
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ).values(handoff_state="released", fence_token=4,
+                 confirmed_workspace_id="resolution-workspace"))
+        await conn.execute(insert(integration_owner_recoveries).values(
+            id="preserved-release", owner_row_id=owner["id"], repository_id="repo",
+            ref="aq/parent", task_id="repair-task", outcome="preserved_and_released",
+            principal="operator", created_at=12.0,
+            evidence={
+                "session_id": "resolution-session", "workspace_id": "resolution-workspace",
+                "fence_token": 3, "released_fence_token": 4,
+                "preserved_sha": candidate, "preserved_ref": ref,
+                "stop_proof": {"session_id": "resolution-session",
+                               "instance_token": "resolution-instance",
+                               "state": "stopped", "desired_state": "stopped"},
+            },
+        ))
+    _git(["push", "origin", f"{candidate}:refs/heads/{ref}"], case["work"])
+    return case | {"candidate": candidate, "preserved_ref": ref,
+                   "request_args": {"operation_id": "resolution-op", "intent_id": case["intent_id"],
+                                    "candidate_sha": candidate}}
+
+
+async def test_preserved_repair_recovers_expired_stage_without_renewing_budget(
+    db, conflict_resolution_case, command_handler_factory,
+):
+    from src.integration.parent_completion import ParentCompletion
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    before = await _detached_rebind_snapshot(db)
+    preview = await handler.execute("integration_recover_preserved_repair", case["request_args"])
+    assert preview["outcome"] == "would_recover", preview
+    assert preview["parents"] == [case["target"], case["source"]]
+    assert preview["tree_sha"] == case["resolved_tree"]
+    assert preview["released_fence"] == 4
+    assert preview["remaining_attempts"] == 1
+    assert await _detached_rebind_snapshot(db) == before
+    args = case["request_args"] | {"dry_run": False, "expected_stage": 1,
+                                 "expected_released_fence": 4, "reason": "verified preservation"}
+    result = await handler.execute("integration_recover_preserved_repair", args)
+    assert result["outcome"] == "recovered", result
+    after = await _detached_rebind_snapshot(db)
+    for field in ("attempts", "deadline_at", "deadline_event_id", "started_at", "state", "completed_at"):
+        assert after["stage"][field] == before["stage"][field], field
+    assert after["operation"] == before["operation"]
+    assert after["delegate"] == TaskStatus.BLOCKED
+    assert after["owner"]["owner_id"] == "resolution-op"
+    assert after["owner"]["owner_role"] == "collector"
+    assert after["owner"]["fence_token"] == 5
+    assert after["stage"]["current_subject"]["head_sha"] == case["candidate"]
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == case["candidate"]
+    replay = await handler.execute("integration_recover_preserved_repair", args)
+    assert replay["outcome"] == "already_recovered", replay
+    assert await _detached_rebind_snapshot(db) == after
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+        assert await conn.scalar(select(func.count()).select_from(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op")) == 2
+        receipt = (await conn.execute(select(task_delivery_receipts))).mappings().one()
+    assert receipt["after_sha"] == case["candidate"]
+    assert receipt["resolution_evidence"]["authoring"]["repair_session_id"] == "resolution-session"
+    assert receipt["resolution_evidence"]["push_authority"]["kind"] == "preserved_resolution_push_observed"
+    readiness = await ParentCompletion(db).readiness("parent")
+    assert readiness["outcome"] == "ready", readiness
+    assert (await db.get_task("parent")).status == TaskStatus.PAUSED
+
+
+@pytest.mark.parametrize("mutation", [
+    "candidate", "intent", "stage", "fence", "subject", "source", "target", "preserved",
+    "budget", "human", "gate", "live", "reused", "second_intent", "other_write", "parents",
+])
+async def test_preserved_repair_refuses_stale_moved_or_ambiguous_evidence(
+    db, conflict_resolution_case, command_handler_factory, mutation,
+):
+    from src.database.tables import gates, task_gates
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    args = case["request_args"] | {"dry_run": False, "expected_stage": 1,
+                                 "expected_released_fence": 4, "reason": "verified preservation"}
+    async with db.immediate() as conn:
+        if mutation == "candidate":
+            args["candidate_sha"] = case["resolved_head"]
+        elif mutation == "intent":
+            args["intent_id"] = "obsolete-intent"
+        elif mutation == "stage":
+            args["expected_stage"] = 9
+        elif mutation == "fence":
+            await conn.execute(update(integration_branch_owners).values(fence_token=20))
+        elif mutation == "subject":
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(current_subject={"kind": "parent", "generation": 0, "head_sha": case["source"]}))
+        elif mutation == "budget":
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(attempts=3))
+        elif mutation == "human":
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == "resolution-op",
+            ).values(state="human_required"))
+        elif mutation == "gate":
+            await conn.execute(insert(gates).values(id="human-gate", project_id="project",
+                gate_type="human", title="Hold recovery", question="", status="open", created_at=12.0))
+            await conn.execute(insert(task_gates).values(task_id="parent", gate_id="human-gate"))
+        elif mutation == "live":
+            await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+                state="running", task_id="repair-task"))
+        elif mutation == "reused":
+            await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+                instance_token="new-instance"))
+        elif mutation in {"second_intent", "other_write"}:
+            intent = dict((await conn.execute(select(integration_promotion_intents).where(
+                integration_promotion_intents.c.id == case["intent_id"],
+            ))).mappings().one())
+            # Omit absent JSON fields so the all-NULL binding remains SQL NULL.
+            intent = {key: value for key, value in intent.items() if value is not None}
+            intent.update(id="other-intent", domain_key="other-domain", receipt_id="other-receipt")
+            if mutation == "other_write":
+                intent.update(target_branch="aq/another", state="reserved")
+            await conn.execute(insert(integration_promotion_intents).values(**intent))
+        elif mutation == "parents":
+            from src.database.tables import integration_owner_recoveries
+            bad = case["resolved_head"]
+            audit = dict((await conn.execute(select(integration_owner_recoveries))).mappings().one())
+            await conn.execute(update(integration_owner_recoveries).values(evidence=audit["evidence"] | {"preserved_sha": bad}))
+            args["candidate_sha"] = bad
+    if mutation in {"source", "target", "preserved", "parents"}:
+        branch = {"source": "aq/child", "target": "aq/parent",
+                  "preserved": case["preserved_ref"], "parents": case["preserved_ref"]}[mutation]
+        new = case["resolved_head"] if mutation in {"source", "parents"} else case["candidate"]
+        if mutation == "preserved":
+            new = case["source"]
+        _git(["push", "--force", "origin", f"{new}:refs/heads/{branch}"], case["work"])
+    before = await _detached_rebind_snapshot(db)
+    intent_before = await db.get_integration_promotion_intent(case["intent_id"])
+    result = await handler.execute("integration_recover_preserved_repair", args)
+    assert result["outcome"] in {"blocked", "changed"}, result
+    assert await _detached_rebind_snapshot(db) == before
+    assert await db.get_integration_promotion_intent(case["intent_id"]) == intent_before
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+
+@pytest.mark.parametrize("phase", ["after_preserved_reservation", "after_preserved_push_marker", "after_preserved_push"])
+async def test_preserved_repair_crash_never_repeats_an_ambiguous_push(
+    db, conflict_resolution_case, phase,
+):
+    from src.commands.contracts.integration import IntegrationRecoverPreservedRepairArgs
+    from src.integration.preserved_repair import PreservedRepairRecovery
+    from src.integration.promotion import PromotionService
+    from src.integration.repair import RepairService
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    request = IntegrationRecoverPreservedRepairArgs(**case["request_args"], dry_run=False,
+        expected_stage=1, expected_released_fence=4, reason="verified preservation")
+    promotion = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager(),
+                                 crash_hook=CrashOnce(phase))
+    service = PreservedRepairRecovery(promotion, RepairService(db))
+    with pytest.raises(InjectedCrash, match=phase):
+        await service.run(request, principal="operator")
+    promotion.git.apush_expected_delivery = AsyncMock(wraps=promotion.git.apush_expected_delivery)
+    result = await service.run(request, principal="operator")
+    if phase == "after_preserved_push_marker":
+        assert result["outcome"] == "blocked", result
+        assert "in flight" in result["reason"]
+        promotion.git.apush_expected_delivery.assert_not_awaited()
+    else:
+        assert result["outcome"] == "recovered", result
+        assert promotion.git.apush_expected_delivery.await_count == (phase == "after_preserved_reservation")
+
+
+@pytest.mark.parametrize("moved", ["fence", "subject", "gate", "budget"])
+async def test_preserved_repair_rechecks_authority_after_committing_push_marker(
+    db, conflict_resolution_case, moved,
+):
+    from src.commands.contracts.integration import IntegrationRecoverPreservedRepairArgs
+    from src.database.tables import gates, task_gates
+    from src.integration.preserved_repair import PreservedRepairRecovery
+    from src.integration.promotion import PromotionService
+    from src.integration.repair import RepairService
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+
+    async def race(phase):
+        if phase != "after_preserved_push_marker":
+            return
+        async with db.immediate() as conn:
+            if moved == "fence":
+                await conn.execute(update(integration_branch_owners).values(fence_token=50))
+            elif moved == "gate":
+                await conn.execute(insert(gates).values(id="late-gate", project_id="project",
+                    gate_type="human", title="Wait", question="", status="open", created_at=13.0))
+                await conn.execute(insert(task_gates).values(task_id="parent", gate_id="late-gate"))
+            else:
+                values = {"attempts": 1} if moved == "budget" else {
+                    "current_subject": {"kind": "parent", "generation": 1, "head_sha": case["target"]}}
+                await conn.execute(update(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "resolution-op",
+                    integration_repair_stages.c.ordinal == 1,
+                ).values(**values))
+
+    promotion = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager(), crash_hook=race)
+    promotion.git.apush_expected_delivery = AsyncMock(wraps=promotion.git.apush_expected_delivery)
+    request = IntegrationRecoverPreservedRepairArgs(**case["request_args"], dry_run=False,
+        expected_stage=1, expected_released_fence=4, reason="verified preservation")
+    result = await PreservedRepairRecovery(promotion, RepairService(db)).run(request, principal="operator")
+    assert result["outcome"] == "blocked", result
+    promotion.git.apush_expected_delivery.assert_not_awaited()
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == case["target"]
+
+
+async def test_preserved_repair_requires_operator_and_live_named_supervisor(
+    db, conflict_resolution_case, command_handler_factory,
+):
+    from dataclasses import replace
+    from src.commands.principal import PrincipalKind, ExecutionPrincipal, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    await db.create_session(SessionRecord(
+        id="recovery-supervisor", project_id="project", profile_id="supervisor",
+        harness="fake", provider="fake", name="supervisor-project", lifecycle="named",
+        state="running", desired_state="running", work_dir=str(case["work"]),
+        epoch="epoch", instance_token="supervisor-instance", started_at=3.0,
+    ))
+    principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_recover_preserved_repair"]),
+        session_id="recovery-supervisor", project_id="project", profile_id="supervisor",
+        session_instance_token="supervisor-instance", elevated=True)
+    with principal_context(replace(principal, elevated=False)):
+        refused = await handler.execute("integration_recover_preserved_repair", case["request_args"])
+    assert refused["success"] is False
+    with principal_context(principal):
+        preview = await handler.execute("integration_recover_preserved_repair", case["request_args"])
+    assert preview["outcome"] == "would_recover", preview
+    assert "--released-fence 4" in preview["apply_command"]
+    await db.update_session("recovery-supervisor", state="stopped", desired_state="stopped")
+    with principal_context(principal):
+        refused = await handler.execute("integration_recover_preserved_repair", case["request_args"])
+    assert refused["success"] is False
+
+
+async def test_preserved_repair_consumes_supported_release_of_stopped_pool_writer(
+    db, conflict_resolution_case, command_handler_factory,
+):
+    """Release the real stopped claim/checkout, then adopt exactly its audited merge."""
+    from sqlalchemy import delete
+    from src.database.tables import agents, integration_owner_recoveries
+    from src.integration.owner_recovery import OwnerRecovery
+
+    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    _git(["reset", "--hard", case["candidate"]], case["work"])
+    before = await _detached_rebind_snapshot(db)
+    async with db.immediate() as conn:
+        await conn.execute(delete(integration_owner_recoveries))
+        await conn.execute(insert(agents).values(
+            id="stopped-agent", name="writer", profile_id="worker", state="BUSY",
+            current_task_id="repair-task", created_at=1.0,
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "repair-task").values(
+            assigned_agent_id="stopped-agent", claim_epoch=7,
+        ))
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session").values(
+            task_id="repair-task", agent_id="stopped-agent", lifecycle="pool",
+            claim_phase="active", last_claim_epoch=7,
+        ))
+        await conn.execute(update(workspaces).where(workspaces.c.id == "resolution-workspace").values(
+            locked_by_task_id="repair-task", locked_by_agent_id="stopped-agent",
+        ))
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == before["owner"]["id"],
+        ).values(handoff_state="attached", session_id="resolution-session",
+                 workspace_id="resolution-workspace"))
+    stopped = AsyncMock(return_value=True)
+    released = await OwnerRecovery(db, GitManager(), None, confirm_stopped=stopped).recover(
+        before["owner"]["id"], principal="operator",
+    )
+    assert released.outcome == "preserved_and_released", released
+    assert released.evidence["preserved_sha"] == case["candidate"]
+    assert released.evidence["claim_released"] is True
+    stopped.assert_awaited_once()
+    session = await db.get_session("resolution-session")
+    assert (session.task_id, session.claim_phase) == (None, None)
+    workspace = await db.get_workspace("resolution-workspace")
+    assert (workspace.locked_by_task_id, workspace.locked_by_agent_id) == (None, None)
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], case["work"]) == "HEAD"
+    handler = await _detached_rebind_handler(db, case, command_handler_factory)
+    result = await handler.execute("integration_recover_preserved_repair", case["request_args"] | {
+        "dry_run": False, "expected_stage": 1, "expected_released_fence": 5,
+        "reason": "consume completed work from supported owner release",
+    })
+    assert result["outcome"] == "recovered", result
+    assert (await db.get_task("repair-task")).status == TaskStatus.BLOCKED
+    assert (await _detached_rebind_snapshot(db))["owner"]["fence_token"] == 6

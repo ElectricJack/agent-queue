@@ -89,6 +89,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
+        "integration_recover_preserved_repair",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -351,6 +352,49 @@ class IntegrationRebindRepairValue(CommandValue):
     repair_commit_shas: tuple[str, ...] = ()
     fence_token: int | None = None
     session_id: str | None = None
+    reason: str | None = None
+    next_step: str | None = None
+
+
+class IntegrationRecoverPreservedRepairArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    intent_id: str = Field(min_length=1)
+    candidate_sha: str
+    dry_run: bool = True
+    expected_stage: int | None = Field(default=None, ge=1)
+    expected_released_fence: int | None = Field(default=None, ge=1)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_exact_recovery(self) -> IntegrationRecoverPreservedRepairArgs:
+        if not is_valid_git_oid(self.candidate_sha):
+            raise ValueError("candidate_sha must be a full commit id")
+        if not self.dry_run and (
+            self.expected_stage is None or self.expected_released_fence is None
+            or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires the previewed stage, released fence and a reason")
+        return self
+
+
+class IntegrationRecoverPreservedRepairValue(CommandValue):
+    apply_command: str | None = None
+    release_id: str | None = None
+    operation_id: str | None = None
+    stage: int | None = None
+    intent_id: str | None = None
+    candidate_sha: str | None = None
+    expected_target: str | None = None
+    source_head: str | None = None
+    tree_sha: str | None = None
+    parents: tuple[str, ...] = ()
+    repair_commit_shas: tuple[str, ...] = ()
+    remote_head_sha: str | None = None
+    preserved_ref: str | None = None
+    released_fence: int | None = None
+    deadline_at: float | None = None
+    attempts: int | None = None
+    remaining_attempts: int | None = None
     reason: str | None = None
     next_step: str | None = None
 
@@ -1402,6 +1446,19 @@ INTEGRATION_REBIND_REPAIR = _operational_contract(
     successes=frozenset({"would_rebind", "rebound", "already_reserved"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRebindRepairValue,
+)
+
+PRESERVED_REPAIR_OUTCOMES = (
+    "would_recover", "recovered", "already_recovered", "changed", "blocked",
+)
+
+INTEGRATION_RECOVER_PRESERVED_REPAIR = _operational_contract(
+    "integration_recover_preserved_repair",
+    IntegrationRecoverPreservedRepairArgs,
+    PRESERVED_REPAIR_OUTCOMES,
+    successes=frozenset({"would_recover", "recovered", "already_recovered"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationRecoverPreservedRepairValue,
 )
 
 REBIND_DETACHED_REPAIR_OUTCOMES = (
@@ -2947,6 +3004,15 @@ async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: Command
     )
 
 
+async def _recover_preserved_repair_adapter(
+    args: IntegrationRecoverPreservedRepairArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_recover_preserved_repair", args, ctx,
+        IntegrationRecoverPreservedRepairValue, set(PRESERVED_REPAIR_OUTCOMES),
+    )
+
+
 async def _rebind_detached_repair_adapter(
     args: IntegrationRebindDetachedRepairArgs, ctx: CommandContext | None
 ):
@@ -3103,6 +3169,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
         (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
+        (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),

@@ -40,6 +40,15 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["recover-preserved-repair", "op", "--intent", "intent", "--candidate", "a" * 40],
+         "integration_recover_preserved_repair",
+         {"operation_id": "op", "intent_id": "intent", "candidate_sha": "a" * 40, "dry_run": True}),
+        (["recover-preserved-repair", "op", "--intent", "intent", "--candidate", "a" * 40,
+          "--apply", "--stage", "9", "--released-fence", "19", "--reason", "preserved"],
+         "integration_recover_preserved_repair",
+         {"operation_id": "op", "intent_id": "intent", "candidate_sha": "a" * 40,
+          "dry_run": False, "expected_stage": 9, "expected_released_fence": 19,
+          "reason": "preserved"}),
         (["status", "p"], "integration_status", {"project_id": "p"}),
         (["status", "p", "--control-only"], "integration_status",
          {"project_id": "p", "control_only": True}),
@@ -465,6 +474,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
+        "integration_recover_preserved_repair",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
