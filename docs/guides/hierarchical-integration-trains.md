@@ -30,6 +30,12 @@ records the reservation under the current intent; the attached repair session
 then pushes with its current fence and closes. If the writer has stopped,
 recover its attachment through the existing repair lifecycle first.
 
+When a parent repair stage exhausts at the open conflict's old tip, its debug
+successor keeps that conflict intent as its trigger. Its writer resolves and
+publishes through `integration-resolve-conflict` and `push-conflict-resolution`
+under its own fence, with no rebind. Any other debug stage carries the trigger
+`stage-exhausted:<operation>:<ordinal>`.
+
 A parent debug stage can be frozen on a commit the parent branch never
 received: its retained handoff bound a stopped writer's local head, so every
 delegate fails admission with `slot_reset_failed` ("repair branch no longer

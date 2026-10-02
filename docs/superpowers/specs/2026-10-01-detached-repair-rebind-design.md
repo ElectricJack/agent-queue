@@ -17,7 +17,9 @@ branch no longer descends from its frozen starting commit") and the delegate
 ends `BLOCKED` for manual retry.
 
 Debug stages also carry the trigger `stage-exhausted:<operation>:<ordinal>`.
-The conflict that started the repair is still an open promotion intent, but
+(Since task `sound-forge`, a debug stage starting at the open conflict's
+`expected_target` carries that intent instead; a frozen unpublished head never
+does.) The conflict that started the repair is still an open promotion intent, but
 `integration-resolve-conflict`, `push-conflict-resolution` and
 `aq integration rebind-repair` all require the stage trigger to name that
 intent, and `rebind-repair` also requires an attached writer. No supported
@@ -129,6 +131,8 @@ decision.
 
 - Preventing the failure. A retained parent handoff should never bind an
   unpublished head, and debug stages should keep the open conflict intent as
-  their trigger. Both are filed as follow-up work.
+  their trigger. Both are filed as follow-up work. Task `sound-forge` did the
+  second: `RepairService._activate_debug_on` binds the sole unresolved
+  conflict whose `expected_target` is the exhausted stage's subject.
 - Batch (root) operations. They already preserve unpublished progress on
   `aq/preserved/*` refs.

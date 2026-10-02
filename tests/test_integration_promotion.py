@@ -3233,6 +3233,192 @@ async def test_detached_repair_rebind_refuses_unproven_state_without_mutation(
     assert intent["state"] == "conflict"
 
 
+async def _exhaust_conflict_stage(db, case, exhausted_stage: int) -> dict:
+    """Expire the stage holding the open conflict; return its debug successor row.
+
+    Stage 1 reproduces operation bcab5af6 stage 8: a continuation bound it to the
+    conflict at its target after a predecessor on another head.
+    """
+    import time
+
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.repair import RepairService
+
+    # Wall-clock: the promotion service checks the debug deadline with time.time().
+    now = time.time()
+    boundary = HierarchicalIntegrationPolicy.model_validate(_hierarchy_policy()).parent
+    stage_policy = boundary.repair.model_dump(mode="json") | {"on_exhausted": "continue"}
+    target_subject = {"kind": "parent", "generation": 0, "head_sha": case["target"]}
+    async with db.immediate() as conn:
+        if exhausted_stage == 0:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            ).values(deadline_at=now - 1.0))
+        else:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            ).values(
+                repair_task_id="repair-task-0", state="expired", completed_at=4.0,
+                starting_sha=case["base"],
+                current_subject={"kind": "parent", "generation": 0, "head_sha": case["base"]},
+            ))
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id="resolution-op",
+                ordinal=1,
+                policy=stage_policy,
+                repair_task_id="repair-task",
+                writer_kind="repair_delegate",
+                starting_sha=case["target"],
+                trigger_id=case["intent_id"],
+                current_subject=target_subject,
+                deadline_event_id="repair-deadline-resolution-op-1",
+                started_at=4.0,
+                deadline_at=now - 1.0,
+                attempts=0,
+                dossier={
+                    "starting_sha": case["target"],
+                    "branch_sha": case["target"],
+                    "trigger_id": case["intent_id"],
+                    "continuations": [{
+                        "intent_id": case["intent_id"],
+                        "starting_sha": case["target"],
+                        "recorded_at": 4.0,
+                    }],
+                },
+                state="active",
+            ))
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == "resolution-op",
+            ).values(active_stage=1, state="escalated"))
+    expired = await RepairService(db).expire("resolution-op", exhausted_stage, now=now)
+    assert expired == {
+        "outcome": "expired",
+        "action": "dispatch_debug",
+        "operation_id": "resolution-op",
+        "stage": exhausted_stage + 1,
+    }
+    async with db._engine.connect() as conn:
+        return dict((await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == exhausted_stage + 1,
+        ))).mappings().one())
+
+
+@pytest.mark.parametrize("exhausted_stage", [0, 1])
+async def test_debug_stage_at_conflict_target_resolves_under_its_own_fence(
+    db, conflict_resolution_case, exhausted_stage
+):
+    """Task sound-forge: operation bcab5af6 stage 9 could never reserve its resolution.
+
+    The exhausted stage's subject is the open conflict's old tip, so its debug
+    successor keeps that conflict as its trigger instead of ``stage-exhausted``.
+    """
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+    from src.integration.repair import RepairService
+
+    case = conflict_resolution_case
+    debug = await _exhaust_conflict_stage(db, case, exhausted_stage)
+    ordinal = exhausted_stage + 1
+
+    assert debug["trigger_id"] == case["intent_id"]
+    assert debug["starting_sha"] == case["target"]
+    assert debug["current_subject"] == {
+        "kind": "parent", "generation": 0, "head_sha": case["target"],
+    }
+    assert debug["dossier"]["trigger_id"] == case["intent_id"]
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert debug["dossier"]["current_conflict"] == {
+        "intent_id": case["intent_id"],
+        "source_task_id": "child",
+        "source_head": case["source"],
+        "source_base": intent["source_base"],
+        "expected_target": case["target"],
+        "diagnostics": intent["conflict_diagnostics"] or {},
+    }
+    # The parent playbook's operation-key replay names the debug stage; no new budget.
+    restarted = await RepairService(db).start("resolution-op", case["target"], "resolution-op")
+    assert (restarted["outcome"], restarted["stage"]) == ("already_started", ordinal)
+
+    ownership = BranchOwnership(db, confirm_handoff=lambda _row: True)
+    await db.create_task(Task(
+        id="debug-repair-task", project_id="project", title="Debug conflict resolution",
+        description="", status=TaskStatus.IN_PROGRESS, repo_id="repo",
+        branch_name="aq/parent", created_by_kind="integration_repair",
+        created_by_id="resolution-op",
+    ))
+    debug_fence = await ownership.transfer(
+        Fence.model_validate(case["resolution_fence"]), "debug-repair-task", "repair"
+    )
+    await db.create_session(SessionRecord(
+        id="debug-resolution-session", task_id="debug-repair-task", project_id="project",
+        profile_id="debug-repairer", harness="fake", provider="fake",
+        name="s-debug-resolution", lifecycle="task", state="running",
+        work_dir=str(case["work"]), epoch="debug-epoch",
+        instance_token="debug-resolution-instance", started_at=4.0,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == ordinal,
+        ).values(repair_task_id="debug-repair-task", writer_kind="repair_delegate"))
+        await conn.execute(update(workspaces).where(
+            workspaces.c.id == "resolution-workspace",
+        ).values(locked_by_task_id="debug-repair-task"))
+    await ownership.attach(
+        debug_fence, "debug-resolution-session", "resolution-workspace", expected_role="repair"
+    )
+
+    service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(), ownership=ownership
+    )
+    request = _resolution_request(case, fence=debug_fence.model_dump(mode="json"))
+    with principal_context(_resolution_principal(
+        task_id="debug-repair-task", session_id="debug-resolution-session"
+    )):
+        await service.reserve_resolution(request)
+        await service.push_resolution(case["intent_id"], debug_fence)
+    await service.reconcile(case["intent_id"])
+
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == (
+        case["resolved_head"]
+    )
+    intent = await db.get_integration_promotion_intent(case["intent_id"])
+    assert intent["resolution_task_id"] == "debug-repair-task"
+    assert intent["resolution_stage_ordinal"] == ordinal
+    assert intent["resolution_fence_token"] == debug_fence.token
+
+
+@pytest.mark.parametrize("unbound", ["subject_moved", "resolution_reserved"])
+async def test_debug_stage_off_an_open_conflict_keeps_stage_exhausted_trigger(
+    db, conflict_resolution_case, unbound
+):
+    """Only the sole unresolved conflict at the exhausted subject becomes the trigger."""
+    from src.commands.principal import principal_context
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    if unbound == "subject_moved":
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+                integration_repair_stages.c.ordinal == 0,
+            ).values(
+                current_subject={"kind": "parent", "generation": 0, "head_sha": case["base"]},
+            ))
+    else:
+        service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+        with principal_context(_resolution_principal()):
+            await service.reserve_resolution(_resolution_request(case))
+
+    debug = await _exhaust_conflict_stage(db, case, 0)
+
+    assert debug["trigger_id"] == "stage-exhausted:resolution-op:0"
+    assert "current_conflict" not in debug["dossier"]
+
+
 @pytest.mark.parametrize("blocker", ["push_started", "remote_moved"])
 async def test_operator_recovery_refuses_ambiguous_resolution(
     db, conflict_resolution_case, blocker
