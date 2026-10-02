@@ -598,7 +598,10 @@
     "knowledge-records": {
       "description": "Durable record identities, knowledge schema and immutable revision integrity.",
       "modules": [
+        "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_migrations.py",
+        "tests/test_knowledge_service.py",
+        "tests/test_record_links.py",
         "tests/test_record_queries.py",
         "tests/test_record_schema.py"
       ]
@@ -1327,7 +1330,7 @@
       ]
     }
   },
-  "digest": "sha256:a9826f1c82c889fbb2e67ebabe53f037ef8ae9a9b541c568da330bb2096fa85b",
+  "digest": "sha256:df237e637331572c9ace1bd3eb3295b1b9daa9bad4f10e6572902dbb3d376df1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8227,6 +8230,26 @@
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
     },
+    "tests/test_knowledge_authorization.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.plugins.registry",
+        "src.profiles.capabilities",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Core access remains fail closed with legacy capability enforcement disabled."
+    },
     "tests/test_knowledge_migrations.py": {
       "areas": [
         "knowledge-records"
@@ -8240,6 +8263,23 @@
         "migration"
       ],
       "summary": "Real disposable PostgreSQL upgrades, helper reinstall and safe rollback."
+    },
+    "tests/test_knowledge_service.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL races, canonical bytes, atomic receipts and lexical retrieval."
     },
     "tests/test_known_tools.py": {
       "areas": [
@@ -11322,6 +11362,23 @@
         "asyncio"
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
+    },
+    "tests/test_record_links.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Informational links have their own ownership, history and concurrency fences."
     },
     "tests/test_record_queries.py": {
       "areas": [
