@@ -852,7 +852,32 @@ No deletes on this table during normal operation. Deleted only as part of cascad
 
 Indexes: `idx_token_ledger_task_attempt` (`task_id`, `attempt_id`) and unique
 `uq_token_ledger_call` (`session_id`, `call_id`). Nullable identities preserve
-historical rows without inventing attribution. Added by Alembic `a00000000047`.
+historical rows without inventing attribution. Added by Alembic `a00000000047`;
+`idx_token_ledger_call_id` (`call_id`, for adopting legacy rows) by `a00000000055`.
+
+### Table: `transcript_usage_calls`
+
+Durable per-API-call usage maxima for transcript ingestion (`azure-vault-92.1`,
+Alembic `a00000000055`). Claude streams one API call as several transcript
+content rows that repeat the same usage; the ledger used to charge each row.
+`record_transcript_usage` (`src/database/queries/token_queries.py`) locks the
+call's row, raises each category to the newly observed maximum and appends only
+the positive increase to `token_ledger` in the same transaction, so replays,
+restarts and concurrent readers never charge a call twice. Existing ledger rows
+are never rewritten.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `usage_key` | TEXT | PRIMARY KEY | `<provider>:<sha256>` of provider, transcript conversation and API call id (`transcript_usage_key`); content UUID when the API id is absent |
+| `first_ledger_id` | TEXT | nullable | First ledger row charged for the call; later increases keep its attribution |
+| `input_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum uncached input observed |
+| `output_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum output observed |
+| `cache_read_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum cache read observed |
+| `cache_write_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum cache write observed |
+| `updated_at` | REAL | NOT NULL | Daemon clock at the last raise |
+
+`ck_transcript_usage_calls_nonnegative` enforces the bounds. Downgrading drops
+the table and restores per-row charging; ledger rows survive.
 
 ### Table: `benchmark_stage_spans`
 
