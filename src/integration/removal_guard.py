@@ -316,6 +316,7 @@ async def assert_integration_permits_removal(
     mode: str | None,
     abandon_undelivered: bool = False,
     delivery=None,
+    obsolete_integration_delegate: bool = False,
 ) -> None:
     """Raise the first ordered integration refusal for a removal.
 
@@ -336,7 +337,13 @@ async def assert_integration_permits_removal(
 
     from src.integration.delegate_release import RELEASE_COMMAND, live_integration_owner
 
-    owner = await live_integration_owner(conn, list(ids))
+    if obsolete_integration_delegate:
+        from src.integration.delegate_release import assert_obsolete_delegate_on
+
+        await assert_obsolete_delegate_on(db, conn, root_id)
+    owner = await live_integration_owner(
+        conn, list(ids), archive_obsolete=obsolete_integration_delegate
+    )
     if owner is not None:
         state = owner["state"]
         if state == "human_required":

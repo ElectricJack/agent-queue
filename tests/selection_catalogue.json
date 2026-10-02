@@ -1319,7 +1319,7 @@
       ]
     }
   },
-  "digest": "sha256:3eec158f14a7119ba2b5820e7fc5b991ad937522885e2ace71568eab52a8fbf5",
+  "digest": "sha256:d3cc817ba0ee285aa191ca71e736265e68767123f677cd289a2c272ea6aa75bd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7138,6 +7138,7 @@
         "src.doctor.models",
         "src.integration.controls",
         "src.integration.delegate_release",
+        "src.integration.repair",
         "src.models"
       ],
       "markers": [

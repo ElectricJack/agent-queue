@@ -23,6 +23,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stage_evidence,
     integration_repair_stages,
+    messages,
     playbook_artifacts,
     sessions,
     task_branch_origins,
@@ -1376,6 +1377,17 @@ async def test_exhaustion_continues_with_fresh_bounded_stages_and_deduped_worker
     first = await service.dispatch("operation", 0)
     assert first["outcome"] == "dispatched"
     for ordinal, due in ((0, 130.0), (1, 190.0), (2, 250.0)):
+        if ordinal > 0:
+            # Continuous work may renew a bounded stage after authoritative
+            # progress; worker turnover alone cannot renew it.
+            head = str(ordinal) * 40
+            previous = await _repair_stage(db, "operation", ordinal)
+            async with db.immediate() as conn:
+                await service.bind_current_parent_subject_on(
+                    conn, "operation", head_sha=head, now=due - 1,
+                    commit_proof={"base_sha": previous["current_subject"]["head_sha"],
+                                  "head_sha": head, "commits": [head]},
+                )
         expired = await service.expire("operation", ordinal, now=due)
         assert expired["action"] == "dispatch_debug"
         assert expired["stage"] == ordinal + 1
@@ -1396,6 +1408,66 @@ async def test_exhaustion_continues_with_fresh_bounded_stages_and_deduped_worker
         first = dispatched
     operation = await db.get_integration_operation("operation")
     assert operation["active_stage"] == 3 and operation["state"] == "escalated"
+
+
+@pytest.mark.parametrize("exhaustion", ["timeout", "failure", "closed_writer", "generation_only"])
+async def test_continuous_unchanged_head_stops_once_with_supervisor_dossier(db, exhaustion):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["parent"]["repair"]["on_exhausted"] = "continue"
+    await _seed_parent_operation(db, policy=policy)
+    ownership = BranchOwnership(db)
+    await ownership.acquire(BranchKey(repository_id="repo", branch="aq/parent"),
+                            "operation", "collector")
+    service = RepairService(db, clock=lambda: 150.0)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.dispatch("operation", 0)
+    await service.expire("operation", 0, now=130.0)
+    delegate = await service.dispatch("operation", 1)
+    if exhaustion == "generation_only":
+        async with db.immediate() as conn:
+            await conn.execute(update(task_integration_checkpoints)
+                               .where(task_integration_checkpoints.c.task_id == "parent")
+                               .values(generation=4))
+            await service.bind_current_parent_subject_on(
+                conn, "operation", head_sha=STARTING_SHA, now=150.0,
+            )
+    if exhaustion == "failure":
+        await _add_parent_evidence(db, "debug-red", run_id="debug-run", conclusion="failure")
+        result = await service.record_result("operation", "debug-red", now=150.0)
+        assert result["outcome"] == "budget_exhausted"
+        assert result["action"] == "supervisor_recovery"
+        replay = await service.record_result("operation", "debug-red", now=151.0)
+        assert replay["outcome"] == "budget_exhausted" and replay["action"] == "duplicate"
+    elif exhaustion == "closed_writer":
+        await db.transition_task(delegate["repair_task_id"], TaskStatus.COMPLETED, force=True)
+        assert (await service.dispatch("operation", 1))["outcome"] == "stale"
+    else:
+        result = await service.expire("operation", 1, now=190.0)
+        assert result["stage"] == 1 and result["action"] == "supervisor_recovery"
+    for _ in range(3):
+        assert (await service.expire("operation", 1, now=200.0))["action"] == "supervisor_recovery"
+        assert (await service.dispatch("operation", 1))["outcome"] == "stale"
+        assert await service.pending_dispatches() == []
+        assert await service.due_stages(now=300.0) == []
+    operation = await db.get_integration_operation("operation")
+    assert operation["active_stage"] == 1 and operation["state"] == "escalated"
+    stage = await _repair_stage(db, "operation", 1)
+    assert stage["deadline_at"] == 190.0
+    assert stage["dossier"]["supervisor_recovery"]["subject"]["head_sha"] == STARTING_SHA
+    assert (await db.get_task("parent")).status == TaskStatus.PAUSED
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_repair_stages.c.ordinal)
+                .order_by(integration_repair_stages.c.ordinal))).scalars().all() == [0, 1]
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_no_progress",
+        ))).mappings().all()
+        assert len(notices) == 1
+        assert "operation" in notices[0]["body"] and delegate["repair_task_id"] in notices[0]["body"]
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+        assert owner["owner_id"] == delegate["repair_task_id"]
+        assert owner["handoff_state"] == "reserved"
 
 
 async def test_due_stage_query_does_not_require_an_agent_or_ci_event(db):
@@ -1556,7 +1628,7 @@ async def test_parent_green_and_timeout_serialize_to_one_debug_stage(db):
     assert stages[1]["state"] == "active"
 
 
-async def _seed_root_operation(db, *, branch: str = "aq/integration/batch") -> str:
+async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", policy=None) -> str:
     from src.integration.repair import RepairService
 
     await db.update_project("p", hierarchical_integration_mode="train")
@@ -1585,7 +1657,7 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch") -> s
                 lifecycle="testing",
                 current_revision=0,
                 integration_branch=branch,
-                policy_snapshot=_policy(),
+                policy_snapshot=policy or _policy(),
                 artifact_snapshot=artifact.model_dump(mode="json"),
                 cleanup_state="pending",
                 created_at=1.0,
@@ -1624,6 +1696,24 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch") -> s
             )
         )
     return operation["id"]
+
+
+async def test_continuous_batch_timeout_stops_without_advancing_candidate_head(db):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["root"]["repair"]["on_exhausted"] = "continue"
+    operation_id = await _seed_root_operation(db, policy=policy)
+    service = RepairService(db)
+    assert (await service.start(operation_id, STARTING_SHA, "batch", now=100.0))["outcome"] == "started"
+    assert (await service.expire(operation_id, 0, now=130.0))["stage"] == 1
+    result = await service.expire(operation_id, 1, now=190.0)
+    assert result["stage"] == 1 and result["action"] == "supervisor_recovery"
+    assert (await db.get_integration_operation(operation_id))["state"] == "escalated"
+    assert (await db.get_integration_batch("batch"))["lifecycle"] == "testing"
+    stage = await _repair_stage(db, operation_id, 1)
+    assert stage["dossier"]["supervisor_recovery"]["subject"]["candidate_sha"] == STARTING_SHA
+    assert await service.due_stages(now=300.0) == []
 
 
 async def _record_root_green(db, service, operation_id, *, now=110.0):
@@ -3153,6 +3243,12 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
                 integration_branch_owners.c.id == "owner").values(
                 handoff_state="attached", session_id="successor-session", workspace_id="retained"))
         write_claim_file(str(checkout), {"task_id": debug_task.id, "claim_epoch": 2})
+        # This handoff carries unpublished checkout progress. Bind an exact
+        # advanced subject before another automatic continuation is allowed.
+        async with db.immediate() as conn:
+            await service.bind_current_parent_subject_on(
+                conn, "operation", head_sha=retained_head, now=150.0
+            )
         assert (await service.expire("operation", 1, now=162.0))["stage"] == 2
         third = await service.dispatch("operation", 2)
         assert third["outcome"] == "dispatched"

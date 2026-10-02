@@ -1,8 +1,8 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:13d466fdb1d05b55b4f3b385107c8223426af3612bc7320134e57e6501fa3d35
+artifact_sha256: sha256:aa39297af49a5ae0b34bc65d52a59222b481897c2a2def9f69b5f3ed40c7f834
 source_sha256: sha256:aad657532402ee10ae5d02acf4b1ebe0eda28f3a3914deca81fd62767789f81b
-contract_fingerprint: sha256:e84411d236ed2ab7326f03d7a2f1e54707cbe99b6cfe514df9f152c2aaa34e07
+contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -36,3 +36,8 @@ project's lifecycle events. Commands receive durable subject identities; CI
 trust, Git refs, repair budgets, and promotion authority stay server-owned.
 Import and activation require operator review. The bundle has no automatic
 activation.
+
+CI repair `clear-quest-21` refreshed the record and timeout command fingerprints
+for the new `supervisor_recovery` action. Reviewed rules, steps, transitions,
+capability grants and source text are unchanged; no-progress incidents remain
+owned by the command service.

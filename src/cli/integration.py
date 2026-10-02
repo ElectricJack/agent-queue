@@ -664,16 +664,26 @@ def integration_rebind_repair(
 
 @integration.command("release-delegates")
 @click.argument("operation_id")
+@click.option("--archive-obsolete", is_flag=True,
+              help="Archive obsolete terminal repair stages after checking owners, claims and gates.")
 @click.pass_context
 @_handle_errors
-def integration_release_delegates(ctx: click.Context, operation_id: str) -> None:
+def integration_release_delegates(
+    ctx: click.Context, operation_id: str, archive_obsolete: bool
+) -> None:
     """Settle the delegate tasks of an OPERATION_ID that has already ended.
 
     For one operation that was cancelled or completed before its delegates were
     released. The fleet-wide equivalent is
     `aq doctor --check integration.stranded_delegates --fix`.
+
+    With --archive-obsolete, archive terminal generated repair delegates after
+    proving they hold no authority or gates. Earlier stages of a live operation
+    may qualify; its current delegate and the operation remain untouched.
     """
-    _execute(ctx, "integration_release_delegates", {"operation_id": operation_id})
+    _execute(ctx, "integration_release_delegates", {
+        "operation_id": operation_id, "archive_obsolete": archive_obsolete,
+    })
 
 
 @integration.command("recover-candidate-member")
