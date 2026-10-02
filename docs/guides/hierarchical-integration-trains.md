@@ -179,7 +179,9 @@ also reconciles that release for batches cleaned up by older versions.
 
 `aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
 COMPLETED train root with a PR but no checkpoint or live branch origin. The
-GitHub review poller also warns when such a root has no eligible review source.
+GitHub review poller also warns when such a root has no eligible review source,
+once per root and condition (again after the condition changes or the daemon
+restarts), not on every tick.
 For a **childless** legacy root, run `aq integration materialize-root TASK_ID`
 to read its PR, remote branch head and merge-base with the default branch.
 If the dry run returns `would_materialize`, apply with its exact `head_sha`:
@@ -746,6 +748,17 @@ close records the finished head. The daemon retries a PR either path missed.
 root has no PR, and `--apply --head HEAD_SHA --reason REASON` opens it for
 that head. See [A completed root has no pull
 request](integration-troubleshooting.md#a-completed-root-has-no-pull-request).
+
+The review poller (`src/integration/github_review_poll.py`) visits one page of
+COMPLETED roots per tick and asks GitHub only what can have changed. It
+re-reads a PR's reviews when the PR's `updated_at`, head or base changed, and
+at least every ten minutes regardless; it does not fetch a PR it last saw
+closed while that PR is absent from the repository's open-PR list, read once
+per tick. A verdict or task authorization already stored for the exact source
+identity is not proven against Git again. Source CI of an open exact PR is
+still observed on every visit. The cache is in memory and keyed by the exact
+source identity, so a restart or a new head re-observes the root in full, and
+a failed read is retried on the next visit.
 
 A collecting parent assembles a COMPLETED child only once approved evidence
 pins the child's exact head; until then its siblings' `needs` keep them out of
