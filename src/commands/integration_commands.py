@@ -2417,7 +2417,7 @@ class IntegrationCommandsMixin:
             request.operation_id, request.evidence_id
         )
         return {
-            "success": result["outcome"] in {"continue", "escalate"},
+            "success": result["outcome"] in {"continue", "started", "escalate"},
             **result,
         }
 
