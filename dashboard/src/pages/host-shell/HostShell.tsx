@@ -19,7 +19,8 @@ export default function HostShell() {
 
   useEffect(() => {
     if (selected && !list.some((shell) => shell.name === selected)) setSelected(null);
-    if (!selected && list.length) setSelected(list[0].name);
+    const firstShell = list[0];
+    if (!selected && firstShell) setSelected(firstShell.name);
   }, [list, selected]);
 
   if (shells.isError) {
