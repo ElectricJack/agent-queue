@@ -597,6 +597,7 @@ from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_reference import IntelligenceClassReference
 from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
+from .inventory_root_spec import InventoryRootSpec
 from .job_error_response import JobErrorResponse
 from .job_error_response_result_type_0 import JobErrorResponseResultType0
 from .job_get_args import JobGetArgs
@@ -636,14 +637,17 @@ from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
 from .knowledge_history_response_422 import KnowledgeHistoryResponse422
 from .knowledge_history_response_revisions_item import KnowledgeHistoryResponseRevisionsItem
-from .knowledge_import_request import KnowledgeImportRequest
-from .knowledge_import_request_scope_aliases_type_0 import KnowledgeImportRequestScopeAliasesType0
+from .knowledge_import_args import KnowledgeImportArgs
+from .knowledge_import_args_expected_revisions import KnowledgeImportArgsExpectedRevisions
+from .knowledge_import_args_expected_source_hashes import KnowledgeImportArgsExpectedSourceHashes
+from .knowledge_import_args_operation import KnowledgeImportArgsOperation
+from .knowledge_import_args_scope_aliases_type_0 import KnowledgeImportArgsScopeAliasesType0
 from .knowledge_import_response import KnowledgeImportResponse
 from .knowledge_import_response_422 import KnowledgeImportResponse422
-from .knowledge_import_response_counts import KnowledgeImportResponseCounts
-from .knowledge_import_response_identities_item import KnowledgeImportResponseIdentitiesItem
-from .knowledge_import_response_items_item import KnowledgeImportResponseItemsItem
-from .knowledge_import_response_mappings_item import KnowledgeImportResponseMappingsItem
+from .knowledge_import_response_counts_type_0 import KnowledgeImportResponseCountsType0
+from .knowledge_import_response_identities_type_0_item import KnowledgeImportResponseIdentitiesType0Item
+from .knowledge_import_response_items_type_0_item import KnowledgeImportResponseItemsType0Item
+from .knowledge_import_response_mappings_type_0_item import KnowledgeImportResponseMappingsType0Item
 from .knowledge_lifecycle_response import KnowledgeLifecycleResponse
 from .knowledge_list_request import KnowledgeListRequest
 from .knowledge_list_response import KnowledgeListResponse
@@ -2323,6 +2327,7 @@ __all__ = (
     "IntelligenceClassModelMapping",
     "IntelligenceClassReference",
     "IntelligenceClassReferenceKind",
+    "InventoryRootSpec",
     "JobErrorResponse",
     "JobErrorResponseResultType0",
     "JobGetArgs",
@@ -2362,14 +2367,17 @@ __all__ = (
     "KnowledgeHistoryResponse",
     "KnowledgeHistoryResponse422",
     "KnowledgeHistoryResponseRevisionsItem",
-    "KnowledgeImportRequest",
-    "KnowledgeImportRequestScopeAliasesType0",
+    "KnowledgeImportArgs",
+    "KnowledgeImportArgsExpectedRevisions",
+    "KnowledgeImportArgsExpectedSourceHashes",
+    "KnowledgeImportArgsOperation",
+    "KnowledgeImportArgsScopeAliasesType0",
     "KnowledgeImportResponse",
     "KnowledgeImportResponse422",
-    "KnowledgeImportResponseCounts",
-    "KnowledgeImportResponseIdentitiesItem",
-    "KnowledgeImportResponseItemsItem",
-    "KnowledgeImportResponseMappingsItem",
+    "KnowledgeImportResponseCountsType0",
+    "KnowledgeImportResponseIdentitiesType0Item",
+    "KnowledgeImportResponseItemsType0Item",
+    "KnowledgeImportResponseMappingsType0Item",
     "KnowledgeLifecycleResponse",
     "KnowledgeListRequest",
     "KnowledgeListResponse",

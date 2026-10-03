@@ -217,6 +217,7 @@ _KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
     "knowledge_authority_revoke",
     "knowledge_share",
     "knowledge_redact",
+    "knowledge_import",
     "record_show",
     "record_search",
     "record_capabilities",
@@ -247,6 +248,13 @@ _ERROR_STATUS_BY_CODE: dict[str, int] = {
     "record.retryable": 503,
     "record.hash_divergence": 503,
     "record.integrity_conflict": 409,
+    "knowledge_import.forbidden": 403,
+    "knowledge_import.disabled": 409,
+    "knowledge_import.invalid_input": 422,
+    "knowledge_import.manifest_changed": 409,
+    "knowledge_import.mapping_conflict": 409,
+    "knowledge_import.source_conflict": 409,
+    "knowledge_import.source_unavailable": 410,
 }
 
 ERROR_STATUS.update(

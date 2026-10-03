@@ -221,6 +221,8 @@ class RecordService:
             )
             if not artifact:
                 raise RecordError("record.not_found")
+            if artifact["media_type"] == "application/vnd.aq.import-manifest":
+                raise RecordError("record.source_unavailable", "Import manifests are operator-only")
             if source.get("sha256") and artifact["content_sha256"] != source["sha256"]:
                 raise RecordError("record.source_unavailable")
 

@@ -9,10 +9,10 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.knowledge_import_response_counts import KnowledgeImportResponseCounts
-    from ..models.knowledge_import_response_identities_item import KnowledgeImportResponseIdentitiesItem
-    from ..models.knowledge_import_response_items_item import KnowledgeImportResponseItemsItem
-    from ..models.knowledge_import_response_mappings_item import KnowledgeImportResponseMappingsItem
+    from ..models.knowledge_import_response_counts_type_0 import KnowledgeImportResponseCountsType0
+    from ..models.knowledge_import_response_identities_type_0_item import KnowledgeImportResponseIdentitiesType0Item
+    from ..models.knowledge_import_response_items_type_0_item import KnowledgeImportResponseItemsType0Item
+    from ..models.knowledge_import_response_mappings_type_0_item import KnowledgeImportResponseMappingsType0Item
 
 
 T = TypeVar("T", bound="KnowledgeImportResponse")
@@ -20,74 +20,51 @@ T = TypeVar("T", bound="KnowledgeImportResponse")
 
 @_attrs_define
 class KnowledgeImportResponse:
-    """Read-only reconciliation and the canonical bytes bound by its seal.
+    """Stable envelope for inventory and durable apply/resume projections.
 
     Attributes:
-        source_installation_id (str):
-        snapshot_id (str):
-        snapshot_timestamp (str):
-        manifest_sha256 (str):
-        manifest_content_base64 (str):
-        vector_observation (str):
-        counts (KnowledgeImportResponseCounts):
-        items (list[KnowledgeImportResponseItemsItem]):
-        mappings (list[KnowledgeImportResponseMappingsItem]):
-        identities (list[KnowledgeImportResponseIdentitiesItem]):
         success (bool | Unset):  Default: True.
         outcome (None | str | Unset):
         record_id (None | str | Unset):
         replay (bool | Unset):  Default: False.
         content_sha256 (None | str | Unset):
         revision_id (None | str | Unset):
+        source_installation_id (None | str | Unset):
+        snapshot_id (None | str | Unset):
+        snapshot_timestamp (None | str | Unset):
+        manifest_sha256 (None | str | Unset):
+        manifest_content_base64 (None | str | Unset):
+        vector_observation (None | str | Unset):
+        counts (KnowledgeImportResponseCountsType0 | None | Unset):
+        items (list[KnowledgeImportResponseItemsType0Item] | None | Unset):
+        mappings (list[KnowledgeImportResponseMappingsType0Item] | None | Unset):
+        identities (list[KnowledgeImportResponseIdentitiesType0Item] | None | Unset):
+        run_id (None | str | Unset):
+        state (None | str | Unset):
     """
 
-    source_installation_id: str
-    snapshot_id: str
-    snapshot_timestamp: str
-    manifest_sha256: str
-    manifest_content_base64: str
-    vector_observation: str
-    counts: KnowledgeImportResponseCounts
-    items: list[KnowledgeImportResponseItemsItem]
-    mappings: list[KnowledgeImportResponseMappingsItem]
-    identities: list[KnowledgeImportResponseIdentitiesItem]
     success: bool | Unset = True
     outcome: None | str | Unset = UNSET
     record_id: None | str | Unset = UNSET
     replay: bool | Unset = False
     content_sha256: None | str | Unset = UNSET
     revision_id: None | str | Unset = UNSET
+    source_installation_id: None | str | Unset = UNSET
+    snapshot_id: None | str | Unset = UNSET
+    snapshot_timestamp: None | str | Unset = UNSET
+    manifest_sha256: None | str | Unset = UNSET
+    manifest_content_base64: None | str | Unset = UNSET
+    vector_observation: None | str | Unset = UNSET
+    counts: KnowledgeImportResponseCountsType0 | None | Unset = UNSET
+    items: list[KnowledgeImportResponseItemsType0Item] | None | Unset = UNSET
+    mappings: list[KnowledgeImportResponseMappingsType0Item] | None | Unset = UNSET
+    identities: list[KnowledgeImportResponseIdentitiesType0Item] | None | Unset = UNSET
+    run_id: None | str | Unset = UNSET
+    state: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        source_installation_id = self.source_installation_id
-
-        snapshot_id = self.snapshot_id
-
-        snapshot_timestamp = self.snapshot_timestamp
-
-        manifest_sha256 = self.manifest_sha256
-
-        manifest_content_base64 = self.manifest_content_base64
-
-        vector_observation = self.vector_observation
-
-        counts = self.counts.to_dict()
-
-        items = []
-        for items_item_data in self.items:
-            items_item = items_item_data.to_dict()
-            items.append(items_item)
-
-        mappings = []
-        for mappings_item_data in self.mappings:
-            mappings_item = mappings_item_data.to_dict()
-            mappings.append(mappings_item)
-
-        identities = []
-        for identities_item_data in self.identities:
-            identities_item = identities_item_data.to_dict()
-            identities.append(identities_item)
+        from ..models.knowledge_import_response_counts_type_0 import KnowledgeImportResponseCountsType0
 
         success = self.success
 
@@ -117,22 +94,101 @@ class KnowledgeImportResponse:
         else:
             revision_id = self.revision_id
 
+        source_installation_id: None | str | Unset
+        if isinstance(self.source_installation_id, Unset):
+            source_installation_id = UNSET
+        else:
+            source_installation_id = self.source_installation_id
+
+        snapshot_id: None | str | Unset
+        if isinstance(self.snapshot_id, Unset):
+            snapshot_id = UNSET
+        else:
+            snapshot_id = self.snapshot_id
+
+        snapshot_timestamp: None | str | Unset
+        if isinstance(self.snapshot_timestamp, Unset):
+            snapshot_timestamp = UNSET
+        else:
+            snapshot_timestamp = self.snapshot_timestamp
+
+        manifest_sha256: None | str | Unset
+        if isinstance(self.manifest_sha256, Unset):
+            manifest_sha256 = UNSET
+        else:
+            manifest_sha256 = self.manifest_sha256
+
+        manifest_content_base64: None | str | Unset
+        if isinstance(self.manifest_content_base64, Unset):
+            manifest_content_base64 = UNSET
+        else:
+            manifest_content_base64 = self.manifest_content_base64
+
+        vector_observation: None | str | Unset
+        if isinstance(self.vector_observation, Unset):
+            vector_observation = UNSET
+        else:
+            vector_observation = self.vector_observation
+
+        counts: dict[str, Any] | None | Unset
+        if isinstance(self.counts, Unset):
+            counts = UNSET
+        elif isinstance(self.counts, KnowledgeImportResponseCountsType0):
+            counts = self.counts.to_dict()
+        else:
+            counts = self.counts
+
+        items: list[dict[str, Any]] | None | Unset
+        if isinstance(self.items, Unset):
+            items = UNSET
+        elif isinstance(self.items, list):
+            items = []
+            for items_type_0_item_data in self.items:
+                items_type_0_item = items_type_0_item_data.to_dict()
+                items.append(items_type_0_item)
+
+        else:
+            items = self.items
+
+        mappings: list[dict[str, Any]] | None | Unset
+        if isinstance(self.mappings, Unset):
+            mappings = UNSET
+        elif isinstance(self.mappings, list):
+            mappings = []
+            for mappings_type_0_item_data in self.mappings:
+                mappings_type_0_item = mappings_type_0_item_data.to_dict()
+                mappings.append(mappings_type_0_item)
+
+        else:
+            mappings = self.mappings
+
+        identities: list[dict[str, Any]] | None | Unset
+        if isinstance(self.identities, Unset):
+            identities = UNSET
+        elif isinstance(self.identities, list):
+            identities = []
+            for identities_type_0_item_data in self.identities:
+                identities_type_0_item = identities_type_0_item_data.to_dict()
+                identities.append(identities_type_0_item)
+
+        else:
+            identities = self.identities
+
+        run_id: None | str | Unset
+        if isinstance(self.run_id, Unset):
+            run_id = UNSET
+        else:
+            run_id = self.run_id
+
+        state: None | str | Unset
+        if isinstance(self.state, Unset):
+            state = UNSET
+        else:
+            state = self.state
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "source_installation_id": source_installation_id,
-                "snapshot_id": snapshot_id,
-                "snapshot_timestamp": snapshot_timestamp,
-                "manifest_sha256": manifest_sha256,
-                "manifest_content_base64": manifest_content_base64,
-                "vector_observation": vector_observation,
-                "counts": counts,
-                "items": items,
-                "mappings": mappings,
-                "identities": identities,
-            }
-        )
+        field_dict.update({})
         if success is not UNSET:
             field_dict["success"] = success
         if outcome is not UNSET:
@@ -145,52 +201,41 @@ class KnowledgeImportResponse:
             field_dict["content_sha256"] = content_sha256
         if revision_id is not UNSET:
             field_dict["revision_id"] = revision_id
+        if source_installation_id is not UNSET:
+            field_dict["source_installation_id"] = source_installation_id
+        if snapshot_id is not UNSET:
+            field_dict["snapshot_id"] = snapshot_id
+        if snapshot_timestamp is not UNSET:
+            field_dict["snapshot_timestamp"] = snapshot_timestamp
+        if manifest_sha256 is not UNSET:
+            field_dict["manifest_sha256"] = manifest_sha256
+        if manifest_content_base64 is not UNSET:
+            field_dict["manifest_content_base64"] = manifest_content_base64
+        if vector_observation is not UNSET:
+            field_dict["vector_observation"] = vector_observation
+        if counts is not UNSET:
+            field_dict["counts"] = counts
+        if items is not UNSET:
+            field_dict["items"] = items
+        if mappings is not UNSET:
+            field_dict["mappings"] = mappings
+        if identities is not UNSET:
+            field_dict["identities"] = identities
+        if run_id is not UNSET:
+            field_dict["run_id"] = run_id
+        if state is not UNSET:
+            field_dict["state"] = state
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.knowledge_import_response_counts import KnowledgeImportResponseCounts
-        from ..models.knowledge_import_response_identities_item import KnowledgeImportResponseIdentitiesItem
-        from ..models.knowledge_import_response_items_item import KnowledgeImportResponseItemsItem
-        from ..models.knowledge_import_response_mappings_item import KnowledgeImportResponseMappingsItem
+        from ..models.knowledge_import_response_counts_type_0 import KnowledgeImportResponseCountsType0
+        from ..models.knowledge_import_response_identities_type_0_item import KnowledgeImportResponseIdentitiesType0Item
+        from ..models.knowledge_import_response_items_type_0_item import KnowledgeImportResponseItemsType0Item
+        from ..models.knowledge_import_response_mappings_type_0_item import KnowledgeImportResponseMappingsType0Item
 
         d = dict(src_dict)
-        source_installation_id = d.pop("source_installation_id")
-
-        snapshot_id = d.pop("snapshot_id")
-
-        snapshot_timestamp = d.pop("snapshot_timestamp")
-
-        manifest_sha256 = d.pop("manifest_sha256")
-
-        manifest_content_base64 = d.pop("manifest_content_base64")
-
-        vector_observation = d.pop("vector_observation")
-
-        counts = KnowledgeImportResponseCounts.from_dict(d.pop("counts"))
-
-        items = []
-        _items = d.pop("items")
-        for items_item_data in _items:
-            items_item = KnowledgeImportResponseItemsItem.from_dict(items_item_data)
-
-            items.append(items_item)
-
-        mappings = []
-        _mappings = d.pop("mappings")
-        for mappings_item_data in _mappings:
-            mappings_item = KnowledgeImportResponseMappingsItem.from_dict(mappings_item_data)
-
-            mappings.append(mappings_item)
-
-        identities = []
-        _identities = d.pop("identities")
-        for identities_item_data in _identities:
-            identities_item = KnowledgeImportResponseIdentitiesItem.from_dict(identities_item_data)
-
-            identities.append(identities_item)
-
         success = d.pop("success", UNSET)
 
         def _parse_outcome(data: object) -> None | str | Unset:
@@ -231,7 +276,170 @@ class KnowledgeImportResponse:
 
         revision_id = _parse_revision_id(d.pop("revision_id", UNSET))
 
+        def _parse_source_installation_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_installation_id = _parse_source_installation_id(d.pop("source_installation_id", UNSET))
+
+        def _parse_snapshot_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        snapshot_id = _parse_snapshot_id(d.pop("snapshot_id", UNSET))
+
+        def _parse_snapshot_timestamp(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        snapshot_timestamp = _parse_snapshot_timestamp(d.pop("snapshot_timestamp", UNSET))
+
+        def _parse_manifest_sha256(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        manifest_sha256 = _parse_manifest_sha256(d.pop("manifest_sha256", UNSET))
+
+        def _parse_manifest_content_base64(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        manifest_content_base64 = _parse_manifest_content_base64(d.pop("manifest_content_base64", UNSET))
+
+        def _parse_vector_observation(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        vector_observation = _parse_vector_observation(d.pop("vector_observation", UNSET))
+
+        def _parse_counts(data: object) -> KnowledgeImportResponseCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                counts_type_0 = KnowledgeImportResponseCountsType0.from_dict(data)
+
+                return counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(KnowledgeImportResponseCountsType0 | None | Unset, data)
+
+        counts = _parse_counts(d.pop("counts", UNSET))
+
+        def _parse_items(data: object) -> list[KnowledgeImportResponseItemsType0Item] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                items_type_0 = []
+                _items_type_0 = data
+                for items_type_0_item_data in _items_type_0:
+                    items_type_0_item = KnowledgeImportResponseItemsType0Item.from_dict(items_type_0_item_data)
+
+                    items_type_0.append(items_type_0_item)
+
+                return items_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[KnowledgeImportResponseItemsType0Item] | None | Unset, data)
+
+        items = _parse_items(d.pop("items", UNSET))
+
+        def _parse_mappings(data: object) -> list[KnowledgeImportResponseMappingsType0Item] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                mappings_type_0 = []
+                _mappings_type_0 = data
+                for mappings_type_0_item_data in _mappings_type_0:
+                    mappings_type_0_item = KnowledgeImportResponseMappingsType0Item.from_dict(mappings_type_0_item_data)
+
+                    mappings_type_0.append(mappings_type_0_item)
+
+                return mappings_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[KnowledgeImportResponseMappingsType0Item] | None | Unset, data)
+
+        mappings = _parse_mappings(d.pop("mappings", UNSET))
+
+        def _parse_identities(data: object) -> list[KnowledgeImportResponseIdentitiesType0Item] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                identities_type_0 = []
+                _identities_type_0 = data
+                for identities_type_0_item_data in _identities_type_0:
+                    identities_type_0_item = KnowledgeImportResponseIdentitiesType0Item.from_dict(
+                        identities_type_0_item_data
+                    )
+
+                    identities_type_0.append(identities_type_0_item)
+
+                return identities_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[KnowledgeImportResponseIdentitiesType0Item] | None | Unset, data)
+
+        identities = _parse_identities(d.pop("identities", UNSET))
+
+        def _parse_run_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        run_id = _parse_run_id(d.pop("run_id", UNSET))
+
+        def _parse_state(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        state = _parse_state(d.pop("state", UNSET))
+
         knowledge_import_response = cls(
+            success=success,
+            outcome=outcome,
+            record_id=record_id,
+            replay=replay,
+            content_sha256=content_sha256,
+            revision_id=revision_id,
             source_installation_id=source_installation_id,
             snapshot_id=snapshot_id,
             snapshot_timestamp=snapshot_timestamp,
@@ -242,12 +450,8 @@ class KnowledgeImportResponse:
             items=items,
             mappings=mappings,
             identities=identities,
-            success=success,
-            outcome=outcome,
-            record_id=record_id,
-            replay=replay,
-            content_sha256=content_sha256,
-            revision_id=revision_id,
+            run_id=run_id,
+            state=state,
         )
 
         knowledge_import_response.additional_properties = d

@@ -87,3 +87,28 @@ async def test_metadata_create_all_installs_functions_before_payload_checks(db):
         )
         await conn.run_sync(lambda sync: run_migration(sync, "upgrade"))
         assert await conn.scalar(select(record_installation.c.installation_id))
+
+
+async def test_restore_validator_migration_pins_helpers_with_empty_search_path(db):
+    from sqlalchemy import text
+    from tests.record_helpers import snapshot
+    import json
+
+    repair = importlib.import_module("migrations.versions.a00000000061_record_validator_restore")
+    async with db.immediate() as conn:
+        await conn.exec_driver_sql("ALTER FUNCTION knowledge_snapshot_valid_v1(jsonb) "
+                                   "RESET search_path")
+        def upgrade(sync):
+            with Operations.context(MigrationContext.configure(sync)):
+                repair.upgrade()
+                repair.upgrade()
+        await conn.run_sync(upgrade)
+        await conn.exec_driver_sql("SET LOCAL search_path = ''")
+        assert await conn.scalar(text("SELECT public.knowledge_snapshot_valid_v1(CAST(:v AS jsonb))"),
+                                 {"v": json.dumps(snapshot())})
+        invalid = snapshot()
+        invalid["metadata"] = {"invalid": "key"}
+        assert not await conn.scalar(
+            text("SELECT public.knowledge_snapshot_valid_v1(CAST(:v AS jsonb))"),
+            {"v": json.dumps(invalid)},
+        )

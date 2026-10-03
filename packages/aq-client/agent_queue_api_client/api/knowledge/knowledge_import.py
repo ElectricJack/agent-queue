@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.knowledge_import_request import KnowledgeImportRequest
+from ...models.knowledge_import_args import KnowledgeImportArgs
 from ...models.knowledge_import_response import KnowledgeImportResponse
 from ...models.knowledge_import_response_422 import KnowledgeImportResponse422
 from ...types import Response
@@ -13,7 +13,7 @@ from ...types import Response
 
 def _get_kwargs(
     *,
-    body: KnowledgeImportRequest,
+    body: KnowledgeImportArgs,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -63,16 +63,16 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: KnowledgeImportRequest,
+    body: KnowledgeImportArgs,
 ) -> Response[KnowledgeImportResponse | KnowledgeImportResponse422]:
-    """Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+    """Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
-     Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+     Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
     Args:
-        body (KnowledgeImportRequest):
+        body (KnowledgeImportArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -96,16 +96,16 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: KnowledgeImportRequest,
+    body: KnowledgeImportArgs,
 ) -> KnowledgeImportResponse | KnowledgeImportResponse422 | None:
-    """Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+    """Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
-     Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+     Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
     Args:
-        body (KnowledgeImportRequest):
+        body (KnowledgeImportArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -124,16 +124,16 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: KnowledgeImportRequest,
+    body: KnowledgeImportArgs,
 ) -> Response[KnowledgeImportResponse | KnowledgeImportResponse422]:
-    """Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+    """Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
-     Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+     Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
     Args:
-        body (KnowledgeImportRequest):
+        body (KnowledgeImportArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -155,16 +155,16 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: KnowledgeImportRequest,
+    body: KnowledgeImportArgs,
 ) -> KnowledgeImportResponse | KnowledgeImportResponse422 | None:
-    """Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+    """Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
-     Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or
-    written.
+     Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit
+    sealed selection.
 
     Args:
-        body (KnowledgeImportRequest):
+        body (KnowledgeImportArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
