@@ -34,15 +34,19 @@ def integration() -> None:
 @integration.command("engine-transfer")
 @click.argument("repository_id")
 @click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--parent-task-id", default=None,
+              help="Transfer this parent instead of repository roots.")
 @click.option("--expected-subject", "expected_subjects", multiple=True,
-              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every root subject.")
+              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every selected subject.")
 @click.option("--reason", default="", help="Required explanation when applying the transfer.")
 @click.option("--evidence", multiple=True, help="Shadow, scenario and operator approval references.")
 @click.option("--apply", is_flag=True, help="Apply the exact previewed versions; default is preview.")
 @click.pass_context
 @_handle_errors
-def integration_engine_transfer(ctx, repository_id, engine, expected_subjects, reason, evidence, apply):
-    """Preview or transfer exclusive root publisher ownership for REPOSITORY_ID."""
+def integration_engine_transfer(
+    ctx, repository_id, engine, parent_task_id, expected_subjects, reason, evidence, apply,
+):
+    """Preview or transfer exclusive integration ownership for REPOSITORY_ID."""
     versions = {}
     for item in expected_subjects:
         try:
@@ -58,6 +62,7 @@ def integration_engine_transfer(ctx, repository_id, engine, expected_subjects, r
     _execute(ctx, "integration_engine_transfer", {
         "repository_id": repository_id, "engine": engine, "expected_versions": versions,
         "reason": reason, "evidence": list(evidence), "dry_run": not apply,
+        **({"parent_task_id": parent_task_id} if parent_task_id else {}),
     })
 
 

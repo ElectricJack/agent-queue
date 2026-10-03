@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:cfcf6888fac5ee21857ad05352810ac382584bdd1a54184c70dac00780d73ec2` |
+| Contract fingerprint | `sha256:97715b304c4516b6363522691728aa95ea21abd86b44bc70c969e5c47c3f1124` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `parent_task_id` | `string \| null` | no | `null` | — |
 | `repository_id` | `string` | yes | — | — |
 | `engine` | `"legacy" \| "reconciler"` | yes | — | — |
 | `expected_versions` | `object` | no | — | — |

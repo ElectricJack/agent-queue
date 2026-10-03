@@ -368,6 +368,7 @@ areas:
       - tests/test_integration_records_and_gates.py
       - tests/test_integration_observe.py
       - tests/test_integration_parent_subjects.py
+      - tests/test_integration_parent_reconciler.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_root_adapters.py
       - tests/test_integration_mode.py

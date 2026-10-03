@@ -570,6 +570,7 @@
         "tests/test_integration_mode.py",
         "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_parent_reconciler.py",
         "tests/test_integration_parent_subjects.py",
         "tests/test_integration_reconciler.py",
         "tests/test_integration_records_and_gates.py",
@@ -1331,7 +1332,7 @@
       ]
     }
   },
-  "digest": "sha256:7fef2ae4cde264b3428dd352da0962822abfe7d2b9d5b6496d9ab8a3408af1e0",
+  "digest": "sha256:08bc93e39212430a14a390f8adb18e6f0fdbf9ea212ed2c5148b5306b26a1d4b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7582,6 +7583,38 @@
         "parametrize"
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
+    },
+    "tests/test_integration_parent_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.gate_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.integration.child_delivery",
+        "src.integration.collection",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.parent_adapters",
+        "src.integration.parent_engine",
+        "src.integration.parent_runtime",
+        "src.integration.parent_subjects",
+        "src.integration.repair",
+        "src.integration.subjects",
+        "src.integration.writers",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
     },
     "tests/test_integration_parent_subjects.py": {
       "areas": [

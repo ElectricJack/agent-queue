@@ -19,6 +19,7 @@ from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.parent_engine import parent_engine_guard
 from src.models import TaskStatus
 
 
@@ -55,6 +56,23 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_parent_action(self, args: dict) -> dict:
+        """Internal visit dispatch: process-bound engine scope is the authority."""
+        from src.integration.parent_engine import active_parent_scope
+        from src.integration.subjects import Subject
+
+        row = await self.db.get_integration_subject(args.get("subject_id"))
+        if row is None or row["version"] != args.get("expected_version"):
+            return _failure("stale", "parent subject version changed")
+        subject = Subject.from_row(row)
+        if not active_parent_scope(self.db, subject.task_id):
+            return _failure("unauthorized", "parent action needs the active visit exclusion")
+        runtime = getattr(self.orchestrator, "parent_subject_runtime", None)
+        if runtime is None:
+            return _failure("unavailable", "parent runtime unavailable")
+        value = await runtime.adapters.perform(self, subject, args["request"])
+        return {"success": not value.is_unknown, "value": value.model_dump(mode="json")}
+
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -74,12 +92,17 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", error)
         if (not request.dry_run and request.engine == "reconciler"
             and not self.config.integration.reconciler_active):
-            return _failure("refused", "enable the active loop before transferring roots")
+            return _failure("refused", "enable the active loop before transferring subjects")
         try:
-            result = await RootEngineOwnership(self.db).transfer(
+            from src.integration.parent_engine import ParentEngineOwnership
+            owner = (ParentEngineOwnership(self.db) if request.parent_task_id
+                     else RootEngineOwnership(self.db))
+            parent_args = {"task_id": request.parent_task_id} if request.parent_task_id else {}
+            result = await owner.transfer(
                 request.repository_id, engine=SubjectEngine(request.engine),
                 expected_versions=request.expected_versions, reason=request.reason,
                 evidence=request.evidence, operator_id=operator, dry_run=request.dry_run,
+                **parent_args,
             )
         except (EngineRefused, BranchBusy, StaleFence) as exc:
             return _failure("refused", str(exc))
@@ -399,6 +422,7 @@ class IntegrationCommandsMixin:
             return await self._integration_collector_matches_target(owner_id, target, project_id)
         return False
 
+    @parent_engine_guard("command_target", outcome="human_required")
     async def _cmd_integration_transfer_owner(self, args: dict) -> dict:
         """Fence out one branch writer only after a proven server-side handoff."""
         from pydantic import ValidationError
@@ -1312,9 +1336,13 @@ class IntegrationCommandsMixin:
         except ValidationError as exc:
             return _failure("invalid", f"invalid collection reopen request: {exc}")
         task = await self.db.get_task(request.task_id)
-        principal, refusal = await integration_operator(
-            self.db, task.project_id if task is not None else None
-        )
+        from src.integration.parent_engine import active_parent_scope
+        if task is not None and active_parent_scope(self.db, task.id):
+            principal, refusal = "policy:parent-reconciler", None
+        else:
+            principal, refusal = await integration_operator(
+                self.db, task.project_id if task is not None else None
+            )
         if refusal is not None:
             return _failure("unauthorized", refusal)
         repair = self._integration_repair_service()
@@ -2107,6 +2135,8 @@ class IntegrationCommandsMixin:
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
             git_manager=self.orchestrator.git,
+            subject_policy_loader=getattr(self.orchestrator, "_load_playbook_artifact", None)
+            if getattr(self.orchestrator, "parent_subject_runtime", None) is not None else None,
         )
 
     def _integration_repair_service(self):

@@ -25,6 +25,7 @@ from sqlalchemy import select, update
 
 from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.tables import (
+    integration_repair_operations,
     archived_tasks,
     integration_branch_owners,
     integration_candidate_ref_mutations,
@@ -575,6 +576,13 @@ class WriterPrimitives:
                     # unlike an old writer's reservation. Transfer it only
                     # after checking it has no process or workspace holder.
                     domain_ids = {current.id, current.task_id, current.batch_id} - {None}
+                    if current.parent_episode_id:
+                        operation_id = await conn.scalar(select(integration_repair_operations.c.id).where(
+                            integration_repair_operations.c.parent_task_id == current.task_id,
+                            integration_repair_operations.c.episode_id == current.parent_episode_id,
+                        ))
+                        if operation_id:
+                            domain_ids.add(operation_id)
                     transfer = (
                         owner["owner_id"] in domain_ids
                         and owner["handoff_state"] == "reserved"

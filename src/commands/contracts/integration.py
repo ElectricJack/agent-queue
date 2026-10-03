@@ -3280,6 +3280,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             registry.register(CommandRegistration(contract.name, contract, adapter))
 
 class IntegrationEngineTransferArgs(CommandArgs):
+    parent_task_id: str | None = Field(default=None, min_length=1)
     repository_id: str = Field(min_length=1)
     engine: Literal["legacy", "reconciler"]
     expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
