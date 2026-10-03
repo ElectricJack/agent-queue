@@ -55,6 +55,11 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "reconcile_collaborations",  # daemon-only expiry and retention
     "job_reconcile",
     "job_submit_integration",
+    # Internal parent-reconciler visit dispatch.  The handler admits a call only
+    # inside the visit's process-bound engine scope and at the exact subject
+    # version its committed decision was taken at, which no MCP client can
+    # establish.  Only ``ParentSubjectAdapters`` dispatches it.
+    "integration_parent_action",
 
     "shutdown",
     "restart_daemon",

@@ -725,6 +725,30 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "work_dir": {"type": "string", "description": "Work-dir override"},
         },
     },
+    # -- parent reconciler visit dispatch ----------------------------------
+    # Only ``ParentSubjectAdapters`` may call this: the handler refuses
+    # without the visit's process-bound engine scope, so no external caller
+    # can satisfy it.  It is excluded from MCP for that reason, and excluded
+    # from the LLM allowlists upstream; the schema still exists because the
+    # auto-discovered CLI and API router reach the same handler.
+    "integration_parent_action": {
+        "type": "object",
+        "properties": {
+            "subject_id": {
+                "type": "string",
+                "description": "Parent subject the visit acts for",
+            },
+            "expected_version": {
+                "type": "integer",
+                "description": "Subject version the committed decision was taken at",
+            },
+            "request": {
+                "type": "object",
+                "description": "Committed primitive request, verbatim",
+            },
+        },
+        "required": ["subject_id", "expected_version", "request"],
+    },
 }
 
 
