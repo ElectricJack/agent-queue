@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+177 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -167,10 +167,14 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
+| [`knowledge_cite`](knowledge_cite.md) | Knowledge Cite | Record an exact revision explicitly read or attached by this execution. |
+| [`knowledge_context_deliver`](knowledge_context_deliver.md) | Knowledge Context Deliver | Acknowledge observed transport delivery of a prepared bundle. |
 | [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
 | [`knowledge_create_task`](knowledge_create_task.md) | Knowledge Create Task | File one ordinary task with an exact motivated_by knowledge link. |
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
 | [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
+| [`knowledge_generation_status`](knowledge_generation_status.md) | Knowledge Generation Status | Inspect independent generation budgets, circuits and ambiguous calls without provider access. |
+| [`knowledge_generation_tick`](knowledge_generation_tick.md) | Knowledge Generation Tick | Reconcile retained inputs and run bounded, explicitly enabled proposal generation. |
 | [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |
 | [`knowledge_import`](knowledge_import.md) | Knowledge Import | Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection. |
 | [`knowledge_list`](knowledge_list.md) | Knowledge List | List authorized knowledge metadata with a page cursor. |
