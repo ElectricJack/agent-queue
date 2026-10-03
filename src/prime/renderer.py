@@ -161,6 +161,10 @@ class PrimeRenderer:
                 if getattr(sess, "state", None) in live_states
                 else None,
                 registry=self.harness_registry,
+                # The task's project, which is the scope the session was
+                # launched from -- a project harness file shadows the system
+                # one (``orchestrator/execution.py``).
+                project_id=task.project_id,
                 config=self.config, session=sess, observation=observation,
             ),
             _sections.build_completion_protocol_section(

@@ -430,6 +430,17 @@ question store apply to every harness whose `command` is named `opencode`
 the CLI (`npx opencode`) is not recognised, so point `command` at the binary
 or a shim named after it.
 
+That resolution is project-scoped, because the launch is: a session is started
+from `vault/projects/<pid>/harnesses/<name>.md` when that file exists. So when
+a project shadows a harness id with a different `command`, the addendum and the
+question store follow the executable *for that project only* — every other
+project on the same id keeps the system file's behaviour.
+
+One id never moves: the CLI's own name. `runs_cli` answers on the id match
+before it consults the registry, so a project file shadowing `opencode` itself
+keeps OpenCode's addendum and store. Renaming the id is a project's only way
+to opt out.
+
 The routing policy names harnesses, so a new harness id reaches work only
 through a lane or as a general candidate. A narrow lane is the only way to keep
 it to narrow work: a harness that no narrow lane names is a general candidate
