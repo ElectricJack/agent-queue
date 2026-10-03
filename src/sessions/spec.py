@@ -27,6 +27,7 @@ however long the prompt is.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -539,6 +540,11 @@ class SessionSpecBuilder:
             # policy deliberately withholds hook trust (notably supervisors
             # running in the vault). Existing user hooks remain untouched.
             hook_files = []
+        # Worker-lifecycle (task/pool) Claude sessions only: supervisors and
+        # named sessions never see the overrides, and the empty-map default
+        # leaves the hook file byte-identical to the shipped template.
+        if lifecycle in _WORKER_LIFECYCLES and hook_files:
+            hook_files = self._apply_claude_plugin_overrides(hook_files, harness)
         prompt = None if harness.prompt_mode == "none" else bootstrap
         argv = self._compose_argv(
             harness=harness,
@@ -552,6 +558,7 @@ class SessionSpecBuilder:
             hook_files=hook_files,
             task_intelligence_class=task_intelligence_class,
             class_config=class_config,
+            worker_context=lifecycle in _WORKER_LIFECYCLES,
         )
 
         files.extend(hook_files)
@@ -571,6 +578,15 @@ class SessionSpecBuilder:
             launch_env.update(git_identity.env())
         if lifecycle in _WORKER_LIFECYCLES:
             harness_env = getattr(harness, "env_map", None) or {}
+            from src.sessions.context import compact_tokens
+
+            limit = compact_tokens(self.config)
+            key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+            if _is_claude_cli(harness) and (limit or key in harness_env):
+                # This is configuration, never inherited session identity.
+                # build_session_env filters CLAUDE_CODE_* from harness input;
+                # the builder explicitly supplies this one supported setting.
+                launch_env.setdefault(key, str(harness_env.get(key, limit)))
             for key, value in WORKER_TOOL_ENV.items():
                 if key not in harness_env:
                     launch_env.setdefault(key, value)
@@ -665,6 +681,7 @@ class SessionSpecBuilder:
         hook_files: list[tuple[str, str]] | None = None,
         task_intelligence_class: str | None = None,
         class_config: dict | None = None,
+        worker_context: bool = False,
     ) -> list[str]:
         if class_config is None:
             class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
@@ -678,6 +695,10 @@ class SessionSpecBuilder:
             argv.append(resume_key)
 
         argv.extend(harness.args)
+        if worker_context and _is_codex_cli(harness):
+            from src.sessions.context import codex_compact_override
+
+            argv.extend(codex_compact_override(harness.args, self.config))
 
         # These profile switches are explicit opt-ins for one concrete CLI.
         # Raw harness args remain a supported escape hatch; when they already
@@ -1013,6 +1034,40 @@ class SessionSpecBuilder:
                     template,
                     src,
                 )
+        return out
+
+    def _apply_claude_plugin_overrides(
+        self, hook_files: list[tuple[str, str]], harness: Harness
+    ) -> list[tuple[str, str]]:
+        """Fold worker plugin overrides into the rendered Claude hook file.
+
+        ``sessions.worker_claude_plugin_overrides`` is merged as
+        ``enabledPlugins`` into ``.aq/hooks/claude.json`` — the one hook file
+        a Claude CLI session actually reads — so an operator can disable a
+        per-worker plugin without touching ``~/.claude/settings.json``.  The
+        empty-map default returns *hook_files* untouched, so the file stays
+        byte-identical to the shipped template; only a configured, non-empty
+        map is re-serialized.
+        """
+        if not _is_claude_cli(harness):
+            return hook_files
+        overrides = (getattr(self.config, "sessions", None) or None)
+        overrides = getattr(overrides, "worker_claude_plugin_overrides", None) or {}
+        if not overrides:
+            return hook_files
+        logger.info(
+            "Worker plugin overrides applied to %s: %s (audit: rendered claude.json carries this set)",
+            harness.id,
+            json.dumps(dict(overrides), sort_keys=True),
+        )
+        out: list[tuple[str, str]] = []
+        for dest, content in hook_files:
+            if not dest.endswith("claude.json"):
+                out.append((dest, content))
+                continue
+            payload = json.loads(content)
+            payload["enabledPlugins"] = dict(overrides)
+            out.append((dest, json.dumps(payload, indent=2) + "\n"))
         return out
 
     def _default_api_url(self) -> str:

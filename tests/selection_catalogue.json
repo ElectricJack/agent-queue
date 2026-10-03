@@ -695,7 +695,8 @@
         "tests/test_metrics_host.py",
         "tests/test_metrics_perf.py",
         "tests/test_metrics_relay.py",
-        "tests/test_metrics_sampler.py"
+        "tests/test_metrics_sampler.py",
+        "tests/test_metrics_token_efficiency.py"
       ]
     },
     "migrations": {
@@ -1328,7 +1329,7 @@
       ]
     }
   },
-  "digest": "sha256:41c0804cbb690d734825c9d510131d1606a871b53e6b7fa5f3f87644fda17a6a",
+  "digest": "sha256:115a30b6397eecefab3cd0b6b80214fcf85449d26dec586cd7f4027330a6f6c0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2180,6 +2181,7 @@
         "src.commands.contracts",
         "src.commands.principal",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.doctor",
         "src.doctor.models",
@@ -2187,6 +2189,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator.core",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.sessions",
@@ -4206,9 +4209,11 @@
         "src.config",
         "src.config_editor",
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
         "src.routing.sources",
+        "src.sessions.transcripts.base",
         "src.tools"
       ],
       "markers": [
@@ -4566,8 +4571,10 @@
       "default_arm": true,
       "imports": [
         "src.api.scope",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
+        "src.prompt_builder",
         "src.vault"
       ],
       "markers": [],
@@ -6300,8 +6307,11 @@
         "src.api.scope",
         "src.commands.contracts",
         "src.commands.contracts.handoff",
+        "src.config",
         "src.handoffs",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context",
+        "src.sessions.transcripts.base"
       ],
       "markers": [
         "parametrize"
@@ -8270,13 +8280,16 @@
         "src.commands.contracts.job",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.handoffs",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context"
       ],
       "markers": [
         "parametrize"
@@ -8855,6 +8868,21 @@
         "parametrize"
       ],
       "summary": "The metrics sampler: one row per tick, honest roll-ups, real retention."
+    },
+    "tests/test_metrics_token_efficiency.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.metrics.token_efficiency",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Read-only token-efficiency report: corrected accounting, attribution, halts, export."
     },
     "tests/test_mid_chain_rebase.py": {
       "areas": [
@@ -12115,8 +12143,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.routing.context",
         "src.routing.planner",
-        "src.routing.policy"
+        "src.routing.policy",
+        "src.routing.replay"
       ],
       "markers": [
         "parametrize"
@@ -12141,9 +12171,13 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
         "src.playbooks.invocation",
+        "src.providers",
+        "src.providers.availability",
+        "src.routing.planner",
         "src.routing.sources",
         "src.sessions.harness_parser"
       ],
@@ -12702,6 +12736,7 @@
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
+        "src.config",
         "src.intelligence_classes",
         "src.models",
         "src.sessions",
@@ -14109,6 +14144,7 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -14166,10 +14202,12 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
-        "src.sessions.transcripts.codex"
+        "src.sessions.transcripts.codex",
+        "src.sessions.transcripts.reconciliation"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Transcript reader tests (S3, Task B1)."
     },

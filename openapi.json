@@ -18211,8 +18211,8 @@
         "tags": [
           "wait"
         ],
-        "summary": "Read a durable wait and its bounded result pointer.",
-        "description": "Read a durable wait and its bounded result pointer.",
+        "summary": "Read a durable wait, optionally consuming its result notification.",
+        "description": "Read a durable wait, optionally consuming its result notification.",
         "operationId": "wait_get",
         "requestBody": {
           "content": {
@@ -64273,6 +64273,24 @@
           "wait_id": {
             "type": "string",
             "title": "Wait Id",
+            "description": ""
+          },
+          "consume": {
+            "type": "boolean",
+            "title": "Consume",
+            "description": "",
+            "default": false
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
             "description": ""
           },
           "project_id": {

@@ -1047,6 +1047,25 @@ token_ledger = Table(
     Index("idx_token_ledger_timestamp", "timestamp"),
     Index("idx_token_ledger_task_attempt", "task_id", "attempt_id"),
     Index("uq_token_ledger_call", "session_id", "call_id", unique=True),
+    Index("idx_token_ledger_call_id", "call_id"),
+)
+
+transcript_usage_calls = Table(
+    "transcript_usage_calls",
+    metadata,
+    Column("usage_key", Text, primary_key=True),
+    # Original attribution and evidence survive task/session archival.
+    Column("first_ledger_id", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=False),
+    Column("output_tokens", Integer, nullable=False),
+    Column("cache_read_tokens", Integer, nullable=False),
+    Column("cache_write_tokens", Integer, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "input_tokens >= 0 AND output_tokens >= 0 "
+        "AND cache_read_tokens >= 0 AND cache_write_tokens >= 0",
+        name="ck_transcript_usage_calls_nonnegative",
+    ),
 )
 
 benchmark_stage_spans = Table(

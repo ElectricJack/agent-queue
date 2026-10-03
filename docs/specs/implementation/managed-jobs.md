@@ -84,6 +84,26 @@ actual failure/cancellation/lost outcomes and point to `aq job result ID`.
 Installed worker templates need the usual grants reseed; see the
 [wait guide](../../guides/agent-waits.md). No schema revision is needed in phase 3.
 
+### Consuming completion notifications
+
+`aq wait show ID --consume --json` reads a terminal result and consumes only
+its deterministic `wait:ID:result` notification in the same transaction. Plain
+reads remain side-effect free. Consumption requires a live authenticated owner;
+pool callers supply their current claim epoch. A new holder may consume the same
+task's historical result, without renewing its old wait or inactivity exemption.
+Active waits are never consumed. Replays preserve the original result, version,
+resolution and delivery stamps. If outbox insertion previously failed, consumption
+repairs that intent before marking delivery; failure leaves it available for retry.
+No producer, unrelated feedback, or task status changes as a result of consumption.
+
+Registration and result reads return state-specific next steps: active owners end
+their turn, expired owners inspect the producer once and decide what to do with
+the still-running work, and terminal owners inspect the actual outcome. An expired
+wait is never evidence of producer success or permission to submit a replacement.
+Prime renders a bounded recent wait history independently of message delivery,
+including after session/claim turnover and when messaging is disabled. Existing
+resume/compaction hooks recover these pointers; per-prompt polling hooks remain absent.
+
 Terminal result delivery consumes at most 100 pending `job_outbox` intents per
 service tick, including with new job admission disabled. A task's matching active
 or satisfied job wait owns its wake, even if its result message is still pending;

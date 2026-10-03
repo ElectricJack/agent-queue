@@ -16,12 +16,16 @@ class WaitGetRequest:
     """
     Attributes:
         wait_id (str):
+        consume (bool | Unset):  Default: False.
+        claim_epoch (int | None | Unset):
         project_id (None | str | Unset):
         task_id (None | str | Unset):
         session_id (None | str | Unset):
     """
 
     wait_id: str
+    consume: bool | Unset = False
+    claim_epoch: int | None | Unset = UNSET
     project_id: None | str | Unset = UNSET
     task_id: None | str | Unset = UNSET
     session_id: None | str | Unset = UNSET
@@ -29,6 +33,14 @@ class WaitGetRequest:
 
     def to_dict(self) -> dict[str, Any]:
         wait_id = self.wait_id
+
+        consume = self.consume
+
+        claim_epoch: int | None | Unset
+        if isinstance(self.claim_epoch, Unset):
+            claim_epoch = UNSET
+        else:
+            claim_epoch = self.claim_epoch
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -55,6 +67,10 @@ class WaitGetRequest:
                 "wait_id": wait_id,
             }
         )
+        if consume is not UNSET:
+            field_dict["consume"] = consume
+        if claim_epoch is not UNSET:
+            field_dict["claim_epoch"] = claim_epoch
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if task_id is not UNSET:
@@ -68,6 +84,17 @@ class WaitGetRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         wait_id = d.pop("wait_id")
+
+        consume = d.pop("consume", UNSET)
+
+        def _parse_claim_epoch(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -98,6 +125,8 @@ class WaitGetRequest:
 
         wait_get_request = cls(
             wait_id=wait_id,
+            consume=consume,
+            claim_epoch=claim_epoch,
             project_id=project_id,
             task_id=task_id,
             session_id=session_id,

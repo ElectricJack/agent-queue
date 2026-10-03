@@ -431,15 +431,6 @@ class SurfaceCommandsMixin:
 
         auto = validated.auto
         note = agent_note(validated.model_dump())
-        if auto and not meaningful(note):
-            return {
-                "success": True,
-                "handoff_id": None,
-                "restart_requested": False,
-                "created": False,
-                "noop": True,
-            }
-
         # A bearer session's identity always comes from daemon scope.
         session_id = scope.get("session_id") or validated.session_id
         session = await self.db.get_session(session_id) if session_id else None

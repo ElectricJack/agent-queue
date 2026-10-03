@@ -8,6 +8,24 @@ from pydantic import ValidationError
 from src.agent_waits import ProducerObservation, WaitError, deadline_for, resolve_wait, typed_match
 
 
+@pytest.mark.parametrize("kind,match,command", [
+    ("job", {"job_id": "validation"}, "aq job show validation --json"),
+    ("task", {"task_id": "review"}, "aq task show review --json"),
+    ("message", {"thread_id": "reply", "after_seq": 1}, "recipient and thread cursor"),
+    ("timer", {"due_at": 50}, "timer due instant"),
+])
+def test_expiry_returns_an_action_without_repeating_work(kind, match, command):
+    from src.agent_waits import wait_next_step
+
+    result = wait_next_step(dict(
+        id="w", owner_kind="task", kind=kind, match=match, state="expired",
+        digest={"reason": "deadline_expired"},
+    ))
+    assert command in result and "once" in result
+    assert "producer was not cancelled" in result
+    assert "Do not infer success" in result and "submit replacement work" in result
+
+
 @pytest.mark.parametrize(
     "completed,now,state",
     [
