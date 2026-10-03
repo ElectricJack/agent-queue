@@ -786,7 +786,10 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         if args.get("control_only"):
             return await self._integration_control_service().status(project_id, control_only=True)
-        return await self._integration_status_subjects(
+        from src.commands.integration_surface_commands import attach_status_subjects
+
+        return await attach_status_subjects(
+            self.db,
             await self._integration_control_service().status(project_id),
             project_id,
             args.get("subject_id") or None,
@@ -1007,7 +1010,9 @@ class IntegrationCommandsMixin:
         if not authorized:
             return _failure("unauthorized", "integration flush is outside the caller authority")
         # §5.1: flush is "every live reconciler subject of the project is due now".
-        await self._wake_project_integration_subjects(project_id)
+        from src.commands.integration_surface_commands import wake_project_subjects
+
+        await wake_project_subjects(self.db, project_id)
         project = await self.db.get_project(project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
             return await self._development_integration().sweep(project_id)

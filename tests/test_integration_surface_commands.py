@@ -15,7 +15,9 @@ from sqlalchemy import insert, update
 
 from src.commands.integration_surface_commands import (
     IntegrationSurfaceCommandsMixin,
+    attach_status_subjects,
     integration_gate_subject,
+    wake_project_subjects,
 )
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import integration_subjects, playbook_artifacts
@@ -39,7 +41,6 @@ from src.integration.subjects import (
 from src.models import Project, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
 
-NOW = time.time()
 HEAD = "a" * 40
 BASE = "b" * 40
 PIN = PolicyArtifactPin(playbook_id="surface-test", artifact_sha256="sha256:" + "1" * 64)
@@ -62,6 +63,9 @@ class Handler(IntegrationSurfaceCommandsMixin):
 
 def _subject(subject_id: str, *, kind=SubjectKind.SOURCE, task_id="t1", project_id="p",
              schedule=None, phase=SubjectPhase.BUILDING) -> dict:
+    # Read the clock here, not at import: xdist imports every module when a
+    # worker starts, minutes before this one runs.
+    now = time.time()
     parts = ("request-" + subject_id,) if kind is SubjectKind.ROOT_BATCH else (task_id, 0)
     subject = Subject(
         id=subject_id,
@@ -76,9 +80,9 @@ def _subject(subject_id: str, *, kind=SubjectKind.SOURCE, task_id="t1", project_
         head_sha=HEAD,
         base_sha=BASE,
         generation=0,
-        schedule=schedule or SubjectSchedule.progress(now=NOW + 300, max_wait_seconds=600),
-        created_at=NOW,
-        updated_at=NOW,
+        schedule=schedule or SubjectSchedule.progress(now=now + 300, max_wait_seconds=600),
+        created_at=now,
+        updated_at=now,
     )
     row = subject.to_row()
     for column in ("last_journal_seq", "version", "wake_requested_at", "last_visit_at"):
@@ -94,7 +98,7 @@ async def db(reuse_database):
     for task_id, project_id in (("t1", "p"), ("t2", "p"), ("t9", "other")):
         await database.create_task(Task(
             id=task_id, project_id=project_id, title=task_id, description=task_id,
-            status=TaskStatus.COMPLETED, created_at=NOW, updated_at=NOW,
+            status=TaskStatus.COMPLETED, created_at=time.time(), updated_at=time.time(),
         ))
     async with database._engine.begin() as conn:
         await conn.execute(
@@ -134,9 +138,8 @@ async def test_listing_filters_by_task_and_root(db):
 
 
 async def test_flush_makes_only_its_projects_subjects_due(db):
-    handler = Handler(db)
     before = time.time()
-    assert await handler._wake_project_integration_subjects("p") == 2
+    assert await wake_project_subjects(db, "p") == 2
     assert _due(await db.get_integration_subject("source-1")) <= time.time()
     assert _due(await db.get_integration_subject("root-1")) >= before - 1
     assert _due(await db.get_integration_subject("source-9")) > time.time() + 200
@@ -207,7 +210,7 @@ async def test_explain_shows_the_latest_decisions_newest_first(db):
             "primitive": "wait",
             "facts_digest": "sha256:" + "e" * 64,
             "payload": {"visit": seq},
-            "recorded_at": NOW + seq,
+            "recorded_at": time.time() + seq,
         })
     handler = Handler(db)
     explained = await handler._cmd_integration_explain({"target": "t1", "limit": 2})
@@ -225,14 +228,13 @@ async def test_explain_shows_the_latest_decisions_newest_first(db):
 
 
 async def test_status_attaches_the_subject_view(db):
-    handler = Handler(db)
     base = {"success": True, "outcome": "ok", "project_id": "p"}
-    result = await handler._integration_status_subjects(dict(base), "p", None)
+    result = await attach_status_subjects(db, dict(base), "p", None)
     assert sorted(view["id"] for view in result["subjects"]) == ["root-1", "source-1"]
     assert all(view["overdue_seconds"] == 0.0 for view in result["subjects"])
-    one = await handler._integration_status_subjects(dict(base), "p", "source-1")
+    one = await attach_status_subjects(db, dict(base), "p", "source-1")
     assert [view["id"] for view in one["subjects"]] == ["source-1"]
-    foreign = await handler._integration_status_subjects(dict(base), "p", "source-9")
+    foreign = await attach_status_subjects(db, dict(base), "p", "source-9")
     assert foreign["outcome"] == "not_found"
 
 
@@ -248,7 +250,7 @@ async def _root_adapter_gate(db) -> str:
     await db.ensure_integration_subject(
         _subject(
             "gated-1", task_id="t2",
-            schedule=SubjectSchedule.hold(now=NOW, gate_id=gate_id, max_wait_seconds=600),
+            schedule=SubjectSchedule.hold(now=time.time(), gate_id=gate_id, max_wait_seconds=600),
         )
     )
     return gate_id

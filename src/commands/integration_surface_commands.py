@@ -109,54 +109,62 @@ def subject_view(row: dict[str, Any], *, now: float) -> dict[str, Any]:
     return view
 
 
+async def integration_subject_views(
+    db, project_id: str, *, subject_ids: tuple[str, ...] = (), include_done: bool = False,
+) -> list[dict[str, Any]]:
+    """Each subject's view, with its open gate's question and choices."""
+    from src.integration.records import journal_entry_on
+
+    rows = await db.list_integration_subjects(
+        project_id=project_id, subject_ids=subject_ids, include_done=include_done,
+    )
+    now = time.time()
+    views = [subject_view(row, now=now) for row in rows]
+    gated = [view for view in views if view["gate_id"]]
+    if gated:
+        async with db._engine.connect() as conn:
+            for view in gated:
+                entry = await journal_entry_on(conn, view["id"], f"gate:{view['gate_id']}")
+                payload = (entry or {}).get("payload") or {}
+                request = payload.get("request") or {}
+                view["gate"] = {
+                    "gate_id": view["gate_id"],
+                    "question": request.get("question"),
+                    "choices": list(request.get("choices") or ()),
+                    "default_choice": request.get("default_choice"),
+                    "timeout_at": payload.get("timeout_at"),
+                    "opened_at": (entry or {}).get("recorded_at"),
+                }
+    return views
+
+
+async def attach_status_subjects(
+    db, result: dict[str, Any], project_id: str, subject_id: str | None
+) -> dict[str, Any]:
+    """Attach the observer's subject view to ``integration status``."""
+    if result.get("outcome") == "not_found":
+        return result
+    views = await integration_subject_views(
+        db, project_id, subject_ids=(subject_id,) if subject_id else (),
+        include_done=bool(subject_id),
+    )
+    if subject_id and not views:
+        return _failure("not_found", f"subject {subject_id} is not in project {project_id}")
+    return {**result, "subjects": views}
+
+
+async def wake_project_subjects(db, project_id: str) -> int:
+    """Make every live subject of *project_id* due now (§5.1 ``flush``)."""
+    return await db.wake_integration_subjects(now=time.time(), project_ids=[project_id])
+
+
+def gate_resolver(handler: Any):
+    """The orchestrator's resolve-and-emit hook, or ``None`` without one."""
+    return getattr(getattr(handler, "orchestrator", None), "_resolve_gate_and_emit", None)
+
+
 class IntegrationSurfaceCommandsMixin:
     """``gate answer``, ``policy activate``, ``hold``, ``explain`` and status subjects."""
-
-    async def _integration_subject_views(
-        self, project_id: str, *, subject_ids: tuple[str, ...] = (), include_done: bool = False,
-    ) -> list[dict[str, Any]]:
-        from src.integration.records import journal_entry_on
-
-        rows = await self.db.list_integration_subjects(
-            project_id=project_id, subject_ids=subject_ids, include_done=include_done,
-        )
-        now = time.time()
-        views = [subject_view(row, now=now) for row in rows]
-        gated = [view for view in views if view["gate_id"]]
-        if gated:
-            async with self.db._engine.connect() as conn:
-                for view in gated:
-                    entry = await journal_entry_on(conn, view["id"], f"gate:{view['gate_id']}")
-                    payload = (entry or {}).get("payload") or {}
-                    request = payload.get("request") or {}
-                    view["gate"] = {
-                        "gate_id": view["gate_id"],
-                        "question": request.get("question"),
-                        "choices": list(request.get("choices") or ()),
-                        "default_choice": request.get("default_choice"),
-                        "timeout_at": payload.get("timeout_at"),
-                        "opened_at": (entry or {}).get("recorded_at"),
-                    }
-        return views
-
-    async def _integration_status_subjects(
-        self, result: dict[str, Any], project_id: str, subject_id: str | None
-    ) -> dict[str, Any]:
-        """Attach the observer's subject view to ``integration status``."""
-        if result.get("outcome") == "not_found":
-            return result
-        views = await self._integration_subject_views(
-            project_id, subject_ids=(subject_id,) if subject_id else (),
-            include_done=bool(subject_id),
-        )
-        if subject_id and not views:
-            return _failure("not_found", f"subject {subject_id} is not in project {project_id}")
-        return {**result, "subjects": views}
-
-    async def _wake_project_integration_subjects(self, project_id: str) -> int:
-        return await self.db.wake_integration_subjects(
-            now=time.time(), project_ids=[project_id]
-        )
 
     async def _integration_scope_refusal(
         self, project_id: str, args: dict
@@ -169,10 +177,6 @@ class IntegrationSurfaceCommandsMixin:
         if refusal is not None:
             return None, _failure("unauthorized", refusal)
         return operator_id, None
-
-    def _integration_gate_resolver(self):
-        orchestrator = getattr(self, "orchestrator", None)
-        return getattr(orchestrator, "_resolve_gate_and_emit", None)
 
     async def _cmd_integration_gate_answer(self, args: dict) -> dict:
         gate_id = str(args.get("gate_id") or "")
@@ -204,7 +208,7 @@ class IntegrationSurfaceCommandsMixin:
             )
         outcome, reason = await answer_integration_gate(
             self.db, gate, row, choice=choice, answered_by=operator_id,
-            resolve=self._integration_gate_resolver(),
+            resolve=gate_resolver(self),
         )
         if outcome != "answered":
             reason = reason or outcome
@@ -353,7 +357,8 @@ class IntegrationSurfaceCommandsMixin:
         _operator, refusal = await self._integration_scope_refusal(project_id, args)
         if refusal is not None:
             return refusal
-        views = await self._integration_subject_views(
+        views = await integration_subject_views(
+            self.db,
             project_id, subject_ids=subject_ids, include_done=True
         )
         for view in views:

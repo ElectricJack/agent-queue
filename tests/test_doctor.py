@@ -80,6 +80,7 @@ class TestRegistry:
         from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
         from src.doctor.integration_checks import integration_checks
+        from src.doctor.integration_subject_checks import integration_subject_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
         from src.doctor.perf_checks import perf_checks
         from src.doctor.playbook_v2_checks import playbook_v2_checks
@@ -111,6 +112,7 @@ class TestRegistry:
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
+            | {c.id for c in integration_subject_checks()}
             | {c.id for c in git_checks()}
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}

@@ -212,6 +212,7 @@ class GateCommandsMixin:
 
         from src.commands.integration_surface_commands import (
             answer_integration_gate,
+            gate_resolver,
             integration_gate_subject,
         )
 
@@ -234,7 +235,7 @@ class GateCommandsMixin:
                 row,
                 choice=str(args.get("resolution") or ""),
                 answered_by="human:local-operator",
-                resolve=self.orchestrator._resolve_gate_and_emit,
+                resolve=gate_resolver(self),
             )
             return {
                 "success": outcome == "answered",
