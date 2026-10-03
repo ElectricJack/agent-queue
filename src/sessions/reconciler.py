@@ -3,20 +3,25 @@
 One ``tick()`` per orchestrator cycle (~5 s), zero LLM calls, deterministic.
 The daemon does not *drive* agents — it observes them and converges.
 
-``tick()`` runs six steps in a fixed order, each isolated so a failure in
+``tick()`` runs a fixed order of steps, each isolated so a failure in
 one does not skip the rest:
 
 1. **Refresh observation** — who is actually alive.
 2. **Drain-ack** — the explicit end of the completion protocol.
-3. **Exit classifier** — dead process, task still open → typed verdict.
-4. **Orphans** — the two ways row and task can disagree: a live session
+3. **Prepare timeout** — a pool claim stuck mid-preparation is released.
+4. **Exit classifier** — dead process, task still open → typed verdict.
+5. **Abandoned claim loop** — an idle worker that stopped claiming is
+   recycled, behind a compare-and-set.
+6. **Orphans** — the two ways row and task can disagree: a live session
    whose task is no longer open (kill it), and an open task whose session
    row is not live (release it).
-5. **Stall ladder** — alive but silent: nudge → restart → quarantine.  A
-   CLI parked on its usage-limit screen leaves as a ``RATE_LIMIT`` exit.
-6. **Named desired-state** — converge persistent sessions (start/sleep).
-7. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
-   primary defense.
+7. **Idle stop intent** — a session that has nothing left to do is
+   stopped after a bounded grace, so a harness that never exits on its own
+   still gives its pool slot and worktree back.
+8. **Stall ladder** — alive but silent: nudge → restart → quarantine.
+9. **Named desired-state** — converge persistent sessions (start/sleep).
+10. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
+    primary defense.
 
 The single most important rule in this module: **unknown is not dead.**  A
 ``PartialListError`` from a provider, or a failed secondary probe, defers
@@ -39,6 +44,8 @@ from src.models import SessionRecord, TaskStatus
 from src.pool_claims import (
     idle_pool_claim_loop_stalled,
     is_live_pool_claim_task_status,
+    pool_claim_budget_exhausted,
+    pool_claim_cap,
     pool_claim_loop_stall_seconds,
 )
 from src.sessions.context import harness_progress
@@ -223,6 +230,17 @@ class SessionReconciler:
         #: last announced, so the announcement repeats instead of either
         #: vanishing after one line or repeating every tick.
         self._stall_reports: dict[tuple[str, str], float] = {}
+        #: (session id, instance token) -> when its finished shape -- a
+        #: recorded stop intent, or a spent claim budget -- was first
+        #: observed.  The idle-stop grace runs from here, never from
+        #: ``last_activity``: tmux's ``window_activity`` advances on any
+        #: output, so an OpenCode pane at its final summary keeps that stamp
+        #: fresh and no pane-derived idle bound can ever fire on one.
+        #: Instance-token keyed, so a relaunched session starts its own
+        #: clock.  Cleared when the row leaves the live set or the shape
+        #: breaks; a daemon restart costs at most one more grace, which is
+        #: why ``sessions.stop_intent_pending`` exists.
+        self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
         self._deferred_prefixes: set[str] = set()
@@ -297,6 +315,7 @@ class SessionReconciler:
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
+            self._step_idle_stop_intent,
             self._step_stall_ladder,
             self._step_named,
             self._step_backstop,
@@ -2196,6 +2215,180 @@ class SessionReconciler:
                 context="session_not_live",
                 error=f"session {row.id} is {row.state}; task has no live session",
             )
+
+    # -- idle stop intent --------------------------------------------------
+
+    def _idle_stop_grace(self) -> float:
+        """Seconds a finished session may keep its process before it is stopped."""
+        return max(0.0, float(getattr(self.sessions_config, "idle_stop_grace_seconds", 0) or 0))
+
+    async def _step_idle_stop_intent(
+        self, live: list[SessionRecord], now: float
+    ) -> None:
+        """Stop a finished session's process once a bounded grace expires.
+
+        The completion protocol asks an agent to *leave*: ``aq task close``
+        releases the claim with ``drain_after_release``, and a claim over a
+        spent budget answers ``session_exhausted``.  Both leave the durable
+        intent that the session is done -- ``desired_state='stopped'``, or a
+        claim budget nothing can extend -- and both say so in the worker
+        prompt's exit instruction.  A harness that honours it exits and
+        :meth:`_step_exits` classifies the death as it always did.
+
+        An OpenCode worker does not.  Its turn ends, the pane stays, and the
+        session keeps its pool slot, its agent and its worktree until someone
+        runs ``aq session kill`` by hand: on 2026-10-03 two verifiers sat in
+        exactly this state for 18 and 26 minutes after a passing and a failing
+        close.  The daemon does not drive agents, but it may enforce a stop
+        somebody already asked for.
+
+        **Why the clock is the observation, not the pane.**  tmux's
+        ``window_activity`` advances on *any* output, and an OpenCode TUI at
+        its final summary keeps painting, so ``sessions.last_activity`` --
+        which every other idle bound here reads -- never goes stale.  (That is
+        also why ``_step_abandoned_pool_claim_loop`` never saw these workers:
+        they counted as idle *supply*.)  So the grace runs from the first tick
+        this step *observed* the finished shape, keyed by the instance token
+        so a relaunched session starts its own clock.  A daemon restart costs
+        at most one more grace, and ``sessions.stop_intent_pending`` reports
+        anything that outlives several of them.
+
+        Every exemption the other idle steps honour is honoured here too: an
+        unlisted provider prefix, a task this daemon is still writing under
+        its control lock, and a pending agent question, which a
+        stopped-intent session can still be blocked on.  A durable wait needs
+        no separate gate: one can only be registered against a session still
+        holding its task ``running``, so the open-task shape below already
+        covers it.
+
+        The stop is the one ``aq session kill`` performs -- ``provider.stop``
+        behind the instance-token fence -- and the pool teardown is
+        ``_terminate_pool_session``, so the slot, the claim and the worktree
+        come back the same way an operator's kill returns them.
+        """
+        grace = self._idle_stop_grace()
+        if grace <= 0:
+            return
+        seen_at = self._idle_stop_intent_seen
+        live_keys = set()
+        for row in live:
+            key = (row.id, row.instance_token)
+            live_keys.add(key)
+            if not await self._idle_stop_candidate(row, now=now):
+                seen_at.pop(key, None)
+                continue
+            first = seen_at.setdefault(key, now)
+            if now - first < grace:
+                continue
+            seen_at.pop(key, None)
+            fresh = await self._still_live(row)
+            if fresh is None or (fresh.id, fresh.instance_token) != key:
+                continue
+            if not await self._idle_stop_candidate(fresh, now=now):
+                continue
+            await self._stop_finished_session(fresh, now=now)
+        # A relaunched session gets a new instance token, and a stopped row
+        # leaves ``live``: both must not leave the map growing forever.
+        for key in [k for k in seen_at if k not in live_keys]:
+            seen_at.pop(key, None)
+
+    async def _idle_stop_candidate(self, row: SessionRecord, *, now: float) -> bool:
+        """Whether *row* has nothing left to do at all.
+
+        The shape is the safety proof, and it never consults a clock a
+        painting pane can keep fresh: a session that still holds an open task,
+        or is inside a claim, still has work -- and one with neither is
+        mid-turn on nothing AQ can act on.  Ordered cheapest gate first, so
+        the one lookup a *running* worker cannot avoid (``get_profile``, for
+        the claim budget) is only reached by a worker that has claimed at
+        least once and holds nothing.
+        """
+        if row.claim_phase is not None:
+            return False
+        if self._is_deferred(row.name):
+            return False
+        if row.task_id:
+            task = await self.db.get_task(row.task_id)
+            if task is not None and is_live_pool_claim_task_status(task.status):
+                return False
+            # A close that has committed but not finished its tail (branch
+            # handoff under the task's control lock) still owns this process.
+            if self._task_control_held(row.task_id):
+                return False
+        if row.desired_state == "stopped":
+            finished = True
+        elif row.lifecycle == "pool" and row.claims:
+            # ``session_exhausted``: the budget ``take_claim_slot`` enforces
+            # is spent, so the worker protocol's answer is to leave.
+            profile = await self._profile_for(row)
+            finished = profile is not None and pool_claim_budget_exhausted(
+                row, pool_claim_cap(self.config, profile)
+            )
+        else:
+            finished = False
+        if not finished:
+            return False
+        return not await self._waiting_for_question(row, now)
+
+    def _task_control_held(self, task_id: str) -> bool:
+        """Whether this daemon is still writing *task_id* under its control lock."""
+        held = getattr(self.orchestrator, "_task_control_held", None)
+        if held is None:
+            return False
+        try:
+            return bool(held(task_id))
+        except Exception:
+            logger.debug("task control probe failed for %s", task_id, exc_info=True)
+            return True
+
+    async def _stop_finished_session(self, row: SessionRecord, *, now: float) -> None:
+        """The fenced stop ``aq session kill`` performs, then the slot release."""
+        logger.warning(
+            "Session %s (%s) holds a finished %s task and has been idle with a recorded "
+            "stop intent; stopping its process",
+            row.id,
+            row.name,
+            row.lifecycle,
+        )
+        if row.lifecycle == "pool":
+            if self.orchestrator is None:
+                logger.warning(
+                    "Pool session %s has a stop intent but no orchestrator is wired "
+                    "— skipping", row.id,
+                )
+                return
+            await self.orchestrator._terminate_pool_session(row, reason="stop_intent_idle")
+            await self._emit(
+                "session.stop_intent_stopped",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                lifecycle=row.lifecycle,
+                idle_seconds=int(now - (row.last_activity or row.started_at or now)),
+            )
+            return
+        provider = self._provider_for(row)
+        if provider is None:
+            return
+        try:
+            await provider.stop(self._handle(row), grace=2.0)
+        except Exception:
+            logger.warning("Stopping session %s failed", row.id, exc_info=True)
+            return
+        # ``state`` is deliberately left alone: ``_step_exits`` iterates live
+        # rows and classifies the death, releasing the task and the agent.  A
+        # database write here would be a claim about a process only a fresh
+        # probe can support.
+        await self._emit(
+            "session.stop_intent_stopped",
+            session_id=row.id,
+            name=row.name,
+            task_id=row.task_id,
+            project_id=row.project_id,
+            lifecycle=row.lifecycle,
+            idle_seconds=int(now - (row.last_activity or row.started_at or now)),
+        )
 
     # -- step 5: named desired-state ---------------------------------------
 

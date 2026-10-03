@@ -1141,6 +1141,14 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id"],
     },
+    # A session that had nothing left to do -- a recorded stop intent
+    # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
+    # claim budget -- kept its harness process alive past the idle-stop grace,
+    # and the reconciler stopped it the way ``aq session kill`` does (2026-10-03).
+    "session.stop_intent_stopped": {
+        "required": ["session_id", "name", "lifecycle"],
+        "optional": ["task_id", "project_id", "idle_seconds"],
+    },
     "session.sleeping": {
         "required": ["session_id", "name", "reason"],
         "optional": ["project_id"],

@@ -632,7 +632,8 @@ new hash to the manifest; a test fails otherwise.
 ## 7. Surfaces
 
 **Config** (`~/.agent-queue/config.yaml`, `sessions:` block): `enabled`, `provider`,
-`tmux_socket`, `lease_ttl_seconds` (default 480), `stall_max_nudges`, `stall_backoff_seconds`,
+`tmux_socket`, `lease_ttl_seconds` (default 480), `idle_stop_grace_seconds` (default 60),
+`stop_intent_report_seconds` (default 600), `stall_max_nudges`, `stall_backoff_seconds`,
 `max_restarts`, `restart_window_seconds`, `restart_backoff_seconds`, `dialog_budget_seconds`,
 `state_cache_ttl_seconds`, `transcript_poll_seconds`, `adopt_on_start`. Per-profile knobs
 (lifecycle, wake_mode, timeouts) live in profile markdown, not config.yaml.
