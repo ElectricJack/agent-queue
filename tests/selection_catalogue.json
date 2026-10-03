@@ -593,7 +593,9 @@
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
-        "tests/test_integration_subjects.py"
+        "tests/test_integration_subjects.py",
+        "tests/test_integration_surface.py",
+        "tests/test_integration_surface_commands.py"
       ]
     },
     "intelligence-classes": {
@@ -1385,7 +1387,7 @@
       ]
     }
   },
-  "digest": "sha256:e06d3806d36388f864a67c20b16fa4bb6ec8939e52900d04fe2f7ae53c112965",
+  "digest": "sha256:e7b421e09bcf0e9a191a996f598dfb1443a771040cdec99cd3e7f5147550d63b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8453,6 +8455,45 @@
         "parametrize"
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
+    },
+    "tests/test_integration_surface.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.integration_legacy",
+        "src.doctor",
+        "src.profiles.capabilities",
+        "src.profiles.parser",
+        "src.vault"
+      ],
+      "markers": [],
+      "summary": "The consolidated integration operator surface (simplification §5.1, Phase 4)."
+    },
+    "tests/test_integration_surface_commands.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_surface_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.doctor.integration_subject_checks",
+        "src.doctor.models",
+        "src.integration.records",
+        "src.integration.subjects",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "The consolidated integration operator surface against a real database."
     },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
