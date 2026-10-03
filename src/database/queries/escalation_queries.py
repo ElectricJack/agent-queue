@@ -96,17 +96,31 @@ def _assert_identity(row: Mapping[str, Any], values: Mapping[str, Any], fields: 
 class EscalationQueriesMixin:
     """Persistence API shared by command, supervisor, and transport services."""
 
-    async def create_escalation(self, **values: Any) -> tuple[dict[str, Any], bool]:
+    async def create_escalation(
+        self, *, supervisor_delivery_body_kind: str | None = None, **values: Any
+    ) -> tuple[dict[str, Any], bool]:
         """Create an incident or return its existing row.
 
         The incident key is unique within a project.  Replaying the same
         source returns ``(row, False)``; reusing that key for another source is
         rejected instead of silently hiding a later incident.
+
+        The delivery watchdog may coalesce its operational notices by body
+        kind. The group lock, incident and supervisor inbox notice share one
+        transaction, so parallel ticks and restarts cannot duplicate them.
         """
         missing = _ESCALATION_CREATE_REQUIRED - values.keys()
         if missing:
             raise ValueError("escalation missing: " + ", ".join(sorted(missing)))
         _require_nonempty(values, tuple(_ESCALATION_CREATE_REQUIRED))
+        if supervisor_delivery_body_kind is not None:
+            if (
+                values["source_kind"] != "supervisor_delivery"
+                or not supervisor_delivery_body_kind
+                or not values["source_identity"].startswith(supervisor_delivery_body_kind + ":")
+            ):
+                raise ValueError("coalescing requires a supervisor delivery source and body kind")
+            values["severity"] = "low"
         now = float(values.pop("now", time.time()))
         row_values = dict(values)
         row_values.setdefault("task_id", None)
@@ -138,7 +152,9 @@ class EscalationQueriesMixin:
             if row_values.get(name) is not None and len(str(row_values[name])) > maximum
         ]
         if oversized:
-            raise ValueError("escalation fields exceed bounded snapshot limits: " + ", ".join(oversized))
+            raise ValueError(
+                "escalation fields exceed bounded snapshot limits: " + ", ".join(oversized)
+            )
 
         statement = (
             pg_insert(escalations)
@@ -147,8 +163,59 @@ class EscalationQueriesMixin:
             .returning(escalations)
         )
         async with self.immediate() as conn:
+            if supervisor_delivery_body_kind is not None:
+                group = (
+                    f"supervisor_delivery:{row_values['project_id']}:"
+                    f"{supervisor_delivery_body_kind}"
+                )
+                await conn.execute(
+                    select(func.pg_advisory_xact_lock(func.hashtextextended(group, 0)))
+                )
+                existing = (
+                    (
+                        await conn.execute(
+                            select(escalations)
+                            .where(
+                                escalations.c.project_id == row_values["project_id"],
+                                escalations.c.source_kind == "supervisor_delivery",
+                                escalations.c.source_identity.startswith(
+                                    supervisor_delivery_body_kind + ":", autoescape=True
+                                ),
+                                escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+                            )
+                            .order_by(escalations.c.created_at, escalations.c.id)
+                            .limit(1)
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    return dict(existing), False
             inserted = (await conn.execute(statement)).mappings().one_or_none()
             if inserted is not None:
+                if supervisor_delivery_body_kind is not None:
+                    await conn.execute(
+                        pg_insert(messages)
+                        .values(
+                            id="msg-" + inserted["id"],
+                            project_id=inserted["project_id"],
+                            from_kind="system",
+                            from_id="supervisor-delivery-watchdog",
+                            to_kind="session",
+                            to_id=inserted["supervisor_owner"],
+                            subject=inserted["summary"],
+                            body=(
+                                f"{inserted['summary']}\n{inserted['investigation']}\n"
+                                f"{inserted['decision_requested']}\nIncident: {inserted['id']}"
+                            ),
+                            thread_id=inserted["id"],
+                            priority=100,
+                            created_at=now,
+                            body_kind="supervisor_delivery",
+                        )
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
                 return dict(inserted), True
             matches = (
                 (
@@ -171,7 +238,13 @@ class EscalationQueriesMixin:
             if len(matches) != 1:
                 raise EscalationConflict("incident and source identities resolve differently")
             existing = matches[0]
-            _assert_identity(existing, row_values, _ESCALATION_IDENTITY)
+            fields = _ESCALATION_IDENTITY
+            if supervisor_delivery_body_kind is not None:
+                # Older watchdog snapshots attached a single task to the
+                # notice. A closed notice stays closed after the cutover to
+                # project-level incidents; its historical snapshot is kept.
+                fields = tuple(name for name in fields if name != "task_id")
+            _assert_identity(existing, row_values, fields)
             return dict(existing), False
 
     async def get_escalation(self, escalation_id: str) -> dict[str, Any] | None:

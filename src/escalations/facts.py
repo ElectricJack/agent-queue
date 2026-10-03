@@ -64,6 +64,11 @@ class EscalationFacts:
     task_status: str | None = None
     choices: Sequence[str] = field(default_factory=tuple)
     terminal_outcome: str | None = None
+    source_kind: str = ""
+
+    @property
+    def wants_human_delivery(self) -> bool:
+        return self.source_kind != "supervisor_delivery"
 
     @property
     def is_terminal(self) -> bool:
@@ -98,6 +103,7 @@ class EscalationFacts:
             terminal_outcome=(
                 str(row["terminal_outcome"]) if row.get("terminal_outcome") else None
             ),
+            source_kind=str(row.get("source_kind") or ""),
         )
 
 
