@@ -904,7 +904,7 @@ class TaskRecoveryQueryMixin:
         if (
             (incident.get("decision") is not None and not releasing_hold)
             or incident_reason(meta) != "session_not_live"
-            or attempt["end_reason"] != "productive_death"
+            or attempt["end_reason"] not in {"productive_death", "drained"}
             or not row
             or row["lifecycle"] != "pool"
             or row["desired_state"] != "stopped"
