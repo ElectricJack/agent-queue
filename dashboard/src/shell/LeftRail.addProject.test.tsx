@@ -49,6 +49,11 @@ describe("LeftRail Add project button", () => {
     expect(screen.getByRole("link", { name: /reviews/i })).toHaveTextContent("2");
   });
 
+  it("links to the operator host shell page", () => {
+    renderRail();
+    expect(screen.getByRole("link", { name: /host shell/i })).toHaveAttribute("href", "/host-shell");
+  });
+
   it("places a compact, labelled New folder control immediately before Add project", () => {
     renderRail();
     const newFolder = newFolderButton();
