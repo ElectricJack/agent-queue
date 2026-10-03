@@ -49,6 +49,7 @@ from src.database.tables import (
     integration_candidate_resolutions,
     integration_candidate_revisions,
     integration_parent_episodes,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
@@ -215,6 +216,21 @@ async def db(reuse_database):
                     updated_at=1.0,
                 )
             )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="op-missing-batch",
+                target_kind="batch",
+                batch_id="missing-batch",
+                episode_id="missing-episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
         # A candidate reservation hangs off a built revision's member result,
         # which hangs off the batch's reviewed member.  Seeding the chain is the
         # price of proving ``reservation_id`` against a real row rather than a
@@ -325,7 +341,11 @@ async def db(reuse_database):
                     updated_at=1.0,
                 )
             )
-        for row_id, repository_id in (("owner-p", "repo-p"), ("owner-other", "repo-other")):
+        for row_id, repository_id in (
+            ("owner-p", "repo-p"),
+            ("owner-other", "repo-other"),
+            ("owner-missing-repo", "missing-repo"),
+        ):
             await conn.execute(
                 insert(integration_branch_owners).values(
                     id=row_id,
@@ -335,6 +355,31 @@ async def db(reuse_database):
                     owner_role="producer",
                     fence_token=1,
                     handoff_state="attached",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        for intent_id, project_id, repository_id in (
+            ("intent-p", "p", "repo-p"),
+            ("intent-other", "other", "repo-other"),
+            ("intent-null-p", None, "repo-p"),
+            ("intent-null-other", None, "repo-other"),
+            ("intent-null-missing-repo", None, "missing-repo"),
+        ):
+            await conn.execute(
+                insert(integration_promotion_intents).values(
+                    id=intent_id,
+                    domain_key=intent_id,
+                    project_id=project_id,
+                    receipt_id=f"receipt-{intent_id}",
+                    source_head="b" * 40,
+                    source_base="a" * 40,
+                    repository_id=repository_id,
+                    target_branch="refs/heads/main",
+                    expected_target="c" * 40,
+                    fence_owner_id="owner",
+                    fence_token=1,
+                    state="conflict",
                     created_at=1.0,
                     updated_at=1.0,
                 )
@@ -661,6 +706,82 @@ async def test_a_target_row_that_is_gone_is_left_to_the_handler(db):
         await target_scope_error("integration_reserve_owner", {"task_id": "gone"}, "p", db=db)
         is None
     )
+
+
+async def test_a_session_with_null_project_is_refused(db):
+    error = await check_request_scope(
+        "integration_repair_close_current",
+        {"operation_id": "op-p", "session_id": SUPERVISOR_GLOBAL},
+        _scope("p"),
+        db=db,
+    )
+
+    assert error == (
+        "out of scope: integration_repair_close_current targets a row owned by no project"
+    )
+
+
+@pytest.mark.parametrize(
+    "command", ["integration_reconcile_promotion", "integration_push_conflict_resolution"]
+)
+@pytest.mark.parametrize(
+    ("intent_id", "expected_error"),
+    [
+        ("intent-p", None),
+        ("intent-other", "targets another project (intent_id belongs to other)"),
+        ("intent-null-p", None),
+        ("intent-null-other", "targets another project (intent_id belongs to other)"),
+        ("intent-null-missing-repo", "targets a row owned by no project"),
+    ],
+)
+async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
+    db, command, intent_id, expected_error
+):
+    error = await check_request_scope(command, {"intent_id": intent_id}, _scope("p"), db=db)
+
+    assert error == (None if expected_error is None else f"out of scope: {command} {expected_error}")
+
+
+@pytest.mark.parametrize("argument", sorted(TARGET_RESOLVERS))
+async def test_missing_targets_remain_admitted_for_every_resolver(db, argument):
+    if argument == "receive_new_work.project_id":
+        command = "provider_allocation_preview"
+        args = {"receive_new_work": {"project_id": "gone", "mode": "prefer"}}
+    else:
+        command = "missing_target"
+        args = {argument: "gone"}
+    assert await target_scope_error(command, args, "p", db=db) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        ("integration_release_owner", {"owner_row_id": "owner-missing-repo"}),
+        ("integration_abort", {"operation_id": "op-missing-batch"}),
+    ],
+)
+async def test_an_existing_target_with_a_missing_indirect_owner_is_refused(db, command, args):
+    assert await check_request_scope(command, args, _scope("p"), db=db) == (
+        f"out of scope: {command} targets a row owned by no project"
+    )
+
+
+async def test_a_missing_task_reaches_the_handler_and_returns_not_found(
+    db, command_handler_factory
+):
+    handler = await command_handler_factory()
+    handler.orchestrator.db = db
+    handler.config.security.capability_enforcement = "off"
+
+    with principal_context(_principal("p")):
+        result = await handler.execute(
+            "integration_reserve_owner",
+            {"task_id": "gone", "_scope": _elevated_scope_envelope("p")},
+        )
+
+    assert result["success"] is False
+    assert result["outcome"] == "not_found"
+    assert result["error"] == "task does not exist"
 
 
 async def test_every_target_named_is_checked_not_just_the_first(db):
