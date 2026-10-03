@@ -15,6 +15,8 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
     archived_tasks,
+    projects,
+    repos,
     gates,
     task_gates,
     workspaces,
@@ -34,6 +36,8 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     task_delivery_receipts,
+    task_branch_origins,
+    task_completion_records,
     task_integration_checkpoints,
     tasks,
 )
@@ -1665,6 +1669,402 @@ async def _trusted_check(db, checkpointed, head_sha="d" * 40, generation=1, **ov
     async with db.immediate() as conn:
         await conn.execute(insert(integration_check_evidence).values(**values))
     return values["id"]
+
+
+@pytest.fixture
+async def git_completed_parent(db, tmp_path):
+    """An actual ParentCompletion close, with real Git and no leaf close row."""
+    from src.git.manager import GitManager
+    from src.integration.development import DevelopmentIntegration
+    from tests.test_delivery_consumers import Origin, git
+
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "origin/main")
+    partial = origin.work("parent", "first")
+    head = origin.work("parent", "last")
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1, base_sha=base)
+    await _code_receipt(db, children[0], base, head)
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(url=origin.url))
+        await conn.execute(update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS"))
+        await conn.execute(update(integration_branch_owners).values(
+            owner_id="parent", owner_role="verifier", fence_token=2,
+        ))
+        # Like the live incident: the episode starts at 1 and collection
+        # advances to generation 6 before trusted verification completes it.
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(branch_owner_id="parent", generation=6))
+    await _trusted_check(db, checkpointed, head_sha=head, generation=6)
+    verified = await hierarchy.verify_parent("parent", 6, head, ["check-unit"])
+    assert verified["outcome"] == "verified"
+    assert (await hierarchy.complete_parent("parent", 6, head))["outcome"] == "completed"
+    assert await db.get_task_completion("parent") is None
+    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
+    db.set_delivery_observer(service.delivery_observer)
+    await db.update_project("p", hierarchical_integration_mode="train")
+    return service, origin, base, partial, head, checkpointed, verified
+
+
+async def test_completed_parent_delivery_and_adoption_use_its_verified_generation(
+    db, git_completed_parent,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.provenance import CompletionIdentity, GitProvenance
+
+    service, origin, _base, _partial, head, checkpointed, verified = git_completed_parent
+    before = await service.delivery_observer.observe(["parent"])
+    assert before.get("parent").state == DeliveryState.PENDING
+    assert before.get("parent").source_oid == head
+    request = before.get("parent").request
+    assert request.parent_completion.operation_id == checkpointed["operation_id"]
+    assert request.parent_completion.generation == 6
+    assert request.completion_id == "parent:" + verified["verification_id"]
+
+    origin.land("parent")
+    view = await service.delivery_observer.observe(["parent"])
+    assert view.get("parent").state == DeliveryState.CONTAINED
+    result = await service.adopt(
+        project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+        head_sha=view.get("parent").target_oid, reason="verified aggregate already delivered",
+        operator_id="local",
+    )
+    assert result["manifest"] == [{
+        "task_id": "parent", "source_sha": head, "acceptance": "ancestry",
+    }]
+    assert await db.get_task_completion("parent") is None
+    provenance = GitProvenance(service.git, str(origin.clone), repository_url=origin.url)
+    from tests.test_delivery_consumers import git
+    git(origin.clone, "fetch", "origin")
+    record = await provenance.read_completion(CompletionIdentity(
+        "p", "repo", "parent", request.completion_id,
+    ))
+    assert record["source_oid"] == head
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_check_evidence))).all()) == 1
+        assert len((await conn.execute(select(integration_parent_verifications))).all()) == 1
+        assert len((await conn.execute(select(integration_parent_operation_completions))).all()) == 1
+    assert (await service.delivery_observer.observe(["parent"])).get("parent").satisfied
+
+
+@pytest.mark.parametrize("branch", ["advanced", "deleted"])
+async def test_parent_delivery_and_adoption_keep_the_verified_source_when_its_ref_changes(
+    db, git_completed_parent, branch,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from tests.test_delivery_consumers import git
+
+    service, origin, _base, _partial, head, *_rest = git_completed_parent
+    origin.land("parent")
+    main = git(origin.clone, "rev-parse", "main")
+    if branch == "advanced":
+        assert origin.work("parent", "later") != head
+    else:
+        git(origin.clone, "push", "origin", "--delete", "aq/parent")
+    proof = (await service.delivery_observer.observe(["parent"])).get("parent")
+    assert (proof.state, proof.source_oid) == (DeliveryState.CONTAINED, head)
+    result = await service.adopt(
+        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha=main,
+        reason="verified source already delivered", operator_id="local",
+    )
+    assert result["manifest"][0]["source_sha"] == head
+    assert await db.get_task_completion("parent") is None
+
+
+@pytest.mark.parametrize("binding", ["partial", "cleared", "missing"])
+async def test_partial_parent_binding_cannot_fall_back_to_a_retained_old_leaf_close(
+    db, git_completed_parent, binding,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from tests.test_delivery_consumers import git
+
+    service, origin, _base, _partial, head, *_rest = git_completed_parent
+    origin.land("parent")
+    main = git(origin.clone, "rev-parse", "main")
+    await db.save_task_completion(TaskCompletion(
+        id="old-leaf", task_id="parent", outcome="pass", commits=[head], completed_at=1.0,
+    ))
+    await GitProvenance(service.git, str(origin.clone), repository_url=origin.url).write_completion(
+        CompletedSource(CompletionIdentity("p", "repo", "parent", "old-leaf"), head),
+    )
+    async with db.immediate() as conn:
+        if binding == "missing":
+            await conn.execute(delete(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ))
+        else:
+            values = dict(episode_id=None, last_completed_operation_id=None,
+                          last_completed_verification_id=None)
+            if binding == "cleared":
+                values["current_verification_id"] = None
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(**values))
+    proof = (await service.delivery_observer.observe(["parent"])).get("parent")
+    assert (proof.state, proof.reason) == (DeliveryState.UNKNOWN, "invalid_parent_completion")
+    with pytest.raises(ValueError, match="current verified parent completion"):
+        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+                            head_sha=main, reason="partial binding", operator_id="local")
+
+
+async def test_parent_adoption_cannot_substitute_a_branch_when_exact_git_observation_fails(
+    db, git_completed_parent, monkeypatch,
+):
+    from src.git.manager import GitError
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.provenance import GitProvenance
+    from tests.test_delivery_consumers import git
+
+    service, origin, _base, _partial, head, *_rest = git_completed_parent
+    origin.land("parent")
+    main = git(origin.clone, "rev-parse", "main")
+    refs = git(origin.clone, "ls-remote", "origin")
+    exact = GitProvenance.exact
+
+    async def missing_source(store, oid):
+        if oid == head:
+            raise GitError("exact parent source unavailable")
+        return await exact(store, oid)
+
+    monkeypatch.setattr(GitProvenance, "exact", missing_source)
+    assert (await service.delivery_observer.observe(["parent"])).get("parent").state == (
+        DeliveryState.UNKNOWN
+    )
+    with pytest.raises(ValueError, match="verified parent source could not be observed"):
+        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+                            head_sha=main, reason="Git unavailable", operator_id="local",
+                            accept_equivalent=True)
+    assert git(origin.clone, "ls-remote", "origin") == refs
+    assert await service.rows("p") == []
+    assert await db.get_task_completion("parent") is None
+
+
+@pytest.mark.parametrize("delivery", ["ancestry", "equivalent"])
+async def test_root_scheduler_and_adoption_agree_on_completed_parent(
+    db, git_completed_parent, delivery,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.scheduler import TrainService
+    from tests.test_delivery_consumers import git
+    from tests.test_integration_sealing import _origin_row, _request, _review_row
+
+    service, origin, base, _partial, head, _checkpointed, verified = git_completed_parent
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).values(integration_mode="pull_request"))
+        await conn.execute(update(tasks).where(tasks.c.id == "parent").values(
+            pr_url="https://github.com/example/repo/pull/1",
+        ))
+        if not await conn.scalar(select(task_branch_origins.c.task_id).where(
+            task_branch_origins.c.task_id == "parent",
+        )):
+            await conn.execute(insert(task_branch_origins).values(**{
+                **_origin_row("parent"), "branch_name": "aq/parent", "base_sha": base,
+            }))
+        await conn.execute(insert(integration_review_evidence).values(**_review_row(
+            "parent", head, evidence_id="parent-root-review", source_base=base,
+            review_kind="parent", generation=6,
+            reviewed_tree_sha=git(origin.clone, "rev-parse", head + "^{tree}"),
+            evidence={"decision": "approved", "verification_id": verified["verification_id"]},
+        )))
+        frontier = await db.eligible_root_page_on(
+            conn, project_id="p", repository_id="repo", after=None, limit=10,
+        )
+        assert [member["task_id"] for member in frontier] == ["parent"]
+    if delivery == "ancestry":
+        origin.land("parent")
+    else:
+        git(origin.clone, "checkout", "main")
+        git(origin.clone, "merge", "--squash", "aq/parent")
+        git(origin.clone, "commit", "-m", "reviewed equivalent aggregate")
+        git(origin.clone, "push", "origin", "main")
+    main = git(origin.clone, "rev-parse", "main")
+    view = await service.delivery_observer.observe(["parent"])
+    train = TrainService(db)
+    if delivery == "equivalent":
+        assert view.get("parent").state == DeliveryState.PENDING
+        async with db._engine.connect() as conn:
+            repository = (await conn.execute(select(repos))).mappings().one()
+            assert await train._git_delivered_roots_on(conn, view, "p", repository) == set()
+    result = await service.adopt(
+        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha=main,
+        reason="reviewed aggregate already delivered", operator_id="local",
+        accept_equivalent=delivery == "equivalent",
+    )
+    assert result["manifest"][0]["source_sha"] == head
+    view = await service.delivery_observer.observe(["parent"])
+    async with db._engine.connect() as conn:
+        repository = (await conn.execute(select(repos))).mappings().one()
+        assert await train._git_delivered_roots_on(conn, view, "p", repository) == {"parent"}
+    for now in (10.0, 30.0):
+        request = await _request(db, now=now)
+        assert (await train.seal("p", request["request_id"], now + 1))["outcome"] == "empty"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches))).all() == []
+        # Only the real child-to-parent receipt, never a fabricated root receipt.
+        assert len((await conn.execute(select(task_delivery_receipts))).all()) == 1
+        assert len((await conn.execute(select(integration_check_evidence))).all()) == 1
+    assert await db.get_task_completion("parent") is None
+    await _drift_parent(db, "generation", base)
+    async with db._engine.connect() as conn:
+        assert await train._git_delivered_roots_on(conn, view, "p", repository) == set()
+
+
+@pytest.mark.parametrize("target", ["partial", "other"])
+async def test_verified_parent_requires_complete_source_on_the_requested_target(
+    db, git_completed_parent, target,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from tests.test_delivery_consumers import git
+
+    service, origin, base, partial, _head, *_rest = git_completed_parent
+    if target == "partial":
+        git(origin.clone, "push", "origin", f"{partial}:refs/heads/main")
+    else:
+        git(origin.clone, "push", "origin", "aq/parent:refs/heads/other")
+    main = partial if target == "partial" else base
+    view = await service.delivery_observer.observe(["parent"])
+    assert view.get("parent").state == DeliveryState.PENDING
+    with pytest.raises(ValueError, match="not an ancestor"):
+        await service.adopt(
+            project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+            head_sha=main, reason="insufficient containment", operator_id="local",
+        )
+    assert await db.get_task_completion("parent") is None
+
+
+async def _drift_parent(db, kind, base):
+    if kind == "project":
+        await db.create_project(Project(id="other", name="Other"))
+    if kind in {"repository", "checkpoint_repository", "designated_repository", "project"}:
+        await db.create_repo(RepoConfig(
+            id="other", project_id="other" if kind == "project" else "p",
+            source_type=RepoSourceType.CLONE,
+            url=(await db.get_repo("repo")).url,
+        ))
+    if kind == "project":
+        await db.update_project("other", integration_repository_id="other")
+    async with db.immediate() as conn:
+        if kind == "reopened":
+            await conn.execute(update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS"))
+        elif kind == "generation":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(generation=7))
+        elif kind == "head":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(checkpoint_sha=base))
+        elif kind == "verification":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(current_verification_id=None))
+        elif kind == "operation":
+            await conn.execute(update(integration_repair_operations).values(state="cancelled"))
+        elif kind == "checks":
+            await conn.execute(update(integration_repair_operations).values(required_check_version="new"))
+        elif kind == "episode":
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="new-episode", parent_task_id="parent", repository_id="repo",
+                generation=7, pre_collection_checkpoint_sha=base, created_at=10.0,
+            ))
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(episode_id="new-episode"))
+        elif kind == "completion":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(last_completed_operation_id=None, last_completed_verification_id=None))
+        elif kind == "branch":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(branch="aq/other"))
+        elif kind == "project":
+            await conn.execute(update(tasks).where(tasks.c.id == "parent").values(project_id="other"))
+        elif kind == "repository":
+            await conn.execute(update(tasks).where(tasks.c.id == "parent").values(repo_id="other"))
+        elif kind == "unbound_repository":
+            await conn.execute(update(tasks).where(tasks.c.id == "parent").values(repo_id=None))
+        elif kind == "checkpoint_repository":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent",
+            ).values(repository_id="other"))
+        elif kind == "designated_repository":
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                integration_repository_id="other",
+            ))
+        elif kind == "target":
+            await conn.execute(update(repos).values(default_branch="other"))
+        elif kind == "new_close":
+            await conn.execute(insert(task_completion_records).values(
+                id="later-close", task_id="parent", outcome="pass", commits="[]",
+                completed_at=10**12,
+            ))
+        elif kind == "reclosed":
+            await db._upsert_meta("parent", "integration_rework_at", 10**12, conn=conn)
+        elif kind == "incomplete_close":
+            await db._upsert_meta("parent", "development_completion_id", "new-close", conn=conn)
+        else:
+            raise AssertionError(kind)
+
+
+@pytest.mark.parametrize("kind", [
+    "reopened", "generation", "head", "verification", "operation", "checks", "episode",
+    "completion", "branch", "repository", "unbound_repository", "checkpoint_repository",
+    "designated_repository",
+    "project", "new_close", "reclosed", "incomplete_close",
+])
+async def test_stale_parent_binding_never_borrows_retained_provenance(
+    db, git_completed_parent, kind,
+):
+    from src.integration.delivery_truth import DeliveryState
+    from tests.test_delivery_consumers import git
+
+    service, origin, base, *_rest = git_completed_parent
+    origin.land("parent")
+    main = git(origin.clone, "rev-parse", "main")
+    await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+                        head_sha=main, reason="original delivery", operator_id="local")
+    observed = await service.delivery_observer.observe(["parent"])
+    await _drift_parent(db, kind, base)
+    async with db.immediate() as conn:
+        assert await observed.verified_on(conn, ["parent"]) == {}
+    assert (await service.delivery_observer.observe(["parent"])).get("parent").state == (
+        DeliveryState.UNKNOWN
+    )
+    with pytest.raises(ValueError, match="verified parent completion|repository project"):
+        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+                            head_sha=main, reason="stale delivery", operator_id="local",
+                            accept_equivalent=True)
+
+
+@pytest.mark.parametrize("kind", [
+    "generation", "head", "operation", "episode", "target", "designated_repository", "project",
+])
+async def test_parent_adoption_rechecks_binding_before_any_provenance_write(
+    db, git_completed_parent, monkeypatch, kind,
+):
+    from src.integration.development import DevelopmentBusy
+    from tests.test_delivery_consumers import git
+
+    service, origin, base, *_rest = git_completed_parent
+    origin.land("parent")
+    main = git(origin.clone, "rev-parse", "main")
+    refs = git(origin.clone, "ls-remote", "origin")
+    observe = service._observe_adoption
+
+    async def observe_then_drift(*args):
+        manifest = await observe(*args)
+        await _drift_parent(db, kind, base)
+        return manifest
+
+    monkeypatch.setattr(service, "_observe_adoption", observe_then_drift)
+    with pytest.raises(DevelopmentBusy, match="changed"):
+        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+                            head_sha=main, reason="concurrent drift", operator_id="local")
+    assert git(origin.clone, "ls-remote", "origin") == refs
+    assert await service.rows("p") == []
+    assert await db.get_task_completion("parent") is None
 
 
 async def test_completion_without_trusted_binding_names_the_missing_producer(db):
