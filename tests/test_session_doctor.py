@@ -18,7 +18,7 @@ from src.doctor.models import Severity
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
-from src.sessions.provider import NotSubmitted, SessionHandle, SessionSpec
+from src.sessions.provider import NotSubmitted, NudgeReason, SessionHandle, SessionSpec
 from tests.db_fixtures import lease_dsn
 
 # ``src/doctor/__init__.py`` rebinds the package attribute ``session_checks``
@@ -410,6 +410,49 @@ class TestStallUnreachable:
         assert entry["reason"] == "has a draft or its input is unknown"
         assert row.name in result.detail and "[fast-jev:opencode" in result.detail
         assert provider.sent_nudges == []
+
+    async def test_only_a_person_holds_the_ladder_and_the_report_says_which(
+        self, db, monkeypatch
+    ):
+        """Since 2026-10-03 an unreadable composer no longer waits for a human."""
+        provider = FakeProvider()
+        held = await _stalled(db, provider)
+        provider.script_composer_refusal(
+            held.name, "has a draft or its input is unknown", "my own draft"
+        )
+        await db.create_task(
+            Task(
+                id="t2", project_id=PROJECT_ID, title="t2", description="d",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        wedged = SessionRecord(
+            id="s2", project_id=PROJECT_ID, profile_id="worker", harness="opencode",
+            provider="fake", name="p-worker--proj--wedged", lifecycle="pool",
+            work_dir="/w", epoch="e", instance_token="tok2",
+            started_at=time.time() - 30 * 60, last_activity=time.time() - 30 * 60,
+            state="running", task_id="t2", claim_phase="active",
+        )
+        await db.create_session(wedged)
+        await provider.start(
+            SessionSpec(
+                session_name=wedged.name, work_dir=wedged.work_dir,
+                command=("agent",), instance_token=wedged.instance_token,
+            )
+        )
+        provider.script_composer_refusal(
+            wedged.name, f"cannot inspect input for {wedged.name!r}",
+            kind=NudgeReason.STALE_FRAME,
+        )
+
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.WARN
+        kinds = {e["name"]: e["reason_kind"] for e in result.data["sessions"]}
+        assert kinds[held.name] == "draft"
+        assert kinds[wedged.name] == "stale_frame"
+        # The wording names what an operator still has to clear by hand.
+        assert "1 of 2" in result.detail and "stale_frame" in result.detail
 
     async def test_the_refusal_is_named_when_the_composer_shows_nothing(self, db):
         provider = FakeProvider()

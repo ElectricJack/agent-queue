@@ -619,6 +619,12 @@ from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityG
 from .knowledge_authority_grant_response_422 import KnowledgeAuthorityGrantResponse422
 from .knowledge_authority_revoke_request import KnowledgeAuthorityRevokeRequest
 from .knowledge_authority_revoke_response_422 import KnowledgeAuthorityRevokeResponse422
+from .knowledge_citation_response import KnowledgeCitationResponse
+from .knowledge_cite_request import KnowledgeCiteRequest
+from .knowledge_cite_response_422 import KnowledgeCiteResponse422
+from .knowledge_context_deliver_request import KnowledgeContextDeliverRequest
+from .knowledge_context_deliver_response_422 import KnowledgeContextDeliverResponse422
+from .knowledge_context_delivery_response import KnowledgeContextDeliveryResponse
 from .knowledge_create_request import KnowledgeCreateRequest
 from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
 from .knowledge_create_response import KnowledgeCreateResponse
@@ -2349,6 +2355,12 @@ __all__ = (
     "KnowledgeAuthorityGrantResponse422",
     "KnowledgeAuthorityRevokeRequest",
     "KnowledgeAuthorityRevokeResponse422",
+    "KnowledgeCitationResponse",
+    "KnowledgeCiteRequest",
+    "KnowledgeCiteResponse422",
+    "KnowledgeContextDeliverRequest",
+    "KnowledgeContextDeliverResponse422",
+    "KnowledgeContextDeliveryResponse",
     "KnowledgeCreateRequest",
     "KnowledgeCreateRequestMetadataType0",
     "KnowledgeCreateResponse",

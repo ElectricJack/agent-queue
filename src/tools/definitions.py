@@ -311,6 +311,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "knowledge_create_task": "knowledge",
     "knowledge_list": "knowledge",
     "knowledge_show": "knowledge",
+    "knowledge_cite": "knowledge",
+    "knowledge_context_deliver": "knowledge",
     "knowledge_update": "knowledge",
     "knowledge_history": "knowledge",
     "knowledge_diff": "knowledge",
@@ -8364,6 +8366,8 @@ for _definition in _ALL_TOOL_DEFINITIONS:
 # K10 task composition uses the same typed schema on every transport.
 from src.commands.contracts.knowledge import (  # noqa: E402
     KnowledgeCreateTaskArgs as _KnowledgeCreateTaskArgs,
+    KnowledgeCiteArgs as _KnowledgeCiteArgs,
+    KnowledgeContextDeliverArgs as _KnowledgeContextDeliverArgs,
 )
 
 _ALL_TOOL_DEFINITIONS.append({
@@ -8371,6 +8375,18 @@ _ALL_TOOL_DEFINITIONS.append({
     "description": "File one task through ordinary routing and gates, with a pinned motivated_by link.",
     "input_schema": _KnowledgeCreateTaskArgs.model_json_schema(),
 })
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "knowledge_cite",
+        "description": "Record an exact readable revision as explicitly read or attached.",
+        "input_schema": _KnowledgeCiteArgs.model_json_schema(),
+    },
+    {
+        "name": "knowledge_context_deliver",
+        "description": "Acknowledge observed transport delivery; does not prove model reading.",
+        "input_schema": _KnowledgeContextDeliverArgs.model_json_schema(),
+    },
+])
 for _definition in _ALL_TOOL_DEFINITIONS:
     if _definition["name"] == "knowledge_create":
         _definition["input_schema"]["properties"].update({
