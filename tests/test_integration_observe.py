@@ -437,6 +437,54 @@ async def test_explicit_holds_and_exact_head_rejections_remain_binding():
     assert facts.binding()["held"]
 
 
+def unsealed_root(**changes):
+    """An admitting root whose frontier is the project's checkpointed root tasks."""
+    data = snapshot(
+        batch_id=None,
+        phase="admitting",
+        target_ref="refs/heads/main",
+        head_sha=None,
+        base_sha=None,
+        generation=0,
+    )
+    rows = {
+        key: value
+        for key, value in data.rows.items()
+        if not key.startswith(("integration_batch", "integration_candidate"))
+    }
+    data = replace(data, rows=rows)
+    for key, value in changes.items():
+        data = with_rows(data, **{key: value})
+    return data
+
+
+async def test_an_unsealed_root_frontier_hold_or_rejection_does_not_hold_the_train():
+    review = snapshot().all("integration_review_evidence")[0]
+    data = unsealed_root(
+        task_metadata=[{"task_id": "source", "key": "manual_pause", "value": "{}"}],
+        integration_review_evidence=[review, {**review, "id": "no", "verdict": "rejected",
+                                              "created_at": 20}],
+    )
+    facts = await observe(data, Git(ancestry={(SOURCE, BASE): False, (BASE, SOURCE): True}))
+    # The frontier task stays visible (and excluded by the seal's admission),
+    # but only a sealed member or the subject's own task binds the subject.
+    assert facts.members[0].held and facts.members[0].review == "rejected"
+    assert facts.holds == () and not facts.binding()["held"]
+    paused = replace(data, project={**data.project, "status": "PAUSED"})
+    assert {hold.kind for hold in (await observe(paused)).holds} == {"project_inactive"}
+
+
+async def test_unconstructed_members_relate_to_the_publication_targets_observed_tip():
+    data = unsealed_root()
+    facts = await observe(data, Git(ancestry={(SOURCE, BASE): False, (BASE, SOURCE): True}))
+    assert facts.candidate is None and facts.head is None
+    assert facts.members[0].ancestry == "ahead" and facts.unknown == ()
+    # An absent or unread target tip is still not an ancestry fact.
+    unread = await observe(data, Git(heads={"refs/heads/aq/source": SOURCE}))
+    assert unread.members[0].ancestry == "unknown"
+    assert "ancestry_unknown:source" in unread.unknown
+
+
 @pytest.mark.parametrize(
     "status,answer,held",
     [

@@ -29,6 +29,8 @@ from src.integration.subjects import (
     SubjectKind,
     SubjectPhase,
     SubjectSchedule,
+    WriterLease,
+    WriterStatus,
     budget_values,
     subject_key,
     writer_values,
@@ -126,7 +128,162 @@ class RootObserver(IntegrationObserver):
             facts = facts.model_copy(
                 update={"budget": facts.budget.model_copy(update={"attempts": attempts})}
             )
+        if subject.engine is SubjectEngine.RECONCILER and subject.batch_id and facts.writer.task_id:
+            facts = await self._legacy_writer(subject, facts)
         return facts
+
+    async def _legacy_writer(self, subject, facts):
+        """Read phase-one legacy repair receipts as the table's writer facts.
+
+        The legacy stage keeps naming its writer after the work is done. Its
+        own durable receipts say when that writer let go: an accepted repair
+        handed the fenced ref to the collector, or the delegate closed under
+        its exact fence and its session and checkout are gone. A stopped
+        writer whose work a journalled merged build already adopted is no
+        longer the subject's writer. Live, attached or unproven writers keep
+        the observer's answer.
+        """
+        task_id = facts.writer.task_id
+        async with self.db._engine.connect() as conn:
+
+            async def rows(table, *conditions, order=None):
+                statement = select(table).where(*conditions)
+                if order is not None:
+                    statement = statement.order_by(order)
+                return (await conn.execute(statement)).mappings().all()
+
+            journal = await rows(
+                t.integration_subject_journal,
+                t.integration_subject_journal.c.subject_id == subject.id,
+                t.integration_subject_journal.c.mode == "active",
+                t.integration_subject_journal.c.primitive == Primitive.GIT_MERGE_MEMBERS.value,
+                order=t.integration_subject_journal.c.seq,
+            )
+            batch = (
+                await rows(t.integration_batches, t.integration_batches.c.id == subject.batch_id)
+            )[0]
+            owner = next(
+                iter(
+                    await rows(
+                        t.integration_branch_owners,
+                        t.integration_branch_owners.c.repository_id == subject.repository_id,
+                        t.integration_branch_owners.c.ref == batch["integration_branch"],
+                    )
+                ),
+                None,
+            )
+            handoffs = await rows(
+                t.integration_candidate_resolutions,
+                t.integration_candidate_resolutions.c.batch_id == subject.batch_id,
+                t.integration_candidate_resolutions.c.repair_task_id == task_id,
+                t.integration_candidate_resolutions.c.state == "accepted",
+            )
+            sessions = await rows(t.sessions, t.sessions.c.task_id == task_id)
+            locked = await rows(t.workspaces, t.workspaces.c.locked_by_task_id == task_id)
+            task = next(iter(await rows(t.tasks, t.tasks.c.id == task_id)), None)
+            stages = await rows(
+                t.integration_repair_stages,
+                t.integration_repair_stages.c.repair_task_id == task_id,
+            )
+            closes = await rows(
+                t.integration_outbox,
+                t.integration_outbox.c.project_id == subject.project_id,
+                t.integration_outbox.c.event_type == "integration.repair_delegate_closed",
+            )
+        if owner is not None and owner["owner_id"] == task_id:
+            return facts  # the writer still holds its fenced ref
+        decided = {
+            row["subject_version"]: row for row in journal if row["entry_kind"] == "decision"
+        }
+        for row in journal:
+            observed = (decided.get(row["subject_version"], {}).get("payload") or {}).get("facts")
+            if (
+                row["entry_kind"] == "action"
+                and row["outcome"] == "merged"
+                and observed
+                and (observed.get("writer") or {}).get("task_id") == task_id
+                and observed.get("writer_status") == WriterStatus.STOPPED.value
+            ):
+                return self._project_writer(facts, WriterLease())
+        if (
+            not sessions
+            and not locked
+            and task is not None
+            and not task["claim_epoch"]
+            and task["status"] in {"COMPLETED", "FAILED"}
+        ):
+            # Retired before any claim (an ejection supersedes it): no
+            # process ever ran and nothing is left to preserve.
+            return self._project_writer(facts, WriterLease())
+        handed = next(
+            (
+                row
+                for row in handoffs
+                if owner is not None
+                and row["handoff_owner_id"] == owner["owner_id"]
+                and row["handoff_fence_token"] is not None
+                and owner["fence_token"] >= row["handoff_fence_token"]
+            ),
+            None,
+        )
+        proof = None
+        if handed is not None:
+            proof = {
+                "kind": "accepted_handoff",
+                "reservation_id": handed["id"],
+                "successor_owner_id": handed["handoff_owner_id"],
+                "successor_fence_token": handed["handoff_fence_token"],
+                "confirmed_at": handed["updated_at"],
+            }
+        latest = max(sessions, key=lambda row: row["started_at"] or 0, default=None)
+        if (
+            proof is None
+            and latest is not None
+            and all(row["state"] == "stopped" for row in sessions)
+            and not locked
+            and task is not None
+            and task["status"] == "COMPLETED"
+        ):
+            receipts = [
+                {"kind": "accepted_delegate_completion", **completion}
+                for stage in stages
+                if (completion := (stage["dossier"] or {}).get("accepted_delegate_completion"))
+            ] + [
+                {"kind": "delegate_close", "event_id": row["id"], **row["payload"]}
+                for row in closes
+                if (row["payload"] or {}).get("task_id") == task_id
+            ]
+            proof = next(
+                (
+                    {**receipt, "confirmed_at": latest["ended_at"] or latest["started_at"]}
+                    for receipt in receipts
+                    if receipt.get("task_id") == task_id
+                    and receipt.get("session_id") == latest["id"]
+                    and receipt.get("instance_token") == latest["instance_token"]
+                ),
+                None,
+            )
+        if proof is None:
+            return facts
+        stopped = facts.writer.model_copy(
+            update={"status": WriterStatus.STOPPED, "stop_proof": {"stop_proof": proof}}
+        )
+        return self._project_writer(facts, stopped)
+
+    @staticmethod
+    def _project_writer(facts, writer):
+        task_id = facts.writer.task_id
+        return facts.model_copy(
+            update={
+                "writer": writer,
+                "unknown": tuple(
+                    reason
+                    for reason in facts.unknown
+                    if reason
+                    not in {"writer_stop_unproven:" + task_id, "writer_liveness_unknown:" + task_id}
+                ),
+            }
+        )
 
 
 def _legacy_phase(lifecycle):
