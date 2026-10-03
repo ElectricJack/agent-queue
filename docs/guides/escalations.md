@@ -162,24 +162,28 @@ the exact text, or `suppression_reason`.
 
 ## Reading a digest
 
-One message, at most 1,200 characters, never split across posts:
+One message, at most 600 characters, never split across posts:
 
 ```text
-**Agent Queue — last hour**
-2 completed · 1 progressed · 3 active
+📊 Agent Queue — last hour · 2 completed · 1 progressed · 3 active · +3 more · 1 open escalation
 • agent-queue: completed — document the escalation guide (solid-grove.19)
 • agent-queue: progress — pull request ready — fix the claim race (solid-grove.7)
-• demo: started — add a health endpoint (demo.4)
-+2 more · 1 open escalation · https://aq.your-tailnet.ts.net
+<https://aq.your-tailnet.ts.net/focus/inbox>
 ```
 
-Counts first, then at most three highlights, then the overflow count, the
-number of open escalations and the dashboard link. That link is
-`dashboard.server.public_url`, never the daemon's port. Without one, the footer
-says `Remote dashboard link unavailable (...)`; see
+The window and its counts share the first line, so two highlight sections are
+what a three-line budget leaves. Counts first, then the highlights, then the
+overflow count and the number of open escalations. The one link is the
+needs-you inbox on the dashboard, `dashboard.server.public_url` joined to the
+focus path — never the daemon's port and never a settings page. Without an
+origin the last line says `Remote dashboard link unavailable (...)`; see
 [dashboard links in Discord posts](dashboard.md#dashboard-links-in-discord-posts). If the highlights would
 push the message over the limit, the least informative one is folded into the
 `+N more` count rather than starting a second message.
+
+The budget is data, not a convention: `src/discord/render_budget.py` holds one
+row per kind of post and the renderer cuts to it, so a producer cannot opt
+out. `tests/test_discord_render_budgets.py` pins every row.
 
 ### Why the channel is quiet
 
@@ -205,10 +209,14 @@ worker parked on a human answer are all correctly counted as *not* active
 
 ## Answering an escalation
 
-When a supervisor escalates, the channel gets a post naming the project, the
-task, the blocker, what was already tried, the exact decision needed, the
-options if there are any, a dashboard link and the escalation ID. The
-configured mention is attached to that first post and nowhere else.
+When a supervisor escalates, the channel gets two body lines and one link: the
+decision needed, the context behind it, and the incident's page on the
+dashboard. What did not fit — what was already tried, the options — waits in
+the thread, and the escalation ID appears once, as the link. The configured
+mention is attached to that first post and nowhere else. When the incident
+closes, its root is edited down to a single line saying how it ended, with no
+link and no mention: the page is already linked from the root above it and from
+the thread.
 
 **Reply in the thread underneath it.** That is the whole interface. What
 happens next:

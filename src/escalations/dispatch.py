@@ -429,12 +429,8 @@ class EscalationDeliveryService:
         replacement = bool((row.get("payload") or {}).get("replacement"))
         base_url, dashboard_notice = await self._dashboard()
         content = (
-            render_resolved_root(
-                facts,
-                base_url=base_url,
-                dedup_key=dedup_key,
-                dashboard_notice=dashboard_notice,
-            )
+            # §3.2's collapsed row carries no link, so it needs no origin.
+            render_resolved_root(facts, dedup_key=dedup_key)
             if facts.is_terminal
             else render_root(
                 facts,
@@ -806,12 +802,7 @@ class EscalationDeliveryService:
             await self.transport.edit_root(
                 channel_id=str(binding.channel_id or self._channel_id),
                 root_message_id=str(binding.root_message_id),
-                content=render_resolved_root(
-                    facts,
-                    base_url=base_url,
-                    dedup_key=f"{dedup_key}:root",
-                    dashboard_notice=dashboard_notice,
-                ),
+                content=render_resolved_root(facts, dedup_key=f"{dedup_key}:root"),
             )
         except TransportMissing as exc:
             # The root is gone but the outcome is recorded in the thread and in

@@ -25,6 +25,7 @@ from src.digest.eligibility import (
     highlight_key,
 )
 from src.digest.facts import KIND_COMPLETED, KIND_PROGRESS, KIND_PROVIDER, KIND_STARTED
+from src.discord.render_budget import GLYPH_DIGEST
 
 NOW = 1_000_000.0
 HOUR = 3600.0
@@ -202,7 +203,7 @@ def test_message_stays_under_the_limit_and_folds_the_rest_into_a_count():
     assert "20 completed" in result.text
 
 
-def test_highlights_are_capped_at_three_and_prefer_completions():
+def test_highlights_are_capped_and_prefer_completions():
     facts = (
         fact(key="s1", kind=KIND_STARTED, task_id="t1", detail="started one"),
         fact(key="s2", kind=KIND_STARTED, task_id="t2", detail="started two"),
@@ -211,7 +212,9 @@ def test_highlights_are_capped_at_three_and_prefer_completions():
     )
     result = build_digest(inputs(facts=facts))
     assert "shipped four" in result.text
-    assert "+1 more" in result.text
+    # §3.2 leaves three body lines: the window and its counts are the first.
+    assert "+2 more" in result.text
+    assert result.text.split("\n")[0].startswith(f"{GLYPH_DIGEST} Agent Queue")
 
 
 def test_no_mentions_survive_even_from_user_authored_text():
@@ -306,8 +309,9 @@ def test_a_fleet_fact_leads_the_highlights_and_names_no_project_or_task():
     busy = tuple(fact(key=f"c{i}", task_id=f"t{i}", detail=f"done {i}") for i in range(4))
     result = build_digest(inputs(facts=(*busy, provider())), project_ids=frozenset({"p"}))
     lines = result.text.split("\n")
-    assert lines[1].startswith("1 provider change · 4 completed")
-    assert lines[2] == "• provider codex: unavailable (unauthenticated)"
+    assert lines[0].startswith(f"{GLYPH_DIGEST} Agent Queue")
+    assert "1 provider change · 4 completed" in lines[0]
+    assert lines[1] == "• provider codex: unavailable (unauthenticated)"
     assert "()" not in result.text
 
 

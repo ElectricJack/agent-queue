@@ -136,7 +136,9 @@ def test_root_post_carries_the_identifying_fields_and_only_configured_mentions()
     assert "Migration blocked" in text
     assert "Roll forward or hold?" in text
     assert f"<@{MENTION_USER}>" in text and f"<@&{MENTION_ROLE}>" in text
-    assert f"{BASE_URL}/settings/messaging#escalation-reply-esc-1" in text
+    # §6.1: the post's one link is the incident's focus page, never settings.
+    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert "/settings/" not in text
     assert "esc-1" in text and "aq-esc:esc-1:root:0" in text
 
 
@@ -169,7 +171,7 @@ def test_replacement_root_repeats_the_incident_without_repeating_the_ping():
     assert "reposted" in text
     assert "Migration blocked" in text
     assert "Roll forward or hold?" in text
-    assert f"{BASE_URL}/settings/messaging#escalation-reply-esc-1" in text
+    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
     assert "aq-esc:esc-1:root:1" in text
 
 
@@ -210,7 +212,7 @@ def test_resolved_root_drops_the_mention_entirely():
         decision_requested="d",
         terminal_outcome="Rolled the replica forward",
     )
-    text = render_resolved_root(facts, base_url=BASE_URL, dedup_key="esc-1:resolution:0:root")
+    text = render_resolved_root(facts, dedup_key="esc-1:resolution:0:root")
     assert "<@" not in text
     assert "Rolled the replica forward" in text
     assert "Resolved" in text
