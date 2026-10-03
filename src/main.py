@@ -532,13 +532,6 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     """
     checks: dict[str, dict] = {}
 
-    # Database check
-    try:
-        await orch.db.list_agents()
-        checks["database"] = {"ok": True}
-    except Exception as e:
-        checks["database"] = {"ok": False, "error": str(e)}
-
     # Orchestrator status
     checks["orchestrator"] = {
         "ok": True,
@@ -546,8 +539,8 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "running_tasks": len(orch._running_tasks),
     }
 
-    # Recomputed on every read: a startup snapshot kept /health at 503 for a
-    # required playbook an operator had already repaired, until a restart.
+    # Recomputed each collection so a required playbook repaired after startup
+    # appears in the next health snapshot without a daemon restart.
     refresh_required = getattr(orch, "refresh_required_playbook_status", None)
     if inspect.iscoroutinefunction(refresh_required):
         required_playbooks = await refresh_required()
@@ -558,10 +551,12 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     # Agent status
     try:
         agents = await orch.db.list_agents()
+        checks["database"] = {"ok": True}
         busy = sum(1 for a in agents if a.state == AgentState.BUSY)
         idle = sum(1 for a in agents if a.state == AgentState.IDLE)
         checks["agents"] = {"ok": True, "busy": busy, "idle": idle, "total": len(agents)}
     except Exception as e:
+        checks["database"] = {"ok": False, "error": str(e)}
         checks["agents"] = {"ok": False, "error": str(e)}
 
     # Aggregate counts avoid materializing the entire ready backlog on every probe.

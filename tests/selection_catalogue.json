@@ -1388,7 +1388,7 @@
       ]
     }
   },
-  "digest": "sha256:f02419a86c97e35733da2cc3cfb19c3564a5d2cec747b1704d24b23e301135d6",
+  "digest": "sha256:2a313ec94d021b93d3aa2dfd7d842c1e7ab8db4eff5edcbe868c5a1d52bd2b84",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6528,6 +6528,7 @@
         "src.api",
         "src.api.dependencies",
         "src.api.health",
+        "src.api.health_monitor",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
@@ -9598,6 +9599,7 @@
       "imports": [
         "src.config",
         "src.metrics.histogram",
+        "src.metrics.loop_watchdog",
         "src.metrics.perf"
       ],
       "markers": [
@@ -15227,6 +15229,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.health",
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",

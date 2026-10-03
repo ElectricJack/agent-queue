@@ -145,6 +145,21 @@ def create_app(
     deps._require_session_token = bool(config.api_auth.require_session_token)
 
     deps._health_provider = health_provider
+    from src.api.health_monitor import HealthMonitor
+
+    health_monitor = HealthMonitor(health_provider) if health_provider is not None else None
+    deps._health_monitor = health_monitor
+
+    @app.on_event("startup")
+    async def _start_health_monitor():
+        if health_monitor is not None:
+            health_monitor.start()
+
+    @app.on_event("shutdown")
+    async def _stop_health_monitor():
+        if health_monitor is not None:
+            await health_monitor.stop()
+
     deps._plan_content_provider = plan_content_provider
     deps._started_at = time.monotonic()
     deps._base_url = (
@@ -275,6 +290,12 @@ def create_app(
     # WebSocket event stream — forward notify.* events to connected clients
     ws_manager = WebSocketManager(orchestrator.bus, db=orchestrator.db)
     ws_manager.start()
+
+    @app.on_event("startup")
+    async def _start_ws():
+        # A supervised API server restart reuses the application after its
+        # shutdown unsubscribed this manager. start() is idempotent.
+        ws_manager.start()
 
     @app.websocket("/ws/events")
     async def ws_events(websocket: WebSocket):

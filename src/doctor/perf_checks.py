@@ -14,6 +14,7 @@ from src.metrics.histogram import count_over, is_hist, merge_hists, percentile
 
 OWNER = "dashboard-performance"
 CHECK_ID = "perf.sustained_loop_lag"
+HEALTH_CHECK_ID = "perf.health_latency"
 WINDOW_SECONDS = 180
 THRESHOLD_MS = 500.0
 MIN_SAMPLES = 120
@@ -160,8 +161,42 @@ async def _check_sustained_loop_lag(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_health_latency(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(id=HEALTH_CHECK_ID, severity=Severity.INFO, detail="no database handle")
+    now = time.time()
+    rows = await ctx.db.read_metrics_samples(
+        "1s", now - WINDOW_SECONDS, now, limit=WINDOW_SECONDS + 5
+    )
+    if rows and _at(rows[-1], "enabled") is False:
+        return CheckResult(
+            id=HEALTH_CHECK_ID, severity=Severity.INFO,
+            detail="performance probes are off (metrics.perf_enabled = false)",
+        )
+    latency = _merged(rows, "api", "routes", "GET /health", "latency")
+    count = latency["count"]
+    data = {"window_seconds": WINDOW_SECONDS, "requests": count}
+    if count < _ROUTE_MIN_COUNT:
+        return CheckResult(
+            id=HEALTH_CHECK_ID, severity=Severity.INFO,
+            detail=f"only {count} of {_ROUTE_MIN_COUNT} completed /health requests in the window",
+            data=data,
+        )
+    p95 = percentile(latency, 0.95)
+    data.update({"p95_ms": round(p95, 1), "max_ms": round(latency["max"], 1)})
+    return CheckResult(
+        id=HEALTH_CHECK_ID, severity=Severity.WARN if p95 > 2000 else Severity.OK,
+        detail=f"/health p95 {p95:.0f} ms over the last {WINDOW_SECONDS}s "
+               "(ASGI dispatch to response; also inspect perf.sustained_loop_lag)",
+        data=data,
+    )
+
+
 def perf_checks() -> list[DoctorCheck]:
-    return [DoctorCheck(id=CHECK_ID, run=_check_sustained_loop_lag, owner=OWNER, timeout_s=10.0)]
+    return [
+        DoctorCheck(id=CHECK_ID, run=_check_sustained_loop_lag, owner=OWNER, timeout_s=10.0),
+        DoctorCheck(id=HEALTH_CHECK_ID, run=_check_health_latency, owner=OWNER, timeout_s=10.0),
+    ]
 
 
 CHECKS = {check.id: check for check in perf_checks()}
