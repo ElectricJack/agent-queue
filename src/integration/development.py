@@ -1185,6 +1185,13 @@ class DevelopmentIntegration:
         self, repo, store, target_ref, head, expected, manifest, evidence, reason,
         *, arm_branch_cleanup=False,
     ):
+        if target_ref == "refs/heads/" + repo.default_branch:
+            from src.integration.development_adapter import development_subject_owns_target
+
+            if await development_subject_owns_target(
+                self.db, repo.project_id, repo.id, target_ref,
+            ):
+                return {"outcome": "subject_owned", "parked": []}
         now = time.time()
         row = {
             "id": str(uuid4()),
@@ -1547,9 +1554,18 @@ class DevelopmentIntegration:
         project_id = project.id
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
-        await self.rebind_foreign_repositories(project_id, repo)
-        await self.refresh_dependencies(project_id)
         async with nullcontext() if _moved else self.exclusion(repo.id):
+            # Shadow subjects and an unowned subject leave this path active.
+            # The shared writer takes this same repository exclusion, so a
+            # target with durable reconciler ownership cannot publish twice.
+            from src.integration.development_adapter import development_subject_owns_target
+
+            if await development_subject_owns_target(
+                self.db, project_id, repo.id, "refs/heads/" + repo.default_branch,
+            ):
+                return {"outcome": "subject_owned", "parked": []}
+            await self.rebind_foreign_repositories(project_id, repo)
+            await self.refresh_dependencies(project_id)
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):

@@ -219,6 +219,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
         "tests/test_stranded_work.py"
@@ -564,9 +565,11 @@
         "tests/test_integration_attestation.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
+        "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
         "tests/test_integration_observe.py",
@@ -1340,7 +1343,7 @@
       ]
     }
   },
-  "digest": "sha256:5c7f2ebc03645277e7ee0c5ae1c2b609055be4a90fb644549eebc081ce26448c",
+  "digest": "sha256:195e6edfaf15fa2ca9bc26d0132780519ef96c421a16d90a37dd8266fed794f9",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4759,6 +4762,29 @@
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
     },
+    "tests/test_development_subjects.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.ci_producers",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.subjects",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Development policy equivalence and incremental engine ownership on PostgreSQL."
+    },
     "tests/test_development_validation.py": {
       "areas": [
         "development-delivery"
@@ -7116,6 +7142,34 @@
       ],
       "summary": ""
     },
+    "tests/test_integration_ci_producers.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.ci",
+        "src.integration.ci_adapters",
+        "src.integration.ci_producers",
+        "src.integration.main_promotion",
+        "src.integration.subjects",
+        "src.jobs.adapters",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared exact-head facts, replay, App trust and detached validation isolation."
+    },
     "tests/test_integration_cleanup.py": {
       "areas": [
         "integration-trains"
@@ -7258,6 +7312,28 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_gitops.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.cleanup",
+        "src.integration.development",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git/PostgreSQL invariants for the shared retained-clone primitives."
     },
     "tests/test_integration_hierarchy.py": {
       "areas": [
