@@ -424,6 +424,11 @@ note; optional task/claim retry keys prevent duplicate rows. Empty auto hooks
 preserve the existing note. Prime section 6 quotes a bounded projection separately
 from current daemon facts. See [handoff and wake budgets](../../guides/wake-context-compaction.md).
 
+Authenticated handoffs accept the project identity injected by the API scope
+check. A pool session with no fixed task in its token resolves an omitted task
+from its current daemon-held claim. Project/session scope and task ownership
+checks still apply, and pool writes require the current claim epoch.
+
 - `--auto` (wired to `PreCompact`): **note only, never a restart** — Gas City's `gc-flp1`
   lesson: restarting on every compaction loops forever.
 - Non-auto: note **plus** a restart request (`session.restart_requested` event). Restart

@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/handoff.py`](../../../src/commands/contracts/handoff.py) |
-| Contract fingerprint | `sha256:6955dcbad2959c56b9ee212ba6c881edef5d4742688c628a36c69d794e871b31` |
+| Contract fingerprint | `sha256:a48ac962cbf3756deaa07c6cb3814b45242f71125d2f6219d970c5ee6e7f04ba` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `task_id` | `string \| null` | no | `null` | — |
+| `project_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
 | `claim_epoch` | `integer \| null` | no | `null` | — |
 | `auto` | `boolean` | no | `false` | — |
