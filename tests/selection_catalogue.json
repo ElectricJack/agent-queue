@@ -613,6 +613,12 @@
         "tests/test_tier_provider_defaults.py"
       ]
     },
+    "knowledge-evaluation": {
+      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks.",
+      "modules": [
+        "tests/test_knowledge_evaluation.py"
+      ]
+    },
     "knowledge-inventory": {
       "description": "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests.",
       "modules": [
@@ -626,6 +632,7 @@
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_commands.py",
+        "tests/test_knowledge_evaluation.py",
         "tests/test_knowledge_import_inventory.py",
         "tests/test_knowledge_inventory.py",
         "tests/test_knowledge_migrations.py",
@@ -1373,7 +1380,7 @@
       ]
     }
   },
-  "digest": "sha256:24c3f9e07a06a3803ba882eb235c4ff98f693af341001f0b4442e649990d1e63",
+  "digest": "sha256:7bfdf3a84cbe7f264fd70a4c4488cbf26c5208131d868c8ab9b93a4ed31e3c35",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8794,6 +8801,18 @@
         "usefixtures"
       ],
       "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
+    "tests/test_knowledge_evaluation.py": {
+      "areas": [
+        "knowledge-evaluation",
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
     },
     "tests/test_knowledge_import_inventory.py": {
       "areas": [
