@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import runpy
 import socket
 import subprocess
@@ -18,6 +19,7 @@ API = runpy.run_path(str(SCRIPT))
 FIXTURES = ROOT / "tests/fixtures/knowledge"
 GOLDEN = sorted((FIXTURES / "golden").glob("*.json"))
 NEGATIVE = sorted((FIXTURES / "negative").glob("*.json"))
+INTEGRATED = sorted((FIXTURES / "integrated").glob("*.json"))
 
 
 @pytest.fixture(autouse=True)
@@ -416,3 +418,58 @@ def test_bad_json_missing_manifest_and_duplicate_fixture_fail(tmp_path):
     report = API["evaluate_paths"]([good, good])
     assert report["status"] == "fail"
     assert report["reports"][1]["errors"] == ["manifest.duplicate_fixture"]
+
+
+# ---------------------------------------------------------------------------
+# Integrated fixtures: sealed for the real service, not for the snapshot adapter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", INTEGRATED, ids=lambda p: p.stem)
+def test_integrated_fixtures_are_sealed_and_schema_valid(path):
+    fixture = json.loads(path.read_text())
+    assert API["validate_manifest"](fixture, API["load_schema"]()) == []
+    assert fixture["expected"]["required_budget_diagnostic"] is (
+        fixture["fixture_id"] == "required-content-over-budget"
+    )
+    assert all(record["revision_sha256"] for record in fixture["records"])
+
+
+@pytest.mark.parametrize("path", INTEGRATED, ids=lambda p: p.stem)
+def test_the_snapshot_adapter_cannot_satisfy_an_integrated_fixture(path):
+    """The sealed placeholder observation is not a result: the integrated adapter
+    is the only one that can answer an integrated manifest, and the snapshot
+    replay must fail loudly rather than pass an empty selection."""
+    fixture = json.loads(path.read_text())
+    report = evaluate(fixture)
+    assert report["status"] == "fail"
+    assert "selection.identities" in errors(report) if fixture["expected"]["allowed_identities"] \
+        else "budget.required_diagnostic" in errors(report)
+
+
+def test_integrated_adapter_refuses_a_database_it_must_not_touch():
+    refuse = API["_refuse_unsafe_database"]
+    with pytest.raises(API["AdapterUnavailable"]) as missing:
+        refuse(None)
+    assert "requires_disposable_db" in str(missing.value)
+    sentinel = os.environ.get("AQ_DATABASE_URL") or "aq-worker-no-direct-db://"
+    with pytest.raises(API["AdapterUnavailable"]) as worker:
+        refuse(sentinel)
+    assert "refuses_worker_sentinel" in str(worker.value)
+    with pytest.raises(API["AdapterUnavailable"]) as maintenance:
+        refuse("postgresql+asyncpg://user:pw@localhost:5534/postgres")
+    assert "refuses_maintenance_database" in str(maintenance.value)
+
+
+def test_integrated_cli_without_a_disposable_database_is_unsupported(tmp_path):
+    output = tmp_path / "report.json"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--adapter", "context-bundle",
+         "--output", str(output)],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    report = json.loads(output.read_text())
+    assert report["status"] == "unsupported"
+    assert report["errors"] == ["adapter.context_bundle_requires_disposable_db"]
+    assert result.stdout == ""

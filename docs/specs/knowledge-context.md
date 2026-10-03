@@ -64,3 +64,51 @@ import legacy memory or call a paid provider. Shipped worker/supervisor grants
 include the citation and delivery commands. Existing worker profiles remain
 write-if-absent and require the normal operator grants-only reseed before
 activation. When a bundle is supplied, legacy L1/L2 tiers are suppressed.
+
+## Harness delivery and resume adapters (K09)
+
+`src/knowledge/delivery.py` wraps and routes one already-prepared selection. It
+never ranks, summarizes, verifies or acquires authority, and it has no database
+or daemon dependency, so `aq prime --hook-json` can import it directly. One
+payload leaves every transport byte-identical; only the wrapper differs.
+
+Four transports, classified from what a launch actually provisioned — not from
+what a harness could do. A hook whose trust was withheld is not a hook:
+
+| Transport | Condition | Wrapping |
+|---|---|---|
+| `hook_envelope` | `claude`/`codex` with hooks provisioned | `SessionStart` hook JSON |
+| `startup_prompt` | any launch with a prompt channel | plain body |
+| `startup_guidance` | no hook and no prompt channel | `.aq/knowledge-startup.md` written into the workspace |
+| `memory_pointer` | opt-in managed pointer block in a provider memory file | markers around AQ commands and the authority boundary |
+
+Duplicate suppression is transport-only: a startup prompt that already carried
+the payload suppresses the hook envelope, while `compact` and `resume` always
+deliver — those are exactly when continuation state pays for itself. The
+acknowledgment key is derived from transport, bundle, source, session and claim
+epoch, so a retried receipt deduplicates and a recycled slot cannot reuse the
+previous task's key. `acknowledge()` reports `delivered`, `failed` or `unknown`;
+`unknown` is a written payload whose receipt did not complete, and no state
+claims comprehension.
+
+`aq prime` acknowledges only after the body is written, and falls back to
+recording `unknown` when the receipt does not land. `SessionSpecBuilder` records
+the provisioned transport on the spec and writes the guidance file for a launch
+that cannot carry the payload in argv. Compaction and resume reprepare under the
+current execution identity; a provider or model switch recalculates the budget
+while the authorized corpus and pinned evidence stay consistent.
+
+`scripts/evaluate-knowledge.py` is the provider-neutral fixture runner. Its
+default adapter replays sealed synthetic observations; `--adapter context-bundle`
+and `--adapter local-model` replay the same independent oracle against the real
+service in a **disposable** database named with `--db-url`, which is recreated
+for the run and dropped afterwards. Worker sentinels, the maintenance database
+and the operator's production database are refused. Integrated fixtures under
+`tests/fixtures/knowledge/integrated/` seal each record's exact revision hash, so
+the oracle compares the adapter's reported hash against sealed bytes instead of
+hashing the excerpt it rendered. The local-model adapter models a CLI with
+neither hook nor prompt argument: it proves contract compatibility, never
+local-model quality.
+
+Activation remains the operator's G4 decision. This increment adds no
+migration, enables no feature flag, imports no data and calls no provider.

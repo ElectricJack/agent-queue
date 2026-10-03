@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the synthetic golden knowledge fixtures with consistent section hashes.
+"""Generate the synthetic knowledge fixtures with consistent section hashes.
 
 The golden fixtures under ``tests/fixtures/knowledge/golden/`` pin ``input_hashes``
 for every top-level section, including observations and budgets;
@@ -7,6 +7,13 @@ editing a section invalidates its hash and the runner must fail it. This
 regenerates the hashes from the current section contents so a deliberate
 hash-mutation test can compare against a tampered copy in-place in a test,
 never against the shipped golden set.
+
+``tests/fixtures/knowledge/integrated/`` holds the fixtures the real K08
+service is replayed against. Sealing their exact revision hashes needs the
+service's own canonical snapshot form, so this generator imports
+``tests.knowledge_fixture_adapter`` for the one snapshot builder the adapter
+seeds from: two implementations would be two sets of bytes. It never opens a
+database; only the integrated run does.
 
 Usage::
 
@@ -23,6 +30,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 EVALUATOR = runpy.run_path(str(ROOT / "scripts/evaluate-knowledge.py"))
 canonical_dumps = EVALUATOR["canonical_dumps"]
 sha256_text = EVALUATOR["sha256_text"]
@@ -30,6 +39,7 @@ seal_manifest = EVALUATOR["seal_manifest"]
 render_snapshot = EVALUATOR["render_snapshot"]
 
 GOLDEN_DIR = ROOT / "tests" / "fixtures" / "knowledge" / "golden"
+INTEGRATED_DIR = ROOT / "tests" / "fixtures" / "knowledge" / "integrated"
 PREPARED_AT = "2026-10-01T00:00:00Z"
 
 IDENTITY_PROC = "rec-procedure-deploy@rev-0007:procedure"
@@ -599,6 +609,182 @@ worker["delivery_rules"]["events"] = [
 seal_manifest(worker)
 FIXTURES[worker["fixture_id"]] = worker
 
+# ---------------------------------------------------------------------------
+# Integrated fixtures: replayed against the real K08 service, not a snapshot.
+#
+# Each record seals the exact revision content hash the record store computes,
+# so the oracle compares the adapter's reported hash with sealed bytes instead
+# of hashing the excerpt it rendered. ``authority`` is the delivery authority
+# label ("none" without an authority grant), and ``evidence`` is a retained
+# artifact source id, which the rendered payload carries verbatim.
+# ---------------------------------------------------------------------------
+
+
+def snapshot_fixture_snapshot(fixture: dict) -> dict:
+    """Placeholder observation for an integrated fixture.
+
+    The integrated adapter ignores it — that is the whole point of an
+    integration fixture — but the manifest schema requires the section, so an
+    empty observation is sealed rather than a recorded snapshot of a run.
+    """
+    rules = fixture["delivery_rules"]
+    return {
+        "selected": [],
+        "omissions": [],
+        "rendered": "",
+        "rendered_sha256": sha256_text(""),
+        "owner": {key: rules[key] for key in ("owner_kind", "owner_id", "claim_epoch")},
+        "citations": [],
+        "deliveries": [],
+        "usage": {"method": "upper_bound_bytes:utf8", "tokens": 0, "bytes": 0},
+        "diagnostics": [],
+        "metadata": {"synthetic": True},
+    }
+
+
+def integration_hash(doc: dict) -> str:
+    """The revision content hash the record store will compute for *doc*.
+
+    Deliberately produced by the same canonicalization the service uses: the
+    fixture pins the bytes it sealed, and the adapter has to arrive at that
+    hash from the database rather than by re-rendering anything.
+    """
+    from src.knowledge.models import content_hash, normalize_snapshot
+
+    return content_hash(normalize_snapshot(doc))
+
+
+def integration_record(record_id: str, revision_id: str, kind: str, body: str) -> dict:
+    evidence = "synthetic-log-evidence" if kind == "evidence" else "synthetic-agent-assertion"
+    record = {
+        "record_id": record_id,
+        "revision_id": revision_id,
+        "kind": kind,
+        "excerpts": {"body": body},
+        "evidence": evidence,
+        "authority": "none",
+        "freshness": "current",
+        "verification": "unverified",
+        "lifecycle": "active",
+    }
+    from tests.knowledge_fixture_adapter import _seed_snapshot
+
+    record["revision_sha256"] = integration_hash(_seed_snapshot(record))
+    return record
+
+
+def integration_manifest(
+    fixture_id: str,
+    scenario: str,
+    records: list,
+    *,
+    allowed: list,
+    omitted: dict | None = None,
+    attempts: list,
+    budget: dict | None = None,
+    required_diagnostic: bool = False,
+) -> dict:
+    fixture = manifest(
+        fixture_id,
+        scenario,
+        records,
+        {
+            "allowed_identities": allowed,
+            "omitted_reasons": omitted or {},
+            "forbidden_records": {},
+            "duplicate_delivery": {"attempts": attempts},
+            "required_budget_diagnostic": required_diagnostic,
+        },
+        budget=budget or {
+            "max_tokens": 8192,
+            "max_bytes": 16384,
+            "token_unit": "upper_bound_bytes:utf8",
+            "reserved_tokens": 64,
+            "reserved_bytes": 64,
+        },
+    )
+    fixture["observation"] = snapshot_fixture_snapshot(fixture)
+    fixture["delivery_rules"]["events"] = [
+        {key: value for key, value in attempt.items() if key != "expected_new"}
+        for attempt in attempts
+    ]
+    seal_manifest(fixture)
+    return fixture
+
+
+def _identity(record: dict) -> str:
+    return f"{record['record_id']}@{record['revision_id']}:{record['kind']}"
+
+
+_PARITY_RECORDS = [
+    integration_record("rec-integrated-evidence", "rev-0001", "evidence", EVIDENCE_TEXT),
+    integration_record(
+        "rec-integrated-procedure", "rev-0002", "procedure",
+        "Run the staging health gate, then freeze the schema before release.",
+    ),
+]
+
+# Every installed harness label delivers the identical selection: Claude and
+# Codex through the SessionStart hook envelope, OpenCode through the startup
+# prompt, and a local model through explicit guidance.
+INTEGRATED: dict[str, dict] = {
+    "hook-and-startup-parity": integration_manifest(
+        "hook-and-startup-parity",
+        "Identical selected Markdown and one citation per record across every harness",
+        _PARITY_RECORDS,
+        allowed=[_identity(record) for record in _PARITY_RECORDS],
+        attempts=[{
+            "bundle_id": "bundle-hook-and-startup-parity",
+            "transport": "hook_envelope",
+            "transport_key": "bundle-hook-and-startup-parity:hook_envelope",
+            "final_state": "delivered",
+            "expected_new": True,
+        }],
+    ),
+    # A lost acknowledgment is `unknown`, and the retry deduplicates: one
+    # delivery receipt and one citation, not two of either.
+    "duplicate-acknowledgment": integration_manifest(
+        "duplicate-acknowledgment",
+        "A retried acknowledgment on one transport key creates no second receipt or citation",
+        [_PARITY_RECORDS[0]],
+        allowed=[_identity(_PARITY_RECORDS[0])],
+        attempts=[
+            {
+                "bundle_id": "bundle-duplicate-acknowledgment",
+                "transport": "startup_prompt",
+                "transport_key": "bundle-duplicate-acknowledgment:startup_prompt",
+                "final_state": "unknown",
+                "expected_new": True,
+            },
+            {
+                "bundle_id": "bundle-duplicate-acknowledgment",
+                "transport": "startup_prompt",
+                "transport_key": "bundle-duplicate-acknowledgment:startup_prompt",
+                "final_state": "delivered",
+                "expected_new": False,
+            },
+        ],
+    ),
+    # Required content alone over budget: a typed diagnostic, no knowledge, no
+    # rendering, and no delivery receipt to claim a cap that was never met.
+    "required-content-over-budget": integration_manifest(
+        "required-content-over-budget",
+        "Required reserves alone exceed the cap: typed diagnostic, zero payload",
+        _PARITY_RECORDS,
+        allowed=[],
+        omitted={_identity(record): "context.required_over_budget" for record in _PARITY_RECORDS},
+        attempts=[],
+        budget={
+            "max_tokens": 32,
+            "max_bytes": 16384,
+            "token_unit": "upper_bound_bytes:utf8",
+            "reserved_tokens": 64,
+            "reserved_bytes": 64,
+        },
+        required_diagnostic=True,
+    ),
+}
+
 # Intentionally failing, sealed observations: these demonstrate independent oracle failures.
 NEGATIVE: dict[str, dict] = {}
 for name, base in (
@@ -626,7 +812,11 @@ def main() -> int:
     args = parser.parse_args()
 
     problems: list[str] = []
-    all_fixtures = [(GOLDEN_DIR, FIXTURES), (GOLDEN_DIR.parent / "negative", NEGATIVE)]
+    all_fixtures = [
+        (GOLDEN_DIR, FIXTURES),
+        (INTEGRATED_DIR, INTEGRATED),
+        (GOLDEN_DIR.parent / "negative", NEGATIVE),
+    ]
     for directory, group in all_fixtures:
         for name, fixture in sorted(group.items()):
             path = directory / f"{name}.json"
@@ -652,9 +842,15 @@ def main() -> int:
                 path.write_text(
                     json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
-        print(f"Wrote {len(FIXTURES)} golden and {len(NEGATIVE)} negative fixtures")
+        print(
+            f"Wrote {len(FIXTURES)} golden, {len(INTEGRATED)} integrated "
+            f"and {len(NEGATIVE)} negative fixtures"
+        )
     else:
-        print(f"Golden fixtures current: {len(FIXTURES)} fixtures")
+        print(
+            f"Fixtures current: {len(FIXTURES)} golden, {len(INTEGRATED)} integrated, "
+            f"{len(NEGATIVE)} negative"
+        )
     return 0
 
 
