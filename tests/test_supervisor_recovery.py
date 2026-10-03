@@ -6,14 +6,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select, update
 
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
-from src.database.tables import messages
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from src.database.tables import (
+    integration_branch_owners,
+    integration_owner_recoveries,
+    messages,
+    projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+)
+from src.models import (
+    Agent, AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus,
+)
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -757,6 +766,328 @@ async def test_operator_stop_is_a_decision_not_an_incident(env):
     assert (await notify(env))["outcome"] == "not_actionable"
     await env.db.queue_task_recovery_notifications()
     assert not await queued_messages(env)
+
+
+async def released_handoff(env):
+    """The durable state left by a stopped pool writer and operator release-owner."""
+    await env.db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE))
+    await env.db.create_profile(AgentProfile(id="codex-worker", name="Codex"))
+    await env.db.update_task("t", repo_id="r")
+    await stopped_attempt(env, reason="productive_death")
+    await env.db.update_session("s", lifecycle="pool", task_id=None)
+    await env.db.set_task_meta("t", "needs_attention", "session_not_live")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="train",
+                integration_repository_id="r",
+            )
+        )
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin",
+                task_id="t",
+                repository_id="r",
+                branch_name="aq/keep",
+                base_sha="a" * 40,
+                creation_generation=0,
+                reserved=True,
+                materialized=True,
+                created_at=1,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="t",
+                repository_id="r",
+                branch="aq/keep",
+                checkpoint_sha="a" * 40,
+                updated_at=1,
+            )
+        )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="r",
+                ref="aq/keep",
+                owner_id="t",
+                owner_role="worker",
+                handoff_state="released",
+                fence_token=2,
+                created_at=1,
+                updated_at=8000,
+            )
+        )
+        await conn.execute(
+            insert(integration_owner_recoveries).values(
+                id="release",
+                owner_row_id="owner",
+                repository_id="r",
+                ref="aq/keep",
+                task_id="t",
+                outcome="preserved_and_released",
+                principal="human:local-operator",
+                created_at=8000,
+                evidence={
+                    "released_fence_token": 2,
+                    "claim_released": True,
+                    "workspace_unlocked": True,
+                    "preserved_ref": "aq/preserved/owner",
+                    "preserved_sha": "b" * 40,
+                "stop_proof": {
+                    "session_id": "s",
+                    "instance_token": "s",
+                    "name": "s",
+                    "provider": "fake",
+                        "desired_state": "stopped",
+                        "confirmed_at": 8000,
+                    },
+                },
+            )
+        )
+    await env.db.update_task(
+        "t",
+        profile_id="codex-worker",
+        intelligence_class="standard-high",
+        route_source="override",
+        provider_intent="pinned",
+        route={
+            "profile_id": "codex-worker",
+            "intelligence_class": "standard-high",
+            "override": {
+                "by": "local operator",
+                "at": 8001,
+                "reason": "Continue preserved work on the operator selected provider",
+            },
+        },
+    )
+    return current
+
+
+async def test_resume_operator_released_reroute_consumes_budget_and_preserves_proof_once(env):
+    current = await released_handoff(env)
+    assert current["retry_allowed"] is False
+    assert "Session exit" in current["retry_blocker"]
+    assert "error" in await decide(env, current)  # Generic recovery stays fenced.
+    results = await asyncio.gather(
+        *(env.handler.execute("resume_task", {"task_id": "t"}) for _ in range(2))
+    )
+    assert sum("error" not in r for r in results) == 1, results
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.READY and task.retry_count == 1
+    assert (task.profile_id, task.intelligence_class) == ("codex-worker", "standard-high")
+    assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
+    assert await env.db.get_task_meta("t", "needs_attention") is None
+    saved = await env.db.get_task_meta("t", "supervisor_recovery_checkpoint")
+    assert saved["sha"] == "b" * 40 and saved["ref"] == "aq/preserved/owner"
+    assert saved["release_id"] == "release" and saved["released_fence_token"] == 2
+    decided = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert decided["operator_handoff"] == saved
+    assert decided["routing"] == current["routing"]  # Never rewrite the incident snapshot.
+    comments = await env.handler.execute("task_comments", {"task_id": "t"})
+    assert "Operator handoff evidence" in comments["comments"][0]["body"]
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "missing_audit",
+        "sweep",
+        "stale_fence",
+        "wrong_instance",
+        "wrong_name",
+        "wrong_provider",
+        "unreleased_claim",
+        "old_override",
+        "changed_affinity",
+        "retry_budget",
+        "recovery_budget",
+        "project_budget",
+        "gate",
+        "hold_label",
+        "live_worker",
+        "recovery_hold",
+        "foreign_supervisor",
+        "worker",
+    ],
+)
+async def test_operator_handoff_resume_retains_all_proof_authority_and_budget_guards(env, guard):
+    current = await released_handoff(env)
+    args = {"task_id": "t"}
+    if guard in {
+        "missing_audit", "sweep", "stale_fence", "wrong_instance", "wrong_name",
+        "wrong_provider", "unreleased_claim",
+    }:
+        async with env.db.immediate() as conn:
+            if guard == "missing_audit":
+                await conn.execute(delete(integration_owner_recoveries))
+            elif guard == "sweep":
+                await conn.execute(update(integration_owner_recoveries).values(principal="sweep"))
+            elif guard == "stale_fence":
+                await conn.execute(update(integration_branch_owners).values(fence_token=3))
+            else:
+                audit = (await conn.execute(select(integration_owner_recoveries))).mappings().one()
+                proof = dict(audit["evidence"])
+                if guard == "wrong_instance":
+                    proof["stop_proof"] = {**proof["stop_proof"], "instance_token": "reused"}
+                elif guard in {"wrong_name", "wrong_provider"}:
+                    proof["stop_proof"] = {
+                        **proof["stop_proof"], guard.removeprefix("wrong_"): "another-worker",
+                    }
+                else:
+                    proof["claim_released"] = False
+                await conn.execute(update(integration_owner_recoveries).values(evidence=proof))
+    elif guard == "old_override":
+        route = (await env.db.get_task("t")).route
+        route["override"]["at"] = 7999
+        await env.db.update_task("t", route=route)
+    elif guard == "changed_affinity":
+        await env.db.create_agent(Agent(id="other-agent", name="Other", profile_id="worker"))
+        await env.db.update_task("t", affinity_agent_id="other-agent")
+    elif guard == "retry_budget":
+        await env.db.update_task("t", retry_count=3)
+    elif guard == "recovery_budget":
+        await env.db.set_task_meta("t", "supervisor_recovery_attempts", 2)
+    elif guard == "project_budget":
+        await env.db.update_project("p", budget_limit=1, total_tokens_used=1)
+    elif guard == "gate":
+        await env.db.create_gate(
+            project_id="p", gate_type="human", title="Review", waiter_task_ids=["t"]
+        )
+    elif guard == "hold_label":
+        await env.db.add_task_label("t", "hold:operator")
+    elif guard == "live_worker":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    elif guard == "recovery_hold":
+        assert "error" not in await decide(env, current, "hold")
+    else:
+        args["_scope"] = asdict(
+            RequestScope(
+                kind="session",
+                session_id="untrusted",
+                project_id="other" if guard == "foreign_supervisor" else "p",
+                elevated=guard == "foreign_supervisor",
+            )
+        )
+    before = await env.db.get_task("t")
+    result = await env.handler.execute("resume_task", args)
+    assert "error" in result, result
+    after = await env.db.get_task("t")
+    assert after.status == before.status and after.retry_count == before.retry_count
+    assert await env.db.get_task_meta("t", "supervisor_recovery_checkpoint") is None
+
+
+async def test_existing_incident_refresh_reports_changed_route_as_not_retryable(env):
+    current = await incident(env)
+    assert current["retry_allowed"] is True
+    await env.db.update_task("t", intelligence_class="standard-high")
+    await notify(env)
+    refreshed = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert refreshed["id"] == current["id"]
+    assert refreshed["retry_allowed"] is False
+    assert "routing changed" in refreshed["retry_blocker"]
+    message = await env.db.get_message("msg-" + current["id"])
+    assert '"retry_allowed": false' in message.body
+    assert "routing changed" in message.body
+
+
+async def supervisor_handoff_hold(env, current):
+    await env.db.create_profile(AgentProfile(id="supervisor", name="Supervisor"))
+    await env.db.create_session(
+        SessionRecord(
+            id="supervisor",
+            project_id="p",
+            profile_id="supervisor",
+            harness="fake",
+            provider="fake",
+            name="n-supervisor--p",
+            lifecycle="named",
+            state="running",
+            desired_state="running",
+            epoch="e",
+            instance_token="supervisor",
+            work_dir="/never-used",
+            started_at=9000,
+        )
+    )
+    scope = asdict(
+        RequestScope(kind="session", session_id="supervisor", project_id="p", elevated=True)
+    )
+    assert "error" not in await decide(env, current, "hold", _scope=scope)
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    return held, scope
+
+
+async def test_operator_handoff_explicit_supervisor_hold_release_is_fenced_and_audited(env):
+    current = await released_handoff(env)
+    held, scope = await supervisor_handoff_hold(env, current)
+    assert "error" in await env.handler.execute("resume_task", {"task_id": "t"})
+    assert "error" in await decide(
+        env, current, expected_hold_at=held["decided_at"] - 1, _scope=scope
+    )
+    results = await asyncio.gather(
+        *(decide(env, current, expected_hold_at=held["decided_at"], _scope=scope) for _ in range(2))
+    )
+    assert sum("error" not in result for result in results) == 1, results
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.READY and task.retry_count == 1
+    assert task.profile_id == "codex-worker" and task.branch_name == "aq/keep"
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["decision_history"] == [
+        {key: held[key] for key in ("decision", "decision_reason", "decided_at", "decided_by")}
+    ]
+    assert recorded["decided_by"] == "supervisor session:supervisor"
+    assert recorded["operator_handoff"]["release_id"] == "release"
+    assert recorded["retry_allowed"] is False
+    comments = await env.handler.execute("task_comments", {"task_id": "t"})
+    assert "Cleared recovery hold" in comments["comments"][0]["body"]
+    assert "Operator handoff evidence" in comments["comments"][0]["body"]
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["manual_hold", "human_hold", "gate", "hold_label", "budget", "live_worker", "stale_fence"],
+)
+async def test_operator_handoff_hold_release_preserves_human_holds_and_rechecks_guards(env, guard):
+    current = await released_handoff(env)
+    held, scope = await supervisor_handoff_hold(env, current)
+    if guard == "manual_hold":
+        recorded = {**held, "decided_by": "operator"}
+        await env.db.set_task_meta("t", "supervisor_recovery_incident", recorded)
+    elif guard == "human_hold":
+        async with env.db.immediate() as conn:
+            from src.database.tables import task_comments
+
+            await conn.execute(update(task_comments).values(author_kind="user"))
+    elif guard == "gate":
+        await env.db.create_gate(
+            project_id="p", gate_type="human", title="Review", waiter_task_ids=["t"]
+        )
+    elif guard == "hold_label":
+        await env.db.add_task_label("t", "hold:human")
+    elif guard == "budget":
+        await env.db.update_task("t", retry_count=3)
+    elif guard == "live_worker":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    else:
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).values(fence_token=3))
+    result = await decide(env, current, expected_hold_at=held["decided_at"], _scope=scope)
+    assert "error" in result, result
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.BLOCKED
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["decision"] == "hold" and not recorded.get("decision_history")
+    assert await env.db.get_task_meta("t", "supervisor_recovery_checkpoint") is None
 
 
 async def test_event_before_the_attempt_stops_defers_to_the_scan(env):
