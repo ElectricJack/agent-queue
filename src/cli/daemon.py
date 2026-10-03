@@ -486,12 +486,38 @@ def _database_is_at_head() -> bool:
 def _backup_database() -> None:
     """Dump the configured Postgres database to BACKUPS_DIR.
 
-    Mirrors the operator wrapper: ``pg_dump`` inside the ``aq-postgres``
-    container is ``docker cp``-ed out, and a dump that is missing the marker
-    comment is refused as incomplete.  Any failure is a loud error — never a
-    silent skip.
+    Prefer a local PostgreSQL client and the configured connection, including
+    Homebrew's keg-only clients. Fall back to the legacy ``aq-postgres`` Docker
+    container when no local client is installed. A failed backup stops startup.
     """
     import datetime
+
+    from src.install.command import run_command
+    from src.install.update import backup_database, find_pg_dump
+
+    pg_dump = find_pg_dump()
+    if pg_dump is not None:
+        destination = Path(BACKUPS_DIR) / (
+            f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
+        )
+        try:
+            ok, message = backup_database(
+                Path(CONFIG_PATH), destination, execute=run_command, pg_dump=pg_dump
+            )
+            if not ok:
+                console.print(f"Database backup failed: {message}", markup=False)
+                raise SystemExit(13)
+            with destination.open("rb") as handle:
+                valid = handle.read(5) == b"PGDMP"
+            if not valid:
+                destination.unlink(missing_ok=True)
+                console.print("Database backup failed: pg_dump did not produce a custom archive.")
+                raise SystemExit(15)
+        except OSError as exc:
+            console.print(f"Database backup failed: {exc}", markup=False)
+            raise SystemExit(14) from exc
+        console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
+        return
 
     try:
         os.makedirs(BACKUPS_DIR, exist_ok=True)
@@ -511,6 +537,11 @@ def _backup_database() -> None:
         _docker("docker", "cp", f"{container}:{tmp}", out)
         _docker("docker", "exec", container, "rm", "-f", tmp)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        console.print(
+            "Database backup failed: no local pg_dump was found and the aq-postgres Docker "
+            "backup failed. Install PostgreSQL client tools for the configured server.",
+            markup=False,
+        )
         raise SystemExit(13) from exc
 
     # The wrapper's integrity check: a real pg_dump carries that comment.
