@@ -23,6 +23,16 @@ class KnowledgeEnvelope(BaseModel):
     revision_id: str | None = None
 
 
+class KnowledgeCitationResponse(KnowledgeEnvelope):
+    citation_id: str
+
+
+class KnowledgeContextDeliveryResponse(KnowledgeEnvelope):
+    bundle_id: str
+    delivery_id: str
+    state: str
+
+
 class KnowledgeCreateResponse(KnowledgeEnvelope):
     kind: str | None = None
     version: int | None = None
@@ -105,6 +115,8 @@ class KnowledgeImportResponse(KnowledgeEnvelope):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "knowledge_cite": KnowledgeCitationResponse,
+    "knowledge_context_deliver": KnowledgeContextDeliveryResponse,
     "knowledge_create": KnowledgeCreateResponse,
     "knowledge_create_task": KnowledgeCreateTaskResponse,
     "knowledge_list": KnowledgeListResponse,

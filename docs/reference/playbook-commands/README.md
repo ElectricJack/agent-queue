@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+175 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -167,6 +167,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
+| [`knowledge_cite`](knowledge_cite.md) | Knowledge Cite | Record an exact revision explicitly read or attached by this execution. |
+| [`knowledge_context_deliver`](knowledge_context_deliver.md) | Knowledge Context Deliver | Acknowledge observed transport delivery of a prepared bundle. |
 | [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
 | [`knowledge_create_task`](knowledge_create_task.md) | Knowledge Create Task | File one ordinary task with an exact motivated_by knowledge link. |
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |

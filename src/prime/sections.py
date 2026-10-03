@@ -510,6 +510,7 @@ async def build_messages_section(
     parts: list[str] = []
 
     messages_enabled = bool(getattr(getattr(config, "messages", None), "enabled", False))
+    message_ids = []
     if messages_enabled:
         if callable(getattr(db, "list_collaboration_threads", None)):
             try:
@@ -562,6 +563,7 @@ async def build_messages_section(
             key=lambda m: (getattr(m, "priority", 0), getattr(m, "created_at", 0) or 0),
         )
         for msg in ordered:
+            message_ids.append(msg.id)
             header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
             if getattr(msg, "subject", None):
                 header = f"{header} {msg.subject}"
@@ -681,6 +683,13 @@ def build_l2_context_section(config: Any) -> PrimeSection:
     if not getattr(getattr(config, "memory", None), "enabled", False):
         return PrimeSection(key="l2_context", title=SECTION_TITLES["l2_context"], body="")
     return PrimeSection(key="l2_context", title=SECTION_TITLES["l2_context"], body="")
+
+
+def build_knowledge_section(bundle) -> PrimeSection:
+    """Render only the authorized selection supplied by the command owner."""
+    markdown = bundle.to_markdown()
+    return PrimeSection(key="l2_context", title="Knowledge context",
+                        body=markdown.removeprefix("## Knowledge context\n\n").rstrip())
 
 
 # ---------------------------------------------------------------------------
