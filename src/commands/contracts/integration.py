@@ -3165,6 +3165,27 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                                              {"preview", "transferred", "refused"})
 
         registry.register(CommandRegistration(name, contract, transfer_engine))
+    name = "integration_shadow_report"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationShadowReportArgs,
+            ("report", "refused"), successes=frozenset({"report"}),
+            side_effect=SideEffectClass.READ, result_model=IntegrationShadowReportValue)
+        contract = contract.model_copy(update={
+            "presentation": contract.presentation.model_copy(update={
+                "title": "Shadow comparison report",
+                "summary": (
+                    "Compare the shadow loop's journalled decisions against the legacy "
+                    "decisions of one explicit window and name every gate still open."
+                ),
+            }),
+        })
+
+        async def shadow_report(args, ctx):
+            return await _hierarchy_adapter("integration_shadow_report", args, ctx,
+                                           IntegrationShadowReportValue,
+                                           {"report", "refused"})
+
+        registry.register(CommandRegistration(name, contract, shadow_report))
     name = "integration_migrate_provenance"
     if registry.get(name) is None:
         contract = _operational_contract(name, IntegrationMigrateProvenanceArgs,
@@ -3302,6 +3323,59 @@ class IntegrationEngineTransferValue(CommandValue):
     expected_versions: dict[str, int] = Field(default_factory=dict)
     current_engines: dict[str, Literal["legacy", "reconciler"]] = Field(default_factory=dict)
     reason: str | None = None
+
+
+class IntegrationShadowReportArgs(CommandArgs):
+    """One explicit evidence window for the shadow-versus-legacy comparison.
+
+    The window is supplied, never inferred: ``since``/``until`` are epoch
+    seconds and a window shorter than the required observation period is
+    reported incomplete rather than rounded up. ``acknowledge_unknown`` names
+    exact journal sequences an operator has reviewed; unknown is never a
+    successful action, so an unacknowledged one blocks.
+    """
+
+    project_id: str = Field(min_length=1)
+    since: float
+    until: float
+    acknowledge_unknown: tuple[int, ...] = ()
+
+    @field_validator("until")
+    @classmethod
+    def ordered_window(cls, value, info):
+        since = info.data.get("since")
+        if since is not None and value <= since:
+            raise ValueError("until must be after since")
+        return value
+
+    @field_validator("acknowledge_unknown")
+    @classmethod
+    def nonnegative_sequences(cls, value):
+        if any(isinstance(seq, bool) or seq < 0 for seq in value):
+            raise ValueError("acknowledge_unknown must name nonnegative journal sequences")
+        return value
+
+
+class IntegrationShadowReportValue(CommandValue):
+    digest: str = ""
+    window_start: float = 0.0
+    window_end: float = 0.0
+    window_complete: bool = False
+    observed_span_seconds: float = 0.0
+    policy_artifacts: tuple[str, ...] = ()
+    legacy_decisions: int = 0
+    agreements: int = 0
+    divergences: int = 0
+    missing_comparisons: int = 0
+    unrouted_decisions: int = 0
+    unexplained_batches: tuple[str, ...] = ()
+    unknown_observations: int = 0
+    blocking_reasons: tuple[str, ...] = ()
+    cleared_for_review: bool = False
+    operator_commands: tuple[str, ...] = ()
+    rollback_commands: tuple[str, ...] = ()
+    report: dict[str, Any] = Field(default_factory=dict)
+    markdown: str = ""
 
 
 class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):

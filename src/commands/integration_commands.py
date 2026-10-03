@@ -85,6 +85,60 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_shadow_report(self, args: dict) -> dict:
+        """One read-only shadow-versus-legacy comparison over an explicit window.
+
+        Nothing here mutates, transfers or enables the active loop: the report
+        is evidence an operator reads, and it renders the commands a human
+        would run next.
+        """
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationShadowReportArgs
+        from src.integration.shadow_report import build_report
+
+        try:
+            request = IntegrationShadowReportArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        project = await self.db.get_project(request.project_id)
+        if project is None:
+            return _failure("refused", "project does not exist")
+        _, error = await integration_operator(self.db, request.project_id)
+        if error:
+            return _failure("refused", error)
+        report = await build_report(
+            request.project_id,
+            self.db,
+            since=request.since,
+            until=request.until,
+            acknowledged_unknowns=request.acknowledge_unknown,
+        )
+        document = report.as_dict()
+        return {
+            "success": True,
+            "outcome": "report",
+            "digest": report.digest,
+            "window_start": report.window.start,
+            "window_end": report.window.end,
+            "window_complete": report.window.complete,
+            "observed_span_seconds": round(report.observed_span_seconds, 3),
+            "policy_artifacts": document["policy_artifacts"],
+            "legacy_decisions": report.legacy_decisions,
+            "agreements": report.agreements,
+            "divergences": report.divergences,
+            "missing_comparisons": report.missing_comparisons,
+            "unrouted_decisions": report.unrouted_decisions,
+            "unexplained_batches": document["unexplained_batches"],
+            "unknown_observations": report.unknown_observations,
+            "blocking_reasons": document["blocking_reasons"],
+            "cleared_for_review": report.cleared_for_review,
+            "operator_commands": document["operator_commands"],
+            "rollback_commands": document["rollback_commands"],
+            "report": document,
+            "markdown": report.render_markdown(),
+        }
+
     """Implemented integration command handlers are registered incrementally."""
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:
