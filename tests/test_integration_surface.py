@@ -26,7 +26,9 @@ from src.commands.contracts.registry import ContractRegistry
 from src.commands.integration_legacy import (
     AGENT_PROTOCOL_CONTROLS,
     APPROVED_INTEGRATION_CONTROLS,
+    APPROVED_INTEGRATION_DOCTOR_CHECKS,
     LEGACY_INTEGRATION_CONTROLS,
+    LEGACY_INTEGRATION_DOCTOR_CHECKS,
     PLAYBOOK_INTEGRATION_COMMANDS,
     legacy_control,
 )
@@ -183,3 +185,19 @@ def test_integration_help_points_at_the_legacy_group():
     assert "aq integration legacy" in result.output
     for name in ("enable", "redrive-root", "record-noop", "develop"):
         assert f"  {name} " not in result.output
+
+
+def test_doctor_has_three_subject_checks_and_gates_every_older_one():
+    from src.doctor import default_registry
+
+    registered = {check_id for check_id in default_registry().ids() if check_id.startswith(
+        "integration.")}
+    legacy = {entry.check_id for entry in LEGACY_INTEGRATION_DOCTOR_CHECKS}
+    assert len(APPROVED_INTEGRATION_DOCTOR_CHECKS) == 3
+    assert len(legacy) == len(LEGACY_INTEGRATION_DOCTOR_CHECKS) == 20
+    assert not legacy & set(APPROVED_INTEGRATION_DOCTOR_CHECKS)
+    assert registered == legacy | set(APPROVED_INTEGRATION_DOCTOR_CHECKS)
+    for entry in LEGACY_INTEGRATION_DOCTOR_CHECKS:
+        assert entry.replacement and entry.removal_gate, entry
+        if entry.replacement.startswith("integration."):
+            assert entry.replacement.split()[0] in APPROVED_INTEGRATION_DOCTOR_CHECKS

@@ -221,6 +221,57 @@ LEGACY_INTEGRATION_CONTROLS: tuple[LegacyControl, ...] = (
 )
 
 
+class LegacyDoctorCheck(NamedTuple):
+    """One pre-consolidation ``integration.*`` doctor check kept until its gate holds."""
+
+    check_id: str
+    replacement: str
+    removal_gate: str
+
+
+#: §5.5: twenty checks become three (``src/doctor/integration_subject_checks.py``).
+APPROVED_INTEGRATION_DOCTOR_CHECKS: tuple[str, ...] = (
+    "integration.subjects_overdue",
+    "integration.subjects_held",
+    "integration.trust",
+)
+
+_STATUS = "aq integration status: an observer fact on the subject"
+_GONE = "none: a state the reconciler cannot reach"
+
+
+def _check(check_id: str, replacement: str) -> LegacyDoctorCheck:
+    return LegacyDoctorCheck(f"integration.{check_id}", replacement, _ENGINE_GATE)
+
+
+#: The checks that read pre-reconciler state.  They stay registered (and run)
+#: until the module whose state they read is deleted.
+LEGACY_INTEGRATION_DOCTOR_CHECKS: tuple[LegacyDoctorCheck, ...] = (
+    _check("reviewed_file_guard", _STATUS),
+    _check("delivery_path", _STATUS),
+    _check("operational", _STATUS),
+    _check("orphaned_operations", _GONE),
+    LegacyDoctorCheck("integration.reused_task_identity", _GONE,
+                      "the legacy integration.reused_task_identity query finds zero rows"),
+    _check("unreviewed_prs", _STATUS),
+    _check("branch_discards", _GONE),
+    _check("stranded_fences", _GONE),
+    _check("missing_canonical_owners", _GONE),
+    _check("stranded_dependents", _STATUS),
+    _check("development_publisher_stalled", "integration.subjects_overdue"),
+    _check("development_conflicts_unrepaired", "integration.subjects_held"),
+    _check("stranded_delegates", _GONE),
+    LegacyDoctorCheck("integration.app_mode", "integration.trust (the same probe, renamed)",
+                      "no installed prompt or runbook names integration.app_mode"),
+    _check("stale_repair_intents", _GONE),
+    _check("missing_repair_owners", _GONE),
+    _check("stale_schedule", "integration.subjects_overdue"),
+    _check("stuck_children", "integration.subjects_overdue"),
+    _check("blocked_collectors", _STATUS),
+    _check("finished_branch_owners", _GONE),
+)
+
+
 def legacy_control(path: str) -> LegacyControl | None:
     """The legacy entry for CLI ``path`` (``"integration legacy enable"``)."""
     for control in LEGACY_INTEGRATION_CONTROLS:
