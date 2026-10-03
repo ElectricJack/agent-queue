@@ -81,6 +81,12 @@ reported `ready` for and that `integration_parent_verify` then recorded. A
 `waiting` outcome means the picture changed between those steps and the rule
 should go back to the readiness poll.
 
+The service also answers `awaiting_trusted_verification` when the checkpoint
+carries no trusted verification binding for the quoted generation and head. That
+is the same routing as `waiting`, not a new one: the typed adapter aliases it onto
+the declared `waiting` outcome — the reviewed playbooks pin this contract's
+fingerprint, so the precise `reason` reaches them in the step summary.
+
 Authority is project-level (`_integration_delivery_authorized`,
 [`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)).
 Idempotency is natural rather than keyed: the service recognises an
@@ -109,8 +115,14 @@ committed — but before its own session close persisted — finish cleanly on r
    must still answer `ready`; anything else is returned as-is.
 6. The checkpoint must carry `verified_generation == generation`, `verified_sha ==
    head_sha` and a `current_verification_id`, and readiness' own `head_sha` must
-   equal the requested head; otherwise `stale_verification`. The verification row
-   itself must exist for this operation, generation and head.
+   equal the requested head. The two are answered differently on purpose: a
+   readiness head that has moved on is a superseded subject (`stale_verification`),
+   while a checkpoint with no trusted verification binding for *this* generation
+   and head is `awaiting_trusted_verification` — a wait on the CI producer, with
+   `reason` (`verification_not_recorded`, `verified_other_head`,
+   `verified_other_generation`, `verification_record_missing`), the required
+   producer / version / check names and the owner next action. The verification
+   row must then exist for this operation, generation and head.
 7. Branch ownership is checked: the expected owner is the operation's verifier
    task (or the parent itself), the operation must be `active` or `escalated`, the
    owner's role must be `verifier`, its handoff state `reserved` or `attached`, and
@@ -141,7 +153,8 @@ was already verified.
 |---|---|
 | `completed` | The parent is complete at this generation and head. |
 | `waiting` | Readiness is no longer `ready` — a child moved after verification. Go back to the readiness poll. |
-| `stale_verification` | The checkpoint's generation, verified generation, verified head or verification id does not match what was quoted. |
+| `stale_verification` | The collected aggregate has advanced past the quoted head: a genuinely superseded subject. |
+| `awaiting_trusted_verification` | No trusted verification binds this generation and head. Reported to playbooks as `waiting`. |
 | `invariant_error` | The parent is missing, an operator hold is in place, or branch ownership/operation state is not what completion requires. |
 | `unauthorized` | The caller cannot complete this parent. |
 | `contract_violation` | The handler returned an outcome the contract does not declare. |
@@ -158,6 +171,13 @@ parent was already completed", not a corrupt system — confirm with
 
 `invariant_error` with `reason: manual_pause` is a human hold, not a fault: resume
 the task and call again.
+
+`awaiting_trusted_verification` exists because "no trusted evidence yet" and
+"this subject was superseded" call for opposite answers. Only the daemon's parent
+CI producer and the parent-integration playbook can record that evidence
+(`integration.ci_completed` → `integration_parent_verify`), so a worker's own test
+run can never satisfy it: a close refused this way keeps the verifier's claim and
+tells it not to re-run the suite.
 
 ## Example step
 

@@ -28,6 +28,7 @@ from src.commands.contracts.models import (
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
 from src.integration.models import BranchKey, Fence
+from src.integration.parent_completion import AWAITING_TRUSTED_VERIFICATION
 from src.git.manager import is_valid_git_oid
 
 
@@ -2806,6 +2807,12 @@ async def _complete_parent_adapter(
             "stale_verification",
             "invariant_error",
         },
+        # A checkpoint with no trusted verification binding for this subject is
+        # the same routing as ``waiting`` -- the next tick re-reads readiness
+        # and the ``task.integration_verified`` event re-runs the rule.  The
+        # reviewed playbooks pin this contract's fingerprint, so the precise
+        # reason reaches them in the summary.
+        aliases={AWAITING_TRUSTED_VERIFICATION: "waiting"},
     )
 
 

@@ -1623,29 +1623,32 @@ class ExecutionMixin:
                             # producer leg.  Aggregate evidence must already
                             # pin this exact generation/head; otherwise keep
                             # the live verifier attached so it can finish.
-                            from src.integration.parent_completion import ParentCompletion
+                            from src.integration.parent_completion import (
+                                AWAITING_TRUSTED_VERIFICATION,
+                                ParentCompletion,
+                            )
 
-                            if (
-                                checkpoint["current_verification_id"] is None
-                                or checkpoint["verified_generation"]
-                                != checkpoint["generation"]
-                                or checkpoint["verified_sha"] != head
-                            ):
-                                ctx.verification_retry_in_session = True
-                                ctx.verification_issues = [
-                                    "Record successful aggregate verification for the current "
-                                    "parent generation and head before closing."
-                                ]
-                                ctx.verification_feedback = ctx.verification_issues[0]
+                            generation = int(checkpoint["generation"])
+                            binding = await ParentCompletion(
+                                self.db, git_manager=self.git
+                            ).diagnose_trusted_binding(task.id, generation, head)
+                            if binding is not None:
+                                # No trusted evidence binds this subject: a wait
+                                # on the CI producer, not a fixable git issue.
+                                await self._trusted_evidence_refusal(ctx, task.id, binding)
                             else:
                                 completion = await ParentCompletion(
                                     self.db, git_manager=self.git
                                 ).complete_parent(
-                                    task.id, int(checkpoint["generation"]), head,
+                                    task.id, generation, head,
                                     accepted_close=accepted_close,
                                 )
                                 if completion["outcome"] == "completed":
                                     managed_parent_completed = True
+                                elif completion["outcome"] == AWAITING_TRUSTED_VERIFICATION:
+                                    await self._trusted_evidence_refusal(
+                                        ctx, task.id, completion
+                                    )
                                 else:
                                     ctx.verification_retry_in_session = True
                                     ctx.verification_issues = [

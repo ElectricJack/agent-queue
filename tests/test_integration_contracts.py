@@ -671,6 +671,46 @@ async def test_complete_parent_adapter_passes_every_reachable_outcome_through(ou
     }
 
 
+@pytest.mark.asyncio
+async def test_complete_parent_adapter_routes_a_missing_trusted_binding_as_waiting():
+    """A wait for trusted CI evidence reaches reviewed playbooks as ``waiting``.
+
+    The reviewed bundles pin this contract's fingerprint, so the engine's
+    finer refusal is aliased onto the declared ``waiting`` outcome and the
+    exact reason survives in the summary.
+    """
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_complete_parent"
+            return {
+                "success": False,
+                "outcome": "awaiting_trusted_verification",
+                "task_id": "parent",
+                "generation": 5,
+                "head_sha": "a" * 40,
+                "reason": "verification_not_recorded",
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_complete_parent")
+    args = registration.contract.execution.args_model(
+        task_id="parent", generation=5, head_sha="a" * 40
+    )
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == "waiting"
+    assert result.summary == "verification_not_recorded"
+    # The frozen contract, and therefore its fingerprint, is unchanged.
+    execution = registration.contract.execution
+    assert "awaiting_trusted_verification" not in {row.name for row in execution.outcomes}
+
+
 @pytest.mark.parametrize(
     "outcome, invariant",
     [
