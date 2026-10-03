@@ -10,6 +10,9 @@ A leaf generation without retained provenance is
 unlabelled: no branch head, reported commit or historical manifest stands in
 for it, so it is unknown until an operator retains it
 (``aq integration migrate-provenance``). An absent ref is never an empty artifact.
+Completed legacy tasks without a descriptive close row can be attested under
+their recorded current generation or :func:`legacy_completion_id`, without
+fabricating a passing worker close or a parent verification.
 
 A *settlement* is the one database answer the evaluator honours, and it is not
 a delivery: it records that a generation is **not owed** to one target (work
@@ -22,6 +25,7 @@ exact completion generation it settled, so a reopened task owes its new work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -378,6 +382,11 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                     request, completion_id=current_id, completed_at=None,
                     reported_source=None,
                 )
+            elif request.completion_id is None and request.task_status == "COMPLETED":
+                # Legacy closes sometimes have no descriptive completion row.
+                # This locates only explicit operator-retained Git evidence;
+                # a branch tip never stands in for the missing generation.
+                request = replace(request, completion_id=legacy_completion_id(request))
             if row["id"] in parent_ids:
                 parent = parent_completions.get(row["id"])
                 try:
@@ -438,11 +447,20 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
 
     parent_ids = set((await conn.execute(select(checkpoint.c.task_id).where(
         checkpoint.c.task_id.in_(task_ids),
-        or_(checkpoint.c.episode_id.is_not(None),
+        # A bare pre-train episode is a legacy leaf binding. Any trace of
+        # actual parent operation/verification history requires the verified
+        # completion protocol, even if its current binding is damaged.
+        or_(checkpoint.c.verified_sha.is_not(None),
+            checkpoint.c.verified_generation.is_not(None),
             checkpoint.c.last_completed_operation_id.is_not(None),
+            checkpoint.c.last_completed_verification_id.is_not(None),
             checkpoint.c.current_verification_id.is_not(None)),
     ).union(select(completion.c.parent_task_id).where(
         completion.c.parent_task_id.in_(task_ids),
+    ), select(verification.c.parent_task_id).where(
+        verification.c.parent_task_id.in_(task_ids),
+    ), select(operation.c.parent_task_id).where(
+        operation.c.parent_task_id.in_(task_ids), operation.c.target_kind == "parent",
     )))).scalars())
     if not parent_ids:
         return parent_ids, {}
@@ -493,6 +511,19 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
             row["generation"], row["verified_sha"], row["completed_at"], row["version"],
         ) for row in rows
     }
+
+
+def legacy_completion_id(request: DeliveryRequest) -> str:
+    """Stable operator-attestable identity for a completed task without a close row.
+
+    Reopen/reclose changes the task version. The archive preserves that version
+    but drops claim epochs; metadata changes alone do not create a generation.
+    """
+    material = json.dumps([
+        request.project_id, request.repository_id, request.task_id,
+        request.task_version,
+    ], separators=(",", ":"))
+    return "legacy:" + hashlib.sha256(material.encode()).hexdigest()
 
 
 def settlement_fields(value):

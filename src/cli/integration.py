@@ -1038,9 +1038,14 @@ def integration_settle_parked(ctx, project_id, operation_id, dismiss, reason):
 @click.option("--source", default=None,
               help="With --task-id: attest the exact 40-hex final source of that COMPLETED "
                    "task's current completion, for a legacy close that recorded none.")
+@click.option("--no-artifact", is_flag=True,
+              help="With --task-id and --reason: attest that this completed work has no artifact.")
+@click.option("--reason", default=None,
+              help="Audit reason; required for a missing completion row or --no-artifact.")
 @click.pass_context
 @_handle_errors
-def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source):
+def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source,
+                                 no_artifact, reason):
     """Inventory legacy completion generations and exact repair bindings in Git.
 
     Each page is bounded in time: follow next_offset (and budget_exhausted);
@@ -1048,10 +1053,14 @@ def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_i
     """
     if source and not task_id:
         raise click.UsageError("--source attests one task's completion; pass --task-id")
+    if no_artifact and (source or not task_id or not (reason or "").strip()):
+        raise click.UsageError("--no-artifact requires --task-id and --reason, without --source")
     _execute(ctx, "integration_migrate_provenance", {
         "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
         **({"task_id": task_id} if task_id else {}),
         **({"source": source} if source else {}),
+        **({"no_artifact": True} if no_artifact else {}),
+        **({"reason": reason} if reason else {}),
     })
 
 

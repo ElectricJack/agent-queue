@@ -624,6 +624,8 @@ class IntegrationMigrateProvenanceArgs(CommandArgs):
     # Operator attestation of task_id's current completion source, for a
     # legacy close that retained no source Git can verify.
     source: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    no_artifact: bool = False
+    reason: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationMigrateProvenanceValue(CommandValue):

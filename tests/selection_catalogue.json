@@ -1384,7 +1384,7 @@
       ]
     }
   },
-  "digest": "sha256:b6f4bba5a5843ad2807560a9c26afee4e5e73d6372e58626ce4cf2843ae015f0",
+  "digest": "sha256:4568bf40db373a9e18cd4789040cbd8a9f9e219a2df8968576bac1b0d789e812",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6160,11 +6160,13 @@
         "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"

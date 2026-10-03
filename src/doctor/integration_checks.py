@@ -1146,11 +1146,33 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
         )
 
     cutoff = time.time() - _UNCOLLECTED_AFTER_SECONDS
+    uncollected = {
+        task_id for task_id, completed_at in passing
+        if owners.get(task_id) in development and (completed_at or 0) <= cutoff
+        and (owners[task_id], task_id) not in collected
+    }
+    # Historical manifests are only one route to delivery. Repairs may have
+    # been delivered directly, including before their archival. Ask the same
+    # current-generation Git truth as the publisher; unavailable proof leaves
+    # them in the diagnostic rather than treating absence as delivery.
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    satisfied = set()
+    if observer is not None and uncollected:
+        from src.integration.delivery_truth import DeliveryState
+
+        view = await observer.observe(uncollected)
+        satisfied = {
+            task_id for task_id in uncollected
+            if (proof := view.get(task_id)) is not None
+            and proof.state in {DeliveryState.CONTAINED, DeliveryState.SETTLED}
+        }
     for task_id, completed_at in passing:
         project_id = owners.get(task_id)
         if project_id not in development or (completed_at or 0) > cutoff:
             continue
         if (project_id, task_id) in collected:
+            continue
+        if task_id in satisfied:
             continue
         findings.append(
             {
