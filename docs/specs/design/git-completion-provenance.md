@@ -2,16 +2,35 @@
 
 Implements shared-contract items 4–6 of the approved
 `projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md`.
-This is a development-mode primitive. The publisher and every delivery
-consumer read it through `src/integration/delivery_truth.py`; the legacy
+The development publisher and the train's Git delivery checks share this primitive.
+Every delivery consumer reads it through `src/integration/delivery_truth.py`; the legacy
 receipt table and every compatibility locator were retired by revision
 `a00000000038` (see [Legacy migration primitive](#legacy-migration-primitive)).
 
 ## Identity and retention
 
-The immutable generation is the existing `task_completion_records.id`. A
+For a leaf, the immutable generation is the existing `task_completion_records.id`. A
 completion binds project, repository, task, generation and the exact full final
 source OID. `claim_epoch` supplements that identity; it does not replace it.
+
+A verified integration parent has no leaf close row. Its generation is
+`parent:<integration_parent_verifications.id>`, backed by the durable
+`integration_parent_operation_completions` binding. The shared delivery reader
+accepts that identity only for a COMPLETED task whose designated project/repository,
+branch, current episode, checkpoint generation/head and current verification match
+the completed parent operation and its successful verification. The episode's initial
+generation may precede the checkpoint generation. A reopened task, newer close,
+unfinished operation or changed binding has unknown delivery, even if an older Git
+completion ref remains. Guarded consumers recheck this entire binding.
+
+That durable parent identity locates the exact source without a provenance migration;
+Git ancestry of the full source still decides containment on the requested target.
+Operator adoption retains this same identity in the existing provenance namespace
+and uses ordinary explicit replacement records for accepted equivalents. Adoption
+rechecks the parent binding and repository/target before writing. It creates no leaf
+completion, train delivery receipt or CI attestation. Root scheduling uses the same
+delivery answer and requires the checkpoint to name the exact source.
+
 Ordinary `aq git commit` / `aq git commit-changes` messages carry `AQ-Task`.
 `GitManager.acommit_all` also reads the worktree claim file. For direct shell
 commits, use `git commit --trailer 'AQ-Task: <task-id>'`. Existing hooks run as

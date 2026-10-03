@@ -28,6 +28,7 @@ from src.database.tables import (
     task_delivery_receipts,
 )
 from src.integration.outbox import enqueue_integration_event
+from src.integration.scheduler import empty_seal_request, request_ended_without_batch_on
 from src.integration.stale_schedule import (
     ENDED_LIFECYCLES,
     RequestChanged,
@@ -69,12 +70,28 @@ class IntegrationReleaseService:
                     )
                 )
             ).scalar_one_or_none()
-        if project_id is None:
-            return IntegrationReleaseResult(outcome="stale", batch_id=batch_id)
+            if project_id is None:
+                return await self._release_empty_seal_on(conn, batch_id)
         try:
             return await self._release_locked(str(project_id), batch_id, now)
         except _CASLost:
             return await self._canonical_replay(str(project_id), batch_id)
+
+    @staticmethod
+    async def _release_empty_seal_on(conn: Any, batch_id: str) -> IntegrationReleaseResult:
+        """Confirm an empty seal, which consumed its request and keeps no row.
+
+        There is nothing to free: the seal already ended the request in the
+        transaction that found the frontier empty.  Any other id with no row
+        is ``stale``, as before.
+        """
+        named = empty_seal_request(batch_id)
+        if named is None or not await request_ended_without_batch_on(conn, *named):
+            return IntegrationReleaseResult(outcome="stale", batch_id=batch_id)
+        project_id, request_id = named
+        return IntegrationReleaseResult(
+            outcome="empty", project_id=project_id, batch_id=batch_id, request_id=request_id
+        )
 
     async def _release_locked(
         self, project_id: str, batch_id: str, now: float

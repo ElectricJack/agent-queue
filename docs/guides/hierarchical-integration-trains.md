@@ -105,6 +105,35 @@ aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-int
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
 
+`reopen-collection` also recovers a suspended producer whose close detached its
+workspace but left a `worker` reservation on the parent branch. The dry run
+reports `kind: suspended_worker`, the current episode, operation, published head
+and owner fence. Applying consumes the confirmed detach proof and transfers
+ownership to that same operation's collector at the next fence. Collection
+reconciliation retries this handoff automatically after restart. It refuses
+live holders, operator holds, open gates, repair/verifier work and unresolved
+external writes; it preserves the checkpoint, generation, operation and receipts.
+
+For the `keen-ridge-24.1` incident, the operator deploys the recovery code, then runs:
+
+```bash
+aq --json integration reopen-collection keen-ridge-24.1
+aq --json integration reopen-collection keen-ridge-24.1 --apply --head REPORTED_HEAD --reason 'Recover confirmed detached producer into current collector'
+aq --json task show keen-ridge-24.1
+aq --json task show keen-ridge-24.1.1
+aq --json system delivery-receipts --source-task-id keen-ridge-24.1.1 --repository-id REPOSITORY_ID --target-branch aq/keen-ridge-24.1
+```
+
+Use the reported head and repository ID, checking episode
+`fca39cce-5c3a-45e9-b677-7460d9f82477` and operation
+`a143948f-0250-4631-806d-26450e850732` are still current. If the automatic pass
+already recovered ownership, `nothing_to_reopen` is expected. Wait for ordinary
+collection to create a receipt for reviewed head
+`35742ce6f77ab633ba8f269c26c8b6a17db9660e`, targeting `aq/keen-ridge-24.1` with
+that current `parent_operation_id` and `parent_episode_id`. The queued delivery
+alone is not receipt evidence. Refusals require resolving the reported blocker,
+then repeating the dry run; they never authorize database edits or bypassing CI.
+
 Always take `GENERATION` and, for a history waiver, `BLOCKER_DIGEST` from a
 fresh `aq integration status` result. A stale result is returned as stale; the
 CLI never rereads and retries a mutation against a newer generation.
@@ -179,7 +208,9 @@ also reconciles that release for batches cleaned up by older versions.
 
 `aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
 COMPLETED train root with a PR but no checkpoint or live branch origin. The
-GitHub review poller also warns when such a root has no eligible review source.
+GitHub review poller also warns when such a root has no eligible review source,
+once per root and condition (again after the condition changes or the daemon
+restarts), not on every tick.
 For a **childless** legacy root, run `aq integration materialize-root TASK_ID`
 to read its PR, remote branch head and merge-base with the default branch.
 If the dry run returns `would_materialize`, apply with its exact `head_sha`:
@@ -358,6 +389,22 @@ does not enable integration for projects that have no policy or remain disabled.
 }
 ```
 
+The optional `max_wait_seconds` (a finite positive number of seconds, default
+`3600`) is the project's `max_wait`: the longest an undelivered integration
+event keeps retrying before the outbox quarantines it. A quarantined event is
+an explicit failed delivery: its `last_error` starts `retry_budget_exhausted:`
+and it keeps every frozen destination and pin. Stored policies name the field
+only when it differs from the default, so snapshots frozen before it existed
+still compare equal. Projects without a hierarchical policy, development mode
+included, use the default. The five event types no shipped playbook consumes
+(`integration.root_delivered`, `integration.human_blocked`,
+`integration.cleanup_pending`, `task.integration_configuration_blocked`,
+`integration.branch_materialization_pending`) are not quarantined. They are
+marked delivered with `last_error` `unsubscribed: ...`, but only when the
+playbook runtime proves that no ready activation in the project's scope
+subscribes to them. An unready or unloaded activation, a partially captured
+fanout or paused playbooks all leave the event retrying instead.
+
 Repository and policy changes are accepted only while the project is disabled,
 fully drained, and has no active integration work. Bind one field, reread status
 for the incremented generation, then bind the next:
@@ -409,6 +456,11 @@ for projects using legacy delivery. `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
 `blocked-task-escalation` must defer integration-owned tasks to operation-level
 recovery instead of generic task recovery or replacement repair budgets.
+Failed delegates of active, escalated or human-required repair operations keep
+inspectable recovery incidents with their stage attempts and deadlines, but do
+not send `Task recovery: <delegate>` supervisor messages. Failure-event replays
+and the recovery scan also archive older delegate notices without redelivery.
+Integration parents and ordinary tasks keep their existing notifications.
 
 When replacing project integration playbooks with shared system activations,
 first disable/drain affected projects and verify there is no active operation.
@@ -556,10 +608,14 @@ schedule interval; changing it sets the next due time to the mutation time plus
 the new interval without dropping an outstanding or coalesced request. The
 option is invalid outside train mode and cannot cancel an active drain. Use
 `flush` for an explicit sweep and never edit the schedule row directly. One
-project cannot have overlapping active trains. Every nonempty batch uses an
-ephemeral integration branch, including a singleton batch. Main promotion is
-permitted only for the exact candidate OID already proven by the configured CI
-producer; there is no post-main audit run. Ordinary task PRs retain the full-CI
+project cannot have overlapping active trains. A sweep whose frontier is
+empty is not a train: the seal consumes its request and inserts no batch row,
+answering `empty` with the `batch_id` `integration-empty:<request_id>`, which
+`integration_release` confirms from the schedule (a replay of that seal answers
+the same, even while a later train holds the project lease). Every nonempty
+batch uses an ephemeral integration branch, including a singleton batch. Main
+promotion is permitted only for the exact candidate OID already proven by the
+configured CI producer; there is no post-main audit run. Ordinary task PRs retain the full-CI
 fallback.
 
 Successful integration/source branches are deleted by the default cleanup
@@ -597,6 +653,34 @@ whose review evidence row carries the checkpoint's current `generation`. With
 at least one such receipt the outcome is `delivered`; otherwise it stays
 `working` with no receipts. A receipt for an older head or generation is never
 counted, and the projection only reads; it never writes or rewrites receipts.
+
+Before sealing, the train also asks the shared Git delivery evaluator whether
+each candidate's exact completion source is already contained in the designated
+repository's default branch. This recognizes operator adoption and explicit
+replacement provenance without creating CI evidence or train receipts. It
+rechecks the completion identity, repository, target and current checkpoint
+source in the seal transaction. The same verified deliveries satisfy declared
+epic dependencies, including prerequisites excluded from admission by a hold.
+Changed sources, unproved completion generations, other targets and failed Git
+observations supply no delivery proof. Holds, open gates and exact review rules
+still control admission of any remaining candidate.
+
+### Epic delivery in the dashboard
+
+Epic cards and the task detail views show implementation progress
+(`5/5 tasks complete`) apart from delivery. The delivery badge comes from a
+read-only projection (`src/integration/epic_delivery.py`, design:
+[epic delivery status](../superpowers/specs/2026-10-02-epic-delivery-status-design.md))
+built on collection readiness, claim eligibility, live operations, branch
+reservations and root receipts. *Integrating* and *Verifying* need a live
+session with recent activity. *Delivered* needs a receipt binding the epic's
+current head. *Paused* means an operator hold. A managed parent that integration
+keeps `PAUSED` shows its delivery state instead, for example
+`Integration blocked - final fix not collected` or
+`Verification blocked - branch handoff required`. The badge names the blocker,
+who has to act and when progress last happened. `get_task` returns the same
+answer as `delivery_status`. Pause, resume and the integration controls still
+act on the stored status.
 
 ### Candidate-member conflict repair
 
@@ -652,6 +736,29 @@ when a repaired source is green, both it and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. Every final
 candidate still requires its own exact authenticated green CI.
 
+Before filing a repair, AQ asks canonical delivery truth the same way root
+admission does (`src/integration/source_delivery.py`): the exact completion
+generation, the exact repository and the exact default target ref, with git
+proving the generation's retained source is contained there. A source already
+delivered under other commits — merged, squashed, cherry-picked, or covered by
+an `aq integration adopt --accept-equivalent` replacement — therefore files no
+repair, and what was observed is recorded on the observation for an operator to
+read. Only a proven answer withholds work: an unreachable repository, a missing
+retained source, a new checkpoint generation, a reopened task, a different
+target or a source that is genuinely not on the target all file the repair as
+before.
+
+Every eligibility decision observes afresh, and nothing persisted is read back
+to decide one. Admission asks again on each poll, and a claim asks again before
+it withholds a queued delegate — so a retargeted or rewound default branch, a
+target that lost containment, and a delivery or adoption that arrives after an
+earlier negative answer each release the repair again. A claim that cannot
+reach git withholds nothing. The exact source identity is revalidated under the
+hierarchy lock immediately before a proof is used, so a generation that moved
+while git was read is a `stale` refusal rather than a withheld repair. An
+already-filed delegate is never ended by this check, and a claimed one keeps its
+writer.
+
 With batch conflict scope, the assignment includes the whole frozen source
 manifest. Start at its partial head, merge every remaining source in order, and
 resolve all needed files in that one workspace. Earlier code, migrations and
@@ -665,7 +772,9 @@ batch ancestry and rejects unsealed side branches before accepting the aggregate
 Continuous repair stages retain finite time/attempt budgets. At exhaustion AQ
 stops and proves the exact old writer, retains its checkout/index/dirty work,
 fences and releases its pool claim, and files a fresh operation-bound stage.
-Incomplete handoffs are retried by the reconciler. Old counters and history stay
+Incomplete handoffs are retried by the reconciler, except for a delegate an
+operator paused with `aq task pause`: it stays paused, even through an explicit
+dispatch, until `aq task resume`. Old counters and history stay
 visible. Periodic sweeps continue after the settling window is cleared, so a
 released batch does not need another review event to schedule the next batch.
 
@@ -747,6 +856,17 @@ root has no PR, and `--apply --head HEAD_SHA --reason REASON` opens it for
 that head. See [A completed root has no pull
 request](integration-troubleshooting.md#a-completed-root-has-no-pull-request).
 
+The review poller (`src/integration/github_review_poll.py`) visits one page of
+COMPLETED roots per tick and asks GitHub only what can have changed. It
+re-reads a PR's reviews when the PR's `updated_at`, head or base changed, and
+at least every ten minutes regardless; it does not fetch a PR it last saw
+closed while that PR is absent from the repository's open-PR list, read once
+per tick. A verdict or task authorization already stored for the exact source
+identity is not proven against Git again. Source CI of an open exact PR is
+still observed on every visit. The cache is in memory and keyed by the exact
+source identity, so a restart or a new head re-observes the root in full, and
+a failed read is retried on the next visit.
+
 A collecting parent assembles a COMPLETED child only once approved evidence
 pins the child's exact head; until then its siblings' `needs` keep them out of
 the claim frontier. `aq doctor --check integration.stuck_children` lists
@@ -764,6 +884,19 @@ collector receives a fresh fence and the checkpoint advances generation. The
 old failed verifier and repair budgets remain evidence. Redrive the child and
 let a fresh verifier check the resulting exact head. Human rollout gates remain
 binding; the old red aggregate is never certified by recovery.
+For a legacy failure with an empty commit list, exactly one immutable
+`task.integration_ready` outbox event must bind that verifier to the same parent,
+episode, repository, branch and head before the failure. The dry run reports
+the original subject in `delegates[].failure_subject`; apply includes that
+binding and failed completion id in its audit event. The original completion
+stays unchanged. Missing, contradictory or ambiguous evidence is refused.
+A verifier session still attached to the branch must first be settled through
+`aq session show SESSION_ID`, `aq session kill SESSION_ID` if still running,
+and `aq integration release-owner --task-id VERIFIER_TASK_ID --dry-run`.
+Apply owner recovery only after it proves the writer stopped and preserves its
+work; then repeat the collection dry run. Worker tokens cannot perform those
+operator steps. See the [failed aggregate recovery design](../superpowers/specs/2026-10-02-failed-aggregate-recovery-design.md)
+for the calm-grove-25 handoff.
 
 If `redrive-child` instead says the parent has no live collection operation,
 `cancel-preserving` cancelled the parent's whole collection; `aq integration

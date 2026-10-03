@@ -33,6 +33,7 @@ __all__ = [
     "derive_harness_id",
     "load_from_vault",
     "register_harness_handlers",
+    "runs_cli",
     "vault_path_for",
 ]
 
@@ -135,6 +136,39 @@ class HarnessRegistry:
 
     def __contains__(self, key: tuple[str | None, str]) -> bool:
         return key in self._harnesses
+
+
+def runs_cli(
+    cli: str,
+    harness_id: str | None,
+    registry: HarnessRegistry | None = None,
+    project_id: str | None = None,
+) -> bool:
+    """Whether the harness named *harness_id* runs the CLI named *cli*.
+
+    A harness id is an operator's name for one launch recipe, and two recipes
+    may run the same CLI against different backends: ``opencode`` on local
+    Ollama and ``opencode-zen`` on the OpenCode Zen gateway.  Behaviour that
+    belongs to the CLI itself — OpenCode's question store, its prime addendum —
+    asks this rather than comparing ids.
+
+    True for the harness named after the CLI, which is the only answer
+    available without a registry, and for any registered harness whose
+    executable has that file name (``.exe`` ignored).
+    """
+    name = str(harness_id or "").strip()
+    if not name:
+        return False
+    if name == cli:
+        return True
+    harness = registry.get(name, project_id) if registry is not None else None
+    command = getattr(harness, "command", None)
+    if not isinstance(command, str) or not command:
+        return False
+    executable = Path(command).name
+    if executable.lower().endswith(".exe"):
+        executable = executable[:-4]
+    return executable == cli
 
 
 # ---------------------------------------------------------------------------

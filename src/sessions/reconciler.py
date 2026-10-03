@@ -27,10 +27,12 @@ evidence of death and on nothing else.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
@@ -39,6 +41,7 @@ from src.pool_claims import (
     is_live_pool_claim_task_status,
     pool_claim_loop_stall_seconds,
 )
+from src.sessions.context import harness_progress
 from src.sessions.exit_classifier import (
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     ExitVerdict,
@@ -57,7 +60,13 @@ from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DRAIN_ACK_KEY", "AdoptReport", "SessionReconciler", "stall_reminder"]
+__all__ = [
+    "DRAIN_ACK_KEY",
+    "AdoptReport",
+    "SessionReconciler",
+    "StalledDeferral",
+    "stall_reminder",
+]
 
 #: Provider-side metadata key the agent's ``aq session drain-ack`` sets.
 DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
@@ -92,6 +101,56 @@ _HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
 LIVE_SESSION_STATES = _LIVE_STATES
+
+
+@dataclass(frozen=True)
+class _NudgeOutcome:
+    """What one nudge attempt did.
+
+    Three states, and the middle one used to be a bare ``None``: *nothing was
+    typed, and the composer was not at fault* — a human's draft, or input AQ
+    would not risk touching.  ``deferral`` carries the refusal so a caller
+    that can corroborate "no person is here" does not have to re-probe the
+    pane to find out which case it was.
+    """
+
+    #: ``True`` delivered, ``False`` failed, ``None`` untouched input.
+    delivered: bool | None
+    #: The :class:`NudgeDeferred` behind ``delivered is None``.
+    deferral: NudgeDeferred | None = None
+
+
+class StalledDeferral(StrEnum):
+    """What a refused nudge proves about the holder behind it.
+
+    Three answers, because "the composer is busy" is not one fact and the
+    difference decides whether the ladder may spend something irreplaceable
+    (a pool holder's claim).
+    """
+
+    #: A person is at the composer, or the agent is demonstrably working.
+    #: Spend nothing and say nothing: their draft is their work.
+    HOLD = "hold"
+    #: No draft is being typed, and AQ has no independent record that could
+    #: confirm or deny progress — an OpenCode worker, whose conversation
+    #: AQ cannot read at all.  Visible (event, warning, doctor) and never
+    #: destructive: the next pass may have proof.
+    REPORT = "report"
+    #: No draft is being typed, and progress evidence independent of the
+    #: composer shows none.  Spend the rung and climb.
+    ESCALATE = "escalate"
+
+
+#: How often one holder's unverifiable stall is re-announced, and therefore
+#: how stale the screen reading quoted in that announcement may be.  It never
+#: becomes destructive, so silence would be the only alternative and that is
+#: what made the 2026-10-03 stall invisible in the first place.
+_STALL_REPORT_INTERVAL_SECONDS = 900.0
+#: Rows of pane tail hashed for the screen reading an announcement quotes.
+#: Enough to hold the composer and the message area above it.
+_SCREEN_PEEK_LINES = 40
+#: Bound on the in-memory screen digests and last reports.
+_PROGRESS_CACHE_MAX = 512
 
 
 @dataclass
@@ -133,6 +192,7 @@ class SessionReconciler:
         orchestrator=None,
         starter=None,
         epoch: str | None = None,
+        transcript_base_dir=None,
     ):
         self.db = db
         self.config = config
@@ -147,6 +207,22 @@ class SessionReconciler:
         #: behavior for a daemon with no message routing wired.
         self.starter = starter
         self.epoch = epoch or uuid.uuid4().hex[:12]
+        #: Where harness transcripts live (``Path.home()`` in production).
+        #: Threaded into ``resolve_reader`` so a test can point the stall
+        #: ladder's liveness check at a temp directory, as the transcript
+        #: watcher is pointed by its own ``base_dir``.
+        self.transcript_base_dir = transcript_base_dir
+        #: (session id, instance token) -> (last changed at, screen digest).
+        #: Reporting context only, never a decision input: it exists so the
+        #: announcement of an unmeasurable stall can say how long the pane has
+        #: shown the same thing, which is the fact an operator has to judge it
+        #: by.  Instance-token keyed, because a relaunched session inherits
+        #: nothing from its predecessor's observations.  Bounded; pruned by age.
+        self._screen_digests: dict[tuple[str, str], tuple[float, str]] = {}
+        #: (session id, instance token) -> when its unverifiable stall was
+        #: last announced, so the announcement repeats instead of either
+        #: vanishing after one line or repeating every tick.
+        self._stall_reports: dict[tuple[str, str], float] = {}
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
         self._deferred_prefixes: set[str] = set()
@@ -663,13 +739,13 @@ class SessionReconciler:
             task_id=row.task_id,
             project_id=row.project_id,
         )
-        nudged = await self._try_nudge(
+        outcome = await self._try_nudge(
             provider,
             row,
             f"You ran `aq session drain-ack` but task {row.task_id} is still open. "
             f"Close it first: `aq task close {row.task_id} --outcome ...`.",
         )
-        if nudged:
+        if outcome.delivered:
             # Clear the ack so the next tick re-evaluates from scratch
             # rather than nudging on every cycle forever.
             try:
@@ -888,6 +964,19 @@ class SessionReconciler:
 
             task = await self.db.get_task(row.task_id) if row.task_id else None
             peek = await self._peek(provider, row)
+            if row.lifecycle == "pool":
+                # session_kill persists stop intent before signalling, while
+                # this tick may still hold the earlier live-session snapshot.
+                # Read after both provider probes so requested stops drain
+                # rather than quarantining the whole pool as rapid crashes.
+                current = await self.db.get_session(row.id)
+                if (
+                    current is None
+                    or current.state not in _LIVE_STATES
+                    or current.instance_token != row.instance_token
+                ):
+                    continue
+                row = current
             verdict = classify_exit(
                 row,
                 task,
@@ -1492,6 +1581,180 @@ class SessionReconciler:
                 await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(resumed))
         return False, resumed or 0.0
 
+    async def _screen_digest(self, provider, row: SessionRecord) -> str | None:
+        """A digest of everything this session's pane is showing, read-only.
+
+        ``None`` when the provider cannot be peeked at or the pane is gone.
+
+        It is the pane's *tail*, not the composer box, and that is the whole
+        point: an agent running one long tool leaves the composer untouched
+        for minutes, so a fingerprint of the composer alone would read a
+        working agent as a frozen screen.  The message area above it is where
+        a working agent shows up.
+        """
+        if not provider.supports(Cap.PEEK):
+            return None
+        try:
+            screen = await provider.peek(self._handle(row), _SCREEN_PEEK_LINES)
+        except Exception:
+            logger.debug("peek failed for %s", row.id, exc_info=True)
+            return None
+        if not screen:
+            return None
+        return hashlib.sha256(screen.encode("utf-8", "replace")).hexdigest()[:16]
+
+    async def _screen_unchanged_seconds(
+        self, provider, row: SessionRecord, *, now: float
+    ) -> float | None:
+        """How long this pane has shown the same thing, or ``None`` if unknown.
+
+        Observation, not a verdict, and deliberately not a decision input.  It
+        is quoted alongside an unmeasurable stall because a screen that has not
+        moved for an hour is a different fact from one that changed a minute
+        ago, and a human is the one who can tell a wedged TUI from an agent
+        thinking.  A terminal read is not evidence about the agent's progress:
+        an unchanged pane is what an agent between two writes looks like just
+        as much as what a wedge looks like.
+
+        The clock is the time the screen last *changed*, not the time it was
+        last sampled, so a stall polled every few seconds is still measured in
+        real seconds; and a failed read leaves the previous reading untouched
+        instead of re-stamping it, so one unreadable poll cannot manufacture a
+        match.
+        """
+        key = (row.id, row.instance_token or "")
+        changed_at, previous = self._screen_digests.get(key, (0.0, ""))
+        current = await self._screen_digest(provider, row)
+        if current is None:
+            return None  # No reading: unknown, and the previous one stands.
+        if current != previous:
+            self._screen_digests[key] = (now, current)
+            return 0.0 if previous else None  # First reading: nothing to compare.
+        self._prune_progress_cache(now)
+        return None if not previous else now - changed_at
+
+    async def _deferral_verdict(
+        self,
+        deferral: NudgeDeferred | None,
+        row: SessionRecord,
+        provider,
+        *,
+        idle_seconds: float,
+        lease_ttl: float,
+        now: float,
+    ) -> StalledDeferral:
+        """What a refused nudge proves, and therefore what the ladder may do.
+
+        The refusal has to *assert* that no draft is being typed
+        (:meth:`NudgeDeferred.escalates_ladder`); that alone is not enough,
+        because it is a statement about a screen and not about the agent.
+        So the answer is one of three, in this order:
+
+        :attr:`StalledDeferral.HOLD`
+            Someone is demonstrably at the composer, or the harness's own
+            record shows the conversation moving.  Nothing is spent and
+            nothing is announced, exactly as before.
+        :attr:`StalledDeferral.ESCALATE`
+            The record is there and says the conversation stopped before the
+            lease expired -- proof, from outside the terminal.  The rung is
+            spent and the ladder climbs as it always does.
+        :attr:`StalledDeferral.REPORT`
+            The harness keeps no record AQ can read (``opencode`` has no
+            reader and no session identity to scope one to), or the one it
+            names could not be stat'ed.  That is *unknown*, and unknown is
+            not evidence: the stall is announced -- a WARNING and a
+            ``task.stalled`` with ``evidence="unverified"``, quoting how long
+            the pane has shown the same thing -- but no rung is spent and no
+            claim is released on a signal AQ could not measure.
+
+            Nothing about the terminal can upgrade that answer.  A pane that
+            has stopped moving is what an agent between two writes looks like
+            as much as what a wedged TUI looks like, so the screen is
+            reported (:meth:`_screen_unchanged_seconds`) and never acted on.
+            Closing the gap needs *scoped, per-session* activity evidence for
+            harnesses AQ cannot read, which is R7's missing OpenCode session
+            identity rather than a heuristic about panes.
+
+        The distinction is the whole fix.  Reading "cannot inspect" as
+        "stalled" is how a wedged-but-live holder could be destroyed on the
+        strength of an absence nobody measured; reading it as "safe" is how
+        ``vivid-quest-44.3`` sat on its task for hours in silence.
+        """
+        if deferral is None or not deferral.escalates_ladder():
+            return StalledDeferral.HOLD
+        if lease_ttl > 0 and idle_seconds <= lease_ttl:
+            return StalledDeferral.HOLD
+        _, progress = await harness_progress(row, base_dir=self.transcript_base_dir)
+        if progress is not None:
+            if lease_ttl > 0 and now - progress <= lease_ttl:
+                return StalledDeferral.HOLD  # It is still writing: alive.
+            logger.warning(
+                "Session %s (%s) on task %s is idle %.0fs with a %s composer and no "
+                "transcript progress since %s — spending a stall rung",
+                row.id, row.name, row.task_id, idle_seconds, deferral.reason,
+                time.strftime("%H:%M:%S", time.localtime(progress)),
+            )
+            return StalledDeferral.ESCALATE
+        return StalledDeferral.REPORT
+
+    async def _announce_unverified_stall(
+        self, row: SessionRecord, task, deferral: NudgeDeferred, *, idle_seconds: float, now: float
+    ) -> None:
+        """Say that a holder is stuck behind a composer AQ cannot read.
+
+        The event is the fix's teeth where proof is missing: this is the stall
+        that produced *zero* ``task.stalled`` events for four hours on
+        2026-10-03, so an operator and the digest had nothing to notice.  It
+        carries ``evidence="unverified"`` so nothing downstream mistakes it for
+        a rung, and how long the pane has shown the same thing, so the person
+        reading it can tell a wedged TUI from an agent thinking — the one
+        judgement AQ deliberately refuses to make for them.
+
+        It repeats at most every :data:`_STALL_REPORT_INTERVAL_SECONDS` per
+        holder instance: not per tick, and not once and then never again,
+        because a stall that will never escalate is precisely the case that
+        must not go quiet.
+        """
+        key = (row.id, row.instance_token or "")
+        last = self._stall_reports.get(key)
+        if last is not None and now - last < _STALL_REPORT_INTERVAL_SECONDS:
+            return
+        provider = self._provider_for(row)
+        frozen_for = (
+            None if provider is None
+            else await self._screen_unchanged_seconds(provider, row, now=now)
+        )
+        self._stall_reports[key] = now
+        self._prune_progress_cache(now)
+        logger.warning(
+            "Session %s (%s) on task %s is idle %.0fs and its %s composer cannot be "
+            "read or cleared%s; no stall rung is spent because this harness has no "
+            "progress record to corroborate it — reported instead",
+            row.id, row.name, row.task_id, idle_seconds, deferral.reason,
+            "" if frozen_for is None
+            else f" and its pane has shown the same thing for {int(frozen_for)}s",
+        )
+        await self._emit(
+            "task.stalled",
+            task_id=row.task_id,
+            project_id=row.project_id,
+            title=task.title,
+            session_id=row.id,
+            idle_seconds=idle_seconds,
+            deferred_reason=str(deferral.reason),
+            evidence="unverified",
+            **({} if frozen_for is None else {"screen_unchanged_seconds": int(frozen_for)}),
+        )
+
+    def _prune_progress_cache(self, now: float) -> None:
+        """Drop readings older than the report interval, keeping both maps bounded."""
+        for key, (changed_at, _) in list(self._screen_digests.items()):
+            if now - changed_at > 4 * _STALL_REPORT_INTERVAL_SECONDS:
+                del self._screen_digests[key]
+        for key, seen_at in list(self._stall_reports.items()):
+            if now - seen_at > 4 * _STALL_REPORT_INTERVAL_SECONDS:
+                del self._stall_reports[key]
+
     # -- step 4: stall ladder ---------------------------------------------
 
     async def _exit_usage_limit_screen(
@@ -1612,6 +1875,7 @@ class SessionReconciler:
 
             nudge_due = can_nudge and rungs < self.sessions_config.stall_max_nudges
             delivered: bool | None = False
+            deferral: NudgeDeferred | None = None
             if nudge_due:
                 minutes = int((now - last) // 60)
                 # A harness sitting at its idle prompt with an open claim
@@ -1621,13 +1885,30 @@ class SessionReconciler:
                 # continue" — rather than only "report status".  This is the
                 # rung that runs *before* any exit handling, which is the
                 # point: an idle prompt should be talked to, not reaped.
-                delivered = await self._try_nudge(
+                outcome = await self._try_nudge(
                     provider, row, stall_reminder(row.task_id, minutes)
                 )
+                delivered, deferral = outcome.delivered, outcome.deferral
                 if delivered is None:
-                    # The input belongs to the user, or cannot be inspected.
-                    # Waiting for an empty composer is not a failed attempt.
-                    continue
+                    verdict = await self._deferral_verdict(
+                        deferral, row, provider,
+                        idle_seconds=now - last, lease_ttl=ttl, now=now,
+                    )
+                    if verdict is StalledDeferral.HOLD:
+                        # The composer belongs to a person, or the agent is
+                        # demonstrably working. Waiting for an empty composer
+                        # is not a failed attempt, and no person is ever
+                        # escalated on.
+                        continue
+                    if verdict is StalledDeferral.REPORT:
+                        # Provably not a draft, and AQ cannot measure whether
+                        # the holder is working: announce it and change
+                        # nothing. A rung here would be a claim released on a
+                        # signal nobody took.
+                        await self._announce_unverified_stall(
+                            row, task, deferral, idle_seconds=now - last, now=now
+                        )
+                        continue
 
             # Only announce a stall once an action can actually be attempted;
             # a draft can defer many polls without generating repeated notices.
@@ -1639,6 +1920,7 @@ class SessionReconciler:
                     title=task.title,
                     session_id=row.id,
                     idle_seconds=now - last,
+                    **({"deferred_reason": str(deferral.reason)} if deferral else {}),
                 )
 
             if nudge_due:
@@ -2278,18 +2560,18 @@ class SessionReconciler:
         except Exception:
             logger.debug("could not persist resume key for task %s", task.id, exc_info=True)
 
-    async def _try_nudge(self, provider, row: SessionRecord, text: str) -> bool | None:
-        """True for delivery, False for failure, None for untouched input."""
+    async def _try_nudge(self, provider, row: SessionRecord, text: str) -> _NudgeOutcome:
+        """Deliver *text* to *row*, and say which of the three things happened."""
         if not provider.supports(Cap.NUDGE):
-            return False
+            return _NudgeOutcome(False)
         try:
             await provider.nudge(self._handle(row), text)
-            return True
+            return _NudgeOutcome(True)
         except NudgeDeferred as exc:
             logger.debug(
                 "Nudge to session %s deferred (%s); terminal input untouched", row.id, exc
             )
-            return None
+            return _NudgeOutcome(None, deferral=exc)
         except NotSubmitted as exc:
             # WARNING, not info: text left in a composer blocks every later
             # nudge on the empty-composer guard, so "will retry" can mean
@@ -2312,12 +2594,12 @@ class SessionReconciler:
                 composer_dirty=dirty,
                 reason=str(exc),
             )
-            return False
+            return _NudgeOutcome(False)
         except CapabilityUnsupported:
-            return False
+            return _NudgeOutcome(False)
         except Exception:
             logger.debug("nudge failed for %s", row.id, exc_info=True)
-            return False
+            return _NudgeOutcome(False)
 
     async def _stop_session(
         self,

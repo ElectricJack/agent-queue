@@ -4,14 +4,17 @@ CI emits one ``integration.candidate_green`` fact per exact evidence identity.
 When that fact's promotion waited (the branch was still held by an attached
 repair writer, the project lease was short, a reconciliation was in flight),
 re-observing the same evidence dedups to the already-delivered event and the
-batch stays green forever.  This module owns the bounded replacement wakeup:
+batch stays green forever.  This module owns the paced replacement wakeup:
 
 * a fresh continuation is keyed by the *promotion fingerprint* — exact
   candidate, evidence, branch-owner fence and project-lease fence — so a real
   authority change (a closed writer handing the branch back) always yields a
   new event, and a replayed or duplicated tick never does;
-* within one fingerprint, re-emission backs off exponentially and stops after
-  :data:`MAX_GENERATIONS`, so a persistently refused promotion cannot loop;
+* within one fingerprint, re-emission backs off exponentially up to
+  :data:`MAX_BACKOFF_SECONDS` and never gives up: a promotion refused for a
+  transient reason (a writer still attached, a short lease) is re-driven at
+  least once an hour until it promotes or its authority changes, so a lost
+  or refused wakeup cannot leave a green batch waiting for nothing;
 * nothing here builds, tests, dispatches a repair, or supplies evidence.  The
   event names only the subject; ``integration_promote_main`` re-derives every
   authority from durable state.
@@ -43,10 +46,13 @@ logger = logging.getLogger(__name__)
 GREEN_EVENT_TYPE = "integration.candidate_green"
 CONTINUATION_PREFIX = "integration-green-continuation"
 #: First re-emission waits this long after the previous continuation; each
-#: further generation doubles it (60, 120, 240, 480, 960 seconds).
+#: further generation doubles it (60, 120, 240, ... seconds) up to the ceiling.
 RETRY_BASE_SECONDS = 60.0
-#: Continuations per promotion fingerprint, the first one included.
-MAX_GENERATIONS = 6
+#: The longest wait between two continuations of one fingerprint.
+MAX_BACKOFF_SECONDS = 3600.0
+#: Generations after which a still-refused promotion is reported as a warning
+#: (it keeps being retried; this is only the point where a person should look).
+WARN_AFTER_GENERATIONS = 6
 #: A delivered green fact gets this long to reach ``prepare`` before the
 #: reconciler treats its promotion as lost.
 DELIVERY_GRACE_SECONDS = 60.0
@@ -83,6 +89,12 @@ def promotion_fingerprint(
         separators=(",", ":"),
     )
     return hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+
+def continuation_delay(generation: int) -> float:
+    """Seconds between continuation ``generation`` and the next one."""
+    exponent = min(max(int(generation) - 1, 0), 32)
+    return min(RETRY_BASE_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
 
 
 def _dedup_prefix(batch_id: str, revision: int, fingerprint: str) -> str:
@@ -154,7 +166,7 @@ class GreenPromotionReconciler:
     promotion intent.  For each it first returns a closed repair writer's
     branch to the collector (which itself enqueues the continuation), then,
     only when the durable snapshot is promotable right now, re-emits a
-    bounded continuation.  Stale, human-gated, attached-writer and
+    paced continuation.  Stale, human-gated, attached-writer and
     already-promoting batches are reported and left alone.
     """
 
@@ -350,25 +362,18 @@ class GreenPromotionReconciler:
                 fingerprint=fingerprint,
             )
             generation = len(emitted)
-            if generation >= MAX_GENERATIONS:
-                return {
-                    "outcome": "exhausted",
-                    "batch_id": batch_id,
-                    "reason": (
-                        f"{generation} promotion continuations for this exact authority "
-                        "did not promote; a supervisor redrive must inspect the refusal"
-                    ),
-                }
             if emitted:
                 # ``available_at`` is the emitter's service clock, like ``now``.
-                due = float(emitted[-1]["available_at"]) + RETRY_BASE_SECONDS * (
-                    2 ** (generation - 1)
-                )
+                due = float(emitted[-1]["available_at"]) + continuation_delay(generation)
                 if observed_at < due:
                     return {
                         "outcome": "backoff",
                         "batch_id": batch_id,
-                        "reason": f"next promotion continuation is due at {due:.0f}",
+                        "generation": generation,
+                        "reason": (
+                            f"{generation} promotion continuations for this exact authority "
+                            f"have not promoted; the next is due at {due:.0f}"
+                        ),
                     }
             event_id = await enqueue_green_continuation_on(
                 conn,
@@ -409,5 +414,9 @@ class GreenPromotionReconciler:
         if self._reported.get(batch_id) == summary:
             return
         self._reported[batch_id] = summary
-        level = logging.WARNING if result.get("outcome") == "exhausted" else logging.INFO
+        level = (
+            logging.WARNING
+            if int(result.get("generation") or 0) >= WARN_AFTER_GENERATIONS
+            else logging.INFO
+        )
         logger.log(level, "green root batch %s promotion continuation %s", batch_id, summary)

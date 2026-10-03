@@ -1,3 +1,4 @@
+import TaskKnowledgeSection from "../../pages/knowledge/TaskKnowledgeSection";
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ClipboardEvent, DragEvent } from "react";
@@ -25,6 +26,7 @@ import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from ".
 import { integrationRemovalRefusal } from "../../api/deleteRefusals";
 import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
+import { EpicDeliveryPanel, EpicStatus } from "../../components/EpicDelivery";
 import TaskActions from "../../components/TaskActions";
 import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
@@ -249,7 +251,11 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {status && <StatusBadge status={status} />}
+          {task?.delivery_status ? (
+            <EpicStatus delivery={task.delivery_status} status={task.status} />
+          ) : (
+            status && <StatusBadge status={status} />
+          )}
           {projectId && <span className="text-gray-400">{projectId}</span>}
           {priority != null && (
             <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-300">
@@ -284,9 +290,13 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
 
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
 
+      {task?.delivery_status && <EpicDeliveryPanel delivery={task.delivery_status} onOpenTask={onOpenTask} />}
+
       {task && <TaskProviderRouting task={task} />}
 
-      {task && <TaskDescription key={task.id} task={task} />}
+      {task && <TaskKnowledgeSection key={task.id} projectId={task.project_id ?? ""} taskId={task.id}>
+        <TaskDescription task={task} />
+      </TaskKnowledgeSection>}
 
       {task && (
         <section>

@@ -413,3 +413,20 @@ def test_reviewer_profile_does_not_reject_solely_for_a_missing_pr():
     # The reviewer is told how to tell the two cases apart with tools it has.
     assert "task_show" in prompt
     assert "task_comments" in prompt
+
+
+def test_worker_template_maintenance_is_not_agent_visible_and_rules_are_verbatim(tmp_path):
+    from src.prime.sections import _extract_profile_prompt
+    from src.prompt_builder import extract_section
+
+    ensure_default_profiles(str(tmp_path))
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        visible = _extract_profile_prompt(text)
+        assert "generic coding worker" in visible
+        assert "Nothing is routed to it" not in visible
+        assert "## Template maintenance" in text
+        assert extract_section(text, "Rules") in visible
+        assert "Never migrate the operator's database" in visible
+        assert "No independent merges" in visible
+        assert "Escalate material scope changes" in visible

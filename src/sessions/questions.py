@@ -169,11 +169,15 @@ def _answer_nudge(question_id):
 
 
 class AgentQuestionService:
-    def __init__(self, db, bus, providers, config, *, native_sources=None):
+    def __init__(self, db, bus, providers, config, *, native_sources=None,
+                 harness_registry=None):
         self.db, self.bus, self.providers, self.config = db, bus, providers, config
         self._locks = _LOCKS.setdefault(db, weakref.WeakValueDictionary())
         #: ``harness -> native store | None``; tests point it at a fixture.
-        self._native_sources = native_sources or resolve_native_question_source
+        #: The registry lets a second harness on the same CLI share its store.
+        self._native_sources = native_sources or (
+            lambda harness: resolve_native_question_source(harness, registry=harness_registry)
+        )
         self._native_scanned: dict[str, float] = {}
 
     def _lock(self, session_id):

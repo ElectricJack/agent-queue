@@ -1,0 +1,515 @@
+"""Development policy equivalence and incremental engine ownership on PostgreSQL."""
+
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from sqlalchemy import insert, select, update
+
+from src.database import Database
+from src.database.tables import integration_branch_owners, integration_subjects, playbook_artifacts
+from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
+from src.integration.development import DevelopmentIntegration, DevelopmentPolicy
+from src.integration.development_adapter import (
+    DevelopmentFrontier,
+    DevelopmentIntegrationAdapter,
+    DevelopmentMember,
+    development_subject_owns_target,
+    ordered_development_members,
+)
+from src.integration.development_policy import PinnedDevelopmentPolicy, render_development_policy
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchOwnership
+from src.integration.subjects import (
+    AdmissionPredicate,
+    CIEvidence,
+    CIState,
+    HoldFacts,
+    GateFacts,
+    JournalMode,
+    MemberFacts,
+    MemberRef,
+    MergeMembersArgs,
+    Primitive,
+    PrimitiveOutcome,
+    PrimitivePorts,
+    SealArgs,
+    Subject,
+    SubjectEngine,
+    SubjectFacts,
+    SubjectKind,
+    SubjectPhase,
+    SubjectSchedule,
+    WriterBudget,
+    WriterLease,
+    WriterStatus,
+)
+from src.playbooks.definition import ProjectScope, load_definition_json, source_digest
+from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from_markdown
+from tests.db_fixtures import lease_dsn
+from tests.test_integration_ci_producers import JobClient
+
+BASE, A, B, C = (letter * 40 for letter in "abcd")
+
+
+def pinned_policy(mode="focused", **settings):
+    settings.setdefault("commands", ["aq test tests/test_development_validation.py"])
+    source = render_development_policy("p", DevelopmentPolicy(validation=mode, **settings))
+    artifact = load_definition_json(Path(
+        "tests/fixtures/playbooks/v2/root-train/artifact.json"
+    ).read_text()).model_copy(update={
+        "id": "p-development", "scope": ProjectScope(project_id="p"),
+        "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
+    })
+    return PinnedDevelopmentPolicy(artifact, source)
+
+
+def subject(pinned, phase=SubjectPhase.ADMITTING, **values):
+    return Subject(**{
+        "id": "root", "project_id": "p", "repository_id": "repo",
+        "kind": SubjectKind.ROOT_BATCH, "subject_key": "root_batch:repo:request",
+        "engine": SubjectEngine.RECONCILER, "phase": phase,
+        "policy": pinned.compiled.pin, "target_ref": "refs/heads/main",
+        "head_sha": B, "base_sha": BASE,
+        "schedule": SubjectSchedule.progress(now=100, max_wait_seconds=3600),
+        "created_at": 100, "updated_at": 100, **values,
+    })
+
+
+def facts(s, state=CIState.NONE, **values):
+    if s.kind is SubjectKind.SOURCE:
+        values.setdefault("members", (MemberFacts(task_id=s.task_id,
+                                                   head_sha=s.head_sha, base_sha=s.base_sha),))
+    return IntegrationPolicyFacts(**{
+        "subject_id": s.id, "subject_version": s.version, "kind": s.kind,
+        "phase": s.phase, "observed_at": 100, "head": s.head,
+        "default_branch_head": BASE, "writer": s.writer, "budget": s.budget,
+        "ci": (CIEvidence(head_sha=s.head_sha, state=state),), **values,
+    })
+
+
+def member(task_id, sha=A, *, deps=(), **facts_values):
+    return DevelopmentMember(
+        MemberFacts(task_id=task_id, head_sha=sha, base_sha=BASE, **facts_values),
+        dependencies=frozenset(deps),
+    )
+
+
+def seal_args(**changes):
+    return SealArgs(admission=AdmissionPredicate(**{
+        "require_review": False, "include_authorized": False, **changes,
+    }))
+
+
+@pytest.mark.parametrize("mode", ["focused", "advisory", "none"])
+def test_installed_fields_are_frozen_in_source_and_project_scope(mode):
+    pinned = pinned_policy(mode, interval_seconds=731, max_batch_size=7,
+                           timeout_seconds=89, slot_wait_seconds=0,
+                           regenerate="scripts/regenerate-generated.sh",
+                           regenerate_timeout_seconds=127)
+    settings = pinned.settings
+    assert (settings.validation, settings.timeout_seconds, settings.slot_wait_seconds,
+            settings.regenerate_timeout_seconds) == (mode, 89, 0, 127)
+    assert settings.commands == ["aq test tests/test_development_validation.py"]
+    table = pinned.definition.integration_policy.tables[SubjectKind.ROOT_BATCH]
+    assert table.actions["seal"].inputs["admission"].value == {
+        "require_review": False, "require_source_ci": False, "include_authorized": False,
+        "max_members": 7,
+    }
+    assert table.actions["cadence"].inputs["seconds"].value == 731
+    assert table.actions["build"].inputs["regenerate_generated"].value is True
+    assert pinned.definition.scope.project_id == "p"
+    with pytest.raises(ValueError, match="reviewed artifact"):
+        replace(pinned, source=pinned.source.replace("731", "732"))
+
+
+@pytest.mark.parametrize("mode, red_phase", [
+    ("focused", SubjectPhase.REPAIRING), ("advisory", SubjectPhase.PUBLISHING),
+])
+def test_conclusive_red_preserves_mode_repair_choice(mode, red_phase):
+    pinned = pinned_policy(mode)
+    s = subject(pinned, SubjectPhase.PROMOTABLE)
+    decision = pinned.compiled.evaluate(s, facts(s, CIState.RED))
+    assert decision.primitive is Primitive.CI_OBSERVE
+    outcome = PrimitiveOutcome(primitive=decision.primitive, outcome="red")
+    assert pinned.compiled.phase(s, decision, outcome) is red_phase
+
+
+@pytest.mark.parametrize("mode,state", [("none", CIState.NONE), ("advisory", CIState.RED)])
+def test_unverified_modes_never_fabricate_green_or_bypass_publication(mode, state):
+    pinned = pinned_policy(mode)
+    s = subject(pinned, SubjectPhase.PUBLISHING)
+    decision = pinned.compiled.evaluate(s, facts(s, state))
+    assert decision.primitive is Primitive.GATE
+    assert decision.request.no_default is True
+    assert decision.request.choices == ("retry", "hold")
+
+
+def test_only_exact_current_green_and_matching_fence_publish():
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.PUBLISHING)
+    fence = Fence(target=BranchKey(repository_id="repo", branch=s.target_ref),
+                  owner_id=s.id, token=2)
+    good = facts(s, CIState.GREEN, publisher_fence=fence)
+    decision = pinned.compiled.evaluate(s, good)
+    assert decision.primitive is Primitive.GIT_PUBLISH
+    assert decision.request.require_green is True
+    assert (decision.request.expected_old_sha, decision.request.new_sha) == (BASE, B)
+    moved_evidence = good.model_copy(update={"ci": (CIEvidence(head_sha=C, state=CIState.GREEN),)})
+    assert pinned.compiled.evaluate(s, moved_evidence).primitive is Primitive.GATE
+    assert pinned.compiled.evaluate(s, facts(s, CIState.GREEN)).primitive is Primitive.WAIT
+
+
+@pytest.mark.parametrize("mode", ["focused", "advisory", "none"])
+def test_binding_human_hold_precedes_all_other_choices(mode):
+    pinned = pinned_policy(mode)
+    s = subject(pinned, SubjectPhase.BUILDING)
+    decision = pinned.compiled.evaluate(s, facts(s, holds=(HoldFacts(kind="review_rejected"),)))
+    assert decision.rule == "binding-human-hold"
+    assert decision.primitive is Primitive.WAIT
+
+
+def test_answered_retry_clears_gate_with_read_only_proof_before_any_mutation():
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING, schedule=SubjectSchedule.hold(
+        now=100, gate_id="human", max_wait_seconds=3600))
+    f = facts(s, gate=GateFacts(gate_id="human", status="answered", answer="retry"))
+    decision = pinned.compiled.evaluate(s, f)
+    assert decision.primitive is Primitive.GIT_ANCESTRY
+    result = PrimitiveOutcome(primitive=decision.primitive, outcome="facts")
+    assert pinned.compiled.schedule(s, decision, result, now=100).gate_id is None
+    assert pinned.compiled.phase(s, decision, result) is SubjectPhase.BUILDING
+
+
+async def test_parked_source_cleanup_requires_existing_delivery_truth(db):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.REPAIRING, kind=SubjectKind.SOURCE, task_id="a")
+    await store_subject(db, s, pinned)
+    a = adapter(db, pinned, DevelopmentFrontier((member("a", B),), satisfied=frozenset({"a"})))
+    decision = pinned.compiled.evaluate(s, await a.observe(s))
+    assert decision.rule == "source-contained"
+    assert decision.primitive is Primitive.CLEANUP
+
+
+async def test_completed_repair_waits_for_delivery_without_spending_another_generation(db):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.REPAIRING, kind=SubjectKind.SOURCE, task_id="a",
+                writer=WriterLease(status=WriterStatus.STOPPED, task_id="repair"),
+                budget=WriterBudget(ordinal=3, intelligence_class="standard-high",
+                                   started_at=0, deadline_at=1))
+    await store_subject(db, s, pinned)
+    repair = replace(member("repair", C), carries=frozenset({("a", B)}))
+    a = adapter(db, pinned, DevelopmentFrontier((member("a", B), repair),
+                                               parked=frozenset({("a", B)})))
+    decision = pinned.compiled.evaluate(s, await a.observe(s))
+    assert decision.rule == "source-replacement-pending"
+    assert decision.primitive is Primitive.WAIT
+
+
+@pytest.mark.parametrize("ordinal", [0, 1, 2, 3])
+def test_three_resumable_repair_generations_without_capacity_expiry(ordinal):
+    pinned = pinned_policy()
+    budget = WriterBudget(ordinal=ordinal, intelligence_class="standard-high",
+                          started_at=0, deadline_at=1)
+    s = subject(pinned, SubjectPhase.REPAIRING, kind=SubjectKind.SOURCE,
+                task_id="parked", budget=budget)
+    decision = pinned.compiled.evaluate(s, facts(s))
+    assert decision.primitive is (Primitive.GATE if ordinal == 3 else Primitive.WRITER_FILE)
+    if ordinal < 3:
+        assert decision.request.ordinal == ordinal + 1
+    waiting = s.model_copy(update={"writer": WriterLease(status=WriterStatus.FILED, task_id="repair")})
+    assert pinned.compiled.evaluate(waiting, facts(waiting)).primitive is Primitive.WAIT
+
+
+@pytest.mark.parametrize("reason", ["parked", "held", "failing", "unpushed", "missing-base"])
+def test_one_ineligible_member_holds_only_its_dependents(reason):
+    bad = member("a")
+    parked = frozenset()
+    if reason == "parked":
+        parked = frozenset({("a", A)})
+    elif reason == "held":
+        bad = replace(bad, facts=bad.facts.model_copy(update={"held": True}))
+    elif reason == "failing":
+        bad = replace(bad, completed=False)
+    elif reason == "unpushed":
+        bad = replace(bad, pushed=False)
+    else:
+        bad = replace(bad, facts=bad.facts.model_copy(update={"base_sha": None}))
+    frontier = DevelopmentFrontier((bad, member("b", B, deps=("a",)), member("c", C)),
+                                   parked=parked)
+    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["c"]
+
+
+def test_dependency_order_cap_cycles_and_external_delivery_truth():
+    frontier = DevelopmentFrontier((member("a", deps=("z",)), member("z", B),
+                                    member("cycle", C, deps=("cycle",))))
+    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["z", "a"]
+    assert [m.task_id for m in ordered_development_members(frontier, 1)] == ["z"]
+    external = DevelopmentFrontier((member("a", deps=("outside",)),),
+                                   satisfied=frozenset({"outside"}))
+    assert [m.task_id for m in ordered_development_members(external, 50)] == ["a"]
+
+
+def test_verified_repair_carries_exact_parked_sources_and_releases_descendants():
+    repair = replace(member("repair", C), carries=frozenset({("a", A)}))
+    frontier = DevelopmentFrontier((member("a"), member("b", B, deps=("a",)), repair),
+                                   parked=frozenset({("a", A)}))
+    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["repair", "b"]
+    stale = replace(repair, carries=frozenset({("a", B)}))
+    assert [m.task_id for m in ordered_development_members(replace(
+        frontier, members=(member("a"), member("b", B, deps=("a",)), stale)
+    ), 50)] == ["repair"]
+
+
+@pytest.fixture
+async def db():
+    db = Database(lease_dsn("development_subjects"))
+    await db.initialize()
+    yield db
+    await db.close()
+
+
+async def store_subject(db, s, pinned):
+    async with db.immediate() as conn:
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=s.policy.artifact_sha256, playbook_id=s.policy.playbook_id,
+            source_digest=pinned.definition.source_hash, contract_fingerprint="sha256:" + "3" * 64,
+            compiler_build="test", path="/test/development.json", created_at=100,
+        ))
+        await db.ensure_integration_subject_on(conn, s.to_row())
+
+
+def adapter(db, pinned, frontier, *, shared=None):
+    async def observe(s):
+        return SubjectFacts(**facts(s).model_dump(exclude={"publisher_fence"}))
+
+    return DevelopmentIntegrationAdapter(
+        db, observe=observe, frontier_for=AsyncMock(return_value=frontier),
+        policy_for=AsyncMock(return_value=pinned), repository_for=AsyncMock(
+            return_value=SimpleNamespace(store=Path("/test/retained"))),
+        shared_ports=shared or PrimitivePorts(), job_client=AsyncMock(), clock=lambda: 100,
+    )
+
+
+async def test_seal_is_idempotent_frozen_and_shadow_never_files_or_merges(db):
+    pinned = pinned_policy()
+    s = subject(pinned)
+    await store_subject(db, s, pinned)
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)))
+    reconciler = a.reconciler(mode=JournalMode.SHADOW)
+    await reconciler.visit(s.id)
+    rows = await db.list_integration_subject_journal(s.id)
+    assert [r["entry_kind"] for r in rows] == ["decision"]
+    assert rows[0]["primitive"] == Primitive.SEAL.value
+    current = Subject.from_row(await db.get_integration_subject(s.id))
+    result = await a.seal(current, seal_args())
+    assert result.outcome == "sealed"
+    a.frontier_for.return_value = DevelopmentFrontier((member("a", B),))
+    await a.seal(current, seal_args())
+    frontier = await a._frontier(current, await a._journal(current))
+    assert frontier.members[0].facts.head_sha == A
+    assert frontier.members[0].facts.held
+
+
+@pytest.mark.parametrize("admission", [
+    {"require_review": True}, {"require_source_ci": True}, {"include_authorized": True},
+])
+async def test_copied_policy_admission_cannot_silently_ignore_a_stricter_filter(db, admission):
+    pinned = pinned_policy()
+    s = subject(pinned)
+    await store_subject(db, s, pinned)
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"), member("b", B, deps=("a",)))))
+    result = await a.seal(s, seal_args(**admission))
+    assert result.outcome in {"empty", "unknown"}
+    assert a._manifest(await a._journal(s)) is None
+
+
+async def test_conflict_parks_one_exact_source_and_independent_member_keeps_building(db):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING)
+    await store_subject(db, s, pinned)
+    args = MergeMembersArgs(target_ref=s.target_ref, base_sha=BASE, members=(
+        MemberRef(task_id="a", head_sha=A, base_sha=BASE),
+        MemberRef(task_id="c", head_sha=C, base_sha=BASE),
+    ))
+    shared = PrimitivePorts({Primitive.GIT_MERGE_MEMBERS: AsyncMock(return_value=PrimitiveOutcome(
+        primitive=Primitive.GIT_MERGE_MEMBERS, outcome="conflict",
+        detail={"member": "a", "files": ["x.py"], "head": BASE},
+    ))})
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"), member("b", B, deps=("a",)),
+                                               member("c", C))), shared=shared)
+    await a.seal(s, seal_args())
+    result = await a.merge(s, args)
+    await a.merge(s, args)
+    decision = pinned.compiled.evaluate(s, facts(s, members=(member("c", C).facts,)))
+    assert pinned.compiled.phase(s, decision, result) is SubjectPhase.BUILDING
+    frontier = await a._frontier(s, await a._journal(s))
+    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["c"]
+    async with db._engine.connect() as conn:
+        parked = (await conn.execute(select(integration_subjects).where(
+            integration_subjects.c.kind == "source",
+        ))).mappings().all()
+    assert len(parked) == 1
+    assert (parked[0]["task_id"], parked[0]["head_sha"], parked[0]["phase"]) == (
+        "a", A, "repairing",
+    )
+
+
+async def test_successful_merge_installs_exact_identity_and_preserves_generation_budget(db):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING, writer=WriterLease(
+        status=WriterStatus.STOPPED, task_id="repair"), budget=WriterBudget(
+            ordinal=3, intelligence_class="standard-high", started_at=0, deadline_at=1))
+    await store_subject(db, s, pinned)
+    shared = PrimitivePorts({Primitive.GIT_MERGE_MEMBERS: AsyncMock(return_value=PrimitiveOutcome(
+        primitive=Primitive.GIT_MERGE_MEMBERS, outcome="merged", detail={"head": C},
+    ))})
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=shared)
+    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
+    # Avoid job I/O in this building-only visit; the observation has no CI.
+    a.producer_for = AsyncMock(return_value=SimpleNamespace(
+        observe=AsyncMock(return_value=CIEvidence(head_sha=s.head_sha, state=CIState.NONE))))
+    await reconciler.visit(s.id)
+    current = Subject.from_row(await db.get_integration_subject(s.id))
+    assert (current.head_sha, current.base_sha, current.generation, current.phase) == (
+        C, BASE, 1, SubjectPhase.TESTING,
+    )
+    assert current.writer.status is WriterStatus.NONE
+    assert current.budget.ordinal == 3
+
+
+async def test_local_checks_advance_sequentially_and_publish_only_after_all_green(db, monkeypatch):
+    pinned = pinned_policy(commands=["ruff check src", "npm run build"])
+    s = subject(pinned, SubjectPhase.TESTING)
+    await store_subject(db, s, pinned)
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
+                                     s.id, "collector")
+    client = JobClient()
+
+    async def read_jobs(_, subject, keys):
+        return await client.read(subject, keys)
+
+    monkeypatch.setattr(LocalCIProducer, "_read_jobs", read_jobs)
+    publish = AsyncMock(return_value=PrimitiveOutcome(
+        primitive=Primitive.GIT_PUBLISH, outcome="published"))
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=PrimitivePorts({
+        Primitive.GIT_PUBLISH: publish,
+    }))
+    a.job_client = client
+    now = [100]
+    a.clock = lambda: now[0]
+    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
+
+    async def visit():
+        await reconciler.visit(s.id)
+        now[0] += 301
+
+    await visit()  # request first command
+    assert len(client.calls) == 1
+    client.complete()
+    await visit()  # observe pending: command two still absent
+    publish.assert_not_awaited()
+    await visit()  # submit second command
+    assert len(client.calls) == 2
+    client.complete(1)
+    await visit()  # exact all-green observation
+    publish.assert_not_awaited()
+    await visit()  # guarded publish
+    assert publish.await_count == 1
+    current = Subject.from_row(await db.get_integration_subject(s.id))
+    assert current.phase is SubjectPhase.PUBLISHED
+    assert all(call["input_ref"] == B for call in client.calls)
+
+
+async def test_infrastructure_retry_has_new_job_identity_without_repair_generation(db, monkeypatch):
+    pinned = pinned_policy(commands=["ruff check src"])
+    s = subject(pinned, SubjectPhase.TESTING)
+    await store_subject(db, s, pinned)
+    client = JobClient()
+
+    async def read_jobs(_, subject, keys):
+        return await client.read(subject, keys)
+
+    monkeypatch.setattr(LocalCIProducer, "_read_jobs", read_jobs)
+    file_writer = AsyncMock()
+    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=PrimitivePorts({
+        Primitive.WRITER_FILE: file_writer,
+    }))
+    a.job_client = client
+    now = [100]
+    a.clock = lambda: now[0]
+    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
+    await reconciler.visit(s.id)
+    client.complete(infra_reason="run_timeout")
+    now[0] += 301
+    await reconciler.visit(s.id)
+    now[0] += 301
+    await reconciler.visit(s.id)
+    assert len(client.calls) == 2
+    assert client.calls[0]["idempotency_key"] != client.calls[1]["idempotency_key"]
+    current = Subject.from_row(await db.get_integration_subject(s.id))
+    assert current.budget is None and current.generation == 0
+    file_writer.assert_not_awaited()
+
+
+@pytest.mark.parametrize("engine,owned,ref,expired,expected", [
+    ("legacy", True, "refs/heads/main", False, False),
+    ("reconciler", False, "refs/heads/main", False, False),
+    ("reconciler", True, "refs/heads/other", False, False),
+    ("reconciler", True, "refs/heads/main", False, True),
+    ("reconciler", True, "refs/heads/main", True, True),
+])
+async def test_only_matching_subject_writer_disables_legacy(db, engine, owned, ref, expired, expected):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING, engine=SubjectEngine(engine))
+    await store_subject(db, s, pinned)
+    if owned:
+        await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=ref), s.id,
+                                          "collector")
+        if expired:
+            async with db.immediate() as conn:
+                await conn.execute(update(integration_branch_owners).values(expires_at=1))
+    assert await development_subject_owns_target(db, "p", "repo", s.target_ref) is expected
+    assert not await development_subject_owns_target(db, "other", "repo", s.target_ref)
+
+
+async def test_legacy_sweep_yields_before_any_mutation_when_subject_owns_target(db, tmp_path):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING)
+    await store_subject(db, s, pinned)
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
+                                     s.id, "collector")
+    project = SimpleNamespace(id="p", hierarchical_integration_policy={"validation": "none"},
+                              integration_repository_id="repo")
+    repo = SimpleNamespace(id="repo", default_branch="main")
+    db.get_repo = AsyncMock(return_value=repo)
+    legacy = DevelopmentIntegration(db, data_dir=tmp_path, git=AsyncMock())
+    legacy.rebind_foreign_repositories = AsyncMock()
+    legacy.refresh_dependencies = AsyncMock()
+    legacy.store = AsyncMock()
+    result = await legacy._sweep(project, retry=False, recover_child_id=None, _moved=None)
+    assert result["outcome"] == "subject_owned"
+    legacy.rebind_foreign_repositories.assert_not_awaited()
+    legacy.refresh_dependencies.assert_not_awaited()
+    legacy.store.assert_not_awaited()
+
+
+async def test_legacy_publication_rechecks_late_subject_takeover_before_journaling(db, tmp_path):
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.BUILDING)
+    await store_subject(db, s, pinned)
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
+                                     s.id, "collector")
+    legacy = DevelopmentIntegration(db, data_dir=tmp_path, git=AsyncMock())
+    legacy.save = AsyncMock()
+    result = await legacy.publish(SimpleNamespace(id="repo", project_id="p", default_branch="main"),
+                                  "/unused", s.target_ref, B, BASE, [], {}, "late batch")
+    assert result["outcome"] == "subject_owned"
+    legacy.save.assert_not_awaited()
+    legacy.git.apush_validated_ref.assert_not_awaited()
+
+
+def test_local_producer_preserves_installed_zero_queue_budget():
+    assert LocalValidationPlan(version="pinned", attempt_id="0", queue_seconds=0).queue_seconds == 0

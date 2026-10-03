@@ -692,6 +692,12 @@ class SessionLens:
             "at": time.time(),
             "reason": str(exc),
             "deferred": isinstance(exc, NudgeDeferred),
+            # The structured reason behind the prose: which refusals hold the
+            # stall ladder (a person is there) and which only hold message
+            # delivery is not something to re-derive from the message.
+            "reason_kind": (
+                str(exc.reason) if isinstance(exc, NudgeDeferred) else None
+            ),
             "composer_dirty": exc.composer_dirty,
         }
 

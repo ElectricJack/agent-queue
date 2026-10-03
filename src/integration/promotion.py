@@ -22,6 +22,7 @@ from src.commands.principal import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.ownership import BranchOwnership
 from src.models import RepoConfig, RepoSourceType
 from src.playbooks.invocation import current_invocation
@@ -57,6 +58,15 @@ class PromotionTargetMoved(PromotionError):
 
 class PromotionNotApplied(PromotionError):
     pass
+
+
+class PromotionRecovery(PromotionError):
+    """A fenced recovery advanced the intent without delivering a receipt."""
+
+    def __init__(self, outcome: str, value: PromotionValue):
+        super().__init__(outcome)
+        self.outcome = outcome
+        self.value = value
 
 
 class PromotionInvariantError(PromotionError):
@@ -125,11 +135,26 @@ class PromotionService:
             return None
         return remote.oid
 
+    @parent_engine_guard("request", result_model=True)
     async def prepare(self, request: PromotionInput) -> PromotionValue:
         domain_key = self._domain_key(request)
         intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
         receipt_id = f"receipt-{uuid.uuid5(_IDENTITY_NAMESPACE, 'receipt:' + domain_key)}"
         existing = await self.db.get_integration_promotion_intent(intent_id)
+        supersedes = None
+        while existing is not None and existing["state"] == "superseded":
+            evidence = existing.get("remote_evidence") or {}
+            if (
+                evidence.get("kind") != "prepared_not_reachable"
+                or request.expected_target == existing["expected_target"]
+            ):
+                raise PromotionTargetMoved("promotion attempt was superseded")
+            supersedes = existing["id"]
+            domain_key = self._successor_domain(existing)
+            intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
+            if intent_id != existing["superseded_by_intent_id"]:
+                raise PromotionInvariantError("promotion successor identity changed")
+            existing = await self.db.get_integration_promotion_intent(intent_id)
         # A committed intent is the durable answer to an idempotent retry.
         # Its source task may have archived in the interval since commit, so
         # validate the request against the frozen row instead of looking for
@@ -210,6 +235,7 @@ class PromotionService:
                         "operation_key": request.operation_key,
                         "project_id": context["project_id"],
                         "receipt_id": receipt_id,
+                        "supersedes_intent_id": supersedes,
                         "source_task_id": request.source_task_id,
                         "target_task_id": context["target_task_id"],
                         "source_head": request.source_head,
@@ -232,6 +258,8 @@ class PromotionService:
                     raise PromotionTargetMoved(str(exc)) from exc
                 raise PromotionInvariantError(str(exc)) from exc
             value = self._value(intent)
+            if intent["state"] == "superseded":
+                raise PromotionTargetMoved("promotion attempt was superseded")
             if intent["state"] == "committed" or intent["prepared_sha"] is not None:
                 return value
             if intent["state"] == "conflict":
@@ -306,8 +334,11 @@ class PromotionService:
         await self._crash("after_prepare")
         return self._value(intent)
 
+    @parent_engine_guard("intent", result_model=True)
     async def push(self, intent_id: str, fence: Fence) -> PromotionValue:
         intent = await self._intent(intent_id)
+        if intent["state"] == "superseded":
+            raise PromotionTargetMoved("promotion attempt was superseded")
         if intent["state"] == "committed":
             return self._value(intent)
         if intent["state"] == "conflict":
@@ -347,7 +378,12 @@ class PromotionService:
             # collector fence.
             async with self.ownership.mutation_exclusion(
                 fence, expected_role="collector"
-            ):
+            ) as conn:
+                # Recovery locks this same fence before superseding. Re-read
+                # after locking so a queued stale push cannot revive it.
+                current = await self.db._locked_intent(conn, intent_id)
+                if current["state"] == "superseded":
+                    raise PromotionTargetMoved("promotion attempt was superseded")
                 await self._crash("before_push")
                 try:
                     await self.git.apush_expected_delivery(
@@ -571,6 +607,7 @@ class PromotionService:
                 )
         return self._value(successor), False
 
+    @parent_engine_guard("intent", result_model=True)
     async def push_resolution(
         self, intent_id: str, fence: Fence
     ) -> tuple[PromotionValue, bool]:
@@ -729,14 +766,19 @@ class PromotionService:
             },
         )
 
-    async def reconcile(self, intent_id: str) -> PromotionValue:
+    @parent_engine_guard("intent", result_model=True)
+    async def reconcile(self, intent_id: str, *, fence: Fence | None = None) -> PromotionValue:
         intent = await self._intent(intent_id)
+        if intent["state"] == "superseded":
+            raise PromotionRecovery("superseded", self._value(intent))
         if intent["state"] == "committed":
             return self._value(intent)
         if intent["state"] == "conflict":
             raise PromotionConflict(self._value(intent), intent.get("conflict_diagnostics") or {})
         if intent["state"] == "resolution_reserved":
             return await self._reconcile_resolution(intent)
+        if fence is not None and intent["state"] in {"reserved", "prepared"}:
+            return await self._recover_parent_intent(intent, fence)
         if not intent["prepared_sha"]:
             raise PromotionInvariantError("promotion intent has no prepared commit")
         repository = await self._resolve_repository(intent["repository_id"])
@@ -756,6 +798,114 @@ class PromotionService:
             ):
                 raise PromotionInvariantError("target diverged from the prepared promotion")
         return await self._finalize(intent, remote.oid)
+
+    @staticmethod
+    def _successor_domain(intent: dict) -> str:
+        return hashlib.sha256(f"{intent['domain_key']}:successor".encode()).hexdigest()
+
+    async def _recover_parent_intent(self, intent: dict, fence: Fence) -> PromotionValue:
+        """Read back and retire an unapplied attempt, or wake its parent playbook.
+
+        Git serialization precedes the collector/intent locks, as in push.
+        No prepared commit is rebuilt here: conflict repair belongs to the
+        delivery.ready consumer. The retained ref and frozen row survive.
+        """
+        from sqlalchemy import select, update
+
+        from src.database.tables import (
+            integration_promotion_intents,
+            integration_repair_operations,
+            task_integration_checkpoints,
+            task_metadata,
+        )
+        from src.integration.parent_intents import enqueue_parent_continuation_on
+
+        if (
+            intent.get("intent_kind", "child") != "child"
+            or fence.target.repository_id != intent["repository_id"]
+            or fence.target.branch != intent["target_branch"]
+            or fence.owner_id != intent["operation_key"]
+        ):
+            raise PromotionTargetMoved("recovery fence is not this intent's collector")
+        repository = await self._resolve_repository(intent["repository_id"])
+        self._assert_frozen_repository(intent, repository)
+        outcome = "waiting"
+        async with self.git.arepository_transaction(str(repository.retained_git_dir)):
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, intent["project_id"])
+                async with self.ownership.mutation_exclusion_on(
+                    conn, fence, expected_role="collector"
+                ):
+                    operation = (await conn.execute(
+                        select(integration_repair_operations).where(
+                            integration_repair_operations.c.id == intent["operation_key"],
+                        ).with_for_update()
+                    )).mappings().one_or_none()
+                    checkpoint = (await conn.execute(
+                        select(task_integration_checkpoints).where(
+                            task_integration_checkpoints.c.task_id == intent["target_task_id"],
+                        )
+                    )).mappings().one_or_none()
+                    paused = (await conn.execute(select(task_metadata.c.task_id).where(
+                        task_metadata.c.task_id == intent["target_task_id"],
+                        task_metadata.c.key == "manual_pause",
+                    ))).first()
+                    if (
+                        operation is None or operation["state"] not in {"active", "escalated"}
+                        or operation["parent_task_id"] != intent["target_task_id"]
+                        or checkpoint is None or checkpoint["state"] != "awaiting_children"
+                        or operation["episode_id"] != checkpoint["episode_id"]
+                        or paused is not None
+                    ):
+                        raise PromotionTargetMoved("parent collection is no longer active")
+                    intent = await self.db._locked_intent(conn, intent["id"])
+                    if intent["state"] == "committed":
+                        return self._value(intent)
+                    if intent["state"] == "superseded":
+                        raise PromotionRecovery("superseded", self._value(intent))
+                    if intent["state"] not in {"reserved", "prepared"}:
+                        raise PromotionTargetMoved("promotion changed during recovery")
+                    remote = await self.git.als_remote_ref(
+                        str(repository.retained_git_dir), intent["target_branch"]
+                    )
+                    if remote.state is RemoteRefState.ERROR:
+                        raise PromotionRuntimeError(remote.error or "target remote state is unknown")
+                    if remote.state is RemoteRefState.ABSENT:
+                        raise PromotionInvariantError("target branch disappeared during recovery")
+                    if intent["prepared_sha"] and await self._prepared_reachable(
+                        repository.retained_git_dir, intent, remote.oid, repository.origin_url
+                    ):
+                        await self.db._finalize_integration_promotion_on(
+                            conn, intent["id"],
+                            {"kind": "prepared_reachable", "remote_sha": remote.oid},
+                        )
+                        return self._value(intent)
+                    if remote.oid != intent["expected_target"]:
+                        if intent["remote_evidence"] is not None:
+                            raise PromotionInvariantError("promotion already has push evidence")
+                        domain_key = self._successor_domain(intent)
+                        successor_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
+                        await conn.execute(update(integration_promotion_intents).where(
+                            integration_promotion_intents.c.id == intent["id"],
+                        ).values(
+                            state="superseded", superseded_by_intent_id=successor_id,
+                            remote_evidence={
+                                "kind": "prepared_not_reachable", "remote_sha": remote.oid,
+                                "prepared_sha": intent["prepared_sha"],
+                                "fence": fence.model_dump(mode="json"),
+                            },
+                            updated_at=self.clock(),
+                        ))
+                        outcome = "superseded"
+                    elif intent["state"] == "reserved":
+                        queued = await enqueue_parent_continuation_on(
+                            conn, intent=intent, fence=fence, now=self.clock()
+                        )
+                        outcome = "continued" if queued else "waiting"
+                    else:
+                        raise PromotionNotApplied("prepared push has not been applied")
+        # Raise only after the mutation transaction has committed.
+        raise PromotionRecovery(outcome, self._value(intent))
 
     async def _reconcile_resolution(self, intent: dict[str, Any]) -> PromotionValue:
         repository = await self._resolve_repository(intent["repository_id"])
@@ -1337,6 +1487,7 @@ __all__ = [
     "PromotionError",
     "PromotionInvariantError",
     "PromotionNotApplied",
+    "PromotionRecovery",
     "PromotionRuntimeError",
     "PromotionService",
     "PromotionSourceMoved",

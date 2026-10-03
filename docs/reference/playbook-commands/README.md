@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-143 commands are registered.
+173 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -98,6 +98,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_development_sweep`](integration_development_sweep.md) | Integration Development Sweep | Authenticated hierarchical integration operational control. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
+| [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
 | [`integration_materialize_root`](integration_materialize_root.md) | Integration Materialize Root | Authenticated hierarchical integration operational control. |
@@ -114,6 +115,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
+| [`integration_recover_parent_head`](integration_recover_parent_head.md) | Integration Recover Parent Head | Authenticated hierarchical integration operational control. |
 | [`integration_recover_preserved_repair`](integration_recover_preserved_repair.md) | Integration Recover Preserved Repair | Authenticated hierarchical integration operational control. |
 | [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) | Recover unwritten conflict resolution | Supersede a malformed reservation only after an operator proves no remote write occurred. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
@@ -134,7 +136,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retry_cleanup`](integration_retry_cleanup.md) | Integration Retry Cleanup | Authenticated hierarchical integration operational control. |
 | [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
+| [`integration_settle_delivered_batch`](integration_settle_delivered_batch.md) | Integration Settle Delivered Batch | Authenticated hierarchical integration operational control. |
 | [`integration_settle_parked`](integration_settle_parked.md) | Integration Settle Parked | Settle a parked development delivery as not owed, or dismiss it. |
+| [`integration_shadow_report`](integration_shadow_report.md) | Shadow comparison report | Compare the shadow loop's journalled decisions against the legacy decisions of one explicit window and name every gate still open. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
@@ -161,6 +165,28 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
+| [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
+| [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
+| [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
+| [`knowledge_create_task`](knowledge_create_task.md) | Knowledge Create Task | File one ordinary task with an exact motivated_by knowledge link. |
+| [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
+| [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
+| [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |
+| [`knowledge_import`](knowledge_import.md) | Knowledge Import | Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection. |
+| [`knowledge_list`](knowledge_list.md) | Knowledge List | List authorized knowledge metadata with a page cursor. |
+| [`knowledge_proposal_decide`](knowledge_proposal_decide.md) | Knowledge Proposal Decide | Accept or reject an exact proposal; supervisor grant required. |
+| [`knowledge_proposal_show`](knowledge_proposal_show.md) | Knowledge Proposal Show | Read an authorized proposal and its exact hash. |
+| [`knowledge_propose`](knowledge_propose.md) | Knowledge Propose | Submit an unverified correction bound to its exact base. |
+| [`knowledge_redact`](knowledge_redact.md) | Knowledge Redact | Preview or permanently erase selected knowledge and derived copies; local operator only. |
+| [`knowledge_restore`](knowledge_restore.md) | Knowledge Restore | Restore a knowledge finding to a retained revision. |
+| [`knowledge_retire`](knowledge_retire.md) | Knowledge Retire | Retire a knowledge finding with an optional successor. |
+| [`knowledge_share`](knowledge_share.md) | Knowledge Share | Preview or change a global record share; explicit global authority required. |
+| [`knowledge_show`](knowledge_show.md) | Knowledge Show | Read an authorized knowledge snapshot at an exact revision. |
+| [`knowledge_update`](knowledge_update.md) | Knowledge Update | Revise editable knowledge fields with a concurrency token. |
+| [`knowledge_verify`](knowledge_verify.md) | Knowledge Verify | Verify or dispute an exact revision with named evidence. |
+| [`link_create`](link_create.md) | Link Create | Add, update, or remove typed record links in one batch. |
+| [`link_list`](link_list.md) | Link List | List the typed links on a record. |
+| [`link_remove`](link_remove.md) | Link Remove | Remove one typed record link. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
 | [`message_wait`](message_wait.md) | Message Wait | Wait up to 60 seconds for collaboration messages on a durable wait. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
@@ -175,6 +201,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
+| [`record_capabilities`](record_capabilities.md) | Record Capabilities | Describe what this caller may do with records. |
+| [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
+| [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
+| [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
 | [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
 | [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
@@ -197,7 +227,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
 | [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
-| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait and its bounded result pointer. |
+| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
 

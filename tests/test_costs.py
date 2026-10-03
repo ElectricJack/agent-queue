@@ -8,6 +8,7 @@ is reported as ``unpriced_tokens`` — never estimated.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -37,6 +38,47 @@ async def _seed(db, *, projects=("p-1",), agents=(("a-1", "claude-sonnet"),)):
         await db.create_agent(
             Agent(id=aid, name=aid, profile_id=profile, state=AgentState.IDLE)
         )
+
+
+async def test_concurrent_transcript_usage_is_atomic_and_per_conversation(db):
+    from src.sessions.transcripts.base import transcript_usage_key
+
+    await _seed(db)
+    async def record(conversation, output, session="s-1"):
+        await db.record_transcript_usage(
+            usage_key=transcript_usage_key("claude", conversation, "msg-1"),
+            project_id="p-1", agent_id="a-1", task_id="t-1", session_id=session,
+            attempt_id=None, model="claude-x", model_source="assistant_response",
+            counters={"input_tokens": 10, "output_tokens": output}, legacy_call_ids=[],
+        )
+    await asyncio.gather(*(record("conversation-1", output) for output in [2, 8, 3, 8, 4]))
+    assert await db.get_project_token_usage("p-1") == 18
+    # Same provider message ID in another conversation is a distinct call.
+    await record("conversation-2", 8)
+    await record("conversation-1", 2, session="s-restarted")
+    assert await db.get_project_token_usage("p-1") == 36
+
+
+async def test_failed_transcript_ledger_insert_rolls_back_call_progress(db):
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from src.database.tables import transcript_usage_calls
+
+    kwargs = {
+        "usage_key": "claude:failed-call", "project_id": "p-1", "agent_id": "a-1",
+        "task_id": "t-1", "session_id": "s-1", "attempt_id": None, "model": "claude-x",
+        "model_source": "assistant_response", "counters": {"input_tokens": 10},
+        "legacy_call_ids": [],
+    }
+    # The nonexistent project's FK rejects the ledger insert after the
+    # progress row is created; neither half of accounting may survive.
+    with pytest.raises(IntegrityError):
+        await db.record_transcript_usage(**kwargs)
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(transcript_usage_calls))).first() is None
+    await _seed(db)
+    await db.record_transcript_usage(**kwargs)
+    assert await db.get_project_token_usage("p-1") == 10
 
 
 class TestSchema:
