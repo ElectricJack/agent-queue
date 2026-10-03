@@ -588,7 +588,6 @@
         "tests/test_integration_settling.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
-        "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py"
       ]
@@ -1365,7 +1364,7 @@
       ]
     }
   },
-  "digest": "sha256:fc8ae7fbf6615fdcf6e784ca1eaabbeb2b9c1f51615384c76acf885951e9bac1",
+  "digest": "sha256:f5d395190e7c91ef5e2c6b621ff63f8845cb32a9ef827ab0f4820506413a2c93",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3098,8 +3097,17 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.middleware",
         "src.cli.app",
-        "src.cli.exceptions"
+        "src.cli.client",
+        "src.cli.exceptions",
+        "src.commands.handler",
+        "src.config",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -7740,15 +7748,10 @@
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
-        "src.git.manager",
         "src.integration.drain_owners",
         "src.integration.hierarchy",
         "src.integration.models",
-        "src.integration.outbox",
         "src.integration.ownership",
-        "src.integration.parent_repair_heads",
-        "src.integration.promotion",
-        "src.integration.repair",
         "src.integration.status",
         "src.models",
         "src.prime.sections",
@@ -7841,7 +7844,6 @@
         "src.doctor.models",
         "src.git.identity",
         "src.git.manager",
-        "src.integration.collection",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.owner_recovery",
@@ -8281,23 +8283,6 @@
         "parametrize"
       ],
       "summary": "A train request whose batch can never release it must not wedge the schedule."
-    },
-    "tests/test_integration_stall_recovery.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.database.tables",
-        "src.integration.outbox",
-        "src.integration.ownership",
-        "src.integration.repair",
-        "src.integration.scheduler",
-        "src.integration.service",
-        "src.models"
-      ],
-      "markers": [],
-      "summary": "P0 acceptance: durable ticks recover stalls on disposable PostgreSQL and Git."
     },
     "tests/test_integration_state.py": {
       "areas": [
@@ -11713,7 +11698,6 @@
         "src.api.auth",
         "src.config",
         "src.database",
-        "src.install.providers",
         "src.llm",
         "src.llm.fake",
         "src.llm.providers.errors",

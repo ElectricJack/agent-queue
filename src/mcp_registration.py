@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXCLUDED_COMMANDS = {
     # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.
     "observe_integration_source_ci",
+    # Internal visit dispatch for a parent subject. The process-bound engine
+    # exclusion (``ParentEngineOwnership.operation``) is the authority, so a
+    # caller-supplied payload can never grant it; the reconciler's adapter
+    # calls it directly (src/integration/parent_adapters.py).
+    "integration_parent_action",
     "reconcile_agent_waits",  # daemon-only bounded durable scan
     "reconcile_collaborations",  # daemon-only expiry and retention
     "job_reconcile",

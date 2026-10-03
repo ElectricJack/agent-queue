@@ -2780,12 +2780,15 @@ async def test_continuous_replay_never_releases_operator_held_delegate(db, held)
 
     await db.pause_task(repair_task_id)
     assert await service.pending_dispatches() == []
-    # An explicit dispatch may hand the fence over; it never lifts the hold.
-    dispatched = await service.dispatch("operation", 0)
-    assert dispatched["outcome"] == "dispatched", dispatched
+    # An operator's hold is a human decision, so even an explicit dispatch
+    # refuses instead of handing the fence over (integration_repair_dispatch
+    # ``human_required``); only ``aq task resume`` lifts it.
+    refused = await service.dispatch("operation", 0)
+    assert refused["outcome"] == "human_required", refused
+    assert "operator" in refused["reason"]
     assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
     assert await db.get_task_meta(repair_task_id, "manual_pause") is not None
-    assert (await service.dispatch("operation", 0))["outcome"] == "already_dispatched"
+    assert (await service.dispatch("operation", 0))["outcome"] == "human_required"
     assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
     assert await service.pending_dispatches() == []
 
