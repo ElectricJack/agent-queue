@@ -1388,7 +1388,7 @@
       ]
     }
   },
-  "digest": "sha256:f02419a86c97e35733da2cc3cfb19c3564a5d2cec747b1704d24b23e301135d6",
+  "digest": "sha256:33c7cdf27d1172705b89ea78ecb619108d7cf1dd94931fd89f8de2ac36c800a6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4654,6 +4654,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.proposal_commands",
         "src.doctor.integration_checks",
         "src.playbooks.definition",
