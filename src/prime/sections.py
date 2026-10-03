@@ -655,18 +655,23 @@ _HARNESS_GUIDANCE = frozenset({"opencode"})
 
 
 def build_tool_guidance_section(
-    harness: str | None = None, *, registry: Any = None
+    harness: str | None = None, *, registry: Any = None, project_id: str | None = None
 ) -> PrimeSection:
     """The shared tool guidance, plus the addendum for the CLI *harness* runs.
 
     The addendum is the CLI's, not one harness file's: with *registry*, a
     harness such as ``opencode-zen`` running the ``opencode`` executable gets
-    OpenCode's (:func:`~src.sessions.harness_registry.runs_cli`).
+    OpenCode's (:func:`~src.sessions.harness_registry.runs_cli`).  *project_id*
+    resolves the harness in that project's scope, as the launch does, so a
+    project file shadowing the id with another executable withholds the
+    addendum for that project alone.
     """
     from src.sessions.harness_registry import runs_cli
 
     body = _load_template("tool_guidance.md")
-    cli = next((c for c in sorted(_HARNESS_GUIDANCE) if runs_cli(c, harness, registry)), None)
+    cli = next(
+        (c for c in sorted(_HARNESS_GUIDANCE) if runs_cli(c, harness, registry, project_id)), None
+    )
     if cli is not None:
         addendum = _load_template(f"tool_guidance_{cli}.md")
         if addendum:
