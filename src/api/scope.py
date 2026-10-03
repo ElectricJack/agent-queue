@@ -237,6 +237,35 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
 )
 
 
+def _forbids_project_id(command: str) -> bool:
+    """Whether *command*'s args contract declares no ``project_id``.
+
+    True only for a registered command whose ``extra="forbid"`` model omits
+    the field, so a key the gate injected would be a validation error the
+    caller cannot fix by changing its arguments.  Derived from the registry
+    rather than listed, so a contract that gains or loses the field moves with
+    it.
+
+    An unregistered command (``delete_project``, ``edit_project``, the project
+    and agent controls — none of them carry a contract) forbids nothing, so the
+    gate keeps injecting for them: their handlers read the injected
+    ``project_id`` and there is no model to reject it.
+
+    Only the elevated per-project branch consults this.  The agent branch below
+    still injects the whole ID triple unconditionally, because handlers there
+    read the injected ``project_id`` too, and layer 1c of
+    ``tests/test_command_scope_matrix.py`` keeps every agent-surface command
+    that validates its own args declaring all three.
+    """
+    from src.commands.contracts import CONTRACTS
+
+    registration = CONTRACTS.get(command)
+    if registration is None:
+        return False
+    args_model = registration.contract.execution.args_model
+    return "project_id" not in args_model.model_fields
+
+
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
     """Enforce (and, for session scopes, inject) the request's scope.
 
@@ -315,7 +344,15 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         expected_pid = scope.project_id
         value = args.get("project_id")
         if value is None:
-            args["project_id"] = expected_pid
+            if not _forbids_project_id(command):
+                args["project_id"] = expected_pid
+            # Otherwise the contract forbids the key (``extra="forbid"``), and
+            # an injected one is a validation error inside the handler — the
+            # ``aq integration reserve-owner`` failure recorded on
+            # azure-journey-72.  Isolation then comes from the target the
+            # command names: ``check_request_scope`` resolves that row's
+            # project and compares it with the token's
+            # (:mod:`src.api.target_scope`).
         elif value != expected_pid:
             return "out of scope: project_id mismatch"
         return None
@@ -853,7 +890,23 @@ async def check_request_scope(
             return None
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
-        return check_command_scope(command, args, scope)
+        error = check_command_scope(command, args, scope)
+        if error is not None:
+            return error
+        if (
+            scope.kind == "session"
+            and scope.elevated
+            and scope.project_id is not None
+            and _forbids_project_id(command)
+        ):
+            # A per-project supervisor on a contract that declares no
+            # ``project_id``: the gate injected nothing, so the project's
+            # isolation is the target's own.  Verified here, where a database
+            # is available, and refused if the target is somebody else's.
+            from src.api.target_scope import target_scope_error
+
+            return await target_scope_error(command, args, scope.project_id, db=db)
+        return None
 
     ordinary_args = dict(args)
     error = check_command_scope(command, ordinary_args, scope)

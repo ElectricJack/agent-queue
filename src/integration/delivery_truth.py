@@ -10,6 +10,9 @@ A leaf generation without retained provenance is
 unlabelled: no branch head, reported commit or historical manifest stands in
 for it, so it is unknown until an operator retains it
 (``aq integration migrate-provenance``). An absent ref is never an empty artifact.
+Completed legacy tasks without a descriptive close row can be attested under
+their recorded current generation or :func:`legacy_completion_id`, without
+fabricating a passing worker close or a parent verification.
 
 A *settlement* is the one database answer the evaluator honours, and it is not
 a delivery: it records that a generation is **not owed** to one target (work
@@ -22,6 +25,7 @@ exact completion generation it settled, so a reopened task owes its new work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -35,6 +39,7 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 #: has no exact source retained in git. Unknown, never delivered or empty.
 MISSING_PROVENANCE = "missing_git_provenance"
 INVALID_PARENT_COMPLETION = "invalid_parent_completion"
+PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 
 #: Task metadata recording that a generation's delivery is not owed to one
 #: target (see the module docstring). ``completion_id`` ``None`` settles every
@@ -76,6 +81,18 @@ class VerifiedParentCompletion:
 
 
 @dataclass(frozen=True)
+class AdoptedParentCompletion:
+    """An explicit audited operator generation, distinct from trusted verification."""
+
+    completion_id: str
+    source_oid: str
+    operation_id: str
+    episode_id: str
+    generation: int
+    checkpoint_version: int
+
+
+@dataclass(frozen=True)
 class DeliveryRequest:
     """Immutable current task/completion inputs, including archived identities.
 
@@ -99,6 +116,7 @@ class DeliveryRequest:
     claim_epoch: int = 0
     requires_parent_completion: bool = False
     parent_completion: VerifiedParentCompletion | None = None
+    parent_adoption: AdoptedParentCompletion | None = None
     #: The recorded settlement (:data:`SETTLEMENT_KEY`), whatever it fences;
     #: :meth:`settles` decides whether it answers this request.
     settled_repository_id: str | None = None
@@ -218,7 +236,8 @@ class DeliverySnapshot:
             return result(DeliveryState.UNKNOWN, "scope_mismatch")
         if self.error or not self.target_oid:
             return result(DeliveryState.UNKNOWN, self.error or "missing_target")
-        if request.requires_parent_completion and request.parent_completion is None:
+        if (request.requires_parent_completion and request.parent_completion is None
+            and request.parent_adoption is None):
             return result(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
         try:
             provenance = GitProvenance(self.git, self.store, repository_url=self.repository_url)
@@ -249,6 +268,10 @@ class DeliverySnapshot:
                     return result(DeliveryState.PENDING, "verified_parent_completion", source)
                 if record is not None:
                     source = record["source_oid"]
+                    if request.parent_adoption is not None and (
+                        source != request.parent_adoption.source_oid or not record["artifact"]
+                    ):
+                        return result(DeliveryState.UNKNOWN, "parent_adoption_provenance_mismatch")
                     # The immutable generation, rather than a branch tip or an
                     # arbitrary task trailer, identifies the complete artifact.
                     if not record["artifact"]:
@@ -353,6 +376,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         parent_ids, parent_completions = await _parent_completions_on(
             reader, task_ids, repository_id=repository_id,
         )
+        parent_adoptions = await _parent_adoptions_on(reader, parent_ids, repository_id)
         rework = dict((await reader.execute(select(
             task_metadata.c.task_id, task_metadata.c.value,
         ).where(task_metadata.c.task_id.in_(parent_ids),
@@ -378,7 +402,39 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                     request, completion_id=current_id, completed_at=None,
                     reported_source=None,
                 )
+            elif request.completion_id is None and request.task_status == "COMPLETED":
+                # Legacy closes sometimes have no descriptive completion row.
+                # This locates only explicit operator-retained Git evidence;
+                # a branch tip never stands in for the missing generation.
+                request = replace(request, completion_id=legacy_completion_id(request))
             if row["id"] in parent_ids:
+                adoption = parent_adoptions.get(row["id"])
+                completion = completion_by_id.get(row["id"])
+                try:
+                    adoption_rework = json.loads(rework.get(row["id"], "0"))
+                    adoption_valid = type(adoption_rework) in (int, float) and (
+                        adoption is not None and adoption_rework <= adoption["completed_at"]
+                    )
+                except (ValueError, TypeError):
+                    adoption_valid = False
+                if (adoption_valid and request.task_status == "COMPLETED"
+                    and completion is not None and completion.outcome == "pass"
+                    and completion.id == adoption["completion_id"]
+                    and completion.completed_at == adoption["completed_at"]
+                    and completion.commits == [adoption["head_sha"]]
+                    and current_id in {None, completion.id}
+                    and request.repository_id == row.get("repo_id") == adoption["repository_id"]
+                    and request.project_id == adoption["project_id"]
+                    and request.branch_name == adoption["branch"]):
+                    requests[row["id"]] = replace(
+                        request, requires_parent_completion=True,
+                        parent_adoption=AdoptedParentCompletion(
+                            completion.id, adoption["head_sha"], adoption["operation_id"],
+                            adoption["episode_id"], adoption["generation"],
+                            adoption["checkpoint_version"],
+                        ), has_recorded_source=True, **settlements.get(row["id"], {}),
+                    )
+                    continue
                 parent = parent_completions.get(row["id"])
                 try:
                     rework_at = json.loads(rework.get(row["id"], "0"))
@@ -416,6 +472,53 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
     return requests
 
 
+async def _parent_adoptions_on(conn, task_ids, repository_id):
+    """Only the explicit audited generation may answer a cancelled parent operation."""
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        events, integration_repair_operations as operation, projects,
+        task_integration_checkpoints as checkpoint,
+    )
+
+    if not task_ids:
+        return {}
+    rows = (await conn.execute(select(
+        events.c.task_id, events.c.project_id, events.c.payload, checkpoint,
+        operation.c.id.label("operation_id"), operation.c.state.label("operation_state"),
+    ).select_from(events.join(checkpoint, checkpoint.c.task_id == events.c.task_id).join(
+        operation, (operation.c.parent_task_id == checkpoint.c.task_id)
+        & (operation.c.episode_id == checkpoint.c.episode_id),
+    ).join(projects, projects.c.id == events.c.project_id)).where(
+        events.c.event_type == PARENT_ADOPTION_EVENT, events.c.task_id.in_(task_ids),
+        checkpoint.c.repository_id == repository_id,
+        projects.c.integration_repository_id == repository_id,
+        operation.c.state == "cancelled",
+    ).order_by(events.c.id.desc()))).mappings().all()
+    adoptions = {}
+    for row in rows:
+        try:
+            audit = json.loads(row["payload"])
+            if (audit["task_id"] == row["task_id"] and audit["project_id"] == row["project_id"]
+                and audit["repository_id"] == row["repository_id"]
+                and audit["branch"] == row["branch"]
+                and audit["operation_id"] == row["operation_id"]
+                and audit["episode_id"] == row["episode_id"]
+                and audit["generation"] == row["generation"]
+                and audit["checkpoint_sha"] == row["checkpoint_sha"]
+                and audit["checkpoint_version"] == row["version"]
+                and audit["conclusion"] == "not_ci_attested"
+                and isinstance(audit["completion_id"], str) and audit["completion_id"]
+                and type(audit["completed_at"]) in (int, float)
+                and isinstance(audit["operator_id"], str) and audit["operator_id"]
+                and isinstance(audit["reason"], str) and audit["reason"].strip()
+                and is_valid_git_oid(audit["head_sha"])):
+                adoptions.setdefault(row["task_id"], audit)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return adoptions
+
+
 async def _parent_completions_on(conn, task_ids, *, repository_id):
     """Current exact parent identities, including invalid bindings to fail closed.
 
@@ -438,11 +541,20 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
 
     parent_ids = set((await conn.execute(select(checkpoint.c.task_id).where(
         checkpoint.c.task_id.in_(task_ids),
-        or_(checkpoint.c.episode_id.is_not(None),
+        # A bare pre-train episode is a legacy leaf binding. Any trace of
+        # actual parent operation/verification history requires the verified
+        # completion protocol, even if its current binding is damaged.
+        or_(checkpoint.c.verified_sha.is_not(None),
+            checkpoint.c.verified_generation.is_not(None),
             checkpoint.c.last_completed_operation_id.is_not(None),
+            checkpoint.c.last_completed_verification_id.is_not(None),
             checkpoint.c.current_verification_id.is_not(None)),
     ).union(select(completion.c.parent_task_id).where(
         completion.c.parent_task_id.in_(task_ids),
+    ), select(verification.c.parent_task_id).where(
+        verification.c.parent_task_id.in_(task_ids),
+    ), select(operation.c.parent_task_id).where(
+        operation.c.parent_task_id.in_(task_ids), operation.c.target_kind == "parent",
     )))).scalars())
     if not parent_ids:
         return parent_ids, {}
@@ -493,6 +605,19 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
             row["generation"], row["verified_sha"], row["completed_at"], row["version"],
         ) for row in rows
     }
+
+
+def legacy_completion_id(request: DeliveryRequest) -> str:
+    """Stable operator-attestable identity for a completed task without a close row.
+
+    Reopen/reclose changes the task version. The archive preserves that version
+    but drops claim epochs; metadata changes alone do not create a generation.
+    """
+    material = json.dumps([
+        request.project_id, request.repository_id, request.task_id,
+        request.task_version,
+    ], separators=(",", ":"))
+    return "legacy:" + hashlib.sha256(material.encode()).hexdigest()
 
 
 def settlement_fields(value):

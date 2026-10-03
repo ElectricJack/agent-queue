@@ -304,3 +304,46 @@ def test_setup_logging_rotating_file_and_auto_exc_info_are_idempotent(tmp_path):
         for f in saved_filters:
             root.addFilter(f)
         root.setLevel(saved_level)
+
+
+# ---------------------------------------------------------------------------
+# Root-logger isolation between tests (tests/conftest.py::_restore_root_logging)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _root_level_before_this_module() -> int:
+    """The root level pytest installed, captured before any test here runs.
+
+    Module-scoped so it observes the level the run started from rather than
+    whatever a previously executed module happened to leave behind.
+    """
+    return logging.getLogger().level
+
+
+def test_setup_logging_reconfigures_the_root_logger():
+    """Control for the isolation check below.
+
+    ``setup_logging`` is a process-global reconfiguration, so the very next
+    test is the one that observes it. Without this control the isolation
+    check could pass simply because nothing had reconfigured the root yet.
+    """
+    setup_logging(level="INFO", format="dev")
+    assert logging.getLogger().level == logging.INFO
+
+
+def test_root_logger_is_restored_between_tests(_root_level_before_this_module):
+    """A test's ``setup_logging`` must not decide the next test's outcome.
+
+    Regression, observed on CI as a red ``Tests (default-6/8)``: every
+    ``setup_logging()`` call in this module used to leave the root logger at
+    INFO/DEBUG for the rest of the xdist worker, so INFO records from
+    *unrelated* loggers started reaching ``caplog``. The worker that ran this
+    module ahead of ``tests/test_orchestrator.py`` saw ``src.database``'s
+    ``database url=`` line inside
+    ``TestSchedulerBlockerLogging::test_scheduler_blocker_cache_is_local_to_each_orchestrator``'s
+    captured messages, which asserts on exact message lists. The outcome of
+    one test then depended on shard order.
+    ``tests/conftest.py::_restore_root_logging`` is the fix; this pins it.
+    """
+    assert logging.getLogger().level == _root_level_before_this_module

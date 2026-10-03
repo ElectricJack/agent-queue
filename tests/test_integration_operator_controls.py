@@ -150,6 +150,35 @@ async def test_all_operator_controls_share_the_live_supervisor_matrix(db):
             assert (refusal is None) is allowed, command
 
 
+@pytest.mark.parametrize("principal,allowed", [
+    (None, True), (_session("super-p", "p"), True),
+    (_session("super-other", "other"), False), (_session("worker", "p"), False),
+])
+async def test_parent_delivery_adoption_requires_operator_and_preserves_audit_label(
+    db, principal, allowed,
+):
+    service = SimpleNamespace(adopt=AsyncMock(return_value={"outcome": "would_adopt_parent"}))
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler._development_integration = lambda: service
+    with principal_context(principal):
+        result = await handler._cmd_integration_adopt({
+            "project_id": "p", "task_ids": ["parent"], "target_ref": "refs/heads/main",
+            "head_sha": "a" * 40, "reason": "children delivered",
+            "settle_delivered_children": True, "dry_run": True,
+        })
+    if allowed:
+        assert result["outcome"] == "would_adopt_parent"
+        assert service.adopt.await_args.kwargs["operator_id"] == (
+            "human:local-operator" if principal is None else "supervisor session:super-p"
+        )
+        assert service.adopt.await_args.kwargs["settle_delivered_children"] is True
+        assert service.adopt.await_args.kwargs["dry_run"] is True
+    else:
+        assert result["outcome"] == "unauthorized"
+        service.adopt.assert_not_awaited()
+
+
 async def test_delivered_batch_settlement_requires_operator_and_passes_audit_label(db, monkeypatch):
     monkeypatch.setattr(db, "get_integration_batch", AsyncMock(return_value={"project_id": "p"}))
     run = AsyncMock(return_value={"outcome": "would_settle", "batch_id": "batch"})

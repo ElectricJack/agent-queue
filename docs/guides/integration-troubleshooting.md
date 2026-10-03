@@ -543,6 +543,11 @@ You can also target a specific owner row directly instead of a task:
 aq integration release-owner --owner-row-id o-a3f7…
 ```
 
+`release-owner` takes no `--project-id`: the task (or the owner row's repository) names the
+project, and the caller's token has to name the same one. A project's supervisor session may
+therefore run this recovery for its own work and is refused for another project's — see
+[aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
 **Refusal reasons and how to resolve them.**
 
 Every refusal is recorded in `integration_owner_recoveries` with the row's
@@ -892,6 +897,26 @@ once, and at most three writers start on one unchanged subject head; after that
 the ladder's no-progress guard ends the budget once with a
 `Repair … stopped without progress` message.
 
+### A parent conflict resolved, and what the ladder does next
+
+A parent conflict repair ends with one recorded resolution on its promotion
+intent: a frozen head, the authoring fence and the observed push. That head is
+the parent's new aggregate subject, so what remains is verification of it, not
+another repair writer. A stage whose subject is that recorded resolution head
+therefore ends `passed` (`resolution_verification` in its dossier names the
+intent and head) and hands the parent back to its collector; the ordinary
+readiness projection, verifier wake and exact-head CI then run on the new head.
+A stage that changes nothing on such a subject no longer produces a
+`Repair … stopped without progress` incident, and a successor stage is only
+allocated when a conclusive failure is recorded at that head — which the
+successor's dossier then carries.
+
+If a resolution was recorded but the aggregate head still does not include it
+(the stage closed without a commit proof, or its extension edge is missing), the
+operation stays blocked for a human: reconcile it through
+`aq integration recover-parent-head OPERATION_ID --head SHA`, never by
+dispatching another repair stage.
+
 `integration_repair_dispatch` answers `unknown` (with `reason` and
 `reason_code`) for a state it did not expect — a missing or mismatched delegate,
 an id collision, a missing or non-predecessor owner, an incoherent handoff.
@@ -1017,6 +1042,40 @@ and a fresh `-g6` verifier was filed.
 Every refusal records its subject/evidence state on the verifier task under
 `integration_trusted_evidence_wait`, so a replay on unchanged state is
 deduplicated into one escalation instead of another invitation to re-run.
+
+## All children reached main but the aggregate verifier is stranded
+
+A managed epic can remain `PAUSED` after every child arrived on the default
+branch through another delivery. Its obsolete aggregate verifier may be `READY`
+but excluded by `frontier_origin_not_materialized`; ordinary `integration adopt`
+still requires a current verified parent completion.
+
+Run `aq doctor --check integration.delivered_children_unsettled_parent`. It names
+the parent, stale verifier, current child delivery proof and the recovery command.
+A local operator or the project's live supervisor can preview and apply:
+
+```bash
+aq integration adopt <project> --task <parent> --head-sha <current-main-sha> \
+  --settle-delivered-children --dry-run --reason 'children delivered through other routes'
+aq integration adopt <project> --task <parent> --head-sha <current-main-sha> \
+  --settle-delivered-children --reason 'children delivered through other routes'
+```
+
+Every current child must be COMPLETED with retained Git proof of containment,
+an immutable equivalent replacement, or an explicit no-artifact completion.
+Add `--accept-equivalent` when a contained child uses an immutable equivalent
+replacement rather than ancestry; it does not waive missing or pending proof.
+Resolve any manual hold, open
+gate, retained session/claim/workspace, attached writer or uncertain external
+write the preview names, then preview again. Reconciler-owned parents require
+their engine's recovery controls.
+
+Apply cancels the obsolete collection and retires its detached verifier/repair
+delegates, preserving their audit history. It records an operator completion
+bound to this parent episode and checkpoint, so delivery consumers can recognize
+the default-branch source. Its conclusion is `not_ci_attested`: it adds no CI
+success or parent verification. A reopen or changed checkpoint invalidates this
+adoption. Workers cannot apply it to another task or manage the live daemon.
 
 ## A parent's collection was cancelled
 

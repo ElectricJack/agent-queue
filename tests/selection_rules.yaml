@@ -183,7 +183,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
-  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
+  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/host_shell.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
   - { paths: ["src/api/messages.py", "src/api/models/message.py"], areas: ["messages"] }
   - { paths: ["src/api/websocket.py"], areas: ["events", "agent-questions"] }
   - { paths: ["src/api/routers/proposals.py", "src/api/models/review.py"], areas: ["document-reviews"] }
@@ -340,6 +340,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
+  - { paths: ["src/integration/delivered_parent_adoption.py"], areas: ["integration-promotion", "integration-controls", "development-delivery"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
   - { paths: ["src/integration/development*.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
@@ -401,7 +402,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/services/**"], areas: ["plugins"] }
 
   - { paths: ["src/sessions/**"], areas: ["session-runtime"] }
-  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
+  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/host_shell.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
   - { paths: ["src/sessions/transcripts/**"], areas: ["transcripts"] }
   - { paths: ["src/sessions/pane_broadcaster.py"], areas: ["panes-streams"] }
   - { paths: ["src/sessions/questions.py"], areas: ["agent-questions"] }

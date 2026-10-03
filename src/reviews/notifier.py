@@ -8,8 +8,10 @@ from typing import Any
 
 from src.escalations.transport import (
     TransportAmbiguous,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
+    bound_content,
 )
 from src.remote_links import DashboardLink, DashboardLinkSource
 
@@ -22,7 +24,9 @@ class ReviewNotifier:
     The review row's ``notified_revision`` is the durable outbox cursor.  A
     retryable or unavailable Discord send deliberately leaves it unchanged;
     an ambiguous send advances it because a duplicate review announcement is
-    worse than a possible miss.
+    worse than a possible miss.  A rejected send leaves it unchanged too -- the
+    revision was never announced -- but this process does not resend it, since
+    the same request earns the same refusal; a restart tries it once more.
     """
 
     def __init__(
@@ -42,6 +46,7 @@ class ReviewNotifier:
         # own machine, so without an origin the post carries the notice.
         self.base_url = (base_url or "").strip().rstrip("/")
         self._links = links
+        self._rejected: set[tuple[str, int]] = set()
 
     async def tick(self) -> int:
         """Deliver pending review revisions and return those handled this tick."""
@@ -56,6 +61,8 @@ class ReviewNotifier:
             try:
                 revision = int(review["current_revision"])
                 review_id = str(review["id"])
+                if (review_id, revision) in self._rejected:
+                    continue
                 if self.transport is None or not self.channel_id:
                     await self.db.mark_review_notified(review_id, revision)
                     handled += 1
@@ -82,6 +89,14 @@ class ReviewNotifier:
                     handled += 1
                 except Exception:
                     logger.exception("Failed to mark ambiguous review notification as handled")
+            except TransportRejected:
+                self._rejected.add((str(review["id"]), int(review["current_revision"])))
+                logger.exception(
+                    "Review %s revision %s notification was rejected by Discord; this process "
+                    "will not resend it",
+                    review.get("id"),
+                    review.get("current_revision"),
+                )
             except (TransportRetryable, TransportUnavailable):
                 logger.warning(
                     "Review %s notification failed transiently; it will retry on the next tick",
@@ -124,7 +139,8 @@ class ReviewNotifier:
             lines.append(f"{link.url}/reviews/{review['id']}")
         else:
             lines.append(link.unavailable_notice)
-        return "\n".join(lines)
+        # The link is the last line, so a long changes note is what gets cut.
+        return bound_content("\n".join(lines))
 
     async def _changes_note(self, review: dict, revision: int) -> str | None:
         """Read the note stored with the revision, without widening the outbox API."""

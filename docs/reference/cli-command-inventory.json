@@ -3687,6 +3687,8 @@
         "optional": [
           "--target-ref",
           "--accept-equivalent",
+          "--settle-delivered-children",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -4205,6 +4207,8 @@
           "--offset",
           "--task-id",
           "--source",
+          "--no-artifact",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",
