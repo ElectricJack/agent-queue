@@ -143,6 +143,7 @@ its outbox; transport failures never need a new author turn.
     "integration_rebind_detached_repair",
     "integration_recover_preserved_repair",
     "integration_recover_parent_head",
+    "integration_settle_delivered_batch",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
