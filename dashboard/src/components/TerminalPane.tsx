@@ -1,13 +1,63 @@
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
 import { createPortal } from "react-dom";
 import { EllipsisHorizontalIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
 export const TERMINAL_TOOL = "inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1 rounded px-2 text-xs text-gray-300 hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-40";
 
+/** Icon-only, like every other header control, so a tab strip never grows the row past one line. */
+export const TERMINAL_TAB = "inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded text-xs text-gray-300 hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-indigo-400";
+
 const Chrome = createContext<{ primary: HTMLDivElement | null; details: HTMLDivElement | null } | null>(null);
 
-function TerminalHeader({ title, status, primary, details, onClose, titleId }: {
-  title: string; status?: ReactNode; primary?: ReactNode; details: ReactNode;
+/**
+ * A pane's view switch (terminal | settings) rides the header, not the
+ * disclosure: it chooses what the pane body shows, so it has to stay reachable
+ * while the details are closed, and a header that carries it needs no opening
+ * round trip to change views. Icon-only keeps the row's height and width
+ * unchanged; `aria-label` keeps the name the tab always had at every width.
+ */
+export function TerminalTabs<T extends string>({ label, idPrefix, tabs, value, onChange }: {
+  label: string;
+  idPrefix: string;
+  tabs: { id: T; label: string; Icon: ComponentType<SVGProps<SVGSVGElement>> }[];
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  return <div role="tablist" aria-label={label} className="flex min-w-0 shrink-0 items-center gap-0.5">
+    {tabs.map(({ id, label: text, Icon }) => (
+      <button key={id} type="button" role="tab" id={idPrefix + "-" + id} data-primary-control
+        aria-label={text} title={text} aria-controls={idPrefix + "-panel"} aria-selected={value === id}
+        onClick={() => onChange(id)}
+        className={TERMINAL_TAB + (value === id ? " bg-indigo-500/10 text-indigo-200" : "")}>
+        <Icon aria-hidden="true" className="h-4 w-4" />
+      </button>
+    ))}
+  </div>;
+}
+
+/**
+ * A compact header row is one line of 44 px touch targets with no slack — a
+ * pool pane at 320 px already spends all of it on the instance picker, the
+ * transport control, details and close — so the switch only joins the header
+ * once the row can hold it. Below that it stays in the disclosure, which is
+ * where it lived before, and the row keeps its one-row geometry. Measured
+ * widths are in docs/reports/terminal-header-evidence/README.md.
+ */
+const ROOMY_HEADER = 640;
+
+function useHeaderHasRoom(): boolean {
+  const [room, setRoom] = useState(() => window.innerWidth >= ROOMY_HEADER);
+  useEffect(() => {
+    const sync = () => setRoom(window.innerWidth >= ROOMY_HEADER);
+    window.addEventListener("resize", sync);
+    sync();
+    return () => window.removeEventListener("resize", sync);
+  }, []);
+  return room;
+}
+
+function TerminalHeader({ title, status, tabs, primary, details, onClose, titleId }: {
+  title: string; status?: ReactNode; tabs?: ReactNode; primary?: ReactNode; details: ReactNode;
   onClose?: () => void; titleId?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -62,6 +112,7 @@ function TerminalHeader({ title, status, primary, details, onClose, titleId }: {
     <header data-terminal-header className="flex min-w-0 shrink-0 items-center gap-1 whitespace-nowrap border-b border-gray-800 bg-gray-900 px-2 py-0.5">
       <h2 id={titleId} title={title} className="min-w-0 flex-1 truncate text-xs font-semibold text-gray-100">{title}</h2>
       {status && <span className="max-w-24 shrink truncate text-[10px] capitalize text-gray-400">{status}</span>}
+      {tabs}
       {primary}
       <button ref={button} type="button" data-primary-control aria-label={"Details for " + title}
         aria-haspopup="dialog" aria-expanded={open} aria-controls={id} title="Terminal details and controls"
@@ -93,15 +144,17 @@ function TerminalHeader({ title, status, primary, details, onClose, titleId }: {
 }
 
 /** A window and its terminal share one header; portals add transport controls without remounting xterm. */
-export default function TerminalPane({ title, status, primary, details, onClose, titleId, children }: {
-  title: string; status?: ReactNode; primary?: ReactNode; details: ReactNode; onClose: () => void; titleId?: string; children: ReactNode;
+export default function TerminalPane({ title, status, tabs, primary, details, onClose, titleId, children }: {
+  title: string; status?: ReactNode; tabs?: ReactNode; primary?: ReactNode; details: ReactNode;
+  onClose: () => void; titleId?: string; children: ReactNode;
 }) {
   const [primaryTarget, setPrimary] = useState<HTMLDivElement | null>(null);
   const [extra, setExtra] = useState<HTMLDivElement | null>(null);
+  const inHeader = useHeaderHasRoom();
   return <Chrome.Provider value={{ primary: primaryTarget, details: extra }}>
-    <TerminalHeader title={title} status={status} onClose={onClose} titleId={titleId}
+    <TerminalHeader title={title} status={status} tabs={inHeader ? tabs : undefined} onClose={onClose} titleId={titleId}
       primary={<>{primary}<div ref={setPrimary} className="flex min-w-0 shrink-0 items-center gap-1" /></>}
-      details={<>{details}<div ref={setExtra} className="space-y-2" /></>} />
+      details={<>{details}{inHeader ? null : tabs}<div ref={setExtra} className="space-y-2" /></>} />
     {children}
   </Chrome.Provider>;
 }
