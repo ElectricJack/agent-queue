@@ -34,7 +34,8 @@ POINTER_BODY = {
 
 @asynccontextmanager
 async def daemon_app(
-    tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db"
+    tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db",
+    health_provider: Any = None,
 ) -> AsyncIterator[Any]:
     """A real ``create_app()`` application over a PostgreSQL-backed orchestrator.
 
@@ -71,15 +72,19 @@ async def daemon_app(
         deps._command_handler,
         deps._token_store,
         deps._require_session_token,
+        deps._health_provider,
+        deps._health_monitor,
     )
     try:
-        yield create_app(orch, config)
+        yield create_app(orch, config, health_provider=health_provider)
     finally:
         (
             deps._orchestrator,
             deps._command_handler,
             deps._token_store,
             deps._require_session_token,
+            deps._health_provider,
+            deps._health_monitor,
         ) = saved
         await db.close()
 
@@ -88,6 +93,47 @@ async def daemon_app(
 async def live_app(tmp_path):
     async with daemon_app(tmp_path) as app:
         yield app
+
+
+async def test_api_lifespan_starts_health_collection_and_cancels_it(tmp_path):
+    import asyncio
+    from httpx import ASGITransport, AsyncClient
+    from src.api import dependencies as deps
+
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def provider():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async with daemon_app(tmp_path, health_provider=provider) as app:
+        monitor = deps._health_monitor
+        monitor.timeout = 60
+        async with app.router.lifespan_context(app):
+            await asyncio.wait_for(started.wait(), 5)
+            assert monitor._task is not None
+            async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+                response = await client.get("/health")
+            assert response.status_code == 503
+            assert response.json()["status"] == "busy"
+            assert not stopped.is_set()
+        assert stopped.is_set() and monitor._task is None
+
+
+async def test_api_restart_restores_websocket_event_subscription(tmp_path):
+    from src.api import dependencies as deps
+
+    async with daemon_app(tmp_path) as app:
+        bus = deps._orchestrator.bus
+        assert len(bus._handlers["*"]) == 1
+        for _ in range(2):
+            async with app.router.lifespan_context(app):
+                assert len(bus._handlers["*"]) == 1
+            assert bus._handlers["*"] == []
 
 
 def _server(**overrides: Any) -> Any:
