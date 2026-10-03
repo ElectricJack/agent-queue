@@ -9,7 +9,10 @@ import pytest
 
 from src.config import DashboardServerConfig
 from src.escalations.transport import (
+    MAX_CONTENT_CHARS,
+    TRUNCATION_NOTICE,
     TransportAmbiguous,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
 )
@@ -106,6 +109,52 @@ async def test_retryable_transport_errors_leave_review_pending(error):
 
     assert await notifier.tick() == 1
     assert db.marked == [("rev-bright-harbor", 1)]
+    assert len(transport.posts) == 2
+
+
+async def test_a_long_changes_note_is_truncated_and_the_link_stays_last():
+    """rev-bright-ridge rev 2: a long note pushed the post past Discord's 2000 limit."""
+    db = FakeDatabase(
+        [review(current_revision=2)],
+        {("rev-bright-harbor", 2): {"changes_note": "c" * 5000}},
+    )
+    transport = FakeTransport()
+    notifier = ReviewNotifier(db, transport, "123", "https://aq.example.test")
+
+    assert await notifier.tick() == 1
+    content = transport.posts[0][1]
+    assert len(content) <= MAX_CONTENT_CHARS
+    assert content.startswith(
+        "📄 Revised plan (rev 2): Review notifications\n"
+        "Project: agent-queue · Author task: steady-lantern.5\nc"
+    )
+    assert content.endswith(
+        f"c{TRUNCATION_NOTICE}\nhttps://aq.example.test/reviews/rev-bright-harbor"
+    )
+    assert db.marked == [("rev-bright-harbor", 2)]
+
+
+async def test_a_rejected_post_is_logged_once_and_never_resent_by_this_process(caplog):
+    """A deterministic 400 must not retry every tick; the revision stays unannounced."""
+    db = FakeDatabase([review()])
+    transport = FakeTransport([TransportRejected("discord 400 (error code: 50035)")])
+    notifier = ReviewNotifier(db, transport, "123", "https://aq.example.test")
+
+    with caplog.at_level(logging.WARNING):
+        assert await notifier.tick() == 0
+        assert await notifier.tick() == 0
+        assert await notifier.tick() == 0
+
+    assert len(transport.posts) == 1
+    assert db.marked == []
+    rejected = [record for record in caplog.records if "rejected" in record.getMessage()]
+    assert len(rejected) == 1 and rejected[0].levelno == logging.ERROR
+    assert "will retry" not in caplog.text
+
+    # A new revision is a new post, and it is attempted.
+    db.reviews[0]["current_revision"] = 2
+    assert await notifier.tick() == 1
+    assert db.marked == [("rev-bright-harbor", 2)]
     assert len(transport.posts) == 2
 
 
