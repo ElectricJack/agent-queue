@@ -1321,7 +1321,7 @@
       ]
     }
   },
-  "digest": "sha256:f590af03c6c99ec5ee744c5a16f0352c27da51fe81bb589a15c5276d26657714",
+  "digest": "sha256:f733480ec3eef91e42834a0895018353d431f4d2f77d10cea99f953565df0175",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7829,7 +7829,9 @@
       "imports": [
         "src.config",
         "src.database.tables",
+        "src.integration",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.scheduler",
         "src.integration.service",
         "src.integration.settling",
@@ -9566,10 +9568,12 @@
         "src.integration.branch_materialization",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.outbox",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
         "src.playbooks.run_state",
+        "src.playbooks.runtime",
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",

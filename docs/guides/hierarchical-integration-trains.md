@@ -360,6 +360,22 @@ does not enable integration for projects that have no policy or remain disabled.
 }
 ```
 
+The optional `max_wait_seconds` (a finite positive number of seconds, default
+`3600`) is the project's `max_wait`: the longest an undelivered integration
+event keeps retrying before the outbox quarantines it. A quarantined event is
+an explicit failed delivery: its `last_error` starts `retry_budget_exhausted:`
+and it keeps every frozen destination and pin. Stored policies name the field
+only when it differs from the default, so snapshots frozen before it existed
+still compare equal. Projects without a hierarchical policy, development mode
+included, use the default. The five event types no shipped playbook consumes
+(`integration.root_delivered`, `integration.human_blocked`,
+`integration.cleanup_pending`, `task.integration_configuration_blocked`,
+`integration.branch_materialization_pending`) are not quarantined. They are
+marked delivered with `last_error` `unsubscribed: ...`, but only when the
+playbook runtime proves that no ready activation in the project's scope
+subscribes to them. An unready or unloaded activation, a partially captured
+fanout or paused playbooks all leave the event retrying instead.
+
 Repository and policy changes are accepted only while the project is disabled,
 fully drained, and has no active integration work. Bind one field, reread status
 for the incremented generation, then bind the next:
