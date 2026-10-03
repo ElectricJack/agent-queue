@@ -1023,6 +1023,40 @@ Every refusal records its subject/evidence state on the verifier task under
 `integration_trusted_evidence_wait`, so a replay on unchanged state is
 deduplicated into one escalation instead of another invitation to re-run.
 
+## All children reached main but the aggregate verifier is stranded
+
+A managed epic can remain `PAUSED` after every child arrived on the default
+branch through another delivery. Its obsolete aggregate verifier may be `READY`
+but excluded by `frontier_origin_not_materialized`; ordinary `integration adopt`
+still requires a current verified parent completion.
+
+Run `aq doctor --check integration.delivered_children_unsettled_parent`. It names
+the parent, stale verifier, current child delivery proof and the recovery command.
+A local operator or the project's live supervisor can preview and apply:
+
+```bash
+aq integration adopt <project> --task <parent> --head-sha <current-main-sha> \
+  --settle-delivered-children --dry-run --reason 'children delivered through other routes'
+aq integration adopt <project> --task <parent> --head-sha <current-main-sha> \
+  --settle-delivered-children --reason 'children delivered through other routes'
+```
+
+Every current child must be COMPLETED with retained Git proof of containment,
+an immutable equivalent replacement, or an explicit no-artifact completion.
+Add `--accept-equivalent` when a contained child uses an immutable equivalent
+replacement rather than ancestry; it does not waive missing or pending proof.
+Resolve any manual hold, open
+gate, retained session/claim/workspace, attached writer or uncertain external
+write the preview names, then preview again. Reconciler-owned parents require
+their engine's recovery controls.
+
+Apply cancels the obsolete collection and retires its detached verifier/repair
+delegates, preserving their audit history. It records an operator completion
+bound to this parent episode and checkpoint, so delivery consumers can recognize
+the default-branch source. Its conclusion is `not_ci_attested`: it adds no CI
+success or parent verification. A reopen or changed checkpoint invalidates this
+adoption. Workers cannot apply it to another task or manage the live daemon.
+
 ## A parent's collection was cancelled
 
 ```text

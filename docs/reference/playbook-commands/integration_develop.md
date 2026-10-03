@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:42d6acc69f27be6fb972ca03e90340808acfed4a306609c84a2c08f7b33e3b7a` |
+| Contract fingerprint | `sha256:831c5c69000b1c08522be1b989cbf9b396702f2567f82a3790185dd2cd803a60` |
 
 ## Parameters
 
@@ -87,8 +87,12 @@ Redacted in receipts and explanations: `reason`.
 | `leases` | `object[]` | — |
 | `bound` | `object[]` | — |
 | `unproven` | `string[]` | — |
+| `verifier_task_id` | `string \| null` | — |
+| `children` | `object[]` | — |
+| `retire_delegates` | `string[]` | — |
+| `conclusion` | `string \| null` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`.
+Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `verifier_task_id`, `children`, `retire_delegates`, `conclusion`.
 
 ## Outcomes
 
@@ -103,6 +107,7 @@ Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_s
 | `delivered` | success | — |
 | `idle` | success | — |
 | `parked` | failure | — |
+| `would_adopt_parent` | success | — |
 
 ## Declared effects
 

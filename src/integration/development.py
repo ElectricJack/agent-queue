@@ -1305,6 +1305,8 @@ class DevelopmentIntegration:
         reason,
         operator_id,
         accept_equivalent=False,
+        settle_delivered_children=False,
+        dry_run=False,
     ):
         """Record a fenced operator completion/equivalence decision in git.
 
@@ -1317,6 +1319,18 @@ class DevelopmentIntegration:
         """
         if not reason.strip() or not is_valid_git_oid(head_sha) or not task_ids:
             raise ValueError("task ids, exact target SHA and reason are required")
+        if settle_delivered_children:
+            from src.integration.delivered_parent_adoption import DeliveredParentAdoption
+
+            if len(set(task_ids)) != 1:
+                raise ValueError("delivered-child adoption requires exactly one parent")
+            return await DeliveredParentAdoption(self).run(
+                task_ids[0], project_id=project_id, target_ref=target_ref, head_sha=head_sha,
+                reason=reason, operator_id=operator_id, dry_run=dry_run,
+                accept_equivalent=accept_equivalent,
+            )
+        if dry_run:
+            raise ValueError("dry-run requires settle_delivered_children")
         project = await self.db.get_project(project_id)
         if project is None or not project.integration_repository_id:
             raise ValueError("project has no designated repository")
@@ -1339,7 +1353,8 @@ class DevelopmentIntegration:
             }:
                 raise ValueError(f"task {task_id} does not belong to the repository project")
             request = requests[task_id]
-            if request.requires_parent_completion and request.parent_completion is None:
+            if (request.requires_parent_completion and request.parent_completion is None
+                and request.parent_adoption is None):
                 raise ValueError(f"{task_id}: current verified parent completion is required")
             if row["status"] == "COMPLETED" and (
                 not request.completion_id or request.completed_at is None
@@ -1408,8 +1423,11 @@ class DevelopmentIntegration:
                     raise DevelopmentBusy("a selected completion changed; adopt again")
                 if request and request.completion_id and _status == "COMPLETED":
                     proof = await truth.evaluate(request)
-                    if request.parent_completion is not None and not proof.source_oid:
-                        raise ValueError(f"{task_id}: verified parent source could not be observed")
+                    if (
+                        request.parent_completion is not None or request.parent_adoption is not None
+                    ) and not proof.source_oid:
+                        kind = "verified" if request.parent_completion is not None else "adopted"
+                        raise ValueError(f"{task_id}: {kind} parent source could not be observed")
                     if proof.source_oid:
                         source = proof.source_oid
                 probe = await self.git.ais_ancestor(

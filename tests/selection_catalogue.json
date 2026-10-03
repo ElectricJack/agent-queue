@@ -544,6 +544,7 @@
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
+        "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
@@ -1387,7 +1388,7 @@
       ]
     }
   },
-  "digest": "sha256:4770e0efa928d50efe23f37a745a12011e804931bec231498d9abf3b14357d75",
+  "digest": "sha256:f02419a86c97e35733da2cc3cfb19c3564a5d2cec747b1704d24b23e301135d6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7431,6 +7432,29 @@
         "parametrize"
       ],
       "summary": "Releasing the delegates of an integration operation that has ended."
+    },
+    "tests/test_integration_delivered_parent_adoption.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.integration.delivered_parent_adoption",
+        "src.integration.delivery_truth",
+        "src.integration.epic_delivery",
+        "src.integration.parent_subjects",
+        "src.integration.provenance",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git recovery for parents whose children reached main by other routes."
     },
     "tests/test_integration_eject.py": {
       "areas": [
