@@ -1371,7 +1371,7 @@
       ]
     }
   },
-  "digest": "sha256:5e073179c1e57757e6852fea7f48ef2fd554afee78fbb9e9e3f0279a6e300476",
+  "digest": "sha256:781db917ad7c8e030d39a5edf19cee83f78ee51fee125a2c3b0f40b5657f1115",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3922,6 +3922,8 @@
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.handler",
         "src.mcp_registration",
         "src.models"
       ],
