@@ -36,12 +36,14 @@ mean "allowed":
   admitting it unchecked.
 
 Only reads of a single-hop ``project_id`` column belong in
-:data:`TARGET_RESOLVERS`.  A row that owns no project of its own resolves
-through its owner — an operation through the row its ``target_kind`` names, a
-branch owner or a NULL-project promotion intent through its repository, an
-escalation message through its escalation — and anything polymorphic (an
-escalation action's ``target_id``, a report request's ``request_id``, a
-transfer's branch ``target``) is
+:data:`TARGET_RESOLVERS`; a project reference resolves the project row itself
+(the provider preference's nested ``receive_new_work.project_id``, and only for
+``provider_allocation_preview``).  A row that owns no project of its own
+resolves through its owner — an operation through the row its ``target_kind``
+names, a branch owner or a NULL-project promotion intent through its
+repository, an escalation message through its escalation — and anything
+polymorphic (an escalation action's ``target_id``, a report request's
+``request_id``, a transfer's branch ``target``) is
 deliberately absent, so those commands stay with the global operator.
 """
 
@@ -63,6 +65,7 @@ from src.database.tables import (
     integration_outbox,
     integration_parent_episodes,
     jobs,
+    projects,
     repos,
     test_selection_promotions,
     test_selections,
@@ -184,11 +187,26 @@ async def _promotion_intent_project(db, intent_id: str) -> Ownership:
     return True, project_id
 
 
+async def _project_reference(db, project_id: str) -> Ownership:
+    """A nested project preference names the project row itself.
+
+    A named project that exists is its own owner, so this resolves the row
+    rather than a column: ``(True, project_id)``.  A name no ``projects`` row
+    carries is a missing target, which the handler answers for itself.
+    """
+    async with db._engine.connect() as conn:
+        found = (
+            await conn.execute(select(projects.c.id).where(projects.c.id == project_id))
+        ).scalar_one_or_none()
+    return (False, None) if found is None else (True, project_id)
+
+
 #: Target reference argument -> the resolver that reads its owning project.
 #: Written by hand on purpose: each entry is a claim about one table's ownership
 #: rule, and ``tests/test_target_scope.py`` pins the surface this admits, so a
 #: new command cannot quietly inherit a pass.
 TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
+    "receive_new_work.project_id": _project_reference,
     # Tasks, live or archived.  ``parent_id`` is the parent task a graph write
     # files children under; ``depends_on`` is a list of other tasks.
     "task_id": _task_project,
@@ -234,13 +252,19 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
 }
 
 
-def target_references(args: dict) -> dict[str, list[str]]:
+def target_references(args: dict, *, command: str | None = None) -> dict[str, list[str]]:
     """The target references *args* carries: argument name -> values.
 
-    A list-valued reference (``depends_on``) contributes every member.
+    A list-valued reference (``depends_on``) contributes every member. The
+    provider preference's nested project reference is supported only for
+    ``provider_allocation_preview``; arbitrary nested values do not become
+    scope targets.
     """
     found: dict[str, list[str]] = {}
     for name, value in args.items():
+        # This resolver key labels a nested path, never a top-level argument.
+        if name == "receive_new_work.project_id":
+            continue
         if name in VALUE_ARGUMENTS or not (
             name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES
         ):
@@ -249,13 +273,18 @@ def target_references(args: dict) -> dict[str, list[str]]:
         ids = [item for item in values if isinstance(item, str) and item]
         if ids:
             found[name] = ids
+    receive = args.get("receive_new_work") if command == "provider_allocation_preview" else None
+    if isinstance(receive, dict):
+        project_id = receive.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            found["receive_new_work.project_id"] = [project_id]
     return found
 
 
-def unresolvable_targets(args: dict) -> list[str]:
+def unresolvable_targets(args: dict, *, command: str | None = None) -> list[str]:
     """Target references this module has no ownership resolver for."""
     return sorted(
-        name for name in target_references(args) if name not in TARGET_RESOLVERS
+        name for name in target_references(args, command=command) if name not in TARGET_RESOLVERS
     )
 
 
@@ -276,13 +305,13 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
             f"out of scope: {command} names a project-owned target that cannot be "
             "verified without a database"
         )
-    references = target_references(args)
+    references = target_references(args, command=command)
     if not references:
         return (
             f"out of scope: {command} names no project-owned target, so a token "
             f"scoped to project {project_id} may not run it"
         )
-    unknown = unresolvable_targets(args)
+    unknown = unresolvable_targets(args, command=command)
     if unknown:
         return (
             f"out of scope: {command} names a target whose owning project cannot be "
