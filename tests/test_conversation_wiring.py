@@ -266,13 +266,18 @@ async def test_shared_dispatch_cancels_reply_after_allowlist_revocation(env):
     service = bind(handler, db, transport)
     accepted = await post(handler)
     await service.pump()
-    await reply(handler, reply_args(accepted))
+    queued_reply = await reply(handler, reply_args(accepted))
+    assert queued_reply["success"]
     handler.config.discord.authorized_users = []
     await service.pump()
     rows = await db.list_outbound_deliveries(
         owner_kind="conversation", owner_id=accepted["conversation_id"]
     )
-    assert rows[-1]["state"] == "cancelled"
+    # The frozen clock ties created_at; the hashed ID order is not action order.
+    [reply_delivery] = [
+        row for row in rows if row["dedup_key"] == queued_reply["delivery_dedup_key"]
+    ]
+    assert reply_delivery["state"] == "cancelled"
     assert len(transport.messages) == 2  # inbound root + acknowledgement
 
 
@@ -282,14 +287,18 @@ async def test_ambiguous_reply_is_not_reposted(env):
     service = bind(handler, db, transport)
     accepted = await post(handler)
     await service.pump()
-    await reply(handler, reply_args(accepted))
+    queued_reply = await reply(handler, reply_args(accepted))
+    assert queued_reply["success"]
     transport.faults.append(("post_thread_message", TransportAmbiguous("lost receipt")))
     await service.pump()
     await service.pump()
     rows = await db.list_outbound_deliveries(
         owner_kind="conversation", owner_id=accepted["conversation_id"]
     )
-    assert rows[-1]["state"] == "unknown"
+    [reply_delivery] = [
+        row for row in rows if row["dedup_key"] == queued_reply["delivery_dedup_key"]
+    ]
+    assert reply_delivery["state"] == "unknown"
     assert len(transport.messages) == 2
 
 
