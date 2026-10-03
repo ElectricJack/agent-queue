@@ -89,6 +89,21 @@ class KnowledgeExportResponse(KnowledgeEnvelope):
     format_version: int = 1
 
 
+class KnowledgeImportResponse(KnowledgeEnvelope):
+    """Read-only reconciliation and the canonical bytes bound by its seal."""
+
+    source_installation_id: str
+    snapshot_id: str
+    snapshot_timestamp: str
+    manifest_sha256: str
+    manifest_content_base64: str
+    vector_observation: str
+    counts: dict
+    items: list[dict]
+    mappings: list[dict]
+    identities: list[dict]
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_create": KnowledgeCreateResponse,
     "knowledge_create_task": KnowledgeCreateTaskResponse,
@@ -100,6 +115,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_retire": KnowledgeLifecycleResponse,
     "knowledge_restore": KnowledgeLifecycleResponse,
     "knowledge_export": KnowledgeExportResponse,
+    "knowledge_import": KnowledgeImportResponse,
 }
 
 

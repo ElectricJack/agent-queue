@@ -419,6 +419,13 @@ async def test_knowledge_import_sealed_manifest_content_is_verifiable(tmp_path):
     with principal_context(TRUSTED_LOCAL):
         result = await handler._cmd_knowledge_import(_args(tmp_path))
 
+    # The generated HTTP response must retain the same sealed bytes and
+    # reconciliation evidence as the shared command result.
+    from src.api.models.knowledge import RESPONSE_MODELS
+
+    response = RESPONSE_MODELS["knowledge_import"].model_validate(result)
+    result = response.model_dump(include=set(result))
+
     content_b64 = result["manifest_content_base64"]
     content = base64.b64decode(content_b64, validate=True)
 

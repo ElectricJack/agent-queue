@@ -1372,7 +1372,7 @@
       ]
     }
   },
-  "digest": "sha256:645f20f158c0d4274a8786cd76c510f19dfcb4cc2244f1949664cd7c128fd204",
+  "digest": "sha256:aa122f442a75994aa31b9e265252a03bfaa51cbf67bc750a66f05f8d50efc857",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8796,6 +8796,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.knowledge",
         "src.commands.contracts.builtin",
         "src.commands.contracts.inventory",
         "src.commands.contracts.registry",
