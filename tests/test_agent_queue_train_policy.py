@@ -10,6 +10,7 @@ import yaml
 
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.ci import ci_trust_from_policy
+from src.integration.train_onboarding import check_set_version
 from src.playbooks.definition import artifact_sha256, canonical_bytes, load_definition_json
 from src.playbooks.proposal import source_digest
 from src.playbooks.validation import (
@@ -33,8 +34,13 @@ def test_required_checks_match_workflow_matrix() -> None:
     e2e = workflow["jobs"]["e2e-cli"]
     assert e2e["name"] == "E2E CLI (${{ matrix.group }})"
     expected += tuple(f"E2E CLI ({group})" for group in e2e["strategy"]["matrix"]["group"])
+    dashboard = workflow["jobs"]["dashboard"]
+    assert dashboard["name"] == "Dashboard (typecheck/build)"
+    expected += (dashboard["name"],)
     assert policy.parent.required_checks.names == expected
     assert policy.root.required_checks.names == expected
+    assert policy.parent.required_checks.version == check_set_version(expected)
+    assert policy.root.required_checks.version == check_set_version(expected)
     # GitHub Actions by its numeric App id: canonical in both credential modes.
     assert policy.parent.required_checks.producer_id == "15368"
     assert policy.root.required_checks.producer_id == "15368"
