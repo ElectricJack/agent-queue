@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 474,
+    "leaf_commands": 512,
     "registration": {
-      "generated": 302,
-      "handwritten": 172
+      "generated": 335,
+      "handwritten": 177
     },
     "ownership": {
-      "core": 435,
+      "core": 473,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 473
+      "supported": 511
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 302,
-      "registration": 158
+      "dispatch": 335,
+      "registration": 163
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 414
+      "untested": 452
     }
   },
   "commands": [
@@ -57,6 +57,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -95,6 +96,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -139,6 +141,7 @@
           "--system-prompt-suffix",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -175,6 +178,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -209,6 +213,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -248,6 +253,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -293,6 +299,7 @@
           "--install",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -331,6 +338,7 @@
           "--create-gist",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -364,6 +372,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -397,6 +406,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -430,6 +440,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -466,6 +477,7 @@
           "--overwrite",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -499,6 +511,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -531,6 +544,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -562,6 +576,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -593,6 +608,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -628,6 +644,7 @@
           "--reply-to",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -660,6 +677,7 @@
           "--legacy-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -693,6 +711,7 @@
           "--drifted-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -728,6 +747,7 @@
           "--grants-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -762,6 +782,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -796,6 +817,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -829,6 +851,7 @@
           "--opencode-export",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -865,6 +888,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -897,6 +921,7 @@
           "--timeout",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -928,6 +953,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -962,6 +988,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -997,6 +1024,7 @@
           "--budget",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1029,6 +1057,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1060,6 +1089,7 @@
           "--after",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1092,6 +1122,7 @@
           "--group-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1120,6 +1151,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1150,6 +1182,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1180,6 +1213,7 @@
           "--port",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1210,6 +1244,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1244,6 +1279,7 @@
           "--subject",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1275,6 +1311,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1311,6 +1348,7 @@
           "--base-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1347,6 +1385,7 @@
           "--subject",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1377,6 +1416,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1407,6 +1447,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1435,6 +1476,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1466,6 +1508,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1495,6 +1538,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1528,6 +1572,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1560,6 +1605,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1594,6 +1640,7 @@
           "--confirm",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1627,6 +1674,7 @@
           "--json",
           "--check",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1666,6 +1714,7 @@
           "--decision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1708,6 +1757,7 @@
           "--choices",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1743,6 +1793,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1778,6 +1829,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1816,6 +1868,7 @@
           "--received-sequence",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1858,6 +1911,7 @@
           "--terminal-evidence",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -1896,6 +1950,7 @@
           "--newer-than",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1934,6 +1989,7 @@
           "--replace-all",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -1968,6 +2024,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2007,6 +2064,7 @@
           "--max-results",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2042,6 +2100,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2080,6 +2139,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2114,6 +2174,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2151,6 +2212,7 @@
           "--category",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2186,6 +2248,7 @@
           "--mode",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2225,6 +2288,7 @@
           "--seed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -2263,6 +2327,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2300,6 +2365,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2334,6 +2400,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2369,6 +2436,7 @@
           "--as-cooked",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2404,6 +2472,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2438,6 +2507,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2473,6 +2543,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2508,6 +2579,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2543,6 +2615,7 @@
           "--max-attempts",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2581,6 +2654,7 @@
           "--failing-checks",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -2621,6 +2695,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2656,6 +2731,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2693,6 +2769,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2729,6 +2806,7 @@
           "--description",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2767,6 +2845,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2802,6 +2881,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2838,6 +2918,7 @@
           "--tech-stack",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2871,6 +2952,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2908,6 +2990,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2944,6 +3027,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -2979,6 +3063,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3015,6 +3100,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3049,6 +3135,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3086,6 +3173,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3121,6 +3209,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3155,6 +3244,7 @@
           "--workspace",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3188,6 +3278,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3223,6 +3314,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3258,6 +3350,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3291,6 +3384,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3326,6 +3420,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3358,6 +3453,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3394,6 +3490,7 @@
           "--variant",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3430,6 +3527,8 @@
           "--waiting-for",
           "--file",
           "--decision",
+          "--constraint",
+          "--evidence",
           "--do-not-repeat",
           "--uncertainty",
           "--idempotency-key",
@@ -3439,6 +3538,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3476,6 +3576,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3520,6 +3621,7 @@
           "--git-name",
           "--git-email",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3551,6 +3653,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3586,6 +3689,7 @@
           "--accept-equivalent",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3622,6 +3726,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3655,6 +3760,7 @@
           "--apply",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3687,6 +3793,7 @@
           "--repository-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3720,6 +3827,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3752,6 +3860,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3783,6 +3892,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3816,6 +3926,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3850,6 +3961,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3888,6 +4000,7 @@
           "--regenerate-timeout-seconds",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3920,6 +4033,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3955,6 +4069,44 @@
           "--interval-seconds",
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration engine-transfer",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_engine_transfer",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "repository_id",
+          "--engine"
+        ],
+        "optional": [
+          "--parent-task-id",
+          "--expected-subject",
+          "--reason",
+          "--evidence",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -3985,6 +4137,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4018,6 +4171,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4053,6 +4207,7 @@
           "--source",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4103,6 +4258,7 @@
           "--check-prs",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4137,6 +4293,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4169,6 +4326,7 @@
           "--head",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4203,6 +4361,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4235,6 +4394,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4266,6 +4426,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4296,6 +4457,45 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration recover-parent-head",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_recover_parent_head",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "operation_id",
+          "--head"
+        ],
+        "optional": [
+          "--dry-run",
+          "--episode",
+          "--generation",
+          "--stage",
+          "--fence",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4332,6 +4532,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4365,6 +4566,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4398,6 +4600,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4429,6 +4632,7 @@
           "--archive-obsolete",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4460,6 +4664,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4492,6 +4697,41 @@
           "--older-than",
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration reopen-collection",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_reopen_collection",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4522,6 +4762,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4555,6 +4796,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4585,6 +4827,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4615,6 +4858,43 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration settle-delivered-batch",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_settle_delivered_batch",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "batch_id"
+        ],
+        "optional": [
+          "--apply",
+          "--candidate",
+          "--target-head",
+          "--snapshot",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4648,6 +4928,43 @@
           "--dismiss",
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration shadow-report",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_shadow_report",
+      "callback": "src.cli.integration.integration_shadow_report",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "--since"
+        ],
+        "optional": [
+          "--until",
+          "--acknowledge-unknown",
+          "--output",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4679,6 +4996,7 @@
           "--control-only",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4711,6 +5029,7 @@
           "--recover-child",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4747,6 +5066,7 @@
           "--print",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4779,6 +5099,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4810,6 +5131,7 @@
           "--after",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4840,6 +5162,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4871,6 +5194,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4904,6 +5228,7 @@
           "--follow",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4935,6 +5260,7 @@
           "--max-bytes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -4965,6 +5291,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5002,10 +5329,946 @@
           "argv",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge authority-grant",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_authority_grant",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--review",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--review"
+        ],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge authority-revoke",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_authority_revoke",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge cite",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_cite",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--revision-id",
+          "--kind",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge context-deliver",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_context_deliver",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--bundle-id",
+          "--transport",
+          "--idempotency-key",
+          "--rendered-sha256"
+        ],
+        "optional": [
+          "--project-id",
+          "--state",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge create",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_create",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--title",
+          "--body",
+          "--category",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--summary",
+          "--tags",
+          "--sources",
+          "--metadata",
+          "--claim-epoch",
+          "--global-scope",
+          "--source-task-id",
+          "--if-link-token",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tags",
+          "--sources",
+          "--metadata"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge create-task",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_create_task",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--identity",
+          "--revision-id",
+          "--title",
+          "--description",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--task-type",
+          "--priority",
+          "--parent-id",
+          "--root",
+          "--reason",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-type",
+          "--parent-id",
+          "--reason",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge diff",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_diff",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--from-revision",
+          "--to-revision"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge export",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_export",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity"
+        ],
+        "optional": [
+          "--project-id",
+          "--revision-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge history",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_history",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity"
+        ],
+        "optional": [
+          "--project-id",
+          "--before-sequence",
+          "--limit",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge import",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_import",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--operation",
+          "--roots",
+          "--vector-export",
+          "--scope-aliases",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--global-scope",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id",
+          "--limit",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--roots",
+          "--scope-aliases",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes"
+        ],
+        "nullable": [
+          "--vector-export",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge list",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_list",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--category",
+          "--include-retired",
+          "--include-disputed",
+          "--limit",
+          "--cursor",
+          "--global-scope",
+          "--lifecycle",
+          "--verification",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge proposal-decide",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_proposal_decide",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id",
+          "--proposal-sha256",
+          "--decision",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge proposal-show",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_proposal_show",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge propose",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_propose",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--snapshot",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--identity",
+          "--if-revision",
+          "--link-operations",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--snapshot",
+          "--link-operations"
+        ],
+        "nullable": [
+          "--project-id",
+          "--identity",
+          "--if-revision",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge redact",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_redact",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--idempotency-key",
+          "--reason-code"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--revision-id",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision",
+          "--revision-id"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge restore",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_restore",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--revision-id",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--if-revision",
+          "--claim-epoch",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge retire",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_retire",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--if-revision",
+          "--successor-record-id",
+          "--claim-epoch",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge share",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_share",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key",
+          "--target-project-id"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--revoke",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge show",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_show",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity"
+        ],
+        "optional": [
+          "--project-id",
+          "--revision-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge update",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_update",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--if-revision",
+          "--claim-epoch",
+          "--title",
+          "--body",
+          "--category",
+          "--summary",
+          "--tags",
+          "--sources",
+          "--metadata",
+          "--change-reason",
+          "--valid-from",
+          "--valid-until",
+          "--recheck-at",
+          "--summary-of-revision",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tags",
+          "--sources",
+          "--metadata"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge verify",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_verify",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key",
+          "--evidence"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--verification",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--evidence"
+        ],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
       }
     },
     {
@@ -5047,6 +6310,7 @@
           "--no-color",
           "--log-file",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5091,6 +6355,7 @@
           "--headers",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5131,6 +6396,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5173,6 +6439,7 @@
           "--headers",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5213,6 +6480,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5247,6 +6515,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5280,6 +6549,7 @@
           "--server-names",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -5318,6 +6588,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5352,6 +6623,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5387,6 +6659,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5423,6 +6696,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5459,6 +6733,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5496,6 +6771,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5542,6 +6818,7 @@
           "--pane-open",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5575,6 +6852,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5610,6 +6888,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5647,6 +6926,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5681,6 +6961,7 @@
           "--specs-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5717,6 +6998,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5750,6 +7032,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5784,6 +7067,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5820,6 +7104,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5857,6 +7142,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5892,6 +7178,7 @@
           "--enabled",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5926,6 +7213,7 @@
           "--health",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5961,6 +7249,7 @@
           "--base-sha256",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -5995,6 +7284,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6028,6 +7318,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6059,6 +7350,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6095,6 +7387,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6129,6 +7422,7 @@
           "--event",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6164,6 +7458,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6199,6 +7494,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6241,6 +7537,7 @@
           "--history-limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6275,6 +7572,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6306,6 +7604,7 @@
           "--activate",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6339,6 +7638,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6372,6 +7672,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6406,6 +7707,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6441,6 +7743,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6477,6 +7780,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6511,6 +7815,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6545,6 +7850,7 @@
           "--event",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -6581,6 +7887,7 @@
           "--receipt-limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6615,6 +7922,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6651,6 +7959,7 @@
           "--show-prompts",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6686,6 +7995,7 @@
           "--expected-source-hash",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6723,6 +8033,7 @@
           "--include-advanced",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6756,6 +8067,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6791,6 +8103,7 @@
           "--baseline-artifact-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6823,6 +8136,7 @@
           "--scope",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6856,6 +8170,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6887,6 +8202,7 @@
           "key_values",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6917,6 +8233,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6947,6 +8264,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -6977,6 +8295,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7007,6 +8326,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7039,6 +8359,7 @@
           "--name",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7067,6 +8388,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7102,6 +8424,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7132,6 +8455,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7162,6 +8486,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7193,6 +8518,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7224,6 +8550,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7254,6 +8581,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7289,6 +8617,7 @@
           "--allow-pinned-wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -7330,6 +8659,7 @@
           "--allow-pinned-wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7363,6 +8693,7 @@
           "--provider",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7400,6 +8731,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7437,6 +8769,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7472,6 +8805,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7506,6 +8840,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7540,6 +8875,7 @@
           "--hook-format",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7579,6 +8915,7 @@
           "--kind-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7613,6 +8950,7 @@
           "--relative-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7652,6 +8990,7 @@
           "--default-branch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7685,6 +9024,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7715,6 +9055,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7753,6 +9094,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7787,6 +9129,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7820,6 +9163,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7851,6 +9195,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7884,6 +9229,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7917,6 +9263,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7948,6 +9295,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -7979,6 +9327,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8011,6 +9360,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8045,6 +9395,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8091,6 +9442,7 @@
           "--github-url",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8124,6 +9476,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8156,6 +9509,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8191,6 +9545,7 @@
           "--profile-id",
           "--brief",
           "--json",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8228,6 +9583,7 @@
           "--fields",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8263,6 +9619,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8299,6 +9656,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8332,6 +9690,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8367,6 +9726,7 @@
           "--cursor",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8401,6 +9761,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8438,6 +9799,7 @@
           "--created-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8472,6 +9834,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8506,6 +9869,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8538,6 +9902,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8572,6 +9937,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8605,6 +9971,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8642,6 +10009,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8678,6 +10046,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -8718,6 +10087,7 @@
           "--no-expiry",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8751,6 +10121,7 @@
           "--verbose",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8782,6 +10153,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8813,6 +10185,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8842,10 +10215,293 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq record capabilities",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "record_capabilities",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record link-create",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "link_create",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--operations",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--if-revision",
+          "--if-link-token",
+          "--claim-epoch",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--operations"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record link-list",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "link_list",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity"
+        ],
+        "optional": [
+          "--project-id",
+          "--revision-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record link-remove",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "link_remove",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--link-id",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--if-revision",
+          "--if-link-token",
+          "--claim-epoch",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record repair",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "record_repair",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--operation"
+        ],
+        "optional": [
+          "--dry-run",
+          "--event-id",
+          "--max-batches",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq record search",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "record_search",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--kind",
+          "--query",
+          "--category",
+          "--lifecycle",
+          "--verification",
+          "--include-retired",
+          "--include-disputed",
+          "--limit",
+          "--cursor",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--category",
+          "--lifecycle",
+          "--verification",
+          "--cursor"
+        ]
+      }
+    },
+    {
+      "path": "aq record show",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "record_show",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--revision-id",
+          "--include-edges",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--revision-id"
+        ]
       }
     },
     {
@@ -8879,6 +10535,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8911,6 +10568,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8944,6 +10602,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -8974,6 +10633,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9008,6 +10668,7 @@
           "--max-lookback-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9044,6 +10705,7 @@
           "--max-lookback-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -9078,6 +10740,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9109,6 +10772,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9139,6 +10803,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9169,6 +10834,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9203,6 +10869,7 @@
           "--evidence-ref",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9233,6 +10900,7 @@
           "--no-dashboard-server",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9267,6 +10935,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9303,6 +10972,7 @@
           "--content-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9342,6 +11012,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9376,6 +11047,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9407,6 +11079,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9444,6 +11117,7 @@
           "--heading-path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -9483,6 +11157,7 @@
           "--responder-class",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9517,6 +11192,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9553,6 +11229,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9586,6 +11263,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9619,6 +11297,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9654,6 +11333,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9690,6 +11370,7 @@
           "--diff-from",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9730,6 +11411,7 @@
           "--activate-on-approval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9764,6 +11446,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9798,6 +11481,7 @@
           "argv",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9828,6 +11512,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9859,6 +11544,7 @@
           "--interval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9890,6 +11576,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9919,6 +11606,7 @@
           "--interval",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9947,6 +11635,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -9976,6 +11665,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10005,6 +11695,7 @@
           "session_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10034,6 +11725,7 @@
           "--session-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10066,6 +11758,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10099,6 +11792,7 @@
           "--live",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10130,6 +11824,7 @@
           "--attempt",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10161,6 +11856,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10191,6 +11887,7 @@
           "--lines",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10222,6 +11919,7 @@
           "session_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10252,6 +11950,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10284,6 +11983,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10314,6 +12014,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10345,6 +12046,7 @@
           "--unless-stopped",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10376,6 +12078,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10406,6 +12109,7 @@
           "--no-dashboard-server",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10436,6 +12140,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10499,6 +12204,7 @@
           "--after-seq",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10533,6 +12239,7 @@
           "--turn-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10567,6 +12274,7 @@
           "--session-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10604,6 +12312,7 @@
           "--state",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10642,6 +12351,7 @@
           "--provenance",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10681,6 +12391,7 @@
           "--file",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10712,6 +12423,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10747,6 +12459,7 @@
           "--task-ids",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -10780,6 +12493,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10808,6 +12522,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10838,6 +12553,7 @@
           "section",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10873,6 +12589,7 @@
           "--host",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10902,6 +12619,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10933,6 +12651,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -10967,6 +12686,7 @@
           "--config",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11004,6 +12724,7 @@
           "--current-stage",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11035,6 +12756,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11069,6 +12791,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11107,6 +12830,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11144,6 +12868,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11177,6 +12902,7 @@
           "--checks",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11216,6 +12942,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11251,6 +12978,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11285,6 +13013,7 @@
           "--top-k",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11318,6 +13047,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11353,6 +13083,7 @@
           "--since-hours",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11385,6 +13116,7 @@
           "--section",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11416,6 +13148,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11450,6 +13183,7 @@
           "--group-by",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11482,6 +13216,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11519,6 +13254,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11550,6 +13286,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11585,6 +13322,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11618,6 +13356,7 @@
           "--task-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11651,6 +13390,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11686,6 +13426,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11720,6 +13461,7 @@
           "--expected-revision",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11757,6 +13499,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11791,6 +13534,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11824,6 +13568,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11859,6 +13604,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11892,6 +13638,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -11927,10 +13674,56 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-engine-transfer",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_engine_transfer",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--repository-id",
+          "--engine"
+        ],
+        "optional": [
+          "--parent-task-id",
+          "--expected-versions",
+          "--reason",
+          "--evidence",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--expected-versions",
+          "--evidence"
+        ],
+        "nullable": [
+          "--parent-task-id"
+        ]
       }
     },
     {
@@ -11962,6 +13755,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -11999,10 +13793,49 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
           "--arguments"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-parent-action",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_parent_action",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--subject-id",
+          "--expected-version",
+          "--request"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--request"
         ],
         "nullable": []
       }
@@ -12037,6 +13870,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12073,6 +13907,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12107,6 +13942,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12140,11 +13976,15 @@
           "--intent-id"
         ],
         "optional": [
+          "--fence",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--fence"
+        ],
         "nullable": []
       }
     },
@@ -12176,6 +14016,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12210,6 +14051,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12243,6 +14085,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12276,6 +14119,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12315,6 +14159,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12352,6 +14197,7 @@
           "--head-sha",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12392,6 +14238,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12426,6 +14273,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12464,6 +14312,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12502,6 +14351,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12537,12 +14387,96 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
         "nullable": [
           "--now"
         ]
+      }
+    },
+    {
+      "path": "aq system integration-settle-delivered-batch",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_settle_delivered_batch",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--expected-candidate-sha",
+          "--expected-target-sha",
+          "--expected-snapshot-digest",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--expected-candidate-sha",
+          "--expected-target-sha",
+          "--expected-snapshot-digest",
+          "--reason"
+        ]
+      }
+    },
+    {
+      "path": "aq system integration-shadow-report",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_shadow_report",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--since",
+          "--until"
+        ],
+        "optional": [
+          "--acknowledge-unknown",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--acknowledge-unknown"
+        ],
+        "nullable": []
       }
     },
     {
@@ -12575,6 +14509,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -12608,6 +14543,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12639,6 +14575,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12674,6 +14611,7 @@
           "--tag",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12709,6 +14647,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12743,6 +14682,7 @@
           "--force",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12774,6 +14714,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12807,6 +14748,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12838,6 +14780,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12872,6 +14815,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12904,6 +14848,7 @@
           "--provider",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12942,6 +14887,7 @@
           "--pattern",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -12976,6 +14922,7 @@
           "--path",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13009,6 +14956,7 @@
           "--wait-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13043,6 +14991,7 @@
           "--now",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13076,6 +15025,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13111,6 +15061,7 @@
           "--variables",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13145,6 +15096,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13180,6 +15132,7 @@
           "--key",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13215,6 +15168,7 @@
           "--clear",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13249,6 +15203,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13286,6 +15241,7 @@
           "--classification",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13321,6 +15277,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13358,6 +15315,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13392,6 +15350,7 @@
           "--with-summaries",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13428,6 +15387,7 @@
           "--include-affinity",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13464,6 +15424,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13500,6 +15461,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13531,6 +15493,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13566,6 +15529,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13599,6 +15563,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13635,6 +15600,7 @@
           "--edges",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13672,6 +15638,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13712,6 +15679,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13751,6 +15719,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13783,6 +15752,7 @@
           "--wait",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13833,6 +15803,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13867,6 +15838,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13901,6 +15873,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13936,6 +15909,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13969,6 +15943,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14017,6 +15992,7 @@
           "--requires-kind",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14054,6 +16030,7 @@
           "--branches",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14090,6 +16067,7 @@
           "--expected-head",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14125,6 +16103,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14158,6 +16137,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14208,6 +16188,7 @@
           "--clear-needs-attention",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14258,6 +16239,7 @@
           "--parent-title",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14291,6 +16273,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14330,6 +16313,7 @@
           "--waiter-task-ids",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14371,6 +16355,7 @@
           "--gate-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14406,6 +16391,7 @@
           "--resolution",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14441,6 +16427,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14474,6 +16461,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14507,6 +16495,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14540,6 +16529,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14573,6 +16563,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14606,6 +16597,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14641,6 +16633,7 @@
           "--max-depth",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14672,6 +16665,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14707,6 +16701,7 @@
           "--include-completed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14739,6 +16734,7 @@
           "--include-completed",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14772,6 +16768,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14806,6 +16803,42 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task object-loop-inputs",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_loop_inputs",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--limit",
+          "--json",
+          "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -14843,6 +16876,7 @@
           "--stop-reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14902,6 +16936,7 @@
           "--max-plateau-rounds",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14953,6 +16988,7 @@
           "--review-sha256",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -14995,6 +17031,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15031,6 +17068,7 @@
           "--parent-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15065,6 +17103,7 @@
           "--parent-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15100,6 +17139,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15134,6 +17174,7 @@
           "--limit",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15171,6 +17212,7 @@
           "--expected-hold-at",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15206,6 +17248,7 @@
           "--dep-type",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15240,6 +17283,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15275,6 +17319,7 @@
           "--root",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15307,6 +17352,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15340,6 +17386,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15378,6 +17425,7 @@
           "--reason",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15414,6 +17462,7 @@
           "--intelligence-class",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15446,6 +17495,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15475,6 +17525,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15517,6 +17568,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15551,6 +17603,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15584,6 +17637,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15617,6 +17671,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15651,6 +17706,7 @@
           "--project-id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15683,6 +17739,7 @@
           "--yes",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15717,6 +17774,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15751,6 +17809,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15783,6 +17842,7 @@
           "--task",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15817,6 +17877,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15851,6 +17912,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15881,6 +17943,7 @@
           "task_id",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15961,6 +18024,7 @@
           "--before",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -15994,6 +18058,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16033,6 +18098,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -16069,6 +18135,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16102,6 +18169,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16138,6 +18206,7 @@
           "--interactive",
           "--state-file",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16169,6 +18238,7 @@
           "--no-backup",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16202,6 +18272,7 @@
           "--project",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16234,6 +18305,7 @@
           "--data-dir",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16265,6 +18337,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16296,6 +18369,7 @@
           "--offset",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16333,6 +18407,7 @@
           "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -16361,8 +18436,11 @@
           "wait_id"
         ],
         "optional": [
+          "--consume",
+          "--claim-epoch",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],

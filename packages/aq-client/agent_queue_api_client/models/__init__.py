@@ -285,6 +285,12 @@ from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
 from .env_var_reference import EnvVarReference
+from .epic_delivery_ref import EpicDeliveryRef
+from .epic_delivery_ref_kind import EpicDeliveryRefKind
+from .epic_delivery_status import EpicDeliveryStatus
+from .epic_delivery_status_evidence import EpicDeliveryStatusEvidence
+from .epic_delivery_status_hold_type_0 import EpicDeliveryStatusHoldType0
+from .epic_delivery_status_state import EpicDeliveryStatusState
 from .escalation_action import EscalationAction
 from .escalation_action_parameters import EscalationActionParameters
 from .escalation_action_result_type_0 import EscalationActionResultType0
@@ -591,6 +597,7 @@ from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_reference import IntelligenceClassReference
 from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
+from .inventory_root_spec import InventoryRootSpec
 from .job_error_response import JobErrorResponse
 from .job_error_response_result_type_0 import JobErrorResponseResultType0
 from .job_get_args import JobGetArgs
@@ -607,12 +614,97 @@ from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
 from .job_submit_args import JobSubmitArgs
+from .knowledge_authority_grant_request import KnowledgeAuthorityGrantRequest
+from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityGrantRequestReviewType0
+from .knowledge_authority_grant_response_422 import KnowledgeAuthorityGrantResponse422
+from .knowledge_authority_revoke_request import KnowledgeAuthorityRevokeRequest
+from .knowledge_authority_revoke_response_422 import KnowledgeAuthorityRevokeResponse422
+from .knowledge_citation_response import KnowledgeCitationResponse
+from .knowledge_cite_request import KnowledgeCiteRequest
+from .knowledge_cite_response_422 import KnowledgeCiteResponse422
+from .knowledge_context_deliver_request import KnowledgeContextDeliverRequest
+from .knowledge_context_deliver_response_422 import KnowledgeContextDeliverResponse422
+from .knowledge_context_delivery_response import KnowledgeContextDeliveryResponse
+from .knowledge_create_request import KnowledgeCreateRequest
+from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
+from .knowledge_create_response import KnowledgeCreateResponse
+from .knowledge_create_response_422 import KnowledgeCreateResponse422
+from .knowledge_create_task_request import KnowledgeCreateTaskRequest
+from .knowledge_create_task_response import KnowledgeCreateTaskResponse
+from .knowledge_create_task_response_422 import KnowledgeCreateTaskResponse422
+from .knowledge_diff_request import KnowledgeDiffRequest
+from .knowledge_diff_response import KnowledgeDiffResponse
+from .knowledge_diff_response_422 import KnowledgeDiffResponse422
+from .knowledge_diff_response_changes_item import KnowledgeDiffResponseChangesItem
+from .knowledge_export_request import KnowledgeExportRequest
+from .knowledge_export_response import KnowledgeExportResponse
+from .knowledge_export_response_422 import KnowledgeExportResponse422
+from .knowledge_history_request import KnowledgeHistoryRequest
+from .knowledge_history_response import KnowledgeHistoryResponse
+from .knowledge_history_response_422 import KnowledgeHistoryResponse422
+from .knowledge_history_response_revisions_item import KnowledgeHistoryResponseRevisionsItem
+from .knowledge_import_args import KnowledgeImportArgs
+from .knowledge_import_args_expected_revisions import KnowledgeImportArgsExpectedRevisions
+from .knowledge_import_args_expected_source_hashes import KnowledgeImportArgsExpectedSourceHashes
+from .knowledge_import_args_operation import KnowledgeImportArgsOperation
+from .knowledge_import_args_scope_aliases_type_0 import KnowledgeImportArgsScopeAliasesType0
+from .knowledge_import_response import KnowledgeImportResponse
+from .knowledge_import_response_422 import KnowledgeImportResponse422
+from .knowledge_import_response_counts_type_0 import KnowledgeImportResponseCountsType0
+from .knowledge_import_response_identities_type_0_item import KnowledgeImportResponseIdentitiesType0Item
+from .knowledge_import_response_items_type_0_item import KnowledgeImportResponseItemsType0Item
+from .knowledge_import_response_mappings_type_0_item import KnowledgeImportResponseMappingsType0Item
+from .knowledge_lifecycle_response import KnowledgeLifecycleResponse
+from .knowledge_list_request import KnowledgeListRequest
+from .knowledge_list_response import KnowledgeListResponse
+from .knowledge_list_response_422 import KnowledgeListResponse422
+from .knowledge_list_response_items_item import KnowledgeListResponseItemsItem
+from .knowledge_proposal_decide_request import KnowledgeProposalDecideRequest
+from .knowledge_proposal_decide_response_422 import KnowledgeProposalDecideResponse422
+from .knowledge_proposal_show_request import KnowledgeProposalShowRequest
+from .knowledge_proposal_show_response_422 import KnowledgeProposalShowResponse422
+from .knowledge_propose_request import KnowledgeProposeRequest
+from .knowledge_propose_request_snapshot import KnowledgeProposeRequestSnapshot
+from .knowledge_propose_response_422 import KnowledgeProposeResponse422
+from .knowledge_protection_response import KnowledgeProtectionResponse
+from .knowledge_protection_response_authority_type_0 import KnowledgeProtectionResponseAuthorityType0
+from .knowledge_protection_response_cleanup_state_type_0 import KnowledgeProtectionResponseCleanupStateType0
+from .knowledge_protection_response_snapshot_type_0 import KnowledgeProtectionResponseSnapshotType0
+from .knowledge_redact_request import KnowledgeRedactRequest
+from .knowledge_redact_response_422 import KnowledgeRedactResponse422
+from .knowledge_restore_request import KnowledgeRestoreRequest
+from .knowledge_restore_response_422 import KnowledgeRestoreResponse422
+from .knowledge_retire_request import KnowledgeRetireRequest
+from .knowledge_retire_response_422 import KnowledgeRetireResponse422
+from .knowledge_share_request import KnowledgeShareRequest
+from .knowledge_share_response_422 import KnowledgeShareResponse422
+from .knowledge_show_request import KnowledgeShowRequest
+from .knowledge_show_response import KnowledgeShowResponse
+from .knowledge_show_response_422 import KnowledgeShowResponse422
+from .knowledge_show_response_authority_type_0 import KnowledgeShowResponseAuthorityType0
+from .knowledge_show_response_snapshot import KnowledgeShowResponseSnapshot
+from .knowledge_update_request import KnowledgeUpdateRequest
+from .knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
+from .knowledge_update_response import KnowledgeUpdateResponse
+from .knowledge_update_response_422 import KnowledgeUpdateResponse422
+from .knowledge_verify_request import KnowledgeVerifyRequest
+from .knowledge_verify_response_422 import KnowledgeVerifyResponse422
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
 from .layout_rect import LayoutRect
 from .layout_stub import LayoutStub
 from .layout_worker import LayoutWorker
+from .link_create_request import LinkCreateRequest
+from .link_create_response_422 import LinkCreateResponse422
+from .link_list_request import LinkListRequest
+from .link_list_response import LinkListResponse
+from .link_list_response_422 import LinkListResponse422
+from .link_list_response_links_item import LinkListResponseLinksItem
+from .link_mutation_response import LinkMutationResponse
+from .link_mutation_response_links_item import LinkMutationResponseLinksItem
+from .link_remove_request import LinkRemoveRequest
+from .link_remove_response_422 import LinkRemoveResponse422
 from .list_active_tasks_all_projects_request import ListActiveTasksAllProjectsRequest
 from .list_active_tasks_all_projects_response import ListActiveTasksAllProjectsResponse
 from .list_active_tasks_all_projects_response_422 import ListActiveTasksAllProjectsResponse422
@@ -760,6 +852,11 @@ from .object_checkpoint_read_request import ObjectCheckpointReadRequest
 from .object_checkpoint_read_response import ObjectCheckpointReadResponse
 from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
 from .object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
+from .object_loop_inputs_request import ObjectLoopInputsRequest
+from .object_loop_inputs_response import ObjectLoopInputsResponse
+from .object_loop_inputs_response_422 import ObjectLoopInputsResponse422
+from .object_loop_inputs_response_loops_item import ObjectLoopInputsResponseLoopsItem
+from .object_loop_inputs_response_starts_item import ObjectLoopInputsResponseStartsItem
 from .object_loop_reconcile_request import ObjectLoopReconcileRequest
 from .object_loop_reconcile_response import ObjectLoopReconcileResponse
 from .object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
@@ -1134,9 +1231,28 @@ from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
+from .record_capabilities_request import RecordCapabilitiesRequest
+from .record_capabilities_response import RecordCapabilitiesResponse
+from .record_capabilities_response_422 import RecordCapabilitiesResponse422
+from .record_capabilities_response_capabilities import RecordCapabilitiesResponseCapabilities
+from .record_edge import RecordEdge
+from .record_edge_domain import RecordEdgeDomain
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
+from .record_repair_request import RecordRepairRequest
+from .record_repair_response import RecordRepairResponse
+from .record_repair_response_422 import RecordRepairResponse422
+from .record_repair_response_batches_type_0_item import RecordRepairResponseBatchesType0Item
+from .record_repair_response_inventory_type_0 import RecordRepairResponseInventoryType0
+from .record_search_request import RecordSearchRequest
+from .record_search_response import RecordSearchResponse
+from .record_search_response_422 import RecordSearchResponse422
+from .record_search_response_items_item import RecordSearchResponseItemsItem
+from .record_show_request import RecordShowRequest
+from .record_show_response import RecordShowResponse
+from .record_show_response_422 import RecordShowResponse422
+from .record_show_response_snapshot import RecordShowResponseSnapshot
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
@@ -1909,6 +2025,12 @@ __all__ = (
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
     "EnvVarReference",
+    "EpicDeliveryRef",
+    "EpicDeliveryRefKind",
+    "EpicDeliveryStatus",
+    "EpicDeliveryStatusEvidence",
+    "EpicDeliveryStatusHoldType0",
+    "EpicDeliveryStatusState",
     "EscalationAction",
     "EscalationActionParameters",
     "EscalationActionResultType0",
@@ -2211,6 +2333,7 @@ __all__ = (
     "IntelligenceClassModelMapping",
     "IntelligenceClassReference",
     "IntelligenceClassReferenceKind",
+    "InventoryRootSpec",
     "JobErrorResponse",
     "JobErrorResponseResultType0",
     "JobGetArgs",
@@ -2227,12 +2350,97 @@ __all__ = (
     "JobResultResponse",
     "JobResultResponseResultType0",
     "JobSubmitArgs",
+    "KnowledgeAuthorityGrantRequest",
+    "KnowledgeAuthorityGrantRequestReviewType0",
+    "KnowledgeAuthorityGrantResponse422",
+    "KnowledgeAuthorityRevokeRequest",
+    "KnowledgeAuthorityRevokeResponse422",
+    "KnowledgeCitationResponse",
+    "KnowledgeCiteRequest",
+    "KnowledgeCiteResponse422",
+    "KnowledgeContextDeliverRequest",
+    "KnowledgeContextDeliverResponse422",
+    "KnowledgeContextDeliveryResponse",
+    "KnowledgeCreateRequest",
+    "KnowledgeCreateRequestMetadataType0",
+    "KnowledgeCreateResponse",
+    "KnowledgeCreateResponse422",
+    "KnowledgeCreateTaskRequest",
+    "KnowledgeCreateTaskResponse",
+    "KnowledgeCreateTaskResponse422",
+    "KnowledgeDiffRequest",
+    "KnowledgeDiffResponse",
+    "KnowledgeDiffResponse422",
+    "KnowledgeDiffResponseChangesItem",
+    "KnowledgeExportRequest",
+    "KnowledgeExportResponse",
+    "KnowledgeExportResponse422",
+    "KnowledgeHistoryRequest",
+    "KnowledgeHistoryResponse",
+    "KnowledgeHistoryResponse422",
+    "KnowledgeHistoryResponseRevisionsItem",
+    "KnowledgeImportArgs",
+    "KnowledgeImportArgsExpectedRevisions",
+    "KnowledgeImportArgsExpectedSourceHashes",
+    "KnowledgeImportArgsOperation",
+    "KnowledgeImportArgsScopeAliasesType0",
+    "KnowledgeImportResponse",
+    "KnowledgeImportResponse422",
+    "KnowledgeImportResponseCountsType0",
+    "KnowledgeImportResponseIdentitiesType0Item",
+    "KnowledgeImportResponseItemsType0Item",
+    "KnowledgeImportResponseMappingsType0Item",
+    "KnowledgeLifecycleResponse",
+    "KnowledgeListRequest",
+    "KnowledgeListResponse",
+    "KnowledgeListResponse422",
+    "KnowledgeListResponseItemsItem",
+    "KnowledgeProposalDecideRequest",
+    "KnowledgeProposalDecideResponse422",
+    "KnowledgeProposalShowRequest",
+    "KnowledgeProposalShowResponse422",
+    "KnowledgeProposeRequest",
+    "KnowledgeProposeRequestSnapshot",
+    "KnowledgeProposeResponse422",
+    "KnowledgeProtectionResponse",
+    "KnowledgeProtectionResponseAuthorityType0",
+    "KnowledgeProtectionResponseCleanupStateType0",
+    "KnowledgeProtectionResponseSnapshotType0",
+    "KnowledgeRedactRequest",
+    "KnowledgeRedactResponse422",
+    "KnowledgeRestoreRequest",
+    "KnowledgeRestoreResponse422",
+    "KnowledgeRetireRequest",
+    "KnowledgeRetireResponse422",
+    "KnowledgeShareRequest",
+    "KnowledgeShareResponse422",
+    "KnowledgeShowRequest",
+    "KnowledgeShowResponse",
+    "KnowledgeShowResponse422",
+    "KnowledgeShowResponseAuthorityType0",
+    "KnowledgeShowResponseSnapshot",
+    "KnowledgeUpdateRequest",
+    "KnowledgeUpdateRequestMetadataType0",
+    "KnowledgeUpdateResponse",
+    "KnowledgeUpdateResponse422",
+    "KnowledgeVerifyRequest",
+    "KnowledgeVerifyResponse422",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",
     "LayoutRect",
     "LayoutStub",
     "LayoutWorker",
+    "LinkCreateRequest",
+    "LinkCreateResponse422",
+    "LinkListRequest",
+    "LinkListResponse",
+    "LinkListResponse422",
+    "LinkListResponseLinksItem",
+    "LinkMutationResponse",
+    "LinkMutationResponseLinksItem",
+    "LinkRemoveRequest",
+    "LinkRemoveResponse422",
     "ListActiveTasksAllProjectsRequest",
     "ListActiveTasksAllProjectsResponse",
     "ListActiveTasksAllProjectsResponse422",
@@ -2378,6 +2586,11 @@ __all__ = (
     "ObjectCheckpointReadResponse",
     "ObjectCheckpointReadResponse422",
     "ObjectCheckpointReadResponseState",
+    "ObjectLoopInputsRequest",
+    "ObjectLoopInputsResponse",
+    "ObjectLoopInputsResponse422",
+    "ObjectLoopInputsResponseLoopsItem",
+    "ObjectLoopInputsResponseStartsItem",
     "ObjectLoopReconcileRequest",
     "ObjectLoopReconcileResponse",
     "ObjectLoopReconcileResponse422",
@@ -2748,9 +2961,28 @@ __all__ = (
     "ReadyTask",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
+    "RecordCapabilitiesRequest",
+    "RecordCapabilitiesResponse",
+    "RecordCapabilitiesResponse422",
+    "RecordCapabilitiesResponseCapabilities",
+    "RecordEdge",
+    "RecordEdgeDomain",
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
+    "RecordRepairRequest",
+    "RecordRepairResponse",
+    "RecordRepairResponse422",
+    "RecordRepairResponseBatchesType0Item",
+    "RecordRepairResponseInventoryType0",
+    "RecordSearchRequest",
+    "RecordSearchResponse",
+    "RecordSearchResponse422",
+    "RecordSearchResponseItemsItem",
+    "RecordShowRequest",
+    "RecordShowResponse",
+    "RecordShowResponse422",
+    "RecordShowResponseSnapshot",
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",

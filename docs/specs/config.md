@@ -565,9 +565,12 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `state_cache_ttl_seconds` | `int` | `2` | TTL of the provider state cache — the tmux provider does at most one `list-panes` and one `ps` per reconciler tick. |
 | `transcript_poll_seconds` | `int` | `2` | Transcript reader poll interval (Phase S3). |
 | `adopt_on_start` | `bool` | `True` | Run the boot-time adoption pass. With it off, surviving sessions are not re-bound and `_recover_stale_state` resets their tasks. |
+| `worker_claude_plugin_overrides` | `map<str, bool>` | `{}` | Per-worker Claude plugin switch. A `plugin_id → bool` map merged as `enabledPlugins` into the `.aq/hooks/claude.json` rendered for **worker-lifecycle (`task`/`pool`) Claude sessions only**; supervisors and named sessions are untouched, and the live user-scope `~/.claude/settings.json` is never read or written. The empty default leaves the hook file byte-identical to the shipped template. Keys are validated `name@marketplace`, values must be `bool`. |
 
 Validation (`SessionsConfig.validate`): `provider` must be one of the three
-names; every integer key must be `>= 0`.
+names; every integer key must be `>= 0`; `worker_claude_plugin_overrides` must
+be a mapping whose keys look like `name@marketplace`
+(e.g. `fast-jev-compaction@fast-jev-compaction`) and whose values are `bool`.
 
 **Rollout and rollback.** A task takes the session path only when
 `sessions.enabled` is true **and** its resolved profile sets `harness:`
@@ -575,6 +578,17 @@ names; every integer key must be `>= 0`.
 gives per-profile and per-project opt-in with no extra config. Rollback is
 flipping `enabled` back to `false` or removing `harness:` from one profile —
 live sessions then drain naturally, and `aq session kill` cleans stragglers.
+
+**Rollout and rollback — fast-jev compaction hold-out.** Stage
+`worker_claude_plugin_overrides: {"fast-jev-compaction@fast-jev-compaction":
+false}` in the same config change that turns on `92.3`'s 160k compaction
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`), so worker sessions neither inherit
+the user-scope plugin nor hand post-compaction tool results to its judge.
+Rollback is deleting that one key — sessions revert to the inherited set on
+their next launch. Re-admit the plugin only after the review's `E1` retention
+probe shows parity with the built-in summary. The override is per-launch only:
+an existing live session keeps whatever it was handed at start, and nothing is
+ever written to `~/.claude/settings.json`.
 
 Per-profile session knobs (`harness`, `lifecycle`, `mode`, `wake_mode`,
 `idle_timeout`, `max_session_age`) live in profile markdown, not here: they
@@ -698,15 +712,27 @@ override → project policy `projects.integration_mode` → this).
 | `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
 | `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 | `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
-| `owner_recovery_sweep` | `bool` | `false` | Whether the daemon periodically releases branch owners whose writers are proven gone. Ships off so the first releases of an existing backlog are deliberate. |
+| `owner_recovery_sweep` | `bool` | `true` | Whether the daemon periodically (every 300 s) releases branch owners whose writers are proven gone, through the same guarded recovery as `aq integration release-owner`: a live writer, a live checkout or an unreachable origin is refused, never released. Ships on because stranded-owner recovery is routine; an explicit `false` (including the string `"false"` from a `${VAR}` substitution) keeps it off. |
+| `reconciler_shadow` | `bool` | `false` | Install the root subject loop in shadow mode: every visit observes, records exactly one decision from the pinned policy artifact and reschedules, and performs no mutating primitive. Legacy keeps exclusive ownership of every root subject, so the loop observes real traffic without changing it. Off by default; see [Shadow week and the guarded root cutover](../guides/reconciler-shadow-cutover-runbook.md). |
+| `reconciler_active` | `bool` | `false` | Visit root subjects that were explicitly transferred to the reconciler. This setting never transfers ownership on its own — `aq integration engine-transfer` does that, with exact subject versions, a reason and shadow/scenario/approval evidence. Disabling it is the first half of the feature-off rollback; the second half is transferring each root subject back to `legacy`. |
 | `publisher_stall_after` | `int` | `5` | Consecutive identical unsuccessful evaluations after which the development publisher ends a skipped candidate's attempt as `stalled`: one error log, one `supervisor-<project>` message and doctor ERROR (`integration.development_publisher_stalled`). An evaluation is identical when task, latest completion, reason, related task, target repository/ref and the relevant git evidence are unchanged. Idle ticks, daemon downtime and waits on a live repair do not count; new evidence or an explicit `aq integration sweep --retry` / `--recover-child` starts a new attempt. |
+| `service_source_timeout_seconds` | `float` | `300` | Wall-clock budget for one source callback of the integration reconciliation service (one bounded page of one source: GitHub PR reviews, candidate CI, the outbox, …). A source past its budget is cancelled and the pass continues with the other sources; its durable rows stay retryable. A callback that refuses cancellation is left to unwind and its source is skipped, never run twice at once, until it has. The slowest sources observed on a busy install take about two minutes. |
+| `service_item_timeout_seconds` | `float` | `60` | Budget for one item of a page the service iterates itself (a due schedule, a repair deadline, a repair dispatch, a candidate CI row, a promotion intent, a cleanup item). A hung item is cancelled and the later items of the page still run. |
+| `service_source_timeouts` | `dict[str, float]` | `{}` | Per-source overrides of `service_source_timeout_seconds`, keyed by the source name the daemon logs (`integration slow source=<name>`), e.g. `{"GitHub PR reviews": 600}`. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
 `INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
 one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
 `src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
 strings; `merge_require_up_to_date` is coerced to a boolean;
-`publisher_stall_after` must be a positive integer.
+`publisher_stall_after` must be a positive integer;
+`service_source_timeout_seconds` and `service_item_timeout_seconds` must be
+positive numbers and `service_source_timeouts` a mapping of non-empty source
+names to positive numbers.
+`reconciler_shadow` and
+`reconciler_active` must be booleans. Neither flag is hot-reloadable: a config
+value alone installs no loop into a running service, so both need `aq restart
+--no-dashboard`.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30

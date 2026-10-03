@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitGetRequest,
 ) -> Response[WaitGetResponse422 | WaitResponse]:
-    """Read a durable wait and its bounded result pointer.
+    """Read a durable wait, optionally consuming its result notification.
 
-     Read a durable wait and its bounded result pointer.
+     Read a durable wait, optionally consuming its result notification.
 
     Args:
         body (WaitGetRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitGetRequest,
 ) -> WaitGetResponse422 | WaitResponse | None:
-    """Read a durable wait and its bounded result pointer.
+    """Read a durable wait, optionally consuming its result notification.
 
-     Read a durable wait and its bounded result pointer.
+     Read a durable wait, optionally consuming its result notification.
 
     Args:
         body (WaitGetRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitGetRequest,
 ) -> Response[WaitGetResponse422 | WaitResponse]:
-    """Read a durable wait and its bounded result pointer.
+    """Read a durable wait, optionally consuming its result notification.
 
-     Read a durable wait and its bounded result pointer.
+     Read a durable wait, optionally consuming its result notification.
 
     Args:
         body (WaitGetRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitGetRequest,
 ) -> WaitGetResponse422 | WaitResponse | None:
-    """Read a durable wait and its bounded result pointer.
+    """Read a durable wait, optionally consuming its result notification.
 
-     Read a durable wait and its bounded result pointer.
+     Read a durable wait, optionally consuming its result notification.
 
     Args:
         body (WaitGetRequest):

@@ -55,7 +55,7 @@ class CompletionIdentity:
     project_id: str
     repository_id: str
     task_id: str
-    generation: str  # task_completion_records.id; claim_epoch is supplementary
+    generation: str  # leaf close id or parent:<verification id>; claim_epoch is supplementary
 
     def __post_init__(self):
         if any(not isinstance(v, str) or not v or len(v) > 500

@@ -35,10 +35,11 @@ def test_guide_mentions_release_owner_command_and_dry_run():
     assert "--dry-run" in section
 
 
-def test_guide_mentions_the_sweep_switch_and_that_it_ships_off():
+def test_guide_mentions_the_sweep_switch_and_that_it_ships_on():
     section = _owner_section(_guide())
     assert "integration.owner_recovery_sweep" in section
-    assert "off by default" in section or "ships off" in section
+    assert "ships on by default" in section
+    assert "explicit `false` always stays off" in section
 
 
 def test_guide_names_every_refusal_reason_and_its_fix():

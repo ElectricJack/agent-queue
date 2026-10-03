@@ -130,6 +130,20 @@ def test_ordered_tables_has_no_duplicates() -> None:
     assert len(names) == len(set(names)), "duplicate entries in _ORDERED_TABLES"
 
 
+def test_legacy_source_metadata_is_closed_over_foreign_keys() -> None:
+    """The legacy schema must resolve FKs without PostgreSQL-only domains."""
+    from sqlalchemy import MetaData
+
+    source_metadata = MetaData()
+    for table in _ORDERED_TABLES:
+        table.to_metadata(source_metadata)
+
+    for table in source_metadata.tables.values():
+        for fk in table.foreign_keys:
+            assert fk.column.table.metadata is source_metadata
+            assert fk.column.table.name not in _EXCLUDED_TABLES
+
+
 def test_insertion_order_is_fk_safe() -> None:
     """Each table's FK targets are inserted earlier, or the column is deferred."""
     position = {t.name: i for i, t in enumerate(_ORDERED_TABLES)}
@@ -174,10 +188,15 @@ async def _empty_pg_adapter():
     """The worker's Postgres database, truncated to the empty state the
     migration requires of its target.  Caller closes it."""
     from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.records.schema import install_record_guards_v1
 
     adapter = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
     await adapter.initialize()
     await adapter.reset_for_tests()
+    # Reset removes the seed too; restore the immutable installation identity
+    # a freshly migrated operator target retains before any legacy import.
+    async with adapter._engine.begin() as conn:
+        await conn.run_sync(install_record_guards_v1)
     return adapter
 
 
@@ -211,7 +230,9 @@ async def _seeded_source(tmp_path) -> str:
     ledger = source_metadata.tables["token_ledger"]
     ledger.indexes = {
         index for index in ledger.indexes
-        if index.name not in {"idx_token_ledger_task_attempt", "uq_token_ledger_call"}
+        if index.name not in {
+            "idx_token_ledger_task_attempt", "uq_token_ledger_call", "idx_token_ledger_call_id",
+        }
     }
     for name in ("session_id", "attempt_id", "call_id", "model_source"):
         ledger._columns.remove(ledger.c[name])
@@ -302,17 +323,25 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
     from sqlalchemy import select, text
 
     from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
-    from src.database.tables import supervisor_report_requests
+    from src.database.tables import record_installation, supervisor_report_requests
+    from src.records.schema import RECORD_TABLE_NAMES
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()
     try:
+        async with target._engine.connect() as conn:
+            installation_id = await conn.scalar(select(record_installation.c.installation_id))
+            assert installation_id is not None
         counts = await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
         assert set(counts) == {table.name for table in _ORDERED_TABLES}
         assert counts["tasks"] == 2 and counts["agents"] == 1
         assert counts["epic_dependencies"] == 1
         assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
+            assert await conn.scalar(select(record_installation.c.installation_id)) == installation_id
+            for table_name in RECORD_TABLE_NAMES:
+                if table_name != "record_installation":
+                    assert not (await conn.execute(select(metadata.tables[table_name]))).first()
             ledger = (await conn.execute(select(metadata.tables["token_ledger"]))).mappings().one()
             assert ledger["tokens_used"] == 12
             assert all(ledger[name] is None for name in (
@@ -394,8 +423,9 @@ async def test_migrate_sqlite_to_postgres_resets_postgres_sequences(tmp_path) ->
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+@pytest.mark.parametrize("existing_table", ["projects", "record_scopes"])
 async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copying(
-    tmp_path,
+    tmp_path, existing_table,
 ) -> None:
     from sqlalchemy import text
 
@@ -405,14 +435,23 @@ async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copyin
     target = await _empty_pg_adapter()
     try:
         async with target._engine.begin() as conn:
-            await conn.execute(
-                text("INSERT INTO projects (id, name, created_at) VALUES ('existing','e',0)")
-            )
+            if existing_table == "projects":
+                await conn.execute(
+                    text("INSERT INTO projects (id, name, created_at) VALUES ('existing','e',0)")
+                )
+            else:
+                await conn.execute(text(
+                    "INSERT INTO record_scopes (scope_key, scope_kind) VALUES ('global','global')"
+                ))
         with pytest.raises(RuntimeError, match="already contains data"):
             await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
         async with target._engine.connect() as conn:
             rows = (await conn.execute(text("SELECT id FROM projects"))).scalars().all()
-            assert rows == ["existing"]  # nothing was copied
+            assert rows == (["existing"] if existing_table == "projects" else [])
+            if existing_table == "record_scopes":
+                assert (
+                    await conn.execute(text("SELECT scope_key FROM record_scopes"))
+                ).scalars().all() == ["global"]
             assert (
                 await conn.execute(text("SELECT COUNT(*) FROM tasks"))
             ).scalar() == 0

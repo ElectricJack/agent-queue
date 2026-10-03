@@ -303,6 +303,53 @@ once per provider, and only:
 written by `aq install`. Runtime availability does not rewrite it; routing
 filters on both.
 
+### D5a — presence is not authentication
+
+`probe_login` (`src/install/logins.py`) reads three sources in the provider's
+own order of authority and never opens a credential: the provider's non-secret
+status command, the *names* of selected environment variables, and the
+*existence* of the provider's credential file. The third is the weakest of the
+three and it is the last resort, because an expired OAuth token leaves its
+credential file exactly where it was. A status command that **answered**
+"not signed in" therefore ends the search: the store's presence is reported as
+`stale_credential_store` and the probe answers `not_authenticated`, which is
+what D3 rules (a) and (c) need in order to fire. Only a status command that
+*could not answer* leaves the store standing as evidence — silence is not a
+denial. That covers a timeout, an `OSError`, and a subcommand the installed
+build does not have.
+
+The last case is the one an exit status cannot express: a CLI missing the
+subcommand complains about the *command* and exits non-zero, the same shape as
+a signed-out answer and about something else entirely. `_ask_status_command`
+therefore matches a **failed** run's output against a short list of "no such
+command" phrases (`unknown command`, `unrecognized subcommand`, `no such
+command`, …) and answers `CANNOT_TELL`. A zero exit is answered first and never
+downgraded: the output of a signed-in CLI can quote the operator's own last
+command or a session title, and none of that may turn an answer into silence.
+The text is read for that classification only, transiently, folded into the
+enum and discarded; it still never reaches a result, a record or a log, and the
+phrases are matched case-insensitively and narrowly, because a false match
+would put the expired-login bug this rule exists to remove back.
+
+Three consequences, all deliberate:
+
+* **A provider with no status subcommand keeps the old behaviour.** Gemini
+  documents no non-interactive way to ask, so nothing can outrank its OAuth
+  cache; a human at a browser is the only check there.
+* **A credential the operator configured is not presence.** A selected
+  environment variable — in the environment or in the provider's own
+  `settings.json` `env` block — still authenticates over a refused store. It is
+  an independently usable credential, and validating it would mean reading it,
+  which the probe is forbidden to do. It is equally the answer when the status
+  command could not answer at all.
+* **An unavailable command is not retried.** A command that answered is not
+  retried today, and one that does not exist cannot be made to exist by asking
+  again; only a command that failed to answer is worth a second try.
+
+AQ never refreshes or synthesises a credential, so recovery is always the
+provider's own login command followed by `aq provider recheck`, after which an
+`authenticated` probe releases the state through D4.
+
 ### D6 — operator override, always with an expiry story
 
 ```bash
@@ -1377,6 +1424,25 @@ provider; state survives a daemon restart; the auth probe never blocks the loop;
 **the 2026-10-01 replay** — a provider exhausted at 100 % across two daemon
 restarts records no `launch_success` for its adopted sessions and makes no
 transition, while a session launched after the restart still counts.
+
+**D5a** (`tests/test_install_logins.py`, `test_provider_evidence.py`,
+`test_harness_parser.py`): **the 2026-10-03 replay** — a credential store left
+behind by an expired login is not authentication, and the probe says so instead
+of reporting the file's presence; an answered "not signed in" outranks the store
+while a command that could not answer leaves it standing; a build without the
+status subcommand complains about the *command* and is classified
+`cannot_tell` rather than `signed_out`, so the store it never spoke for stands;
+the same fixtures' explicit "not signed in" answers still refuse it, and a
+*successful* answer is never downgraded by a phrase in what it printed; a
+provider with no status subcommand keeps the store as evidence; a configured
+environment credential still outranks a refused store; the same store
+authenticates again once the CLI confirms a fresh login; two `not_authenticated`
+probes ≥ 60 s apart carry the provider to `unauthenticated` /
+`probe_not_authenticated` with no launch admitted, and an `authenticated` probe
+recovers it through probation
+to `available`; the shipped Claude harness quarantines the
+`Login expired · Please run /login` screen as `login-required` / `signal: auth`
+and stays quiet on a bare composer.
 
 **Intent and migration** (`tests/test_provider_intent.py`, on PostgreSQL): every
 row of D9; pin refusal for a worker token and for an inline graph; a vault

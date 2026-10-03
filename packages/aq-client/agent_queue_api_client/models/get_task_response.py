@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
     from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
@@ -64,6 +65,7 @@ class GetTaskResponse:
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
         route (GetTaskResponseRouteType0 | None | Unset):
+        delivery_status (EpicDeliveryStatus | None | Unset):
     """
 
     id: str
@@ -104,9 +106,11 @@ class GetTaskResponse:
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     route: GetTaskResponseRouteType0 | None | Unset = UNSET
+    delivery_status: EpicDeliveryStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
@@ -300,6 +304,14 @@ class GetTaskResponse:
         else:
             route = self.route
 
+        delivery_status: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_status, Unset):
+            delivery_status = UNSET
+        elif isinstance(self.delivery_status, EpicDeliveryStatus):
+            delivery_status = self.delivery_status.to_dict()
+        else:
+            delivery_status = self.delivery_status
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -379,11 +391,14 @@ class GetTaskResponse:
             field_dict["class_hint"] = class_hint
         if route is not UNSET:
             field_dict["route"] = route
+        if delivery_status is not UNSET:
+            field_dict["delivery_status"] = delivery_status
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
@@ -679,6 +694,23 @@ class GetTaskResponse:
 
         route = _parse_route(d.pop("route", UNSET))
 
+        def _parse_delivery_status(data: object) -> EpicDeliveryStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_status_type_0 = EpicDeliveryStatus.from_dict(data)
+
+                return delivery_status_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatus | None | Unset, data)
+
+        delivery_status = _parse_delivery_status(d.pop("delivery_status", UNSET))
+
         get_task_response = cls(
             id=id,
             project_id=project_id,
@@ -718,6 +750,7 @@ class GetTaskResponse:
             route_source=route_source,
             class_hint=class_hint,
             route=route,
+            delivery_status=delivery_status,
         )
 
         get_task_response.additional_properties = d

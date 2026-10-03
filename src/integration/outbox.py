@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -14,10 +15,24 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import integration_outbox, integration_outbox_artifact_pins
+from src.integration.models import DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 
 
 AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+ProjectMaxWait = Callable[[str], Awaitable[float]]
 logger = logging.getLogger(__name__)
+
+# Reviewed inventory C.10: these notifications have no shipped playbook
+# consumer. Always offer them to operator-installed consumers before sinking.
+UNSUBSCRIBED_EVENT_TYPES = frozenset({
+    "integration.root_delivered",
+    "integration.human_blocked",
+    "integration.cleanup_pending",
+    "task.integration_configuration_blocked",
+    "integration.branch_materialization_pending",
+})
+DEFAULT_MAX_WAIT_SECONDS = DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
+RETRY_EXHAUSTED_PREFIX = "retry_budget_exhausted: "
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +43,15 @@ class AcceptanceState:
 
 class DestinationArtifactUnavailable(RuntimeError):
     """A captured activation artifact disappeared before it could be pinned."""
+
+
+class NoIntegrationEventConsumer(RuntimeError):
+    """The consumer proved no subscription matches, rather than failing acceptance.
+
+    Adapters may raise this only after ruling out incomplete fanout, missing
+    artifacts, disabled runtime and unavailable frozen operation routes. A
+    plain False remains retryable because it carries no such evidence.
+    """
 
 
 async def load_acceptance_state(db: Any, event_id: str) -> AcceptanceState:
@@ -189,11 +213,14 @@ class IntegrationOutbox:
         retry_max_seconds: float = 300.0,
         clock: Callable[[], float] = time.time,
         before_dispatch: Callable[[str], Awaitable[None]] | None = None,
+        max_wait_seconds: float = DEFAULT_MAX_WAIT_SECONDS,
+        project_max_wait: ProjectMaxWait | None = None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("page_size must be positive")
         if retry_base_seconds <= 0 or retry_max_seconds <= 0:
             raise ValueError("retry delays must be positive")
+        self._validate_max_wait(max_wait_seconds)
         self._db = db
         self._accept_event = accept_event
         self._page_size = page_size
@@ -201,6 +228,8 @@ class IntegrationOutbox:
         self._retry_max_seconds = retry_max_seconds
         self._clock = clock
         self._before_dispatch = before_dispatch
+        self._max_wait_seconds = max_wait_seconds
+        self._project_max_wait = project_max_wait
         self._cursor: tuple[float, str] | None = None
         self._cycle_end: tuple[float, str] | None = None
 
@@ -228,6 +257,15 @@ class IntegrationOutbox:
                     continue
                 if await self._acknowledge(row["id"], now=self._clock()):
                     delivered += 1
+            except NoIntegrationEventConsumer as exc:
+                if (
+                    row["event_type"] in UNSUBSCRIBED_EVENT_TYPES
+                    and await self._sink_unsubscribed(row, now=self._clock())
+                ):
+                    continue
+                await self._retry(
+                    row, now=self._clock(), error=f"{type(exc).__name__}: {exc}",
+                )
             except Exception as exc:  # retryable I/O/consumer failure; process exits still escape
                 await self._retry(row, now=self._clock(), error=f"{type(exc).__name__}: {exc}")
             finally:
@@ -242,9 +280,14 @@ class IntegrationOutbox:
     async def _page(self, now: float) -> list[Any]:
         """Freeze a scan boundary so retrying rows cannot monopolize later pages."""
         key = tuple_(integration_outbox.c.available_at, integration_outbox.c.id)
+        retryable = or_(
+            integration_outbox.c.last_error.is_(None),
+            ~integration_outbox.c.last_error.startswith(RETRY_EXHAUSTED_PREFIX, autoescape=True),
+        )
         due = select(integration_outbox).where(
             integration_outbox.c.delivered_at.is_(None),
             integration_outbox.c.available_at <= now,
+            retryable,
         )
         async with self._db._engine.connect() as conn:
             for _ in range(2):
@@ -254,6 +297,7 @@ class IntegrationOutbox:
                         .where(
                             integration_outbox.c.delivered_at.is_(None),
                             integration_outbox.c.available_at <= now,
+                            retryable,
                         )
                         .order_by(
                             integration_outbox.c.available_at.desc(), integration_outbox.c.id.desc()
@@ -296,18 +340,83 @@ class IntegrationOutbox:
             )
         return int(result.rowcount) == 1
 
+    async def _sink_unsubscribed(self, row: Any, *, now: float) -> bool:
+        """Record durable sink acceptance only when no destination was captured.
+
+        A False consumer response can also mean a partially accepted fanout.
+        Check the current manifest under the update lock rather than trusting
+        the page's snapshot; those deliveries must retain their pins and retry.
+        """
+        reason = "unsubscribed: no enabled matching playbook durably accepted the event"
+        async with self._db.immediate() as conn:
+            result = await conn.execute(
+                update(integration_outbox)
+                .where(
+                    integration_outbox.c.id == row["id"],
+                    integration_outbox.c.delivered_at.is_(None),
+                    integration_outbox.c.destination_manifest.is_(None),
+                    integration_outbox.c.attempts == row["attempts"],
+                )
+                .values(
+                    delivered_at=now,
+                    attempts=integration_outbox.c.attempts + 1,
+                    last_error=reason,
+                )
+            )
+        sunk = int(result.rowcount) == 1
+        if sunk:
+            logger.warning(
+                "integration outbox sink event=%s type=%s project=%s reason=%s",
+                row["id"], row["event_type"], row["project_id"], reason,
+            )
+        return sunk
+
+    @staticmethod
+    def _validate_max_wait(max_wait: float) -> None:
+        if not math.isfinite(max_wait) or max_wait <= 0:
+            raise ValueError("max_wait must be finite and positive")
+
+    async def replay(self, event_id: str, *, now: float) -> bool:
+        """Requeue a quarantined event after recovery, retaining receipt identity.
+
+        This does not reset the original age budget. The recovered consumer
+        gets one more acceptance attempt; a failure is quarantined again.
+        Call through the owning CommandHandler recovery path, never as an
+        alternative acknowledgment of an event whose consumer failed.
+        """
+        async with self._db.immediate() as conn:
+            result = await conn.execute(
+                update(integration_outbox)
+                .where(
+                    integration_outbox.c.id == event_id,
+                    integration_outbox.c.delivered_at.is_(None),
+                    integration_outbox.c.last_error.startswith(
+                        RETRY_EXHAUSTED_PREFIX, autoescape=True
+                    ),
+                )
+                .values(available_at=now, last_error=None)
+            )
+        return int(result.rowcount) == 1
+
     async def _retry(self, row: Any, *, now: float, error: str) -> None:
+        max_wait = self._max_wait_seconds
+        if self._project_max_wait is not None:
+            max_wait = await self._project_max_wait(row["project_id"])
+        self._validate_max_wait(max_wait)
+        deadline = float(row["created_at"]) + max_wait
         attempts = int(row["attempts"]) + 1
         exponent = min(max(attempts - 1, 0), 62)
         delay = min(self._retry_max_seconds, self._retry_base_seconds * (2**exponent))
-        if attempts == 1 or attempts & (attempts - 1) == 0:
-            logger.warning(
-                "integration outbox retry event=%s type=%s project=%s attempts=%s "
-                "retry_at=%.3f reason=%s",
-                row["id"], row["event_type"], row["project_id"], attempts, now + delay, error,
+        exhausted = now >= deadline
+        retry_at = min(now + delay, deadline)
+        if exhausted:
+            # Leave delivered_at unset and every frozen destination/pin intact:
+            # this is an explicit failed delivery, not consumer acceptance.
+            error = (
+                f"{RETRY_EXHAUSTED_PREFIX}max_wait={max_wait:g}s deadline={deadline:.3f}; {error}"
             )
         async with self._db.immediate() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 update(integration_outbox)
                 .where(
                     integration_outbox.c.id == row["id"],
@@ -316,7 +425,20 @@ class IntegrationOutbox:
                 )
                 .values(
                     attempts=attempts,
-                    available_at=now + delay,
+                    available_at=retry_at,
                     last_error=error[:2000],
                 )
+            )
+        if int(result.rowcount) != 1:
+            return
+        if exhausted:
+            logger.error(
+                "integration outbox quarantined event=%s type=%s project=%s attempts=%s reason=%s",
+                row["id"], row["event_type"], row["project_id"], attempts, error,
+            )
+        elif attempts == 1 or attempts & (attempts - 1) == 0:
+            logger.warning(
+                "integration outbox retry event=%s type=%s project=%s attempts=%s "
+                "retry_at=%.3f reason=%s",
+                row["id"], row["event_type"], row["project_id"], attempts, retry_at, error,
             )

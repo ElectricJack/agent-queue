@@ -94,22 +94,29 @@ LIST_PAGE = 200
 
 #: Round trips one steady-state tiles request is allowed, as
 #: ``(statements, pooled transactions)``.  They are equal because every DB
-#: call on this path takes its own connection: nine of them always run --
+#: call on this path takes its own connection: ten of them always run --
 #: ``get_project``, ``get_layout_meta``, the collapsed containers' paths,
 #: the edges touching them, ``list_agents``, ``list_gates``, the visible
-#: rows with their tasks, one ``count_task_subtasks`` lookup and one
+#: rows with their tasks, one ``count_task_subtasks`` lookup, one
 #: ``get_task_meta_bulk`` (phase metadata) lookup over those same visible
-#: ids -- and two more (``load_layout_rows`` plus ``load_rows_with_tasks``
-#: for the stub titles) only when an edge has an endpoint the request is
-#: not returning.
+#: ids and one epic delivery read (``src/integration/epic_delivery.py``)
+#: over the visible nodes that have children -- and two more
+#: (``load_layout_rows`` plus ``load_rows_with_tasks`` for the stub titles)
+#: only when an edge has an endpoint the request is not returning.
 #:
-#: Measured on ``pg_small`` at 11/11 for both focus shapes and 9/9 for the
+#: The epic delivery read is one statement here because the seeded project
+#: records no train evidence; a ``hierarchy`` / ``train`` project adds that
+#: evidence's batched reads in the same transaction (constant in the number
+#: of visible epics, plus collection readiness for epics whose children are
+#: all done -- ``tests/test_api_graph_layout.py`` holds the batching).
+#:
+#: Measured on ``pg_small`` at 12/12 for both focus shapes and 10/10 for the
 #: rect one, whose cross-epic edge lands on a container that is itself
 #: inside the window, so it never reaches the stub queries.  A rect shape
 #: that starts paying them is a real change in what the request does, not
 #: noise: read the endpoint before raising this.
-TILES_ROUND_TRIPS_WITH_STUBS = (11, 11)
-TILES_ROUND_TRIPS_NO_STUBS = (9, 9)
+TILES_ROUND_TRIPS_WITH_STUBS = (12, 12)
+TILES_ROUND_TRIPS_NO_STUBS = (10, 10)
 
 #: Latency budgets, as a multiple of the reference request measured on the
 #: same box in the same process (see the module docstring).
@@ -535,9 +542,9 @@ async def test_tiles_round_trip_budget(pg_small):
     reads the endpoint's geometry cache, so what is counted is the
     per-request tail: the project, the layout meta, the collapsed
     containers' paths, the edges touching them, the agent list, the open
-    gates and the visible rows with their tasks -- plus, when an edge
-    points at something the request is not returning, the stub rows and
-    their titles.
+    gates, the visible rows with their tasks and the epic delivery read --
+    plus, when an edge points at something the request is not returning,
+    the stub rows and their titles.
 
     ``list_gate_waiters_for_project`` is deliberately absent: the seeded
     project has no open gate, and the endpoint only pays for waiters when

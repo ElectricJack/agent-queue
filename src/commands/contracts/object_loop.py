@@ -82,6 +82,16 @@ class ObjectCheckpointReadArgs(CommandArgs):
     project_id: str
 
 
+class ObjectLoopInputsArgs(CommandArgs):
+    project_id: str
+    limit: int = Field(default=32, ge=1, le=32)
+
+
+class ObjectLoopInputsValue(CommandValue):
+    starts: list[dict[str, Any]] = Field(default_factory=list)
+    loops: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ObjectLoopValue(CommandValue):
     object_id: str | None = None
     version: int | None = None
@@ -93,28 +103,29 @@ class ObjectLoopValue(CommandValue):
 
 def register_object_loop_contracts(registry) -> None:
     definitions = (
-        ("object_loop_start", ObjectLoopStartArgs, SideEffectClass.CREATE),
-        ("object_loop_reconcile", ObjectLoopReconcileArgs, SideEffectClass.COMPOSITE),
-        ("object_score_record", ObjectScoreRecordArgs, SideEffectClass.UPDATE),
-        ("object_checkpoint_read", ObjectCheckpointReadArgs, SideEffectClass.READ),
+        ("object_loop_start", ObjectLoopStartArgs, ObjectLoopValue, SideEffectClass.CREATE),
+        ("object_loop_reconcile", ObjectLoopReconcileArgs, ObjectLoopValue, SideEffectClass.COMPOSITE),
+        ("object_score_record", ObjectScoreRecordArgs, ObjectLoopValue, SideEffectClass.UPDATE),
+        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectLoopValue, SideEffectClass.READ),
+        ("object_loop_inputs", ObjectLoopInputsArgs, ObjectLoopInputsValue, SideEffectClass.READ),
     )
-    for name, args_model, effect in definitions:
+    for name, args_model, result_model, effect in definitions:
         if registry.get(name) is not None:
             continue
 
-        async def invoke(args, principal, name=name):
+        async def invoke(args, principal, name=name, result_model=result_model):
             from src.commands.contracts.builtin import _handler
 
             with principal_context(principal):
-                raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+                raw = await _handler().execute(name, args.model_dump())
             if not raw.get("success"):
                 return CommandResult(
-                    outcome="rejected", value=ObjectLoopValue.model_construct(),
+                    outcome="rejected", value=result_model.model_construct(),
                     summary=str(raw.get("error") or "rejected"),
                 )
             return CommandResult(
                 outcome="completed",
-                value=ObjectLoopValue(**{k: raw[k] for k in ObjectLoopValue.model_fields if k in raw}),
+                value=result_model(**{k: raw[k] for k in result_model.model_fields if k in raw}),
                 summary="completed",
             )
 
@@ -122,7 +133,7 @@ def register_object_loop_contracts(registry) -> None:
             name,
             CommandContract(
                 execution=ExecutionContract(
-                    name=name, args_model=args_model, result_model=ObjectLoopValue,
+                    name=name, args_model=args_model, result_model=result_model,
                     capability=name, side_effect=effect, retry_safe=True,
                     idempotency=IdempotencySpec(mode="natural"),
                     outcomes=(

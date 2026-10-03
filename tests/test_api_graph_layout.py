@@ -1489,7 +1489,14 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     assert gates == [
         {"id": open_gid, "gate_type": "human", "status": "open", "task_ids": ["hub", "z"]}
     ]
-    gate_reads = [s for s in statements if "FROM gates" in s or "task_gates" in s]
+    # The epic delivery projection reads open approval gates of the visible
+    # epics in one statement of its own (filtered by gate type).
+    approval_reads = [s for s in statements if "gates.gate_type IN" in s]
+    assert len(approval_reads) <= 1, approval_reads
+    gate_reads = [
+        s for s in statements
+        if ("FROM gates" in s or "task_gates" in s) and s not in approval_reads
+    ]
     assert len(gate_reads) <= 2, gate_reads
 
 
@@ -1692,7 +1699,10 @@ async def test_tiles_phase_lookup_is_one_statement_regardless_of_visible_count(d
         event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
 
     assert r.status_code == 200
-    phase_reads = [s for s in statements if "task_metadata" in s]
+    # The phase lookup reads metadata values; the epic delivery projection's
+    # own operator-hold read selects ids only and is bounded separately
+    # (test_tiles_epic_delivery_statements_do_not_grow_with_visible_epics).
+    phase_reads = [s for s in statements if "task_metadata.value" in s]
     assert len(phase_reads) == 1, phase_reads
 
 
@@ -2059,3 +2069,70 @@ async def test_locate_under_a_finished_root_searches_the_full_layout(db, client_
         )
     assert r.status_code == 200
     assert [hit["id"] for hit in r.json()["hits"]] == ["child"]
+
+
+# ---------------------------------------------------------------------------
+# Epic implementation vs delivery (noble-nexus-42)
+# ---------------------------------------------------------------------------
+
+
+async def test_tiles_list_and_node_carry_epic_delivery_for_nodes_with_children(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    assert tiles.status_code == listed.status_code == node.status_code == 200
+    nodes = {n["id"]: n for n in tiles.json()["nodes"]}
+    delivery = nodes["e"]["delivery"]
+    # e has open children: implementation, not delivery, is what is running.
+    assert delivery["state"] == "implementing"
+    assert (delivery["implementation_completed"], delivery["implementation_total"]) == (1, 3)
+    assert nodes["z"]["delivery"] is None  # a leaf has no epic answer
+    assert {n["id"]: n for n in listed.json()["nodes"]}["e"]["delivery"]["state"] == "implementing"
+    assert node.json()["node"]["delivery"]["state"] == "implementing"
+
+
+async def test_tiles_survive_a_failed_epic_delivery_read(db, client_factory, monkeypatch):
+    from src.integration.epic_delivery import EpicDeliveryProjection
+
+    await seed(db)
+
+    async def boom(self, conn, ids):
+        raise RuntimeError("projection read failed")
+
+    monkeypatch.setattr(EpicDeliveryProjection, "facts_on", boom)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    assert {n["id"]: n for n in r.json()["nodes"]}["e"]["delivery"] is None
+
+
+async def test_tiles_epic_delivery_statements_do_not_grow_with_visible_epics(db):
+    """The projection is batched: more visible epics, same statements."""
+    from src.integration.epic_delivery import EpicDeliveryProjection
+
+    await seed(db)
+    counts = []
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    for round_index, extra in enumerate((0, 3)):
+        for index in range(extra):
+            epic_id = f"x{round_index}{index}"
+            await db.create_task(Task(id=epic_id, project_id="p1", title=epic_id, description=""))
+            await db.create_task(Task(id=f"{epic_id}.c", project_id="p1", title="c", description=""))
+            async with db._engine.begin() as conn:
+                await db.set_parent(f"{epic_id}.c", epic_id, conn=conn)
+        visible = [task.id for task in await db.list_tasks(project_id="p1")]
+        statements.clear()
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+        try:
+            answers = await EpicDeliveryProjection(db).for_tasks(visible)
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+        assert len(answers) == 2 + extra  # e and pkg have children; hub only dependents
+        counts.append(len(statements))
+    assert counts[0] == counts[1], counts

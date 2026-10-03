@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -25,6 +26,10 @@ from src.database.tables import (
 )
 from src.integration.outbox import (
     IntegrationOutbox,
+    DestinationArtifactUnavailable,
+    NoIntegrationEventConsumer,
+    RETRY_EXHAUSTED_PREFIX,
+    UNSUBSCRIBED_EVENT_TYPES,
     enqueue_integration_event,
     freeze_destination_manifest,
     load_acceptance_state,
@@ -233,16 +238,24 @@ def _runtime(db, compiled_root) -> V2PlaybookRuntime:
     )
 
 
-async def _enqueue(db, *, event_id="event-1", dedup_key="sealed:operation-1") -> None:
+async def _enqueue(
+    db, *, event_id="event-1", dedup_key="sealed:operation-1",
+    event_type="integration.sealed", project_id="p",
+) -> None:
     async with db.immediate() as conn:
         await enqueue_integration_event(
             conn,
             event_id=event_id,
             dedup_key=dedup_key,
-            project_id="p",
-            event_type="integration.sealed",
+            project_id=project_id,
+            event_type=event_type,
             payload={"operation_id": "operation-1"},
             available_at=NOW,
+        )
+        # The dispatch clock and event age must use the same synthetic epoch.
+        await conn.execute(
+            integration_outbox.update().where(integration_outbox.c.id == event_id)
+            .values(created_at=NOW)
         )
 
 
@@ -451,6 +464,436 @@ async def test_zero_matching_activations_keeps_event_for_retry(db):
     assert row["attempts"] == 1
     assert row["available_at"] == NOW + 1
     assert await _pending_rows(db) == []
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_confirmed_unsubscribed_events_are_audited_and_not_retried(db, event_type, caplog):
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, "/tmp/no-integration-artifacts")
+    await runtime.refresh()
+    async def no_subscription(event_type, payload, event_id):
+        assert not await runtime.accept_integration_event(event_type, payload, event_id)
+        # Explicit adapter evidence is essential: ordinary False also means
+        # artifact/activation readiness failure or incomplete fanout.
+        raise NoIntegrationEventConsumer("no subscription matches")
+
+    outbox = IntegrationOutbox(db, no_subscription, clock=lambda: NOW)
+
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["attempts"] == 1
+    assert row["last_error"].startswith("unsubscribed: ")
+    assert row["payload"]["event_id"] == "event-1"
+    assert row["destination_manifest"] is None
+    assert await _pending_rows(db) == []
+    assert "integration outbox sink event=event-1" in caplog.text
+    assert f"type={event_type}" in caplog.text
+
+    restarted = IntegrationOutbox(db, no_subscription, clock=lambda: NOW + 7200)
+    assert await restarted.dispatch_due(NOW + 7200) == 0
+    assert (await _outbox_rows(db))[0]["attempts"] == 1
+    assert not await restarted.replay("event-1", now=NOW + 7200)
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_custom_subscriber_accepts_a_normally_unsubscribed_event(db, tmp_path, event_type):
+    await _activate(db, tmp_path / "compiled", "custom-consumer", event_type)
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["last_error"] is None
+    assert row["acceptance_cursor"] == 1
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_unknown_event_quarantine_survives_restart_and_can_be_replayed(db, tmp_path, caplog):
+    await _enqueue(db, event_type="integration.custom_notification")
+    compiled = tmp_path / "compiled"
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, runtime.accept_integration_event, max_wait_seconds=3,
+        retry_base_seconds=10, clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["available_at"] == NOW + 3
+    assert not await outbox.replay("event-1", now=NOW)
+
+    now[0] = NOW + 3
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert "max_wait=3s" in quarantined["last_error"]
+    assert "no enabled matching playbook" in quarantined["last_error"]
+    assert "integration outbox quarantined event=event-1" in caplog.text
+
+    now[0] = NOW + 100
+    restarted = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: now[0])
+    assert await restarted.dispatch_due(now[0]) == 0
+    assert (await _outbox_rows(db))[0]["attempts"] == 2
+
+    await _activate(db, compiled, "custom-consumer", "integration.custom_notification")
+    await runtime.refresh()
+    assert await restarted.replay("event-1", now=now[0])
+    assert await restarted.dispatch_due(now[0]) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+    [delivered] = await _outbox_rows(db)
+    assert delivered["created_at"] == quarantined["created_at"]
+    assert delivered["payload"] == quarantined["payload"]
+    assert delivered["last_error"] is None
+
+
+@pytest.mark.parametrize("event_type", ["integration.sealed", "integration.cleanup_pending"])
+async def test_quarantined_partial_delivery_retains_receipts_and_artifact_pins(
+    db, tmp_path, event_type,
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train-a", event_type)
+    await _activate(db, compiled, "integration-train-b", event_type)
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    original = db.retain_integration_event
+    calls = 0
+
+    async def crash_on_second_destination(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls % 2 == 0:
+            raise RuntimeError("simulated destination write failure")
+        return await original(**kwargs)
+
+    db.retain_integration_event = crash_on_second_destination
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, runtime.accept_integration_event, max_wait_seconds=1, clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(now[0]) == 0
+    now[0] = NOW + 1
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    pins = await _artifact_pin_rows(db)
+    pending = await _pending_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert "RuntimeError: simulated destination write failure" in quarantined["last_error"]
+    assert len(pins) == 2
+    assert len(pending) == 1
+    assert pending[0]["protected"]
+
+    await runtime.shutdown()
+    restarted_runtime = _runtime(db, compiled)
+    await restarted_runtime.refresh()
+    db.retain_integration_event = original
+    now[0] = NOW + 100
+    restarted = IntegrationOutbox(
+        db, restarted_runtime.accept_integration_event, clock=lambda: now[0],
+    )
+    assert await restarted.dispatch_due(now[0]) == 0
+    assert await restarted.replay("event-1", now=now[0])
+    assert await restarted.dispatch_due(now[0]) == 1
+    await _wait_for_accepted(db, "event-1", count=2)
+    await _wait_for_pending_resolution(db, "event-1", count=2)
+    [delivered] = await _outbox_rows(db)
+    assert delivered["destination_manifest"] == quarantined["destination_manifest"]
+    assert delivered["acceptance_cursor"] == 2
+    assert await _artifact_pin_rows(db) == []
+    assert pending[0]["pending_event_id"] in {
+        row["pending_event_id"] for row in await _pending_rows(db)
+    }
+    assert await _accepted_activation_count(db, "event-1") == 2
+
+
+async def test_declined_partial_fanout_of_normally_unsubscribed_event_is_not_sunk(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    async def capture_then_decline(event_type, payload, event_id):
+        assert await runtime.accept_integration_event(event_type, payload, event_id)
+        # Even incorrect adapter evidence cannot sink a captured destination.
+        raise NoIntegrationEventConsumer("adapter observed an obsolete subscription snapshot")
+
+    outbox = IntegrationOutbox(db, capture_then_decline, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert retry["destination_manifest"] is not None
+    assert retry["acceptance_cursor"] == 1
+    assert len(await _artifact_pin_rows(db)) == 1
+    outbox._accept_event = runtime.accept_integration_event
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_subscribed_artifact_readiness_failure_without_manifest_is_not_sunk(
+    db, tmp_path, monkeypatch,
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    original = runtime_module.freeze_destination_manifest
+
+    async def unavailable_artifact(*_args):
+        raise DestinationArtifactUnavailable("event-1")
+
+    monkeypatch.setattr(runtime_module, "freeze_destination_manifest", unavailable_artifact)
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["destination_manifest"] is None
+    assert retry["delivered_at"] is None
+    assert retry["available_at"] == NOW + 1
+    assert not retry["last_error"].startswith("unsubscribed:")
+
+    monkeypatch.setattr(runtime_module, "freeze_destination_manifest", original)
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_project_max_wait_bounds_retry_deadlines_independently(db):
+    await db.create_project(Project(id="q", name="other project"))
+    await _enqueue(db, event_id="p-event", dedup_key="p-event")
+    await _enqueue(db, event_id="q-event", dedup_key="q-event", project_id="q")
+    now = [NOW]
+
+    async def max_wait(project_id):
+        return {"p": 2.0, "q": 5.0}[project_id]
+
+    async def unavailable(*_args):
+        raise OSError("temporarily unavailable")
+
+    outbox = IntegrationOutbox(
+        db, unavailable, project_max_wait=max_wait, retry_base_seconds=100,
+        clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(now[0]) == 0
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["available_at"] == NOW + 2
+    assert rows["q"]["available_at"] == NOW + 5
+    now[0] = NOW + 2
+    assert await outbox.dispatch_due(now[0]) == 0
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert rows["q"]["attempts"] == 1
+    now[0] = NOW + 5
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    assert await outbox.dispatch_due(now[0]) == 1
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["delivered_at"] is None
+    assert rows["q"]["delivered_at"] == now[0]
+
+
+@pytest.mark.parametrize("max_wait", [0, -1, float("inf"), float("nan")])
+def test_retry_age_budget_must_be_finite_and_positive(max_wait):
+    with pytest.raises(ValueError, match="max_wait must be finite and positive"):
+        IntegrationOutbox(None, None, max_wait_seconds=max_wait)
+
+
+def _proving(runtime):
+    """The orchestrator adapter's opt-in to explicit no-consumer evidence."""
+
+    async def accept(event_type, payload, event_id):
+        return await runtime.accept_integration_event(
+            event_type, payload, event_id, prove_no_consumer=True
+        )
+
+    return accept
+
+
+async def _set_activation(
+    db, playbook_id, artifact_sha256, *, scope="project", scope_identifier="p",
+    enabled=True, health="ready",
+) -> None:
+    await db.set_playbook_activation(
+        playbook_id=playbook_id,
+        scope=scope,
+        scope_identifier=scope_identifier,
+        artifact_sha256=artifact_sha256,
+        enabled=enabled,
+        activated_by="test",
+        health=health,
+        reasons="[]",
+    )
+
+
+async def _offer(runtime, **kwargs) -> bool:
+    [row] = await _outbox_rows(db=runtime._db)
+    return await runtime.accept_integration_event(
+        row["event_type"], dict(row["payload"]), row["id"], **kwargs
+    )
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_runtime_proves_no_consumer_only_when_asked(db, tmp_path, event_type):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "unrelated-consumer", "integration.custom_notification")
+    _, disabled_sha = await _activate(
+        db, compiled, "disabled-consumer", event_type, source_digit="2"
+    )
+    # An operator-disabled subscriber is a deliberate unsubscribe, and
+    # activations outside the event's project cannot receive it at all.
+    await _set_activation(db, "disabled-consumer", disabled_sha, enabled=False, health="disabled")
+    await _set_activation(
+        db, "other-project-consumer", disabled_sha, scope_identifier="q", health="stale_contract",
+    )
+    await _set_activation(
+        db, "agent-consumer", disabled_sha, scope="agent_type", scope_identifier="worker",
+        health="invalid",
+    )
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await _offer(runtime) is False
+    with pytest.raises(
+        NoIntegrationEventConsumer,
+        match=f"no ready playbook in scope for project p subscribes to {event_type}",
+    ):
+        await _offer(runtime, prove_no_consumer=True)
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["attempts"] == 1
+    assert row["last_error"].startswith("unsubscribed: ")
+    assert row["destination_manifest"] is None
+    assert await _pending_rows(db) == []
+    assert await _artifact_pin_rows(db) == []
+
+
+async def _never_refreshed(db, compiled):
+    return _runtime(db, compiled), "integration.root_delivered"
+
+
+async def _shutting_down(db, compiled):
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    await runtime.shutdown()
+    return runtime, "integration.root_delivered"
+
+
+async def _unready_in_scope_activation(db, compiled):
+    # Its triggers are unknown until it is ready again, so it may subscribe.
+    _, sha = await _activate(db, compiled, "stale-consumer", "integration.custom_notification")
+    await _set_activation(db, "stale-consumer", sha, health="stale_contract")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _unloadable_artifact(db, compiled):
+    _, sha = await _activate(
+        db, compiled, "missing-artifact", "integration.custom_notification", scope="system",
+    )
+    os.remove(ArtifactStore(str(compiled)).path_for(sha))
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _fenced_lifecycle_subscriber(db, compiled):
+    # Lifecycle playbooks serve only through a frozen route; a subscription
+    # that is fenced off is still a subscription, not proof of none.
+    await _activate(db, compiled, "root-train", "integration.root_delivered", scope="system")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _integration_route_event(db, compiled):
+    # Route events depend on a frozen operation route that is unavailable
+    # here (the project is not enabled); that is never an unsubscribe.
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.sealed"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        _never_refreshed,
+        _shutting_down,
+        _unready_in_scope_activation,
+        _unloadable_artifact,
+        _fenced_lifecycle_subscriber,
+        _integration_route_event,
+    ],
+    ids=lambda scenario: scenario.__name__.strip("_"),
+)
+async def test_runtime_withholds_no_consumer_proof_it_cannot_establish(
+    db, tmp_path, scenario,
+):
+    runtime, event_type = await scenario(db, tmp_path / "compiled")
+    await _enqueue(db, event_type=event_type)
+
+    assert await _offer(runtime, prove_no_consumer=True) is False
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] is None
+    assert row["available_at"] == NOW + 1
+    assert row["last_error"] == "no enabled matching playbook durably accepted the event"
+
+
+async def test_runtime_proof_rereads_activations_committed_after_its_refresh(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    # The subscriber commits before the runtime's refresh observes it.
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert not retry["last_error"].startswith("unsubscribed:")
+
+    await runtime.refresh()
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_runtime_proof_for_an_unknown_event_type_stays_bounded_not_sunk(db, tmp_path):
+    await _enqueue(db, event_type="integration.custom_notification")
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, _proving(runtime), max_wait_seconds=3, retry_base_seconds=10, clock=lambda: now[0],
+    )
+
+    assert await outbox.dispatch_due(now[0]) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert retry["last_error"].startswith("NoIntegrationEventConsumer: no ready playbook")
+    now[0] = NOW + 3
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
 
 
 async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_path):

@@ -6529,6 +6529,993 @@
         }
       }
     },
+    "/api/knowledge/authority-grant": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Grant policy authority bound to an exact verified revision and review.",
+        "description": "Grant policy authority bound to an exact verified revision and review.",
+        "operationId": "knowledge_authority_grant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeAuthorityGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/authority-revoke": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Revoke policy authority without rewriting content history.",
+        "description": "Revoke policy authority without rewriting content history.",
+        "operationId": "knowledge_authority_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeAuthorityRevokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/cite": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Record an exact readable revision as explicitly read or attached.",
+        "description": "Record an exact readable revision as explicitly read or attached.",
+        "operationId": "knowledge_cite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeCiteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeCitationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/context-deliver": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Acknowledge observed transport delivery; does not prove model reading.",
+        "description": "Acknowledge observed transport delivery; does not prove model reading.",
+        "operationId": "knowledge_context_deliver",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeContextDeliverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeContextDeliveryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/create": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Create one active, unverified knowledge finding in the project scope. Idempotent by idempotency_key; a replay returns the original receipt.",
+        "description": "Create one active, unverified knowledge finding in the project scope. Idempotent by idempotency_key; a replay returns the original receipt.",
+        "operationId": "knowledge_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/create-task": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "File one task through ordinary routing and gates, with a pinned motivated_by link.",
+        "description": "File one task through ordinary routing and gates, with a pinned motivated_by link.",
+        "operationId": "knowledge_create_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeCreateTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeCreateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/diff": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Diff two exact, readable revisions of a knowledge record.",
+        "description": "Diff two exact, readable revisions of a knowledge record.",
+        "operationId": "knowledge_diff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeDiffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeDiffResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/export": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Export an authorized knowledge revision as Markdown bytes; no daemon destination path.",
+        "description": "Export an authorized knowledge revision as Markdown bytes; no daemon destination path.",
+        "operationId": "knowledge_export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/history": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read the revision history of a knowledge record.",
+        "description": "Read the revision history of a knowledge record.",
+        "operationId": "knowledge_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/import": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection.",
+        "description": "Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection.",
+        "operationId": "knowledge_import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeImportArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/list": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "List authorized knowledge metadata with a page cursor.",
+        "description": "List authorized knowledge metadata with a page cursor.",
+        "operationId": "knowledge_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/proposal-decide": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Accept or reject an exact proposal; supervisor grant required.",
+        "description": "Accept or reject an exact proposal; supervisor grant required.",
+        "operationId": "knowledge_proposal_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposalDecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/proposal-show": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read an authorized proposal and its exact hash.",
+        "description": "Read an authorized proposal and its exact hash.",
+        "operationId": "knowledge_proposal_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposalShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/propose": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Submit an unverified correction bound to its exact base.",
+        "description": "Submit an unverified correction bound to its exact base.",
+        "operationId": "knowledge_propose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/redact": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Preview or permanently erase selected knowledge and derived copies; local operator only.",
+        "description": "Preview or permanently erase selected knowledge and derived copies; local operator only.",
+        "operationId": "knowledge_redact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeRedactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/restore": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Restore a knowledge finding to a retained revision. Supervisor-only. Idempotent by idempotency_key.",
+        "description": "Restore a knowledge finding to a retained revision. Supervisor-only. Idempotent by idempotency_key.",
+        "operationId": "knowledge_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeLifecycleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/retire": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Retire a knowledge finding with an optional successor. Supervisor-only. Idempotent by idempotency_key.",
+        "description": "Retire a knowledge finding with an optional successor. Supervisor-only. Idempotent by idempotency_key.",
+        "operationId": "knowledge_retire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeRetireRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeLifecycleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/share": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Preview or change a global record share; explicit global authority required.",
+        "description": "Preview or change a global record share; explicit global authority required.",
+        "operationId": "knowledge_share",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/show": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read an authorized knowledge snapshot at an exact revision (defaults to the current revision).",
+        "description": "Read an authorized knowledge snapshot at an exact revision (defaults to the current revision).",
+        "operationId": "knowledge_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/update": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Revise editable knowledge fields with a concurrency token (if_revision). Idempotent by idempotency_key.",
+        "description": "Revise editable knowledge fields with a concurrency token (if_revision). Idempotent by idempotency_key.",
+        "operationId": "knowledge_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/verify": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Verify or dispute an exact revision with named evidence.",
+        "description": "Verify or dispute an exact revision with named evidence.",
+        "operationId": "knowledge_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/create-server": {
       "post": {
         "tags": [
@@ -11451,6 +12438,335 @@
         }
       }
     },
+    "/api/record/link-create": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Add, update, or remove typed record links in one batch. Idempotent by idempotency_key.",
+        "description": "Add, update, or remove typed record links in one batch. Idempotent by idempotency_key.",
+        "operationId": "link_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkMutationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/link-list": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "List the typed links on a record.",
+        "description": "List the typed links on a record.",
+        "operationId": "link_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/link-remove": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Remove one typed record link. Idempotent by idempotency_key.",
+        "description": "Remove one typed record link. Idempotent by idempotency_key.",
+        "operationId": "link_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkRemoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkMutationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/capabilities": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Describe what this caller may do with records in the project.",
+        "description": "Describe what this caller may do with records in the project.",
+        "operationId": "record_capabilities",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordCapabilitiesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordCapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/repair": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Local operator only: dry-run task mapping backfill or selected outbox replay before explicit apply.",
+        "description": "Local operator only: dry-run task mapping backfill or selected outbox replay before explicit apply.",
+        "operationId": "record_repair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordRepairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordRepairResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/search": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Search authorized records with a bounded query and page cursor.",
+        "description": "Search authorized records with a bounded query and page cursor.",
+        "operationId": "record_search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/record/show": {
+      "post": {
+        "tags": [
+          "record"
+        ],
+        "summary": "Read a record by identity, pinned to a revision when knowledge.",
+        "description": "Read a record by identity, pinned to a revision when knowledge.",
+        "operationId": "record_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/report/morning-preview": {
       "post": {
         "tags": [
@@ -15860,6 +17176,53 @@
         }
       }
     },
+    "/api/task/object-loop-inputs": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_loop_inputs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectLoopInputsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectLoopInputsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/object-loop-reconcile": {
       "post": {
         "tags": [
@@ -18164,8 +19527,8 @@
         "tags": [
           "wait"
         ],
-        "summary": "Read a durable wait and its bounded result pointer.",
-        "description": "Read a durable wait and its bounded result pointer.",
+        "summary": "Read a durable wait, optionally consuming its result notification.",
+        "description": "Read a durable wait, optionally consuming its result notification.",
         "operationId": "wait_get",
         "requestBody": {
           "content": {
@@ -27669,6 +29032,170 @@
         ],
         "title": "EnvVarReference"
       },
+      "EpicDeliveryRef": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "operation",
+              "batch",
+              "gate",
+              "session",
+              "system",
+              "operator",
+              "supervisor"
+            ],
+            "title": "Kind"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "EpicDeliveryRef",
+        "description": "A party or record an epic's delivery status points at.\n\n``task``/``operation``/``batch``/``gate`` name a record (``id`` set);\n``session`` is the live worker session; ``system``/``operator``/\n``supervisor`` name who must act and carry no ``id``."
+      },
+      "EpicDeliveryStatus": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "implementing",
+              "queued",
+              "integrating",
+              "verifying",
+              "blocked",
+              "awaiting_approval",
+              "paused",
+              "delivered",
+              "unknown",
+              "not_tracked"
+            ],
+            "title": "State"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "display_status": {
+            "type": "string",
+            "title": "Display Status"
+          },
+          "hold": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "operator",
+                  "integration",
+                  "backoff"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hold"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy"
+          },
+          "responsible": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EpicDeliveryRef"
+            },
+            "type": "array",
+            "title": "Links",
+            "default": []
+          },
+          "evidence": {
+            "type": "string",
+            "enum": [
+              "current",
+              "stale",
+              "unavailable",
+              "untracked"
+            ],
+            "title": "Evidence",
+            "default": "current"
+          },
+          "implementation_completed": {
+            "type": "integer",
+            "title": "Implementation Completed",
+            "default": 0
+          },
+          "implementation_total": {
+            "type": "integer",
+            "title": "Implementation Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "label",
+          "display_status"
+        ],
+        "title": "EpicDeliveryStatus",
+        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with a receipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
+      },
       "EscalationAction": {
         "properties": {
           "id": {
@@ -32180,6 +33707,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -35280,6 +36817,52 @@
         ],
         "title": "IntelligenceClassReference"
       },
+      "InventoryRootSpec": {
+        "properties": {
+          "root_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Id"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Path"
+          },
+          "source_scope": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Source Scope"
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind",
+            "default": "memory"
+          },
+          "relative_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Paths"
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_id",
+          "path",
+          "source_scope"
+        ],
+        "title": "InventoryRootSpec",
+        "description": "One scan root: an absolute path with a stable, path-free identity."
+      },
       "JobErrorResponse": {
         "properties": {
           "success": {
@@ -35634,6 +37217,3060 @@
         ],
         "title": "JobSubmitArgs"
       },
+      "KnowledgeAuthorityGrantRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "review": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeAuthorityGrantRequest"
+      },
+      "KnowledgeAuthorityRevokeRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeAuthorityRevokeRequest"
+      },
+      "KnowledgeCitationResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "citation_id": {
+            "type": "string",
+            "title": "Citation Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "citation_id"
+        ],
+        "title": "KnowledgeCitationResponse"
+      },
+      "KnowledgeCiteRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "type": "string",
+            "title": "Revision Id",
+            "description": ""
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "revision_id",
+          "kind",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeCiteRequest"
+      },
+      "KnowledgeContextDeliverRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id",
+            "description": ""
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "rendered_sha256": {
+            "type": "string",
+            "title": "Rendered Sha256",
+            "description": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "",
+            "default": "delivered"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "transport",
+          "idempotency_key",
+          "rendered_sha256"
+        ],
+        "title": "KnowledgeContextDeliverRequest"
+      },
+      "KnowledgeContextDeliveryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "delivery_id",
+          "state"
+        ],
+        "title": "KnowledgeContextDeliveryResponse"
+      },
+      "KnowledgeCreateRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": ""
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "description": ""
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": ""
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": ""
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources",
+            "description": ""
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "source_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Task Id",
+            "description": ""
+          },
+          "if_link_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Link Token",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "body",
+          "category",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeCreateRequest"
+      },
+      "KnowledgeCreateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeCreateResponse"
+      },
+      "KnowledgeCreateTaskRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "type": "string",
+            "title": "Revision Id",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": ""
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type",
+            "description": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "description": "",
+            "default": 100
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": ""
+          },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "identity",
+          "revision_id",
+          "title",
+          "description",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeCreateTaskRequest"
+      },
+      "KnowledgeCreateTaskResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "task_record_id": {
+            "type": "string",
+            "title": "Task Record Id"
+          },
+          "link_id": {
+            "type": "string",
+            "title": "Link Id"
+          },
+          "route_source": {
+            "type": "string",
+            "title": "Route Source"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Ids",
+            "default": []
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "task_id",
+          "task_record_id",
+          "link_id",
+          "route_source",
+          "status"
+        ],
+        "title": "KnowledgeCreateTaskResponse"
+      },
+      "KnowledgeDiffRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "from_revision": {
+            "type": "string",
+            "title": "From Revision",
+            "description": ""
+          },
+          "to_revision": {
+            "type": "string",
+            "title": "To Revision",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "from_revision",
+          "to_revision"
+        ],
+        "title": "KnowledgeDiffRequest"
+      },
+      "KnowledgeDiffResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "from_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Revision"
+          },
+          "to_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Revision"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Changes",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeDiffResponse"
+      },
+      "KnowledgeExportRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "title": "KnowledgeExportRequest"
+      },
+      "KnowledgeExportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "default": ""
+          },
+          "export_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Sha256"
+          },
+          "format_version": {
+            "type": "integer",
+            "title": "Format Version",
+            "default": 1
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeExportResponse"
+      },
+      "KnowledgeHistoryRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "before_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Sequence",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 25
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "title": "KnowledgeHistoryRequest"
+      },
+      "KnowledgeHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "revisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Revisions",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeHistoryResponse"
+      },
+      "KnowledgeImportArgs": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "dry-run",
+              "apply",
+              "resume",
+              "cancel"
+            ],
+            "title": "Operation",
+            "default": "dry-run"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryRootSpec"
+            },
+            "type": "array",
+            "title": "Roots"
+          },
+          "vector_export": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Export"
+          },
+          "scope_aliases": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Aliases"
+          },
+          "source_installation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Installation Id"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "snapshot_timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Timestamp"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "default": false
+          },
+          "manifest_content_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Content Base64"
+          },
+          "manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Sha256"
+          },
+          "selected_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Item Ids"
+          },
+          "expected_revisions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Expected Revisions"
+          },
+          "expected_source_hashes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Expected Source Hashes"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "backup_receipt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Receipt"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "KnowledgeImportArgs"
+      },
+      "KnowledgeImportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "source_installation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Installation Id"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "snapshot_timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Timestamp"
+          },
+          "manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Sha256"
+          },
+          "manifest_content_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Content Base64"
+          },
+          "vector_observation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Observation"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items"
+          },
+          "mappings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mappings"
+          },
+          "identities": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identities"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeImportResponse",
+        "description": "Stable envelope for inventory and durable apply/resume projections."
+      },
+      "KnowledgeLifecycleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeLifecycleResponse"
+      },
+      "KnowledgeListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": ""
+          },
+          "include_retired": {
+            "type": "boolean",
+            "title": "Include Retired",
+            "description": "",
+            "default": false
+          },
+          "include_disputed": {
+            "type": "boolean",
+            "title": "Include Disputed",
+            "description": "",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 25
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": ""
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "KnowledgeListRequest"
+      },
+      "KnowledgeListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Items",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeListResponse"
+      },
+      "KnowledgeProposalDecideRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "proposal_sha256": {
+            "type": "string",
+            "title": "Proposal Sha256",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "proposal_sha256",
+          "decision",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeProposalDecideRequest"
+      },
+      "KnowledgeProposalShowRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "KnowledgeProposalShowRequest"
+      },
+      "KnowledgeProposeRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Snapshot",
+            "description": ""
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "link_operations": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link Operations",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "snapshot",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeProposeRequest"
+      },
+      "KnowledgeProtectionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "proposal_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Sha256"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
+          "redaction_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Id"
+          },
+          "cleanup_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleanup State"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeProtectionResponse"
+      },
+      "KnowledgeRedactRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "description": ""
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "idempotency_key",
+          "reason_code"
+        ],
+        "title": "KnowledgeRedactRequest"
+      },
+      "KnowledgeRestoreRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "type": "string",
+            "title": "Revision Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "revision_id",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeRestoreRequest"
+      },
+      "KnowledgeRetireRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "successor_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successor Record Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeRetireRequest"
+      },
+      "KnowledgeShareRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "target_project_id": {
+            "type": "string",
+            "title": "Target Project Id",
+            "description": ""
+          },
+          "revoke": {
+            "type": "boolean",
+            "title": "Revoke",
+            "description": "",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key",
+          "target_project_id"
+        ],
+        "title": "KnowledgeShareRequest"
+      },
+      "KnowledgeShowRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "title": "KnowledgeShowRequest"
+      },
+      "KnowledgeShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "knowledge"
+          },
+          "knowledge_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge Alias"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence",
+            "default": 0
+          },
+          "hash_version": {
+            "type": "integer",
+            "title": "Hash Version",
+            "default": 1
+          },
+          "allowed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Actions",
+            "default": []
+          },
+          "protection": {
+            "type": "string",
+            "title": "Protection",
+            "default": "none"
+          },
+          "current_revision_id": {
+            "type": "string",
+            "title": "Current Revision Id"
+          },
+          "current_sequence": {
+            "type": "integer",
+            "title": "Current Sequence"
+          },
+          "scope_key": {
+            "type": "string",
+            "title": "Scope Key"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id"
+          },
+          "change_kind": {
+            "type": "string",
+            "title": "Change Kind"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Reason"
+          },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Snapshot",
+            "default": {}
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "current_revision_id",
+          "current_sequence",
+          "scope_key",
+          "created_at",
+          "actor_id",
+          "change_kind"
+        ],
+        "title": "KnowledgeShowResponse"
+      },
+      "KnowledgeUpdateRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": ""
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body",
+            "description": ""
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": ""
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": ""
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": ""
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources",
+            "description": ""
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": ""
+          },
+          "change_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Reason",
+            "description": ""
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From",
+            "description": ""
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until",
+            "description": ""
+          },
+          "recheck_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recheck At",
+            "description": ""
+          },
+          "summary_of_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Of Revision",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeUpdateRequest"
+      },
+      "KnowledgeUpdateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeUpdateResponse"
+      },
+      "KnowledgeVerifyRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "evidence": {
+            "items": {},
+            "type": "array",
+            "title": "Evidence",
+            "description": ""
+          },
+          "verification": {
+            "type": "string",
+            "title": "Verification",
+            "description": "",
+            "default": "verified"
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key",
+          "evidence"
+        ],
+        "title": "KnowledgeVerifyRequest"
+      },
       "LayoutEdge": {
         "properties": {
           "from": {
@@ -35945,6 +40582,16 @@
                 "type": "null"
               }
             ]
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -36059,6 +40706,307 @@
           "in_collapsed"
         ],
         "title": "LayoutWorker"
+      },
+      "LinkCreateRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "operations": {
+            "items": {},
+            "type": "array",
+            "title": "Operations",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "if_link_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Link Token",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "operations",
+          "idempotency_key"
+        ],
+        "title": "LinkCreateRequest"
+      },
+      "LinkListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "title": "LinkListRequest"
+      },
+      "LinkListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "links": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Links",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "LinkListResponse"
+      },
+      "LinkMutationResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "links": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Links",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "LinkMutationResponse"
+      },
+      "LinkRemoveRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "link_id": {
+            "type": "string",
+            "title": "Link Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "if_link_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Link Token",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "link_id",
+          "idempotency_key"
+        ],
+        "title": "LinkRemoveRequest"
       },
       "ListActiveTasksAllProjectsRequest": {
         "properties": {
@@ -39953,6 +44901,57 @@
           "approved"
         ],
         "title": "ObjectCheckpointReadResponse"
+      },
+      "ObjectLoopInputsRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 32
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ObjectLoopInputsRequest"
+      },
+      "ObjectLoopInputsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "starts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Starts"
+          },
+          "loops": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Loops"
+          }
+        },
+        "type": "object",
+        "required": [
+          "starts",
+          "loops"
+        ],
+        "title": "ObjectLoopInputsResponse"
       },
       "ObjectLoopReconcileRequest": {
         "properties": {
@@ -51094,6 +56093,128 @@
         ],
         "title": "ReceiptDTO"
       },
+      "RecordCapabilitiesRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "RecordCapabilitiesRequest"
+      },
+      "RecordCapabilitiesResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "capabilities": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Capabilities",
+            "default": {}
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RecordCapabilitiesResponse"
+      },
+      "RecordEdge": {
+        "properties": {
+          "edge_id": {
+            "type": "string",
+            "title": "Edge Id"
+          },
+          "source_record_id": {
+            "type": "string",
+            "title": "Source Record Id"
+          },
+          "target_record_id": {
+            "type": "string",
+            "title": "Target Record Id"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "informational",
+              "execution"
+            ],
+            "title": "Domain"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "target_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Revision Id"
+          },
+          "availability": {
+            "type": "string",
+            "title": "Availability",
+            "default": "available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "edge_id",
+          "source_record_id",
+          "target_record_id",
+          "domain",
+          "type"
+        ],
+        "title": "RecordEdge"
+      },
       "RecordFileInspectionRequest": {
         "properties": {
           "project_id": {
@@ -51192,6 +56313,433 @@
           "record"
         ],
         "title": "RecordFileInspectionResponse"
+      },
+      "RecordRepairRequest": {
+        "properties": {
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": ""
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id",
+            "description": ""
+          },
+          "max_batches": {
+            "type": "integer",
+            "title": "Max Batches",
+            "description": "",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "title": "RecordRepairRequest"
+      },
+      "RecordRepairResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "inventory": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory"
+          },
+          "batches": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batches"
+          },
+          "done": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done"
+          },
+          "eligible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RecordRepairResponse"
+      },
+      "RecordSearchRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "",
+            "default": "knowledge"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "",
+            "default": ""
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": ""
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": ""
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": ""
+          },
+          "include_retired": {
+            "type": "boolean",
+            "title": "Include Retired",
+            "description": "",
+            "default": false
+          },
+          "include_disputed": {
+            "type": "boolean",
+            "title": "Include Disputed",
+            "description": "",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 25
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "RecordSearchRequest"
+      },
+      "RecordSearchResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Items",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RecordSearchResponse"
+      },
+      "RecordShowRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "include_edges": {
+            "type": "boolean",
+            "title": "Include Edges",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity"
+        ],
+        "title": "RecordShowRequest"
+      },
+      "RecordShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence",
+            "default": 0
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Snapshot",
+            "default": {}
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/RecordEdge"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "RecordShowResponse"
       },
       "RedactionRowDTO": {
         "properties": {
@@ -59991,6 +65539,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -61385,6 +66943,16 @@
             ],
             "title": "Route"
           },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -61772,6 +67340,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "items": {
@@ -63961,6 +69539,24 @@
           "wait_id": {
             "type": "string",
             "title": "Wait Id",
+            "description": ""
+          },
+          "consume": {
+            "type": "boolean",
+            "title": "Consume",
+            "description": "",
+            "default": false
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
             "description": ""
           },
           "project_id": {

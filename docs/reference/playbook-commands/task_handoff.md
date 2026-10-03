@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/handoff.py`](../../../src/commands/contracts/handoff.py) |
-| Contract fingerprint | `sha256:438852b5c3be37d111c1fb3670808e6edd4b5541f7bf55888790ad8f9856b32c` |
+| Contract fingerprint | `sha256:a48ac962cbf3756deaa07c6cb3814b45242f71125d2f6219d970c5ee6e7f04ba` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
 | `claim_epoch` | `integer \| null` | no | `null` | — |
@@ -35,9 +36,11 @@
 | `decisions` | `string[]` | no | — | — |
 | `do_not_repeat` | `string[]` | no | — | — |
 | `uncertainties` | `string[]` | no | — | — |
+| `constraints` | `string[]` | no | — | — |
+| `evidence` | `string[]` | no | — | — |
 | `idempotency_key` | `string \| null` | no | `null` | — |
 
-Redacted in receipts and explanations: `completed`, `decisions`, `detail`, `do_not_repeat`, `files`, `goal`, `next_step`, `subject`, `uncertainties`, `waiting_for`.
+Redacted in receipts and explanations: `completed`, `constraints`, `decisions`, `detail`, `do_not_repeat`, `evidence`, `files`, `goal`, `next_step`, `subject`, `uncertainties`, `waiting_for`.
 
 ## Result
 

@@ -41,15 +41,20 @@ sessions.stall_unreachable — the rule
 -------------------------------------
 
 The stall ladder nudges a task holder idle past the session lease, and a
-nudge the composer guard defers is silent: no rung is spent, no
-``task.stalled`` is emitted, and the worker waits for a human.  That is how
-OpenCode workers sat idle for 20+ minutes on 2026-09-26/27 — the guard did
-not recognise OpenCode's box composer, and the fast-jev plugin had painted
-its log line over it.  This check lists every live task holder idle past
-the lease whose composer would refuse the nudge right now, with the refusal
-and the text the composer shows, so a human draft, a painted-over box and an
-unrecognised layout can be told apart.  Read-only: it neither repaints nor
-presses a key.  Sessions in a durable wait are not stalled and are skipped.
+nudge the composer guard defers on *a person* is silent: no rung is spent,
+no ``task.stalled`` is emitted, and the worker waits for a human.  That is
+how OpenCode workers sat idle for 20+ minutes on 2026-09-26/27 — the guard
+did not recognise OpenCode's box composer, and the fast-jev plugin had
+painted its log line over it.  This check lists every live task holder idle
+past the lease whose composer would refuse the nudge right now, with the
+refusal, its structured ``reason_kind``, and the text the composer shows, so
+a human draft, a painted-over box and an unrecognised layout can be told
+apart — and so the operator can see which of them will *not* clear on their
+own.  Since 2026-10-03 the ladder no longer waits forever on the rest: a
+stale frame or an unreadable composer spends a rung once no provider activity
+and no transcript write corroborate the stall.  Read-only: it neither
+repaints nor presses a key.  Sessions in a durable wait are not stalled and
+are skipped.
 """
 
 from __future__ import annotations
@@ -75,6 +80,14 @@ ENV_CHECK_ID = "sessions.env_markers"
 BACKLOG_CHECK_ID = "messages.idle_worker_backlog"
 
 UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
+
+#: Refusal reasons a person is responsible for: the ladder will not advance
+#: on these however long the holder is idle, so they are the ones an operator
+#: has to clear.  Anything else (a stale frame, an unreadable composer) is
+#: spent as a rung once progress evidence independent of the composer says
+#: the holder is frozen -- and, where AQ can measure none at all (an
+#: ``opencode`` holder), announced as ``evidence="unverified"`` instead.
+_LADDER_HELD_REASONS = frozenset({"draft", "terminal_busy", "recent_input"})
 
 #: The delivery cascade nudges an idle recipient on every pass, so mail this
 #: old for an idle live worker is a failed wake, not a queue that is draining.
@@ -311,6 +324,10 @@ async def _find_unreachable(ctx: DoctorContext, registry, config, ttl: float) ->
             "project_id": row.project_id,
             "idle_seconds": int(now - (row.last_activity or row.started_at or now)),
             "reason": result.get("reason"),
+            # The structured NudgeReason behind ``reason``: which of these the
+            # stall ladder may escalate on is a mechanical question, so the
+            # report answers it instead of leaving it to be re-derived.
+            "reason_kind": result.get("reason_kind"),
             "input": result.get("input") or "",
         })
     return unreachable
@@ -340,17 +357,31 @@ async def _check_stall_unreachable(ctx: DoctorContext) -> CheckResult:
             detail="every task holder idle past the session lease can be nudged",
         )
     shown = "; ".join(
-        f"{e['name']} (task {e['task_id']}, idle {e['idle_seconds'] // 60}m)"
+        f"{e['name']} (task {e['task_id']}, idle {e['idle_seconds'] // 60}m"
+        + (f", {e['reason_kind']}" if e.get("reason_kind") else "")
+        + ")"
         + (f" shows: {e['input'][:120]}" if e["input"] else f": {e['reason']}")
         for e in unreachable[:5]
     )
+    # Only the refusals a person is responsible for hold the ladder still.
+    # A stale frame or an unreadable composer is escalated by the ladder once
+    # no progress corroborates it, so reporting it as "cannot climb" was
+    # both wrong and the reason nobody noticed the real hole (2026-10-03).
+    held = [e for e in unreachable if e.get("reason_kind") in _LADDER_HELD_REASONS]
+    detail = (
+        f"{len(unreachable)} task holder(s) idle past the {int(ttl) // 60} min lease "
+        f"cannot be nudged, so the stall ladder cannot climb: {shown}"
+    )
+    if len(held) < len(unreachable):
+        detail = (
+            f"{len(held)} of {len(unreachable)} task holder(s) idle past the "
+            f"{int(ttl) // 60} min lease hold the stall ladder on a composer AQ will "
+            f"not touch; the rest are escalated once no progress corroborates them: {shown}"
+        )
     return CheckResult(
         id=UNREACHABLE_CHECK_ID,
         severity=Severity.WARN,
-        detail=(
-            f"{len(unreachable)} task holder(s) idle past the {int(ttl) // 60} min lease "
-            f"cannot be nudged, so the stall ladder cannot climb: {shown}"
-        ),
+        detail=detail,
         data={"count": len(unreachable), "sessions": unreachable},
     )
 

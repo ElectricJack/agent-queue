@@ -113,6 +113,58 @@ class TaskReroute(BaseModel):
     undoable: bool = False
 
 
+class EpicDeliveryRef(BaseModel):
+    """A party or record an epic's delivery status points at.
+
+    ``task``/``operation``/``batch``/``gate`` name a record (``id`` set);
+    ``session`` is the live worker session; ``system``/``operator``/
+    ``supervisor`` name who must act and carry no ``id``.
+    """
+
+    kind: Literal[
+        "task", "operation", "batch", "gate", "session", "system", "operator", "supervisor"
+    ]
+    id: str | None = None
+    label: str = ""
+
+
+class EpicDeliveryStatus(BaseModel):
+    """Implementation progress kept apart from delivery for a task with children.
+
+    A read-only display projection (``src/integration/epic_delivery.py``): it
+    never changes the stored lifecycle and authorizes nothing. ``state`` is
+    ``integrating``/``verifying`` only with a live, recently active session,
+    and ``delivered`` only with a receipt binding the current head.
+    ``display_status`` replaces the stored status on an epic card, so
+    ``Paused`` appears only for an operator hold (``hold == "operator"``).
+    """
+
+    state: Literal[
+        "implementing",
+        "queued",
+        "integrating",
+        "verifying",
+        "blocked",
+        "awaiting_approval",
+        "paused",
+        "delivered",
+        "unknown",
+        "not_tracked",
+    ]
+    label: str
+    display_status: str
+    hold: Literal["operator", "integration", "backoff"] | None = None
+    reason: str | None = None
+    remedy: str | None = None
+    responsible: EpicDeliveryRef | None = None
+    #: Epoch seconds of the last meaningful progress the evidence shows.
+    since: float | None = None
+    links: list[EpicDeliveryRef] = Field(default_factory=list, json_schema_extra={"default": []})
+    evidence: Literal["current", "stale", "unavailable", "untracked"] = "current"
+    implementation_completed: int = 0
+    implementation_total: int = 0
+
+
 class TaskDetail(BaseModel):
     id: str
     project_id: str
@@ -166,6 +218,9 @@ class TaskDetail(BaseModel):
     route_source: str | None = None
     class_hint: str | None = None
     route: dict[str, Any] | None = None
+    # Implementation vs delivery for a task with children; set by
+    # ``get_task``, ``None`` for a leaf and omitted by list rows.
+    delivery_status: EpicDeliveryStatus | None = None
 
 
 class TaskDict(BaseModel):

@@ -62,8 +62,14 @@ aq doctor --check git.stale_branches
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
 | A root batch stays `building` after `construct-and-test` ended `source_moved` | A member's head does not descend from its recorded base | [A batch stops at `source_moved`](#a-batch-stops-at-source_moved) |
 | A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
+| A `dispatch-debug` or `promote-delivery` run ended `busy`, `stale` or `human_required` and the stage has no running writer | A refused dispatch; the service retries it | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
+| A child's delivery intent stays `prepared`; later deliveries end `target_moved: target has an unresolved promotion` | Its push was refused after the collector's fence changed | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
+| Log line `integration source=<name> exceeded its …s budget` | A remote call hung and was cancelled | [Refused runs and hung sources](#refused-runs-and-hung-sources) |
+| A repair stage passes its deadline but no stage 1 (or 2) appears; supervisor message "is waiting for a writer" or "Repair dispatch … is retrying" | Its writer was never claimed, is live, or stopped without publishing; or dispatch met a mechanical `unknown` | [A repair stage passes its deadline without escalating](#a-repair-stage-passes-its-deadline-without-escalating) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
+| `redrive-child` answers "the parent has no live collection operation"; a later child's conflict never gets a repair | `cancel-preserving` cancelled the parent's whole collection operation | [A parent's collection was cancelled](#a-parents-collection-was-cancelled) |
+| An aggregate verifier's `pass` close is refused with `awaiting_trusted_verification`, or repeats on an unchanged head | The daemon has not recorded the trusted CI evidence for that parent generation and head | [An aggregate verifier keeps refusing its close](#an-aggregate-verifier-keeps-refusing-its-close) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | An open PR the train will never seat (untracked branch, child with no repository, parent with no verification), or one whose work already landed under other commits | Legacy delivery the train has no identity for | [A legacy PR stays open](#a-legacy-pr-stays-open) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
@@ -578,21 +584,23 @@ Nothing about the task changes. The stopped session keeps its claim, checkout an
 binding, so this owner recovery, run by hand or by the sweep below, passes the
 writer check, snapshots unpushed work and then releases the branch.
 
-**Automatic sweep.** Set `integration.owner_recovery_sweep: true` in
-`config.yaml` to have the daemon run this same guarded recovery every 300 s
-against every candidate row quiet for at least 600 s. It ships off by
-default because a live writer holding a row will be refused with
-`writer_live` on every sweep tick, and a failed push (origin unreachable) will
-refuse every sweep tick — both are noisy and unnecessary when no one has asked
-for a release. Once the writer is stopped and the branch is genuinely safe the
-sweep succeeds within one tick and the row appears in
-`integration_owner_recoveries` under principal `sweep`. Enable it alongside
-supervision: `doctor` and the manual command remain available regardless.
+**Automatic sweep.** The daemon runs this same guarded recovery every 300 s
+against every candidate row quiet for at least 600 s. It ships on by default
+(`integration.owner_recovery_sweep: true`): stranded-owner recovery is routine,
+and the sweep takes no shortcut the manual command does not. A candidate's
+session must be stopped, a live writer is refused with `writer_live`, a live
+checkout with `checkout_in_use`, and an unreachable origin with
+`origin_unreachable`; a refusal repeating its reason is recorded once per
+throttle window. Once the writer is stopped and the branch is genuinely safe
+the sweep succeeds within one tick and the row appears in
+`integration_owner_recoveries` under principal `sweep`. Set it to `false` to
+release stranded owners only by hand: an explicit `false` always stays off, and
+`doctor` and the manual command remain available regardless.
 
 ```yaml
 # config.yaml
 integration:
-  owner_recovery_sweep: true
+  owner_recovery_sweep: false   # release stranded owners by hand only
 ```
 
 **Reading the audit trail.**
@@ -801,8 +809,7 @@ is written when a batch's state changes:
 |---|---|---|
 | `blocked` | The snapshot is not promotable. The reason names the writer still attached, a short or foreign lease, or an unpublished candidate. | Wait for that holder. An attached writer is never taken over. |
 | `handed_off` / `continued` | A continuation was enqueued. | Nothing. |
-| `pending` / `backoff` | A continuation was just delivered; retries double from 60 s. | Nothing. |
-| `exhausted` | Six continuations for the same authority did not promote. | Read the promotion refusal, then re-drive it as below. |
+| `pending` / `backoff` | A continuation was just delivered; retries double from 60 s up to one hour and never stop while the authority is unchanged. | Nothing. From the sixth continuation the line is logged as a warning: read the promotion refusal it keeps hitting. |
 
 A live supervisor can re-drive the batch. `integration_promote_main` and a
 manual `aq playbook run` of the root train execute as the supervisor session.
@@ -817,6 +824,81 @@ aq playbook run --playbook-id agent-queue-root-train \
 ```
 
 Worker sessions still get `unauthorized`.
+
+## Refused runs and hung sources
+
+A playbook rule runs once per event. When its command answers with a typed
+refusal (`busy`, `stale`, `wait`, `human_required`) the run ends failed and
+nothing in the playbook looks again. The integration service re-finds that work
+from durable rows on every pass instead, so a lost or refused event does not
+leave a subject waiting:
+
+- **Repair dispatch.** Every active repair stage, under any `on_exhausted`
+  policy, whose writer was never launched (no delegate, or a delegate still
+  `PAUSED` because the branch never passed to it) is dispatched again through
+  `integration_repair_dispatch`. The first sight dispatches at once; each later
+  attempt waits twice as long, from 30 s up to 10 minutes. The log line
+  `integration repair dispatch operation=<id> stage=<n> outcome=<outcome>` is
+  written when a stage's outcome changes. Operations a human must decide
+  (`human_required`), supervisor-recovery stages and delegates an operator
+  paused are never selected.
+- **Green promotion.** See [A green batch never promotes](#a-green-batch-never-promotes);
+  continuations never stop, at most an hour apart.
+- **Parent delivery intents.** A child delivery whose exact commit is already on
+  the parent branch is finalized. A `prepared` intent whose push did not apply
+  is pushed again with its own frozen identity under the parent's *current*
+  reserved collector fence (the same expected-old push the original run would
+  have made), after a 60 s grace and with the same backoff. A branch held by a
+  repair or verifier writer is a wait. Under the current collector fence, a
+  diverged prepared intent is superseded only after read-back proves its commit
+  is absent from the target. Collection then queues a fresh attempt, retaining
+  the old intent, recovery ref and receipt identity. An intent whose commit was
+  never built (`reserved`) gets a durable `delivery.ready` continuation so the
+  parent playbook can rebuild it and handle any conflict. Pending continuations
+  deduplicate across restarts; delivered but refused continuations retry with
+  exponential backoff. Ended operations and operator pauses remain held.
+
+Every source of the pass and every item of a page the service iterates itself
+runs under a budget: `integration.service_source_timeout_seconds` (300 s),
+`integration.service_item_timeout_seconds` (60 s) and per-source
+`integration.service_source_timeouts`, keyed by the name in the log line. A
+call past its budget is cancelled, `integration source=<name> exceeded its …s
+budget` is logged, and the other sources run; the work stays retryable on the
+next pass. A call that ignores cancellation is left to finish on its own and its
+source is skipped (`skipped until its timed-out call finishes unwinding`) until
+it has, so one hung GitHub or Git call no longer stops CI observation, repair
+deadlines, intents, cleanup and drains. A source that times out on every pass
+because it is slow rather than hung needs a larger per-source budget.
+
+## A repair stage passes its deadline without escalating
+
+A repair stage's clock only escalates (opens the next stage, or blocks for a
+human under a finite policy) when its writer had a conclusive CI attempt or
+moved the subject head. Otherwise the continuing ladder reads the delegate's
+state at the deadline and records each decision in the stage dossier's
+`deadline_deferrals` (the last ten, plus `deadline_deferral_count`):
+
+| `reason` | Meaning | What happens |
+|---|---|---|
+| `writer_unclaimed` | The delegate is `PAUSED`/`READY` and nobody claimed it: capacity, not failure. | Deadline moves by one primary budget; one supervisor message per stage. Check pool capacity for the stage's class. |
+| `writer_live` | Its session is still live. | Revisited every 5 minutes; the writer keeps its fence. |
+| `operator_hold` | The delegate carries a `manual_pause` hold. | Revisited; never refiled or dispatched around the hold. |
+| `writer_refiled` | It stopped without publishing anything; the owner recovery proved the stop. | The same ordinal and delegate get a fresh clock (`writer_refiles` in the dossier) and are dispatched again. |
+| `stale_fence`, `stop_proof_unavailable`, `checkout_in_use`, `origin_unreachable`, `stale_claim` | The stop could not be proven, or the fence is someone else's. | Revisited every 5 minutes; one supervisor message per stage and reason. Fix the named cause (for example [a branch held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone)). |
+
+A stopped writer with unpublished commits is not refiled: the stage rolls over
+to its successor, which resumes the preserved tip. A stage is refiled at most
+once, and at most three writers start on one unchanged subject head; after that
+the ladder's no-progress guard ends the budget once with a
+`Repair … stopped without progress` message.
+
+`integration_repair_dispatch` answers `unknown` (with `reason` and
+`reason_code`) for a state it did not expect — a missing or mismatched delegate,
+an id collision, a missing or non-predecessor owner, an incoherent handoff.
+Nothing is consumed and the continuation passes retry it; reviewed playbooks
+see it as `busy`, and the supervisor hears once per operation and reason.
+Only an operator hold on the delegate, or preserved progress that no longer
+proves its lineage, stays `human_required`.
 
 ## A completed root has no pull request
 
@@ -896,6 +978,106 @@ refused (`changed`). It records approved evidence for that head (the operator
 as reviewer, the reason in the evidence), queues the parent's collection, and
 logs an `integration.child_redriven` event. Promotion, the receipt and the
 parent's readiness then follow the normal path.
+
+## An aggregate verifier keeps refusing its close
+
+```text
+close refused: Parent integration completion was refused: awaiting_trusted_verification
+(verification_not_recorded). Trusted integration check evidence is not recorded for parent
+<parent> generation <n> at <head>; required producer <producer> version <v> covering <checks>.
+```
+
+A parent's branchless verifier (`verify-<operation-id>[-g<n>]`) proves the
+collected aggregate itself, then completes the parent through
+[`integration_complete_parent`](../reference/playbook-commands/integration_complete_parent.md).
+That completion needs one more thing the verifier cannot produce: the trusted
+check evidence for that exact generation and head. Only the daemon's parent CI
+producer (it publishes the frozen `aq/parent/…` snapshot and observes the
+required checks) and the parent-integration playbook (`integration.ci_completed`
+→ `integration_parent_verify`) may record it. So while the evidence is still
+missing the verifier keeps its claim, its fence and its `IN_PROGRESS` task, and
+the refusal says a re-run of the local suite cannot change it — re-running the
+whole focused/schema sweep per attempt is pure waste on an unchanged aggregate.
+
+Before 2026-10-03 this wait answered as `stale_verification`, an undifferentiated
+"something moved" that invited exactly that re-run; calm-grove-25 generation 5
+spent two 450-test sweeps on one unchanged head before the retry budget ran out
+and a fresh `-g6` verifier was filed.
+
+| What you see | Meaning | Next step |
+|---|---|---|
+| `awaiting_trusted_verification (verification_not_recorded)`, no recorded evidence | Nothing has verified this generation and head yet. Normal while CI is running. | Wait. `aq integration status --project <project>` shows the parent's blockers; `aq integration flush <project>` re-drives the sweep. |
+| The same, with green evidence already recorded for that head | CI went green and the parent-integration playbook has not accepted it yet. | Read the playbook's last `verify-parent` rule; its own outcome says why `integration_parent_verify` did not record the verification. |
+| The same, with a recorded failing conclusion | The aggregate did not pass its required checks; the repair ladder owns the next step. | `aq integration status --project <project>` for the active stage. A new aggregate needs a new CI run, not a re-run of the local suite. |
+| `… (verified_other_head)` / `… (verified_other_generation)` | A verification exists for a different subject. | The collected aggregate moved; the current one needs its own CI run. |
+| `… (verification_record_missing)` | The checkpoint names a verification that does not resolve to this operation. | A durable gap, not a pending run: read `aq integration status` for that parent. |
+| `stale_verification` | The collected aggregate advanced past the head the close quoted. | A genuinely superseded subject; the verifier re-reads readiness. |
+| Refusal 2+ on the same subject, `needs_attention=awaiting_trusted_verification:…` | The wait is stalled, not pending: the verifier re-attempted the close with unchanged evidence. The task is flagged and no new attempt is warranted. | Settle whichever owner the refusal names, then report with `aq message send --to user:dashboard`. |
+
+Every refusal records its subject/evidence state on the verifier task under
+`integration_trusted_evidence_wait`, so a replay on unchanged state is
+deduplicated into one escalation instead of another invitation to re-run.
+
+## A parent's collection was cancelled
+
+```text
+redrive-child: blocked — the parent has no live collection operation for its current episode;
+a cancelled one is reopened with `aq integration reopen-collection <parent>`
+```
+
+A collecting parent has exactly one repair operation per episode, and it is
+also the parent's *collection* operation: the collector's fence names it, every
+child's receipt is bound to it, and its repair stages resolve the children's
+conflicts. `aq integration cancel-preserving <operation>` on that operation —
+typically meant to retire one expired repair stage — stops the whole
+collection. The parent stays `PAUSED` with an `awaiting_children` checkpoint in
+the same episode, the delivered receipts stay bound to it, the collector's
+fence is released and the stage delegates are settled and archived. Nothing
+continues it: the collector and `redrive-child` need a live operation,
+`reserve_episode_on` returns the cancelled one, `aq integration resume` needs a
+`human_required` operation and the delegate in `tasks`, and the next child's
+conflict intent never gets a repair stage (calm-grove-25 and azure-vault-92,
+2026-10-02).
+
+Reopen it in place, so every receipt stays valid as recorded:
+
+```bash
+aq integration reopen-collection <parent>        # dry run
+aq integration reopen-collection <parent> --apply --head <head_sha> --reason '<why>'
+```
+
+The dry run proves the parent's remote tip is the recorded collection head
+(the current conflict's old tip, else the last receipt's head) and that every
+receipt's head is still on the branch. It reports the operation, episode,
+owner, receipts, the settled or archived delegates, any open human gates and
+the one current conflict with the stage it would open.
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `would_reopen` | The operation is `cancelled` and nothing can still write. | `--apply --head <head_sha> --reason '<why>'`. |
+| `nothing_to_reopen` | The collection operation is already live. | `redrive-root` / `redrive-child` for the stall you see. |
+| `ambiguous` | A promotion, resolution, ref mutation or attestation of this operation or branch has an unknown outcome. | Reconcile that write first; it is never replayed. |
+| `blocked` | A branch owner that is attached or held by another writer, an unsettled or attached stage delegate, a verifier, a `manual_pause`, a draining project, more than one conflict, a conflict for a child that moved on, or a remote tip that is not the recorded head. | Settle what `reason` names (`aq doctor --check integration.stranded_delegates --fix` settles delegates). Never force it. |
+| `not_eligible` | Not a collecting parent, or the operation is `human_required` (`aq integration resume`) or `completed`. | Nothing to reopen here. |
+
+Applying needs the head the dry run printed and a reason; state that changed
+since the dry run is refused (`changed`). In one transaction it reclaims the
+collector reservation for the same operation at the next fence token
+(nothing holding an older token can write), returns the operation to `active`
+or `escalated`, and — when one conflict waits — opens a fresh repair stage
+bound to that conflict with its own deadline and budget. The daemon then files
+a new delegate `repair-<operation>-<stage>`; archived delegates are never
+restored and the cancelled stages stay cancelled. A parent the exhausted repair
+terminally `BLOCKED` returns to `PAUSED`. Reopened with no conflict waiting,
+the collection's next conflict opens a fresh stage past the cancelled one on
+its own. If the dispatch fails, the daemon's continuation sweep retries it.
+Gates and holds are untouched. Each
+apply logs an `integration.collection_reopened` event with the operator, the
+reason, the previous owner and fence, the receipts and the new stage.
+
+To retire only an expired repair while children are still landing, do not
+cancel the operation; let its deadline escalate or run `aq integration
+resume <operation>` once it asks for a human.
 
 ## Legacy children block observe readiness
 
@@ -1362,10 +1544,16 @@ refused.
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py),
 [`src/integration/delivery_path.py`](../../src/integration/delivery_path.py),
 [`src/integration/manual_delivery.py`](../../src/integration/manual_delivery.py),
-[`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py).
+[`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py),
+[`src/integration/service.py`](../../src/integration/service.py),
+[`src/integration/green_continuation.py`](../../src/integration/green_continuation.py),
+[`src/integration/parent_completion.py`](../../src/integration/parent_completion.py),
+[`src/integration/parent_intents.py`](../../src/integration/parent_intents.py).
 
 ```bash
 aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
+aq test tests/test_integration_service.py
+aq test tests/test_integration_repair_rollover.py tests/test_integration_promotion.py -k "parent_intent or busy_successor"
 aq test tests/test_delivery_manual.py tests/test_integration_mode.py tests/test_merge_slot.py
 aq test tests/test_integration_pr_delivery.py
 ```

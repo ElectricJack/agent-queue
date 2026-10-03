@@ -16,7 +16,9 @@ the caller must pass ``--task-id`` explicitly (or export the env var).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 import time
 
 import click
@@ -90,14 +92,21 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
     from src.prime.hook_envelopes import suppressed, wrap
 
     hook_mode = hook_json or bool(hook_format)
-    harness = "claude" if hook_json else (hook_format or "")
+    harness = hook_format or ("claude" if hook_json else "")
+    source = None
+    if hook_mode and not sys.stdin.isatty():
+        try:
+            event = json.loads(sys.stdin.read(64 * 1024))
+            if isinstance(event, dict) and event.get("hook_event_name") == "SessionStart":
+                value = event.get("source")
+                source = value if isinstance(value, str) else None
+        except (ValueError, OSError):
+            pass
 
-    if suppressed(os.environ, hook_mode):
+    if suppressed(os.environ, hook_mode, source):
         # Bootstrap argv prompt already delivered .aq/prompt.md — priming
         # again here would waste the exact tokens this design saves
-        # (design §5.4). Post-compaction SessionStart events still reach
-        # this command because session-runtime clears the env var's effect
-        # there by design.
+        # (design §5.4). A compact/resume source bypasses this suppression.
         click.echo(wrap("", harness))
         return
 
@@ -140,6 +149,8 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @click.option("--waiting-for", default=None, help="What must resolve before continuing.")
 @click.option("--file", "files", multiple=True, help="Relevant path (repeatable, at most 20).")
 @click.option("--decision", "decisions", multiple=True, help="Decision (repeatable, at most 20).")
+@click.option("--constraint", "constraints", multiple=True, help="Constraint to preserve exactly.")
+@click.option("--evidence", multiple=True, help="Exact check/error evidence or retrievable log path.")
 @click.option("--do-not-repeat", multiple=True, help="Rejected approach (repeatable, at most 20).")
 @click.option(
     "--uncertainty",
@@ -179,12 +190,15 @@ def handoff(
     decisions,
     do_not_repeat,
     uncertainties,
+    constraints,
+    evidence,
     idempotency_key,
 ) -> None:
     """Record a bounded handoff; non-auto requests a restart (it does not perform one).
 
     Structured agent text is limited to 8 KiB UTF-8 in total. Empty automatic
-    hooks preserve the existing note. The daemon annotates current checkout facts.
+    hooks save facts-only recovery and preserve useful notes. The daemon captures
+    current checkout, waits, jobs and gates without restarting or releasing a claim.
     """
     resolved_task_id = task_id or os.environ.get("AQ_TASK_ID")
     resolved_session_id = session_id or os.environ.get("AQ_SESSION_ID")
@@ -217,6 +231,8 @@ def handoff(
             ("decisions", decisions),
             ("do_not_repeat", do_not_repeat),
             ("uncertainties", uncertainties),
+            ("constraints", constraints),
+            ("evidence", evidence),
         ):
             if value:
                 args[field] = list(value)

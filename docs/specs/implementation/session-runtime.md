@@ -344,6 +344,13 @@ class SessionReconciler:
    and no recent `aq task heartbeat`: nudge → backoff ×`stall_max_nudges` → interrupt +
    restart with resume → quarantine. Rung state kept on task_metadata keys
    (`stall_nudges`, `stall_last_action_at`); events `task.stalled/nudged/restarted/quarantined`.
+   A nudge the composer guard defers spends no rung — unless the refusal carries an
+   escalating `NudgeReason` (`stale_frame`, `unreadable`) *and* progress evidence independent
+   of the composer corroborates the stall: the harness's own transcript older than the lease.
+   The rung is then spent without a nudge and `task.stalled` carries `deferred_reason`. With
+   no such evidence to offer (an `opencode` holder, whose conversation AQ cannot read at all),
+   the stall is announced with `evidence="unverified"` and how long the pane has held still,
+   and nothing is spent — a terminal read is never the decision (design spec §4.3).
 5. **Named desired-state** — build desired set from profiles with `lifecycle: named`;
    start/wake missing (respecting `wake_mode`), drain idle past `idle_timeout`
    (state `sleeping`), recycle past `max_session_age + jitter` via handoff (invoke

@@ -133,6 +133,7 @@ def test_an_unsuitable_starting_folder_falls_back_to_projects(tmp_path, where):
         ("", "enter a folder"),
         ("/", "filesystem root"),
         ("~", "whole home folder"),
+        ("~/.agent-queue", "AQ manages itself"),
         ("~/.agent-queue/projects", "AQ manages itself"),
     ],
 )
@@ -143,6 +144,17 @@ def test_a_folder_that_would_set_aq_up_wrong_is_refused(tmp_path, monkeypatch, a
 
     with pytest.raises(ValueError, match=message):
         validate_project_folder(answer, home, reserved=(home / ".agent-queue",))
+
+
+def test_projects_folder_can_contain_the_aq_checkout(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    code = home / "coding"
+    checkout = code / "agent-queue"
+    checkout.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    assert validate_project_folder("~/coding", home, reserved=(checkout,)) == code.resolve()
+    assert default_project_folder(code, home, reserved=(checkout,)) == code.resolve()
 
 
 def test_a_file_is_not_a_projects_folder(tmp_path):
