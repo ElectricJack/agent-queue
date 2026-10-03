@@ -1384,7 +1384,7 @@
       ]
     }
   },
-  "digest": "sha256:a2ec51e6c711778f8eedbbe40cce2e8e1e3b1cd2de046e4f13e360bdfb031e00",
+  "digest": "sha256:b6f4bba5a5843ad2807560a9c26afee4e5e73d6372e58626ce4cf2843ae015f0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5537,6 +5537,9 @@
         "src.api.models.task",
         "src.commands.handler",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.integration.epic_delivery",
         "src.models"
       ],
