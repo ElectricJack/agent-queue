@@ -210,6 +210,8 @@ class DatabaseBackend(Protocol):
         *,
         project_id: str | None = None,
         subject_ids: Iterable[str] = (),
+        task_ids: Iterable[str] = (),
+        roots_only: bool = False,
         include_done: bool = False,
         limit: int = 200,
     ) -> list[dict]: ...

@@ -38,6 +38,67 @@ def _failure(outcome: str, error: str, **extra: Any) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error, **extra}
 
 
+def integration_gate_subject(await_id: str) -> tuple[str, bool] | None:
+    """``(subject_id, journaled)`` for an integration gate's ``await_id``.
+
+    A gate the engine opens itself (``GatePrimitives.gate``) is keyed by the
+    subject alone and its answer is journaled; the root adapter's gate adds
+    ``:<request digest>`` and its answer is the gate row's resolution.
+    Subject ids never contain ``:``.
+    """
+    if not await_id.startswith(INTEGRATION_GATE_PREFIX):
+        return None
+    subject_id, separator, _ = await_id.removeprefix(INTEGRATION_GATE_PREFIX).partition(":")
+    return (subject_id, not separator) if subject_id else None
+
+
+def _row_gate_choices(gate: dict[str, Any]) -> tuple[str, ...]:
+    """The choices the root adapter wrote into its gate question."""
+    _, separator, tail = str(gate.get("question") or "").rpartition("\nChoices: ")
+    return tuple(c.strip() for c in tail.split(",") if c.strip()) if separator else ()
+
+
+async def answer_integration_gate(
+    db, gate: dict[str, Any], subject_row: dict[str, Any], *, choice: str, answered_by: str,
+    resolve=None,
+) -> tuple[str, str | None]:
+    """Answer one integration gate as a verified human: ``(outcome, reason)``.
+
+    The caller has established that *answered_by* is a verified human.
+    *resolve* resolves a plain gate row with the orchestrator's events
+    (``_resolve_gate_and_emit``); without one the row is resolved directly.
+    """
+    from src.integration.gates import GatePrimitives
+    from src.integration.subjects import Subject
+
+    _, journaled = integration_gate_subject(str(gate.get("await_id") or "")) or ("", True)
+    gate_id = str(gate["id"])
+    if journaled:
+        result = await GatePrimitives(db).answer(
+            Subject.from_row(subject_row), gate_id, choice=choice, answered_by=answered_by,
+            verified_human=True,
+        )
+        return result.outcome, result.reason
+    # The root adapter reads the gate row's resolution on its next visit.
+    if subject_row.get("gate_id") != gate_id:
+        return "unknown", "gate_not_current"
+    if gate.get("status") != "open":
+        if gate.get("resolution") == choice:
+            return "answered", None
+        return "unknown", "answer_immutable"
+    now = time.time()
+    if gate.get("timeout_at") is not None and now >= float(gate["timeout_at"]):
+        return "unknown", "approval_expired"
+    if choice not in _row_gate_choices(gate):
+        return "unknown", "invalid_gate_answer"
+    if resolve is not None:
+        await resolve(gate_id, resolved_by=answered_by, resolution=choice)
+    else:
+        await db.resolve_gate(gate_id, resolved_by=answered_by, resolution=choice)
+    await db.wake_integration_subjects(now=now, subject_ids=[str(subject_row["id"])])
+    return "answered", None
+
+
 def subject_view(row: dict[str, Any], *, now: float) -> dict[str, Any]:
     """The operator's view of one subject: where it is, why, and when it is due."""
     view = {key: row.get(key) for key in _SUBJECT_VIEW_FIELDS}
@@ -109,17 +170,18 @@ class IntegrationSurfaceCommandsMixin:
             return None, _failure("unauthorized", refusal)
         return operator_id, None
 
-    async def _cmd_integration_gate_answer(self, args: dict) -> dict:
-        from src.integration.gates import GatePrimitives
-        from src.integration.subjects import Subject
+    def _integration_gate_resolver(self):
+        orchestrator = getattr(self, "orchestrator", None)
+        return getattr(orchestrator, "_resolve_gate_and_emit", None)
 
+    async def _cmd_integration_gate_answer(self, args: dict) -> dict:
         gate_id = str(args.get("gate_id") or "")
         choice = str(args.get("choice") or "")
         gate = await self.db.get_gate(gate_id) if gate_id else None
-        await_id = str((gate or {}).get("await_id") or "")
-        if gate is None or not await_id.startswith(INTEGRATION_GATE_PREFIX):
+        identity = integration_gate_subject(str((gate or {}).get("await_id") or ""))
+        if gate is None or identity is None:
             return _failure("not_found", f"no integration gate {gate_id!r}", gate_id=gate_id)
-        subject_id = await_id.removeprefix(INTEGRATION_GATE_PREFIX)
+        subject_id = identity[0]
         row = await self.db.get_integration_subject(subject_id)
         if row is None:
             return _failure("not_found", "the gate's integration subject is missing",
@@ -140,12 +202,12 @@ class IntegrationSurfaceCommandsMixin:
                 f"ask the operator to run `aq integration gate answer {gate_id} <choice>`",
                 reason="verified_human_required", **identity,
             )
-        result = await GatePrimitives(self.db).answer(
-            Subject.from_row(row), gate_id, choice=choice, answered_by=operator_id,
-            verified_human=True,
+        outcome, reason = await answer_integration_gate(
+            self.db, gate, row, choice=choice, answered_by=operator_id,
+            resolve=self._integration_gate_resolver(),
         )
-        if result.outcome != "answered":
-            reason = result.reason or result.outcome
+        if outcome != "answered":
+            reason = reason or outcome
             return _failure("refused", f"gate answer refused: {reason}", reason=reason,
                             **identity)
         return {"success": True, "outcome": "answered", "answered_by": operator_id, **identity}
@@ -251,9 +313,11 @@ class IntegrationSurfaceCommandsMixin:
         woken = await self.db.wake_integration_subjects(
             now=now, task_ids=[task_id], writer_task_ids=[task_id],
         )
+        # A root's observer reads its member tasks' holds, so roots look again too.
         roots = [
-            row["id"] for row in await self.db.list_integration_subjects(project_id=project_id)
-            if not row.get("task_id")
+            row["id"] for row in await self.db.list_integration_subjects(
+                project_id=project_id, roots_only=True, limit=1000,
+            )
         ]
         if roots:
             woken += await self.db.wake_integration_subjects(now=now, subject_ids=roots)
@@ -280,9 +344,8 @@ class IntegrationSurfaceCommandsMixin:
             subject_ids = tuple(
                 row["id"]
                 for row in await self.db.list_integration_subjects(
-                    project_id=project_id, include_done=True
+                    project_id=project_id, task_ids=(target,), include_done=True
                 )
-                if target in {row.get("task_id"), row.get("writer_task_id")}
             )
             if not subject_ids:
                 return _failure("not_found", f"task {target} has no integration subject",

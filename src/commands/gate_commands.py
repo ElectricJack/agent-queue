@@ -210,32 +210,37 @@ class GateCommandsMixin:
                 ),
             }
 
-        if str(gate.get("await_id") or "").startswith("integration-subject:"):
+        from src.commands.integration_surface_commands import (
+            answer_integration_gate,
+            integration_gate_subject,
+        )
+
+        integration_gate = integration_gate_subject(str(gate.get("await_id") or ""))
+        if integration_gate is not None:
             # The human identity is server-owned. A generic resolve or an
             # agent-supplied resolved_by cannot create an integration approval.
-            from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
-            from src.integration.gates import GatePrimitives
-            from src.integration.subjects import Subject
+            # ``aq integration gate answer`` is the supported path.
+            from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 
             principal = current_principal() or TRUSTED_LOCAL
             if principal.kind is not PrincipalKind.LOCAL:
                 return {"success": False, "error": "a verified human operator is required"}
-            subject_id = gate["await_id"].removeprefix("integration-subject:")
-            row = await self.db.get_integration_subject(subject_id)
+            row = await self.db.get_integration_subject(integration_gate[0])
             if row is None:
                 return {"success": False, "error": "integration subject is missing"}
-            result = await GatePrimitives(self.db).answer(
-                Subject.from_row(row),
-                str(gate_id),
+            outcome, reason = await answer_integration_gate(
+                self.db,
+                gate,
+                row,
                 choice=str(args.get("resolution") or ""),
                 answered_by="human:local-operator",
-                verified_human=True,
+                resolve=self.orchestrator._resolve_gate_and_emit,
             )
             return {
-                "success": not result.is_unknown,
+                "success": outcome == "answered",
                 "gate_id": str(gate_id),
-                "outcome": result.outcome,
-                "reason": result.reason,
+                "outcome": outcome,
+                "reason": reason,
                 "unblocked_task_ids": [],
             }
 

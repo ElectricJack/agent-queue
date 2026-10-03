@@ -131,15 +131,19 @@ class IntegrationSubjectQueriesMixin:
         *,
         project_id: str | None = None,
         subject_ids: Iterable[str] = (),
+        task_ids: Iterable[str] = (),
+        roots_only: bool = False,
         include_done: bool = False,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         """Subjects for the operator surfaces, soonest due first.
 
-        ``project_id`` narrows to one project and ``subject_ids`` to named
-        subjects; neither given lists every project.  Finished subjects are
-        omitted unless ``include_done``.  Read-only: status, explain and doctor
-        show what the reconciler holds and never write through this.
+        ``project_id`` narrows to one project, ``subject_ids`` to named
+        subjects, ``task_ids`` to subjects bound to or written by those tasks
+        and ``roots_only`` to root subjects (no task of their own); nothing
+        given lists every project.  Finished subjects are omitted unless
+        ``include_done``.  Read-only: status, explain and doctor show what the
+        reconciler holds and never write through this.
         """
         _require_limit(limit)
         due_at = integration_subjects.c.next_due_at
@@ -153,6 +157,16 @@ class IntegrationSubjectQueriesMixin:
         wanted = sorted({value for value in subject_ids if value})
         if wanted:
             statement = statement.where(integration_subjects.c.id.in_(wanted))
+        tasks = sorted({value for value in task_ids if value})
+        if tasks:
+            statement = statement.where(
+                or_(
+                    integration_subjects.c.task_id.in_(tasks),
+                    integration_subjects.c.writer_task_id.in_(tasks),
+                )
+            )
+        if roots_only:
+            statement = statement.where(integration_subjects.c.task_id.is_(None))
         if not include_done:
             statement = statement.where(integration_subjects.c.phase != "done")
         async with self._engine.connect() as conn:
