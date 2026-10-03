@@ -590,6 +590,23 @@ async def test_a_command_naming_no_target_is_refused(db):
     assert "names no project-owned target" in error
 
 
+@pytest.mark.parametrize("project_id", ["p", "other"])
+async def test_provider_preview_resolves_its_nested_project_target(db, project_id):
+    args = {
+        "provider": "codex",
+        "receive_new_work": {"project_id": project_id, "mode": "prefer"},
+    }
+    error = await check_request_scope(
+        "provider_allocation_preview", args, _scope("p"), db=db
+    )
+
+    assert "project_id" not in args
+    if project_id == "p":
+        assert error is None
+    else:
+        assert "receive_new_work.project_id belongs to other" in error
+
+
 async def test_a_target_that_cannot_be_resolved_to_an_owner_is_refused(db):
     error = await target_scope_error(
         "integration_transfer_owner", {"next_owner_id": "agent-1"}, "p", db=db

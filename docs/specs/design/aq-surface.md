@@ -509,7 +509,10 @@ isolation is the target's own**. `src/api/target_scope.py` resolves every target
 call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
 and requires each to equal the token's. A task is read live-or-archived, an operation through
 the row its `target_kind` names, a branch owner row through its repository, check evidence
-through its operation.
+through its operation. The provider preference preview names its project in the nested
+`receive_new_work.project_id` field; that project row is resolved by the same guard.
+The allocation handler still restricts a project supervisor to preference-only changes
+and refuses global lifecycle/bounds changes and busy interruption.
 
 The policy fails closed, because "I could not work out who owns this" is not "allowed":
 
@@ -517,7 +520,7 @@ The policy fails closed, because "I could not work out who owns this" is not "al
 |---|---|
 | every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
 | a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
-| the call names no target at all (`list_projects`, provider previews) | `out of scope: <cmd> names no project-owned target` |
+| the call names no target at all (`list_projects`, provider previews without a project preference) | `out of scope: <cmd> names no project-owned target` |
 | a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
 | the scope layer has no database | refused rather than admitted unchecked |
 | a target row is gone | no project claim to violate; the handler answers `not_found` |

@@ -33,9 +33,9 @@ mean "allowed":
 * a database the scope layer cannot query refuses the call rather than
   admitting it unchecked.
 
-Only reads of a single-hop ``project_id`` column belong in
-:data:`TARGET_RESOLVERS`.  A row that owns no project of its own resolves
-through its owner — an operation through the row its ``target_kind`` names, a
+Single-row project ownership reads belong in :data:`TARGET_RESOLVERS`; a
+project reference resolves the project row itself. A row that owns no project
+of its own resolves through its owner — an operation through the row its ``target_kind`` names, a
 branch owner through its repository, an escalation message through its
 escalation — and anything polymorphic (an escalation action's ``target_id``, a
 report request's ``request_id``, a transfer's branch ``target``) is
@@ -61,6 +61,7 @@ from src.database.tables import (
     integration_parent_episodes,
     integration_promotion_intents,
     jobs,
+    projects,
     repos,
     test_selection_promotions,
     test_selections,
@@ -160,11 +161,20 @@ async def _operation_project(db, operation_id: str) -> str | None:
     return await operation_project_id_for(db, operation_id)
 
 
+async def _project_reference(db, project_id: str) -> str | None:
+    """A nested project preference names the project row itself."""
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(select(projects.c.id).where(projects.c.id == project_id))
+        ).scalar_one_or_none()
+
+
 #: Target reference argument -> the resolver that reads its owning project.
 #: Written by hand on purpose: each entry is a claim about one table's ownership
 #: rule, and ``tests/test_target_scope.py`` pins the surface this admits, so a
 #: new command cannot quietly inherit a pass.
 TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
+    "receive_new_work.project_id": _project_reference,
     # Tasks, live or archived.  ``parent_id`` is the parent task a graph write
     # files children under; ``depends_on`` is a list of other tasks.
     "task_id": _task_project,
@@ -213,7 +223,9 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
 def target_references(args: dict) -> dict[str, list[str]]:
     """The target references *args* carries: argument name -> values.
 
-    A list-valued reference (``depends_on``) contributes every member.
+    A list-valued reference (``depends_on``) contributes every member. The
+    provider preference's nested project reference is an explicit supported
+    path; arbitrary nested values do not become scope targets.
     """
     found: dict[str, list[str]] = {}
     for name, value in args.items():
@@ -225,6 +237,11 @@ def target_references(args: dict) -> dict[str, list[str]]:
         ids = [item for item in values if isinstance(item, str) and item]
         if ids:
             found[name] = ids
+    receive = args.get("receive_new_work")
+    if isinstance(receive, dict):
+        project_id = receive.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            found["receive_new_work.project_id"] = [project_id]
     return found
 
 
