@@ -195,6 +195,7 @@ class IntegrationCommandsMixin:
         from src.integration.models import HierarchicalIntegrationPolicy
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.source_ci import SourceCIObservation, repair_description
+        from src.integration.source_delivery import prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
@@ -228,18 +229,54 @@ class IntegrationCommandsMixin:
                           .where(*conditions))).mappings().one())
             if observation.state not in {"red", "cancelled"}:
                 return {"success": True, "outcome": "observed", "state": observation.state}
-            if record["repair_task_id"]:
+            existing_repair = record["repair_task_id"]
+            delegate_open = False
+            if existing_repair:
                 status = (await conn.execute(select(tasks.c.status).where(
-                    tasks.c.id == record["repair_task_id"]))).scalar_one_or_none()
+                    tasks.c.id == existing_repair))).scalar_one_or_none()
                 if status is None:
                     status = (await conn.execute(select(archived_tasks.c.status).where(
-                        archived_tasks.c.id == record["repair_task_id"]))).scalar_one_or_none()
+                        archived_tasks.c.id == existing_repair))).scalar_one_or_none()
                 if status != TaskStatus.FAILED.value:
-                    return {"success": True, "outcome": "already_repairing",
-                            "repair_task_id": record["repair_task_id"]}
-                if policy.root.repair.on_exhausted != "continue":
+                    delegate_open = True
+                elif policy.root.repair.on_exhausted != "continue":
                     return _failure("human_required", "source repair failed under finite policy")
-            attempt = record["repair_attempt"] + 1
+            attempt = record["repair_attempt"] + (0 if delegate_open else 1)
+        # Canonical delivery truth, asked of the same evidence the root
+        # scheduler admits a delivered root on: the exact completion
+        # generation, the exact repository and the exact default target.  It
+        # runs outside the hierarchy lock because it is git I/O, and it runs
+        # before filing so no agent is ever handed already-delivered work.
+        #
+        # Asked afresh on every observation and never reused from the record:
+        # the target can be retargeted, the target can lose containment, and a
+        # delivery or adoption can arrive after an earlier negative answer.  A
+        # remembered answer answers a question nobody asked, so the record
+        # below is audit only and no eligibility decision reads it back.
+        proof = (await prove_source_delivered(
+            self.db, getattr(self.db, "_delivery_observer", None),
+            task_id=observation.task_id, source=source,
+        ))
+        recorded = await self._record_source_delivery(
+            observation, source, proof, producer, conditions,
+        )
+        if recorded is not None:
+            return recorded
+        if delegate_open:
+            # The delegate is not this handler's to end: a human gate, a finite
+            # policy and a live writer all outrank a delivery answer.  It keeps
+            # its writer, and the answer recorded above keeps the claim
+            # frontier honest about it.
+            return {"success": True, "outcome": "already_repairing",
+                    "repair_task_id": existing_repair,
+                    "delivery": proof.as_evidence()}
+        if proof.delivered:
+            return {
+                "success": True, "outcome": "source_delivered",
+                "state": observation.state, "task_id": observation.task_id,
+                "source_head": source["head"], "generation": source["generation"],
+                "delivery": proof.as_evidence(),
+            }
         # Creation stays on the normal CommandHandler filing/routing path.
         # The enclosing source lock protects replay and competing ticks.
         created = await self._cmd_ensure_task({
@@ -265,7 +302,45 @@ class IntegrationCommandsMixin:
                                 "attempt": current["repair_attempt"]})
             await conn.execute(update(integration_source_ci).where(*conditions).values(
                 repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
-        return {"success": True, "outcome": "repair_created", "repair_task_id": created["task_id"]}
+        return {
+                "success": True, "outcome": "repair_created",
+                "repair_task_id": created["task_id"],
+                "delivery": proof.as_evidence(),
+            }
+
+    async def _record_source_delivery(
+        self, observation, source, proof, producer, conditions
+    ) -> dict | None:
+        """Record what was observed for audit, or refuse a proof that moved.
+
+        The answer was gathered outside the hierarchy lock, so the exact source
+        identity is re-read here under it: a generation that moved while git was
+        read has no answer, and a refusal is returned rather than a proof --
+        withholding a repair a later generation may still need would strand
+        real work, which is the one failure this whole check must not have.
+
+        Nothing reads this record back to decide eligibility
+        (:func:`~src.integration.source_delivery.record_delivery_evidence`);
+        it exists so an operator and ``aq task explain`` can see what was
+        observed.  Returns ``None`` once it is durable, so the caller decides
+        what it means; the returned dict is a refusal to surface instead.
+        """
+        from sqlalchemy import select, update
+
+        from src.database.tables import integration_source_ci
+        from src.integration.source_delivery import record_delivery_evidence
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            if await producer._pull_request_source_on(conn, observation.task_id) != source:
+                return _failure("stale", "source changed before its delivery proof")
+            current = (await conn.execute(select(integration_source_ci.c.evidence)
+                       .where(*conditions))).mappings().one_or_none()
+            if current is None:
+                return _failure("stale", "source observation disappeared before its delivery proof")
+            await conn.execute(update(integration_source_ci).where(*conditions).values(
+                evidence=record_delivery_evidence(current["evidence"], proof)))
+        return None
 
     async def repair_integration_source_ancestry(self, observation) -> dict:
         """Withdraw one exact source whose recorded base is not its ancestor.

@@ -1373,7 +1373,7 @@
       ]
     }
   },
-  "digest": "sha256:9956ab56b179875f65540ce4abc08fcaaef76f5ca7e8f874509a1cff55bb8ee2",
+  "digest": "sha256:8f154dbe94b981038f41682b6de607ba29aa82314d663e0bded2700eb530038f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5572,14 +5572,17 @@
         "src.doctor.stall_checks",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.github_review_poll",
         "src.integration.models",
         "src.integration.promotion",
+        "src.integration.provenance",
         "src.integration.review_evidence",
         "src.integration.root_materialization",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.integration.source_ci",
+        "src.integration.source_delivery",
         "src.models",
         "src.orchestrator",
         "src.vault"

@@ -503,6 +503,29 @@ class ClaimCommandsMixin:
                 return outcome
         return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", session, cap)
 
+    async def _delivered_source_repairs(self, project_id: str) -> dict:
+        """Queued source-CI repairs this claim must not hand to an agent.
+
+        Fails open in every direction: no observer, an unreachable repository,
+        an unresolvable source identity or any proof that is not ``contained``
+        simply withholds nothing, so a transient Git error costs one claim
+        attempt rather than a stranded repair.  Withholding is never worth a
+        failed claim, so nothing here raises into the claim path.
+        """
+        from src.integration.source_delivery import delivered_queued_repairs
+
+        try:
+            return await delivered_queued_repairs(
+                self.db, getattr(self.db, "_delivery_observer", None),
+                project_id=project_id,
+            )
+        except Exception:
+            logger.warning(
+                "source CI delivery gate failed for project %s; claiming unfiltered",
+                project_id, exc_info=True,
+            )
+            return {}
+
     async def _attempt_claim_once(
         self, session, want_id, cap, project, *, routing=None, repaired=False
     ) -> dict:
@@ -536,10 +559,32 @@ class ClaimCommandsMixin:
         # is never acted on from here.
         hierarchy_mode = ProjectIntegrationMode.of(project)
         admission = None
+        withheld_source_repairs: dict = {}
         if getattr(project, "hierarchical_integration_mode", None) == "development":
             from src.integration.admission import observe_admission, structural_candidates
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
             admission = await observe_admission(self.db, ids, self._development_integration())
+        elif getattr(project, "hierarchical_integration_mode", None) in {"hierarchy", "train"}:
+            # A queued source-CI repair whose source generation is already on
+            # the project's default target would repeat delivered work, so it
+            # is withheld from this claim.
+            #
+            # Like every other ``DeliveryObserver`` consumer (development
+            # admission, sealing, archive), the observation runs *before*
+            # ``self.db.immediate()`` opens below: no git I/O and no lock are
+            # held across it.  It re-reads the project's current designated
+            # repository and default branch on every call and revalidates the
+            # exact task/completion identity through ``DeliveryView.verified_on``,
+            # so a retargeted or rewound target and a delivery that has not
+            # arrived yet each release the delegate on the next attempt.
+            #
+            # Nothing is persisted and no frontier predicate reads a record
+            # back, so the withhold is per-attempt and never durable.
+            withheld_source_repairs = await self._delivered_source_repairs(project.id)
+            if want_id and want_id in withheld_source_repairs:
+                return self._simple(
+                    ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
+                )
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -638,6 +683,7 @@ class ClaimCommandsMixin:
                     llm_provider=routing[1] if routing else None,
                     options_hash=routing[2] if routing else None,
                     allowed_task_ids=admission.allowed if admission is not None else None,
+                    excluded_task_ids=withheld_source_repairs or None,
                 )
                 task = None
                 if tid is not None and admission is not None and not await admission.matches(
@@ -721,6 +767,12 @@ class ClaimCommandsMixin:
                     "task.claim_conflict", conflict_task, session_id=session.id
                 )
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
+        if withheld_source_repairs:
+            # Nothing else was claimable and at least one candidate was withheld
+            # by a fresh delivery proof, so say that rather than an empty reason.
+            return self._simple(
+                ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", row, cap
+            )
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
