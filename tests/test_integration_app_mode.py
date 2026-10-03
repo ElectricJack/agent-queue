@@ -713,7 +713,7 @@ async def test_the_command_is_refused_for_worker_tokens():
     worker = RequestScope(kind="session", session_id="w", task_id="t", project_id="agent-queue")
     assert check_command_scope(
         "integration_app_verify", {"project_id": "agent-queue"}, worker
-    ) == "out of scope: integration_app_verify"
+    ) == "out of scope: integration control requires local operator or supervisor"
 
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="w", project_id="agent-queue",

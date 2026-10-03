@@ -152,8 +152,12 @@ its outbox; transport failures never need a new author turn.
     "integration_development_sweep",
     "integration_eject",
     "integration_enable",
+    "integration_explain",
     "integration_flush",
+    "integration_gate_answer",
+    "integration_hold",
     "integration_migrate_provenance",
+    "integration_policy_activate",
     "integration_rebind_reused_identity",
     "integration_rebind_repair",
     "integration_rebind_detached_repair",
@@ -162,7 +166,7 @@ its outbox; transport failures never need a new author turn.
     "integration_settle_delivered_batch",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
-    "integration_recover_unwritten_resolution",
+    "integration_record_noop",
     "integration_redrive_child",
     "integration_reopen_collection",
     "integration_redrive_root",
@@ -351,6 +355,15 @@ its outbox; transport failures never need a new author turn.
   references — and it bundles every unmerged tip and logs every sha under
   `<data_dir>/backups/branch-deletions/` first. Never delete branches any
   other way. Report what it held back if the same branches keep appearing.
+- **The integration decision surface.** Start from `aq integration status <p>
+  [--subject <id>]` and `aq integration explain <subject|task>` (the reconciler's
+  recorded decisions and why). `aq integration hold <task> --reason "..."`
+  stops a subject's integration until `--release`; `aq integration flush <p>`
+  makes every live subject due now. `aq integration gate answer` binds only a
+  verified human's answer: yours is refused, so escalate the gate instead.
+  `aq integration authorize` and `policy activate` carry the same evidence and
+  generation fences as before. Every other control sits under `aq integration
+  legacy …` (the flat paths still resolve) until its removal gate is met.
 - **Finishing an integration drain.** A drain (`aq integration enable <p>
   --mode disabled`) completes only when no integration work is left; `aq
   integration status <p>` shows `desired_mode` and `draining`. Stale state

@@ -1411,6 +1411,12 @@ def _resolve_command(command: str, inventory: dict[str, set[str]]) -> tuple[str 
             next(rest, None)
             continue
         words.append(token)
+    if words[:1] == ["integration"] and not any(
+        "aq " + " ".join(words[:size]) in inventory for size in range(2, len(words) + 1)
+    ):
+        # The pre-consolidation flat path resolves to the same command under
+        # ``aq integration legacy`` (``src/cli/integration.py`` _IntegrationGroup).
+        words = ["integration", "legacy", *words[1:]]
     path, options = None, []
     for size in range(len(words), 0, -1):
         candidate = "aq " + " ".join(words[:size])
@@ -1456,10 +1462,10 @@ def test_every_command_in_the_app_mode_runbook_exists_in_the_cli_inventory():
 
     assert len(commands) >= 20
     assert {
-        "aq integration trust-manifest",
-        "aq integration app-verify",
-        "aq integration app-setup",
-        "aq integration onboard-train",
+        "aq integration legacy trust-manifest",
+        "aq integration legacy app-verify",
+        "aq integration legacy app-setup",
+        "aq integration legacy onboard-train",
         "aq doctor",
     } <= {_resolve_command(command, inventory)[0] for command in commands}
     problems = [problem for c in commands if (problem := _command_problem(c, inventory))]

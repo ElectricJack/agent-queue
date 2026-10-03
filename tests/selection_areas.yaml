@@ -377,6 +377,8 @@ areas:
       - tests/test_integration_reconciler.py
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
+      - tests/test_integration_surface.py
+      - tests/test_integration_surface_commands.py
       - tests/test_integration_gitops.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_observe.py

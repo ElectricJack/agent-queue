@@ -205,6 +205,17 @@ class DatabaseBackend(Protocol):
         self, *, project_id: str, kind: str, subject_key: str
     ) -> dict | None: ...
 
+    async def list_integration_subjects(
+        self,
+        *,
+        project_id: str | None = None,
+        subject_ids: Iterable[str] = (),
+        task_ids: Iterable[str] = (),
+        roots_only: bool = False,
+        include_done: bool = False,
+        limit: int = 200,
+    ) -> list[dict]: ...
+
     async def due_integration_subject_page(
         self,
         *,
@@ -224,6 +235,7 @@ class DatabaseBackend(Protocol):
         writer_task_ids: Iterable[str] = (),
         batch_ids: Iterable[str] = (),
         gate_ids: Iterable[str] = (),
+        project_ids: Iterable[str] = (),
     ) -> int: ...
 
     async def append_integration_subject_journal(self, values: dict) -> tuple[dict, bool]: ...
@@ -235,6 +247,7 @@ class DatabaseBackend(Protocol):
         after_seq: int | None = None,
         limit: int = 100,
         entry_kinds: Sequence[str] | None = None,
+        newest_first: bool = False,
     ) -> list[dict]: ...
 
     # --- Project onboarding idempotency ---

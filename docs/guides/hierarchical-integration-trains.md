@@ -828,6 +828,53 @@ private repair ref remain forensic evidence.
 
 ## 5. Human controls and rollback
 
+### The operator surface
+
+The integration-train simplification (§5.1 of
+[the review](../superpowers/specs/2026-10-02-integration-train-simplification-review.md))
+narrows `aq integration` to the decisions a person makes and the reads that
+explain them:
+
+| Command | Kind | What it does |
+| --- | --- | --- |
+| `aq integration gate answer GATE_ID CHOICE` | decision | Answers an open integration gate with one of its own choices. Only the local operator's answer binds; a supervisor is refused with `verified_human_required` and escalates the gate. |
+| `aq integration authorize TASK_ID` | decision | Authorizes a completed root's exact source (base, head, generation). A dry run by default; `--apply --head SHA --reason` records it. The old name `authorize-root` resolves to the same command. |
+| `aq integration policy activate PROJECT_ID --mode M` | decision | Replaces `enable`, `develop` and `project set integration-policy`. With `--policy FILE` the policy is written under `--expected-generation`, then the mode changes under the generation that write produced. |
+| `aq integration hold TARGET --reason R` | decision | Holds a subject's (or task's) integration until `--release`. The observer reports the hold and every engine mutation rechecks it, so nothing moves the held task. A root batch has no task of its own; hold a member. |
+| `aq integration status PROJECT_ID [--subject ID]` | diagnostic | Adds `subjects`: each live reconciler subject with its blocker, wait reason, due time and open gate. |
+| `aq integration explain TARGET` | diagnostic | The last recorded reconciler decisions for a subject, or for every subject a task belongs to, newest first. |
+| `aq integration flush PROJECT_ID` | hand | Makes every live subject of the project due now, as well as the train sweep. |
+
+The spec counts six surviving controls (four decisions, two diagnostics) but
+keeps `flush` in its HAND row as "set `next_due_at = now`". The surface
+therefore has seven: `flush` is kept as its own command and not folded into
+`status`, which stays read-only.
+
+Every other control is kept under `aq integration legacy …` until its removal
+gate holds. Its old flat path (`aq integration enable`, `aq integration
+resume`, …) still resolves, so existing runbooks keep working.
+`src/commands/integration_legacy.py` records each legacy control's Appendix B
+class, what replaces it and the condition for deleting it. Mechanical controls
+go when every repository's subjects run on the reconciler engine and the
+module behind them is deleted. Migration controls go when their doctor count
+reads zero. `tests/test_integration_surface.py` fails when a command is
+neither approved nor listed there, or when the supervisor's grants disagree
+with the table.
+
+Doctor follows the same split (§5.5):
+
+| Check | Reports |
+| --- | --- |
+| `integration.subjects_overdue` | Reconciler-engine subjects past `next_due_at` by more than one visit interval, meaning nothing is visiting them. |
+| `integration.subjects_held` | Subjects waiting on a person, oldest first, with how long each has waited: an open gate (`gate answer`) or an operator hold (`hold --release`). |
+| `integration.trust` | The GitHub App installation and trust anchors (the probe formerly called `integration.app_mode`). |
+
+The twenty older `integration.*` checks keep running until their removal gate
+holds. Each is listed with its replacement in
+`LEGACY_INTEGRATION_DOCTOR_CHECKS`.
+
+### Operations, gates and cleanup
+
 Status lists `repair`, `promotion`, `reconciliation`, and `cleanup_pending`
 identities. Resume or abort only an operation already in `human_required`; both
 fail closed when provider or irreversible-write facts are ambiguous. Abort is

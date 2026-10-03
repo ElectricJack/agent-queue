@@ -30,13 +30,17 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
 
 
-#: Root-train subject commands an elevated live supervisor may re-drive.
-#: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
+#: Root-train subject commands an elevated live supervisor may re-drive, and
+#: ``record_noop``, the no-code disposition the supervisor profile directs it
+#: to (simplification Appendix B.8: it was refused for every session).  Each
+#: re-proves the head, completion and review evidence server-side.  Sealing,
+#: scheduling and parent-delivery writers stay service/playbook-only.
 _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
     "integration_build_candidate",
     "integration_ci_evidence",
     "integration_cleanup",
     "integration_promote_main",
+    "integration_record_noop",
     "integration_release",
     "integration_repair_close_current",
 })
@@ -782,7 +786,14 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         if args.get("control_only"):
             return await self._integration_control_service().status(project_id, control_only=True)
-        return await self._integration_control_service().status(project_id)
+        from src.commands.integration_surface_commands import attach_status_subjects
+
+        return await attach_status_subjects(
+            self.db,
+            await self._integration_control_service().status(project_id),
+            project_id,
+            args.get("subject_id") or None,
+        )
 
     async def _integration_app_inputs(
         self, args: dict
@@ -998,6 +1009,10 @@ class IntegrationCommandsMixin:
             authorized = refusal is None
         if not authorized:
             return _failure("unauthorized", "integration flush is outside the caller authority")
+        # §5.1: flush is "every live reconciler subject of the project is due now".
+        from src.commands.integration_surface_commands import wake_project_subjects
+
+        await wake_project_subjects(self.db, project_id)
         project = await self.db.get_project(project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
             return await self._development_integration().sweep(project_id)

@@ -410,7 +410,7 @@ async def test_command_is_refused_for_worker_tokens():
     refusal = check_command_scope(
         "integration_trust_manifest", {"project_id": "agent-queue"}, worker
     )
-    assert refusal == "out of scope: integration_trust_manifest"
+    assert refusal == "out of scope: integration control requires local operator or supervisor"
 
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="w", project_id="agent-queue",
