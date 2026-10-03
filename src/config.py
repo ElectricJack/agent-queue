@@ -663,6 +663,7 @@ class KnowledgeConfig:
     consolidation: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     export: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     import_inventory: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    import_apply: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
 
     def validate(self) -> list[ConfigError]:
         errors = []
@@ -683,6 +684,7 @@ class KnowledgeConfig:
             "consolidation",
             "export",
             "import_inventory",
+            "import_apply",
         ):
             feature = getattr(self, name)
             if not isinstance(feature, KnowledgeFeatureConfig) or type(feature.enabled) is not bool:
@@ -4852,7 +4854,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "knowledge" in raw:
         values = _dataclass_kwargs(KnowledgeConfig, raw["knowledge"])
-        for name in ("context", "semantic", "extraction", "consolidation", "export"):
+        for name in ("context", "semantic", "extraction", "consolidation", "export",
+                     "import_inventory", "import_apply"):
             if name in values:
                 values[name] = KnowledgeFeatureConfig(
                     **_dataclass_kwargs(KnowledgeFeatureConfig, values[name])

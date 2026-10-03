@@ -95,3 +95,28 @@ class KnowledgeProtectionResponse(KnowledgeEnvelope):
 from src.commands.contracts.knowledge_protection import PROTECTION_COMMANDS  # noqa: E402
 
 RESPONSE_MODELS.update({name: KnowledgeProtectionResponse for name, *_ in PROTECTION_COMMANDS})
+
+
+class KnowledgeImportResponse(KnowledgeEnvelope):
+    """Stable envelope for inventory and durable apply/resume projections."""
+
+    source_installation_id: str | None = None
+    snapshot_id: str | None = None
+    snapshot_timestamp: str | None = None
+    manifest_sha256: str | None = None
+    manifest_content_base64: str | None = None
+    vector_observation: str | None = None
+    counts: dict | None = None
+    items: list[dict] | None = None
+    mappings: list[dict] | None = None
+    identities: list[dict] | None = None
+    run_id: str | None = None
+    state: str | None = None
+
+
+RESPONSE_MODELS["knowledge_import"] = KnowledgeImportResponse
+
+# Conditional apply/resume requirements must survive the HTTP projection.
+from src.commands.contracts.inventory import KnowledgeImportArgs  # noqa: E402
+
+REQUEST_MODELS = {"knowledge_import": KnowledgeImportArgs}

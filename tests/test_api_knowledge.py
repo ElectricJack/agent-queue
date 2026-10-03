@@ -173,3 +173,43 @@ def test_status_is_consistent_across_verbs(app, code):
 def test_documented_status_pins(app, code, status):
     expected = ERROR_STATUS[("record_capabilities", code)]
     assert expected == status
+
+
+async def test_typed_import_apply_and_resume_preserve_durable_response(app, tmp_path):
+    from src.api.models.knowledge import KnowledgeImportResponse
+    from src.commands.contracts.inventory import KnowledgeImportArgs
+    from src.config import KnowledgeFeatureConfig
+    from tests.record_helpers import knowledge_config, seed_project
+    from tests.test_knowledge_import import args, manifest
+
+    application, ch, _ = app
+    await seed_project(ch._db)
+    ch.config.knowledge = knowledge_config(import_apply=KnowledgeFeatureConfig(enabled=True))
+    # Config.vault_root is derived from data_dir, keeping all artifacts disposable.
+    ch.config.data_dir = str(tmp_path)
+    from pathlib import Path
+
+    Path(ch.config.vault_root).mkdir(parents=True, exist_ok=True)
+    route = _make_route_handler("knowledge_import", KnowledgeImportArgs)
+    application.add_api_route("/api/knowledge/import", route, methods=["POST"],
+                             response_model=KnowledgeImportResponse)
+    sealed = manifest(count=2)
+    payload = args(sealed, limit=1)
+    payload.pop("principal")
+    payload["operation"] = "apply"
+    with TestClient(application) as client:
+        first = client.post("/api/knowledge/import", json=payload)
+        assert first.status_code == 200, first.text
+        assert first.json()["state"] == "applying" and first.json()["counts"]["created"] == 1
+        final = client.post("/api/knowledge/import", json={
+            "operation": "resume", "project_id": "p", "run_id": first.json()["run_id"],
+            "manifest_sha256": sealed.sha256,
+        })
+        assert final.status_code == 200 and final.json()["state"] == "succeeded", final.text
+        assert final.json()["counts"]["created"] == 2
+        invalid = client.post("/api/knowledge/import", json={"operation": "apply"})
+        assert invalid.status_code == 422
+        ch.config.knowledge.import_apply.enabled = False
+        refused = client.post("/api/knowledge/import", json=payload)
+        assert refused.status_code == 409
+        assert refused.json()["error_code"] == "knowledge_import.disabled"

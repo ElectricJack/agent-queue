@@ -624,6 +624,8 @@
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_commands.py",
+        "tests/test_knowledge_compatibility.py",
+        "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
         "tests/test_knowledge_inventory.py",
         "tests/test_knowledge_migrations.py",
@@ -1369,7 +1371,7 @@
       ]
     }
   },
-  "digest": "sha256:d6ed6c4bfff9131dfa19117de65ed2397294d286a2166abd4fe54f0910e94a3f",
+  "digest": "sha256:2d90307dbb2e4a17528bb4a1de11a4e57e38ea9a8fdf6b33028cf3a8d2b21644",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2410,7 +2412,10 @@
       "imports": [
         "src.api",
         "src.api.codegen",
-        "src.api.dependencies"
+        "src.api.dependencies",
+        "src.api.models.knowledge",
+        "src.commands.contracts.inventory",
+        "src.config"
       ],
       "markers": [
         "parametrize",
@@ -8725,6 +8730,41 @@
         "usefixtures"
       ],
       "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
+    "tests/test_knowledge_compatibility.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.knowledge.imports.apply",
+        "src.knowledge.imports.compatibility",
+        "src.knowledge.imports.manifest"
+      ],
+      "markers": [],
+      "summary": "Ownership stays fenced across disabled writes and filesystem divergence."
+    },
+    "tests/test_knowledge_import.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.engine",
+        "src.database.tables",
+        "src.knowledge.imports.apply",
+        "src.knowledge.imports.manifest",
+        "src.knowledge.service",
+        "src.records.auth",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL import receipts, source cutover and restore rehearsal."
     },
     "tests/test_knowledge_import_inventory.py": {
       "areas": [

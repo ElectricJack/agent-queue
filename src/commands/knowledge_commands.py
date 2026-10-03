@@ -294,6 +294,7 @@ class KnowledgeCommandsMixin:
                         "consolidation",
                         "export",
                         "import_inventory",
+                        "import_apply",
                     )
                 },
                 "granted_operations": sorted(grants),
@@ -329,7 +330,7 @@ class KnowledgeCommandsMixin:
             return exc.result()
 
     async def _cmd_knowledge_import(self, args):
-        """Scan, seal and verify a legacy import inventory (read-only, operator)."""
+        """Inventory by default; explicit operator-only apply/resume/cancel."""
         from pathlib import Path
 
         from src.commands.principal import PrincipalKind
@@ -340,6 +341,32 @@ class KnowledgeCommandsMixin:
         if principal is None or principal.kind != PrincipalKind.LOCAL:
             return _error("knowledge_import.forbidden", "Requires the local operator")
         cfg = self.config.knowledge
+        operation = args.get("operation", "dry-run")
+        if operation in {"apply", "resume", "cancel"}:
+            from src.knowledge.imports.apply import ImportService
+
+            try:
+                service = ImportService(self.db, cfg, self.config.vault_root)
+                common = dict(principal=principal, project_id=_knowledge_scope(args),
+                              manifest_sha256=args.get("manifest_sha256"),
+                              limit=args.get("limit", 100))
+                if operation == "apply":
+                    return await service.apply(
+                        **common, manifest_content_base64=args.get("manifest_content_base64"),
+                        selected_item_ids=args.get("selected_item_ids"),
+                        expected_revisions=args.get("expected_revisions"),
+                        expected_source_hashes=args.get("expected_source_hashes"),
+                        idempotency_key=args.get("idempotency_key"),
+                        backup_receipt=args.get("backup_receipt"),
+                    )
+                return await service.resume(**common, run_id=args.get("run_id"),
+                                            cancel=operation == "cancel")
+            except RecordError as exc:
+                return exc.result()
+            except (ValueError, OSError) as exc:
+                return _error("knowledge_import.source_unavailable", str(exc))
+        if operation != "dry-run":
+            return _error("knowledge_import.invalid_input", "Unknown import operation")
         if not (cfg.enabled and getattr(cfg, "import_inventory", None).enabled):
             return _error(
                 "knowledge_import.disabled",

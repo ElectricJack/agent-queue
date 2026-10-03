@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 503,
+    "leaf_commands": 504,
     "registration": {
-      "generated": 329,
+      "generated": 330,
       "handwritten": 174
     },
     "ownership": {
-      "core": 464,
+      "core": 465,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 502
+      "supported": 503
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 329,
+      "dispatch": 330,
       "registration": 160
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 443
+      "untested": 444
     }
   },
   "commands": [
@@ -5472,6 +5472,73 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge import",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_import",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--operation",
+          "--roots",
+          "--vector-export",
+          "--scope-aliases",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--global-scope",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id",
+          "--limit",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--roots",
+          "--scope-aliases",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes"
+        ],
+        "nullable": [
+          "--vector-export",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id"
+        ]
       }
     },
     {
