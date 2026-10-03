@@ -568,6 +568,10 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Schema definition, engine and migration guard."),
     ("src/models.py", "database", "docs/reference/database/README.md", PRODUCTION,
      "Domain dataclasses shared across the system."),
+    ("src/knowledge/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable knowledge domain: identities, revisions, search and services."),
+    ("src/records/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable record identity and schema: validators, backfill, export and outbox."),
 
     ("src/config.py", "vault", "docs/reference/configuration.md", PRODUCTION,
      "Configuration schema and loader."),
