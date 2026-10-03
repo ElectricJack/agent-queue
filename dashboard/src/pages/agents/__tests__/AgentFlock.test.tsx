@@ -341,8 +341,13 @@ describe("Tiled agent workspace", () => {
   it("opens the exact live session in the main Terminal tab by default", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
-    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
-    expect(within(window).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    // The Terminal | Settings switch is in the header, before any disclosure.
+    const header = window.querySelector("header")!;
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(header).getByRole("tablist", { name: "Supervisor view" })).toBeVisible();
+    expect(within(header).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    expect(within(header).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname)).toEqual(["/ws/terminal/session-a"]);
     act(() => {
@@ -408,14 +413,21 @@ describe("Tiled agent workspace", () => {
   it("stops streaming while Settings is visible and resumes on Terminal", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
-    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
+    // The view switch rides the header, so changing views opens no disclosure.
+    const header = window.querySelector("header")!;
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     act(() => TerminalSocketMock.instances[0]!.open());
-    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+    fireEvent.click(within(header).getByRole("tab", { name: "Settings" }));
     expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
-    expect(within(window).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
+    expect(within(header).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(within(header).getByRole("tab", { name: "Terminal" }));
     await waitFor(() => expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1));
+    // The disclosure carries the pane's details, not a second copy of the switch.
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    const dialog = within(window).getByRole("dialog");
+    expect(within(dialog).queryByRole("tab")).toBeNull();
+    expect(within(dialog).getByText(/Profile:/)).toBeVisible();
   });
 
   it("disables a non-pooled agent from its flock row and shows what stays running", async () => {

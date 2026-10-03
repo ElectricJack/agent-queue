@@ -77,13 +77,22 @@ export async function run(t) {
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SESSION).length, 1);
   }
 
-  // Click/touch disclosure on the third pane; its picker and settings remain usable.
+  // Click/touch disclosure on the third pane; its picker stays usable, and the
+  // terminal/settings switch rides the header wherever that row has room for it.
   const poolDetails = '[aria-label="Details for deep-high-claude pool"]';
+  const poolHeader = '[aria-label="deep-high-claude pool agent window"] [data-terminal-header]';
+  const compact = t.page.viewport().width < 640;
   await t.page.$eval(poolDetails, (el) => el.scrollIntoView());
   if (t.isPhone) await t.page.tap(poolDetails); else await t.page.click(poolDetails);
   await t.page.waitForSelector(DIALOG);
-  await expectLayout(t, { primary: [poolDetails, `${DIALOG} [role="tab"]`] });
+  await expectLayout(t, { primary: compact ? [poolDetails] : [poolDetails, `${poolHeader} [role="tab"]`] });
   await t.shot("pool-details");
+  // One switch, in the header on a row that has room and in the disclosure on a
+  // compact row of 44 px targets that has none.
+  assert.equal(await t.page.$$eval(`${DIALOG} [role="tab"]`, (tabs) => tabs.length), compact ? 2 : 0,
+    "the view switch is not where this viewport puts it");
+  assert.equal(await t.page.$$eval(`${poolHeader} [role="tab"]`, (tabs) => tabs.length), compact ? 0 : 2,
+    "the view switch is duplicated or missing from this row");
   assert.equal(await t.page.$$eval(`${DIALOG} select option`, (options) => options.length), 2);
   const panel = await t.page.$eval(DIALOG, (el) => {
     const r = el.getBoundingClientRect();
@@ -129,4 +138,17 @@ export async function run(t) {
   assert.equal(await t.page.$eval(`${DIALOG} select`, (el) => el.value), POOL_SESSION);
   await t.page.keyboard.press("Escape");
   await t.shot("pool-header-removal");
+
+  // Last, because switching views remounts the terminal: on a header that has
+  // room, the switch changes the pane body with no disclosure at all.
+  if (!compact) {
+    await t.page.click(`${poolHeader} [role="tab"][aria-label="Settings"]`);
+    await t.page.waitForSelector('[aria-label="deep-high-claude pool settings"]');
+    assert.equal(await t.page.$(DIALOG), null, "changing views opened the disclosure");
+    await expectLayout(t, { primary: [`${poolHeader} [role="tab"]`] });
+    await t.shot("pool-header-settings");
+    await t.page.click(`${poolHeader} [role="tab"][aria-label="Terminal"]`);
+    await t.page.waitForSelector('[aria-label$="terminal connection"], [aria-label$="terminal status"]');
+    assert.equal(await t.page.$(DIALOG), null);
+  }
 }
