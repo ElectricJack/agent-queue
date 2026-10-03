@@ -38,6 +38,7 @@ from src.playbooks.expressions import (
     condition_values,
     walk_value,
 )
+from src.playbooks.integration_policy import IntegrationPolicy
 
 SCHEMA_GENERATION: Final[int] = 2
 
@@ -699,6 +700,7 @@ class PlaybookDefinition(V2Base):
     rules: Annotated[list[Rule], Field(min_length=1, max_length=MAX_RULES)]
     steps: Annotated[dict[Identifier, Step], Field(min_length=1, max_length=MAX_STEPS)]
     compiled_against: CompiledAgainst = Field(default_factory=CompiledAgainst)
+    integration_policy: IntegrationPolicy | None = None
 
     @model_validator(mode="after")
     def _bounded(self) -> PlaybookDefinition:

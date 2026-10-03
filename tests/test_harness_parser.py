@@ -18,6 +18,7 @@ from src.sessions.harness_registry import (
     _on_harness_changed,
     derive_harness_id,
     load_from_vault,
+    runs_cli,
     vault_path_for,
 )
 from src.vault_watcher import VaultChange
@@ -307,6 +308,38 @@ class TestRegistry:
         fast = registry.get("claude-fast")
         assert fast.command == "claude"
         assert fast.model_flag == "--model"
+
+    def test_runs_cli_matches_the_executable_not_the_id(self, tmp_path):
+        # Two recipes for one CLI: OpenCode on local Ollama and on OpenCode
+        # Zen.  CLI behaviour must follow the executable (noble-delta-40).
+        vault = tmp_path / "vault"
+        self._write(vault, "harnesses/opencode.md", '{"command": "/opt/bin/opencode"}',
+                    hid="opencode")
+        self._write(
+            vault, "harnesses/opencode-zen.md",
+            '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}',
+            hid="opencode-zen",
+        )
+        self._write(vault, "harnesses/opencode-win.md", '{"command": "C:/bin/opencode.EXE"}',
+                    hid="opencode-win")
+        self._write(vault, "harnesses/claude.md", '{"command": "claude"}', hid="claude")
+        self._write(vault, "harnesses/oc-npx.md", '{"command": "npx", "args": ["opencode"]}',
+                    hid="oc-npx")
+        registry = HarnessRegistry()
+        load_from_vault(registry, str(vault))
+
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode-win", registry)
+        assert runs_cli("opencode", "opencode", registry)
+        assert not runs_cli("opencode", "claude", registry)
+        # Only the executable is read: a launcher in front of the CLI is not it.
+        assert not runs_cli("opencode", "oc-npx", registry)
+        assert not runs_cli("opencode", "unregistered", registry)
+        assert not runs_cli("opencode", "", registry)
+        assert not runs_cli("opencode", None, registry)
+        # Without a registry only the harness named after the CLI matches.
+        assert runs_cli("opencode", "opencode")
+        assert not runs_cli("opencode", "opencode-zen")
 
     def test_a_malformed_file_is_skipped_and_reported_not_fatal(self, tmp_path):
         vault = tmp_path / "vault"

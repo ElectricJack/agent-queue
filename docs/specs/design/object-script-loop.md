@@ -90,3 +90,43 @@ does not grant that import or publication.
 The loop row stores bounded identity, budget, wave, checkpoint and intent data
 as PostgreSQL JSONB. Images and raw logs stay in the artifact store. Its task
 references are soft so normal archive cleanup does not erase the loop record.
+
+## Reviewed policy and formulas (AQ-3)
+
+The opt-in `object-loop` V2 bundle is shipped inactive. Its command grants do
+not include review decisions, provider routing, source publication or activation.
+The approved proposal is `rev-amber-zenith`, revision 2; object admission also
+requires an approved, hash-bound `other` brief review in the object's project.
+Importing/reviewing the bundle stores bytes; activation is a separate operator
+decision naming the artifact digest and operational prerequisites.
+
+`object` and `variation` are real vault formulas, seeded write-if-absent from
+the package. Object cooking creates a root and a gated bootstrap leaf. The
+gate is installed in the graph transaction, and is released only after AQ-2
+has committed its finalization hold. Thus even a missed formula event cannot
+settle the root before the first wave. Variation cooking uses an existing
+suite directly under the object root, checks the exact approved checkpoint,
+and gates and marks every leaf in the graph transaction. The hierarchy is
+root → suite → seed/preset check. Exactly one suite per object consumes the
+final-suite reserve; ten distinct seeds and finite presets are bounded on cook. All experiment tasks are excluded from
+source publication; finalization waits for variations as well as candidates.
+
+`object_loop_inputs` is a bounded read-only bridge from formula provenance,
+loop rows, task settlement and review state to V2 inputs. Task/review events
+are wake hints; a timer reads the same persisted inputs after lost events or
+restart. Scorers hand off a strict JSON `ObjectScoreRecordArgs` packet in a
+task note beginning `object-score:1\n`, before closing their own task. Only
+the current completed scorer's latest packet is eligible. The bridge parses
+the entire JSON document (never prose extraction), verifies scope/identity,
+and leaves measurement validation and version fencing to `object_score_record`.
+Workers receive no loop-mutator or sibling-task authority.
+
+The artifact chooses continuation, checkpoint, defect and deadline stops.
+Rejected continuation is retried once as a score-bearing stop, preserving a
+valid winner when a cap binds. No repeated provider calls occur in the policy;
+task retries must fit the reserved amount. Non-settled work remains held during
+an outage. Review rejection, withdrawal or requested changes stop admission
+without granting approval; a revised candidate requires new scored evidence.
+An exact approved checkpoint can adopt its predeclared finite continuation.
+The 24-hour object deadline stops admission; settlement still precedes release
+of the finalization gate. The artifact cannot close tasks or erase failures.

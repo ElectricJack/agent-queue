@@ -1067,6 +1067,36 @@ class SessionCommandsMixin:
                         "open_subtasks": [item["ordinal"] for item in open_subtasks],
                     }
 
+        # Capture the verification subject before any close side effect, including
+        # an authorised descendant abandonment. The pending draft below must keep
+        # it even if the daemon dies after accepting the terminal transition.
+        failed_subject_head = None
+        if outcome == "fail" and task.repo_id and task.branch_name:
+            operation = await self.db.get_integration_verifier_operation(task_id)
+            if operation is not None:
+                from src.integration.verifier_subject import verifier_subject_on
+
+                checkpoint = await self.db.get_integration_checkpoint(operation["parent_task_id"])
+                try:
+                    if checkpoint is None:
+                        raise ValueError("aggregate verifier has no parent checkpoint")
+                    if (task.repo_id, task.branch_name) != (
+                        checkpoint["repository_id"], checkpoint["branch"],
+                    ):
+                        raise ValueError("aggregate verifier branch identity differs from its subject")
+                    async with self.db._engine.connect() as conn:
+                        subject = await verifier_subject_on(
+                            conn, verifier_id=task_id, project_id=task.project_id,
+                            operation=operation, checkpoint=checkpoint,
+                        )
+                    if subject is None:
+                        raise ValueError("aggregate verifier has no immutable verification subject")
+                    failed_subject_head = subject["subject"]["head_sha"]
+                    if args.get("commit") and str(args["commit"]).strip() != failed_subject_head:
+                        raise ValueError("failure commit differs from the immutable verification head")
+                except ValueError as exc:
+                    return {"success": False, "result": "verification_failed", "error": str(exc)}
+
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)
         project = await self.db.get_project(task.project_id)
@@ -1235,7 +1265,8 @@ class SessionCommandsMixin:
                     tests=_string_list(args.get("tests")),
                     commands=_string_list(args.get("commands")),
                     branch=task.branch_name,
-                    commits=[explicit_commit] if explicit_commit else [],
+                    commits=[failed_subject_head or explicit_commit]
+                    if failed_subject_head or explicit_commit else [],
                     pr_url=task.pr_url,
                     summary=summary,
                     notes=str(args.get("notes") or "").strip(),
@@ -1419,6 +1450,8 @@ class SessionCommandsMixin:
         commit = explicit_commit or str(auto_commit or "").strip()
         if "completion_source" in result:
             commit = result["completion_source"] or ""
+        if failed_subject_head is not None:
+            commit = failed_subject_head
 
         # Accepted repair retries reuse the reservation's durable close identity.
         # A crash after the task transition but before claim release must not

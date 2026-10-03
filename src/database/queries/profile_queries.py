@@ -128,12 +128,14 @@ class ProfileQueryMixin:
             row = (await owned.execute(stmt)).mappings().fetchone()
             return self._row_to_profile(row) if row else None
 
-    async def list_profiles(self) -> list[AgentProfile]:
+    async def list_profiles(self, *, conn=None) -> list[AgentProfile]:
         """List all agent profiles ordered by name."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(agent_profiles).order_by(agent_profiles.c.name.asc())
-            )
+        stmt = select(agent_profiles).order_by(agent_profiles.c.name.asc())
+        if conn is not None:
+            result = await conn.execute(stmt)
+            return [self._row_to_profile(r) for r in result.mappings().fetchall()]
+        async with self._engine.begin() as owned:
+            result = await owned.execute(stmt)
             return [self._row_to_profile(r) for r in result.mappings().fetchall()]
 
     async def update_profile(self, profile_id: str, **kwargs) -> None:

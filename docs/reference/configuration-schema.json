@@ -621,9 +621,14 @@
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
-        "owner_recovery_sweep": false,
+        "owner_recovery_sweep": true,
         "publisher_stall_after": 5,
-        "scratch_probe": null
+        "reconciler_active": false,
+        "reconciler_shadow": false,
+        "scratch_probe": null,
+        "service_item_timeout_seconds": 60.0,
+        "service_source_timeout_seconds": 300.0,
+        "service_source_timeouts": {}
       },
       "properties": {
         "default_mode": {
@@ -690,12 +695,20 @@
           "type": "array"
         },
         "owner_recovery_sweep": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "publisher_stall_after": {
           "default": 5,
           "type": "integer"
+        },
+        "reconciler_active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reconciler_shadow": {
+          "default": false,
+          "type": "boolean"
         },
         "scratch_probe": {
           "additionalProperties": false,
@@ -757,10 +770,152 @@
             "object",
             "null"
           ]
+        },
+        "service_item_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        },
+        "service_source_timeout_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "service_source_timeouts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "type": "object"
         }
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "knowledge": {
+      "additionalProperties": false,
+      "default": {
+        "authority_review_required": true,
+        "consolidation": {
+          "enabled": false
+        },
+        "context": {
+          "enabled": false
+        },
+        "enabled": false,
+        "enabled_projects": [],
+        "export": {
+          "enabled": false
+        },
+        "extraction": {
+          "enabled": false
+        },
+        "global_enabled": false,
+        "legacy_memory_mode": "disabled",
+        "semantic": {
+          "enabled": false
+        },
+        "ui_enabled": false,
+        "writes_enabled": false
+      },
+      "properties": {
+        "authority_review_required": {
+          "default": true,
+          "type": "boolean"
+        },
+        "consolidation": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled_projects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "export": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "extraction": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "global_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "legacy_memory_mode": {
+          "default": "disabled",
+          "type": "string"
+        },
+        "semantic": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ui_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "writes_enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "llm": {
       "additionalProperties": false,
@@ -2519,7 +2674,11 @@
         "state_cache_ttl_seconds": 2,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
-        "transcript_startup_replay_limit": 100
+        "transcript_startup_replay_limit": 100,
+        "worker_claude_plugin_overrides": {},
+        "worker_context_checkpoint_tokens": 120000,
+        "worker_context_compact_tokens": 160000,
+        "worker_context_unknown_checkpoint_turns": 40
       },
       "properties": {
         "adopt_on_start": {
@@ -2600,6 +2759,25 @@
         },
         "transcript_startup_replay_limit": {
           "default": 100,
+          "type": "integer"
+        },
+        "worker_claude_plugin_overrides": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "worker_context_checkpoint_tokens": {
+          "default": 120000,
+          "type": "integer"
+        },
+        "worker_context_compact_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
+        "worker_context_unknown_checkpoint_turns": {
+          "default": 40,
           "type": "integer"
         }
       },
@@ -2981,6 +3159,7 @@
       "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "knowledge",
       "llm_logging",
       "logging",
       "max_concurrent_playbook_runs",

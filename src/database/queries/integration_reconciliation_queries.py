@@ -17,6 +17,8 @@ from src.database.tables import (
     project_integration_leases,
     project_integration_schedules,
     projects,
+    task_metadata,
+    tasks,
 )
 
 
@@ -117,6 +119,71 @@ class IntegrationReconciliationQueriesMixin:
                         operation_id == after[1],
                         ordinal > after[2],
                     ),
+                )
+            )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def refused_integration_repair_dispatch_page(
+        self, *, after: tuple[str, int] | None, limit: int
+    ) -> list[dict[str, Any]]:
+        """Active repair stages, under any policy, whose writer was never launched.
+
+        A dispatch refused as ``busy``, ``stale``, ``configuration_blocked`` or
+        an unexpected ownership shape leaves exactly this: no delegate linked,
+        or a linked delegate still ``PAUSED`` because the branch never passed
+        to it.  Operations a human must decide (``human_required``) and
+        supervisor-recovery stages are terminal, a delegate an operator paused
+        is held, and a stage-0 batch candidate still publishing belongs to its
+        collector; none of them is selected.
+        """
+        from src.integration.repair import _unfinished_candidate_publication
+
+        _require_limit(limit)
+        stage = integration_repair_stages
+        operation = integration_repair_operations
+        operator_hold = exists(
+            select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == stage.c.repair_task_id,
+                task_metadata.c.key == "manual_pause",
+            )
+        )
+        statement = (
+            select(
+                stage.c.operation_id,
+                stage.c.ordinal,
+                stage.c.repair_task_id,
+                stage.c.writer_kind,
+                tasks.c.status.label("task_status"),
+            )
+            .select_from(
+                stage.join(operation, operation.c.id == stage.c.operation_id).outerjoin(
+                    tasks, tasks.c.id == stage.c.repair_task_id
+                )
+            )
+            .where(
+                operation.c.active_stage == stage.c.ordinal,
+                operation.c.state.in_(("active", "escalated")),
+                stage.c.state == "active",
+                ~((stage.c.ordinal == 0) & _unfinished_candidate_publication(operation.c.batch_id)),
+                or_(
+                    stage.c.repair_task_id.is_(None),
+                    and_(
+                        stage.c.writer_kind == "repair_delegate",
+                        tasks.c.status == "PAUSED",
+                        ~operator_hold,
+                    ),
+                ),
+            )
+            .order_by(stage.c.operation_id, stage.c.ordinal)
+            .limit(limit)
+        )
+        if after is not None:
+            statement = statement.where(
+                or_(
+                    stage.c.operation_id > after[0],
+                    and_(stage.c.operation_id == after[0], stage.c.ordinal > int(after[1])),
                 )
             )
         async with self._engine.connect() as conn:

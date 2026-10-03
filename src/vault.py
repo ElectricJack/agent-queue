@@ -1382,6 +1382,7 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_templates(data_dir)
     ensure_default_harnesses(data_dir)
     ensure_default_playbooks(data_dir)
+    ensure_default_formulas(data_dir)
     ensure_default_intelligence_classes(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
     # Ship the supervisor/planner/reviewer profiles into vault before
@@ -1583,6 +1584,24 @@ def ensure_default_playbooks(data_dir: str) -> dict:
             ", ".join(result["created"]),
         )
 
+    return result
+
+
+def ensure_default_formulas(data_dir: str) -> dict:
+    """Seed packaged graph recipes without overwriting operator edits."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent / "prompts" / "formulas"
+    destination = Path(data_dir) / "vault" / "formulas"
+    destination.mkdir(parents=True, exist_ok=True)
+    result = {"created": [], "skipped": []}
+    for path in sorted(source.glob("*.md")):
+        target = destination / path.name
+        if target.exists():
+            result["skipped"].append(path.name)
+        else:
+            shutil.copy2(path, target)
+            result["created"].append(path.name)
     return result
 
 

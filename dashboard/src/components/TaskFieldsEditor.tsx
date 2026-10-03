@@ -60,6 +60,20 @@ export interface EditableTask {
   integration_mode_source?: string | null;
   skip_verification?: boolean | null;
   assigned_agent?: string | null;
+  /** An epic's delivery projection; only its ``hold`` is read here. */
+  delivery_status?: { hold?: string | null } | null;
+}
+
+/** A stored PAUSED nobody chose says whose hold it is (the field stays the raw lifecycle). */
+const HOLD_QUALIFIER: Record<string, string> = {
+  integration: "integration hold",
+  backoff: "backoff",
+};
+
+function statusDisplay(task: EditableTask): string {
+  const status = task.status ?? "—";
+  const qualifier = task.status === "PAUSED" ? HOLD_QUALIFIER[task.delivery_status?.hold ?? ""] : undefined;
+  return qualifier ? `${status} (${qualifier})` : status;
 }
 
 export interface FormState {
@@ -230,7 +244,7 @@ export default function TaskFieldsEditor({
           label="Status"
           editing={editing && task.status !== "PAUSED"}
           value={editing ? form.status : task.status ?? "—"}
-          displayValue={task.status ?? "—"}
+          displayValue={statusDisplay(task)}
           options={STATUS_OPTIONS}
           onChange={(v) => setForm({ ...form, status: v })}
           hint="Admin override — bypasses the state machine."

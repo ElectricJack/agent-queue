@@ -247,6 +247,8 @@ class TaskRecoveryQueryMixin:
 
         The incident receipt and inbox message commit together. The normal
         delivery engine wakes the existing supervisor and handles retries.
+        Integration-owned delegates keep an incident without a message;
+        their operation owns recovery and any escalation.
         Ordinary dependency blocks and operator pauses produce no messages.
         """
         await self._supersede_stale_task_recovery_incidents()
@@ -430,8 +432,24 @@ class TaskRecoveryQueryMixin:
                 }
             incident_id = _incident_id(task, attempt, reason)
             previous = meta.get(INCIDENT_KEY) or {}
+            notify_supervisor = not (
+                owner["kind"] == "integration_operation" and owner["role"] == "delegate"
+            )
             if previous.get("id") == incident_id:
-                redelivered = await self._redeliver_task_recovery(conn, task_id, previous)
+                if notify_supervisor:
+                    redelivered = await self._redeliver_task_recovery(conn, task_id, previous)
+                else:
+                    # Older versions queued delegate notices even though generic
+                    # recovery is refused. Keep the incident, retire that notice.
+                    await conn.execute(
+                        update(messages)
+                        .where(
+                            messages.c.id == "msg-" + incident_id,
+                            messages.c.archived_at.is_(None),
+                        )
+                        .values(archived_at=time.time())
+                    )
+                    redelivered = 0
                 return {
                     "outcome": "existing",
                     "task_id": task_id,
@@ -486,6 +504,15 @@ class TaskRecoveryQueryMixin:
                 "next_action": _next_action(owner, reason, budget),
                 "decision": None,
             }
+            await self._upsert_meta(task_id, INCIDENT_KEY, facts, conn=conn)
+            if not notify_supervisor:
+                return {
+                    "outcome": "not_actionable",
+                    "task_id": task_id,
+                    "incident_id": incident_id,
+                    "operation_id": owner["operation_id"],
+                    "detail": "integration operation owns delegate recovery and escalation",
+                }
             body = (
                 "AQ operational incident: a task reached a terminal failure and needs attention. "
                 "This is the one incident for this failure: the task.failed event and the "
@@ -513,7 +540,6 @@ class TaskRecoveryQueryMixin:
                 + json.dumps(facts, sort_keys=True)
             )
             now = time.time()
-            await self._upsert_meta(task_id, INCIDENT_KEY, facts, conn=conn)
             await conn.execute(
                 insert(messages).values(
                     id="msg-" + incident_id,

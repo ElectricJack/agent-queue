@@ -3,6 +3,7 @@ import { LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/out
 import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { ProgressBar } from "../ProgressBar";
+import { EpicDeliveryBadge } from "../../../components/EpicDelivery";
 import { UNIT_H } from "./units";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
@@ -18,6 +19,7 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   const failedChildren = phaseHold?.failed_children ?? [];
   const failedChildrenTotal = phaseHold?.failed_children_total ?? failedChildren.length;
   const hasBar = (node.agg_descendants ?? 0) > 0;
+  const delivery = node.delivery ?? null;
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
@@ -74,8 +76,21 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
           onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
-        <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-70">{node.status.replace(/_/g, " ")}</span>
-        <span className="shrink-0 rounded bg-white/10 px-1">{node.agg_completed}/{node.agg_descendants} done</span>
+        {/* Delivery is not implementation: the badge says where the epic's
+          * delivery stands, the count only how much of it is built. The
+          * stored status (an integration hold reads PAUSED) stays in the
+          * tooltip and on the task's own controls. */}
+        {delivery ? (
+          <EpicDeliveryBadge
+            delivery={delivery}
+            className="max-w-[16rem] shrink text-[10px]"
+          />
+        ) : (
+          <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-70">{node.status.replace(/_/g, " ")}</span>
+        )}
+        <span className="shrink-0 rounded bg-white/10 px-1" title="Implementation progress">
+          {node.agg_completed}/{node.agg_descendants} {delivery ? "tasks complete" : "done"}
+        </span>
         {(node.agg_running ?? 0) > 0 && <span className="shrink-0 text-indigo-300">{node.agg_running} running</span>}
         {(node.agg_blocked ?? 0) > 0 && <span className="shrink-0 text-amber-300">{node.agg_blocked} blocked</span>}
         {/* Entering is the only way into a container; the container already

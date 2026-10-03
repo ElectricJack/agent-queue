@@ -1159,3 +1159,130 @@ class TestErrorDetailsPlumbing:
             assert "not available" in exc.value.detail_message
         finally:
             await client._http.aclose()
+
+
+class TestSavedOutput:
+    def test_receipt_keeps_exact_unprojected_evidence_and_pagination(self, tmp_path, monkeypatch):
+        import hashlib
+        import stat
+
+        import click
+
+        monkeypatch.setenv("AQ_JSON_LEGACY", "1")
+        destination = tmp_path / "result.json"
+        rows = [{"id": f"t{i}", "log": "😀" * 500} for i in range(100)]
+        ctx = click.Context(click.Command("show"), obj={
+            "json": True, "brief": True, "save_output": destination,
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, rows, entity="task", total=143)
+            output = streams[0].getvalue()
+        receipt = json.loads(output)["data"]["saved_output"]
+        raw = destination.read_bytes()
+        saved = json.loads(raw)
+        assert saved == envelope(rows, total=143)
+        assert receipt["path"] == str(destination)
+        assert receipt["bytes"] == len(raw)
+        assert receipt["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert receipt["shape"] == {"type": "array", "count": 100}
+        assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+        assert len(output) < len(raw) / 100
+
+    @pytest.mark.parametrize("payload", [
+        {"success": False, "details": {"exact": "failure line 42"}},
+        {"items": [{"errors": ["exact failure"]}]},
+        {"warnings": ["check unavailable"]},
+        {"gate": {"status": "pending", "identity": "human-1"}},
+        {"next_claim": {"result": "drain_requested"}},
+        {"body": "Read authoritative security rules"},
+        {"status": "AWAITING_APPROVAL", "identity": "worker-1"},
+        {"constraints": ["Do not release claim"]},
+        {"exit_code": 1, "output": "Exact failing test output"},
+        {"description": "Required task instructions"},
+    ])
+    def test_actionable_results_remain_full_even_with_brief(self, tmp_path, payload):
+        import click
+
+        destination = tmp_path / "result.json"
+        ctx = click.Context(click.Command("show"), obj={
+            "json": True, "brief": True, "save_output": destination,
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, payload, entity="task")
+            output = json.loads(streams[0].getvalue())
+        assert output["data"] == payload
+        assert json.loads(destination.read_bytes())["data"] == payload
+        assert output["evidence"]["path"] == str(destination)
+
+    def test_human_failure_keeps_full_details_even_if_formatter_would_drop_them(self, tmp_path):
+        import click
+
+        payload = {"success": False, "details": "exact failure"}
+        rendered = []
+        ctx = click.Context(click.Command("show"), obj={
+            "brief": True, "save_output": tmp_path / "result.json",
+        })
+        with CliRunner().isolation() as streams:
+            emit(ctx, payload, entity="task", render=rendered.append)
+            output = streams[0].getvalue().decode()
+        assert rendered == []
+        assert '"details": "exact failure"' in output
+
+    @pytest.mark.parametrize("symlink", [False, True])
+    def test_never_overwrites_existing_evidence_or_follows_leaf_symlink(self, tmp_path, symlink):
+        import click
+
+        destination = tmp_path / "result.json"
+        target = tmp_path / "missing-target"
+        if symlink:
+            destination.symlink_to(target)
+        else:
+            destination.write_text("original evidence")
+        ctx = click.Context(click.Command("show"), obj={"save_output": destination})
+        with CliRunner().isolation() as streams:
+            with pytest.raises(SystemExit) as error:
+                emit(ctx, {"success": True, "created": "held-task"})
+            output = json.loads(streams[0].getvalue())
+        assert error.value.code == 1
+        assert output["data"] == {"success": True, "created": "held-task"}
+        assert "Cannot save output" in output["output_save_error"]
+        assert output["automatic_retry"] is False
+        if symlink:
+            assert not target.exists()
+            assert destination.is_symlink()
+        else:
+            assert destination.read_text() == "original evidence"
+
+    @pytest.mark.parametrize("as_json", [False, True])
+    def test_command_failure_keeps_details_and_saves_original_error(self, tmp_path, as_json):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        destination = tmp_path / "error.json"
+        client = _mock_client({"task_show": CommandError("task_show", "exact command error")})
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "show", "task-1", "--save-output", str(destination),
+            ] + (["--json"] if as_json else []))
+        assert result.exit_code == 1, result.output
+        error = json.loads(result.output)
+        assert error["error"]["message"] == "exact command error"
+        saved = json.loads(destination.read_bytes())
+        assert saved == {key: value for key, value in error.items() if key != "evidence"}
+
+    def test_save_error_preserves_original_error_and_json_contract(self, tmp_path):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        destination = tmp_path / "already.json"
+        destination.write_text("original evidence")
+        client = _mock_client({"task_show": CommandError("task_show", "original command failure")})
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "--json", "--save-output", str(destination), "task", "show", "task-1",
+            ])
+        assert result.exit_code == 1, result.output
+        error = json.loads(result.output)["error"]
+        assert error["message"] == "original command failure"
+        assert "Cannot save output" in error["output_save_error"]
+        assert destination.read_text() == "original evidence"

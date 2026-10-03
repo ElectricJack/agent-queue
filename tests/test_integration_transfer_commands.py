@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,7 +19,6 @@ from src.database.tables import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
-
 
 TARGET = {"repository_id": "repo", "branch": "aq/parent"}
 
@@ -544,3 +544,46 @@ async def test_repeated_transfer_returns_the_existing_successor_fence(command_ha
     assert first == second
     confirm.assert_awaited_once()
     assert (await _owner_row(handler))["fence_token"] == 5
+
+
+@pytest.mark.parametrize("project_id", [None, "p"])
+async def test_live_supervisor_transfers_owner_after_authorization(command_handler_factory, project_id):
+    handler = await command_handler_factory()
+    await _seed(handler)
+    await handler.db.create_task(Task(id="next", project_id="p", repo_id="repo",
+                                      branch_name="aq/parent", title="Next", description=""))
+    handler.db.get_session = AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id=project_id))
+    confirm = AsyncMock(return_value=True)
+    handler.orchestrator.aconfirm_integration_owner_handoff = confirm
+    caller = ExecutionPrincipal(kind=PrincipalKind.SESSION, session_id="supervisor",
+                                project_id=project_id, elevated=True,
+                                policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_transfer_owner"]))
+    with principal_context(caller):
+        result = await handler.execute("integration_transfer_owner", _args("next"))
+    assert result["outcome"] == "transferred", result
+    assert result["fence"]["token"] == 5
+    confirm.assert_awaited_once()
+
+
+@pytest.mark.parametrize("state,profile_id,project_id", [
+    ("stopped", "supervisor", None), ("running", "worker", None),
+    ("running", "supervisor", "other"),
+])
+async def test_invalid_supervisor_transfer_keeps_fence(command_handler_factory, state, profile_id, project_id):
+    handler = await command_handler_factory()
+    await _seed(handler)
+    handler.db.get_session = AsyncMock(return_value=SimpleNamespace(
+        id="caller", profile_id=profile_id, lifecycle="named", state=state,
+        desired_state="running", project_id=project_id))
+    confirm = AsyncMock(return_value=True)
+    handler.orchestrator.aconfirm_integration_owner_handoff = confirm
+    caller = ExecutionPrincipal(kind=PrincipalKind.SESSION, session_id="caller", project_id=project_id,
+                                elevated=True, policy=CapabilityPolicy.from_namespaces(
+                                    aq_commands=["integration_transfer_owner"]))
+    with principal_context(caller):
+        result = await handler.execute("integration_transfer_owner", _args("next"))
+    assert result["outcome"] == "human_required", result
+    assert (await _owner_row(handler))["fence_token"] == 4
+    confirm.assert_not_awaited()
