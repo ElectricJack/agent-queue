@@ -188,11 +188,30 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "integration_source_ci",
         # Exact per-root operator authorizations shipped in revision 54.
         "integration_root_authorizations",
+        # Durable record/knowledge tables shipped after SQLite removal in
+        # revision 55. Legacy files have no record identities, revisions,
+        # informational links or outbox state; backfill/import is explicit.
+        "record_installation",
+        "record_scopes",
+        "records",
+        "knowledge_records",
+        "knowledge_revisions",
+        "knowledge_revision_payloads",
+        "knowledge_search",
+        "record_link_heads",
+        "record_link_versions",
+        "task_record_link_state",
+        "record_source_artifacts",
+        "record_requests",
+        "record_outbox",
+        "record_consumer_receipts",
+        "record_export_state",
+        "record_backfill_state",
+        # Per-API-call transcript usage maxima shipped in revision 56.
+        "transcript_usage_calls",
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
-        # Per-API-call transcript usage maxima shipped in revision 56.
-        "transcript_usage_calls",
     }
 )
 
@@ -473,12 +492,13 @@ async def migrate_sqlite_to_postgres(
 
 
 async def _check_pg_empty(engine: AsyncEngine) -> None:
-    """Raise if any user tables in PostgreSQL already contain data."""
+    """Refuse user data while preserving the schema's installation identity seed."""
     async with engine.connect() as conn:
         result = await conn.execute(
             text(
                 "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
+                "WHERE schemaname = 'public' "
+                "AND tablename NOT IN ('alembic_version', 'record_installation')"
             )
         )
         for row in result:
