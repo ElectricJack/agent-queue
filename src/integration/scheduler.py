@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import case, delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.integration_schedule_queries import (
@@ -30,6 +30,7 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
     repos,
+    task_integration_checkpoints,
 )
 from src.git.manager import GitError, _validate_ref
 from src.integration.engine import root_engine_guard
@@ -467,6 +468,7 @@ class TrainService:
         default_mode: str = "pull_request",
         page_size: int = DEFAULT_PAGE_SIZE,
         migration_inspector=None,
+        delivery_observer=None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("integration train page size must be positive")
@@ -474,6 +476,75 @@ class TrainService:
         self.default_mode = default_mode
         self.page_size = page_size
         self.migration_inspector = migration_inspector
+        self.delivery_observer = delivery_observer or getattr(db, "_delivery_observer", None)
+
+    async def _observe_root_deliveries(self, project_id, request_id):
+        """Ask canonical Git truth before taking the hierarchy lock.
+
+        Include prerequisites even when they have no review, are held, or have
+        been archived: delivery and permission to enter a train are separate.
+        """
+        if self.delivery_observer is None:
+            return None
+        async with self.db._engine.connect() as conn:
+            prior = await self._batch_for_request(conn, project_id, request_id)
+            if prior is not None and prior["lifecycle"] != "sealing":
+                return None
+            if prior is None and await request_ended_without_batch_on(conn, project_id, request_id):
+                return None
+            repository_id = await conn.scalar(select(projects.c.integration_repository_id).where(
+                projects.c.id == project_id,
+            ))
+            if repository_id is None:
+                return None
+            ids = set()
+            after = None
+            while True:
+                page = await self.db.eligible_root_page_on(
+                    conn, project_id=project_id, repository_id=repository_id,
+                    after=after, limit=self.page_size,
+                )
+                if not page:
+                    break
+                ids.update(row["task_id"] for row in page)
+                after = (page[-1]["task_id"], page[-1]["source_head"])
+            edges = await dependencies_for(conn, list(ids))
+            ids.update(dependency for dependencies in edges.values() for dependency in dependencies)
+        return await self.delivery_observer.observe(ids)
+
+    async def _git_delivered_roots_on(self, conn, view, project_id, repository):
+        """Recheck generation, repository, target and the train's exact source.
+
+        A contained completion can answer a dependency without a checkpoint.
+        When a checkpoint exists, it must name that same source; a previous
+        adoption cannot hide newly checkpointed work. Settlements and empty
+        artifacts are not code delivery to the default branch.
+        """
+        from src.integration.delivery_truth import DeliveryState
+
+        if view is None:
+            return set()
+        verified = await view.verified_on(conn, view.evidence)
+        target_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
+        sources = {task_id: proof.source_oid for task_id, proof in verified.items() if (
+            proof.state == DeliveryState.CONTAINED
+            and proof.request.task_status == "COMPLETED"
+            and (proof.request.project_id, proof.request.repository_id, proof.request.target_ref)
+            == (project_id, repository["id"], target_ref)
+            and view.targets[task_id].repository_url == repository["url"]
+        )}
+        checkpoint = task_integration_checkpoints
+        heads = dict((await conn.execute(
+            select(checkpoint.c.task_id, case(
+                (checkpoint.c.episode_id.is_not(None), checkpoint.c.verified_sha),
+                else_=checkpoint.c.checkpoint_sha,
+            )).where(
+                checkpoint.c.task_id.in_(sources),
+                checkpoint.c.repository_id == repository["id"],
+            )
+        )).all())
+        return {task_id for task_id, source in sources.items()
+                if task_id not in heads or heads[task_id] == source}
 
     @root_engine_guard("project", outcome="busy")
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
@@ -500,6 +571,7 @@ class TrainService:
     async def _seal_once(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         if not project_id.strip() or not request_id.strip():
             raise ValueError("integration seal project and request are required")
+        delivery_view = await self._observe_root_deliveries(project_id, request_id)
         inspected = None
         if self.migration_inspector is not None:
             # Git I/O must never hold the hierarchy lock. The transaction below
@@ -513,12 +585,23 @@ class TrainService:
                 ):
                     return self._empty_result(project_id, request_id)
                 project = await self.db.get_project(project_id)
+                preview_delivered = set()
+                if delivery_view is not None and project is not None:
+                    repository = (await read_conn.execute(select(repos).where(
+                        repos.c.id == project.integration_repository_id,
+                        repos.c.project_id == project_id,
+                    ))).mappings().one_or_none()
+                    if repository is not None:
+                        preview_delivered = await self._git_delivered_roots_on(
+                            read_conn, delivery_view, project_id, repository
+                        )
                 preview = (
                     await self._eligible_members(
                         read_conn,
                         project_id=project_id,
                         repository_id=project.integration_repository_id,
                         project_mode=project.integration_mode,
+                        git_delivered=preview_delivered,
                     )
                     if project is not None
                     else []
@@ -532,6 +615,8 @@ class TrainService:
                     member["source_head"],
                 )
                 inspected[key] = await self.migration_inspector(member)
+        if delivery_view is not None and not await delivery_view.fresh():
+            return self._result("stale", project_id, request_id, None, None)
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
 
@@ -596,6 +681,9 @@ class TrainService:
             ).mappings().one_or_none()
             if repository is None:
                 raise ValueError("designated integration repository does not exist")
+            git_delivered = await self._git_delivered_roots_on(
+                conn, delivery_view, project_id, repository
+            )
 
             policy = HierarchicalIntegrationPolicy.model_validate(
                 project["hierarchical_integration_policy"]
@@ -666,6 +754,7 @@ class TrainService:
                 project_id=project_id,
                 repository_id=repository_id,
                 project_mode=project["integration_mode"],
+                git_delivered=git_delivered,
             )
             if inspected is not None:
                 from src.integration.migration_heads import select_members
@@ -689,6 +778,7 @@ class TrainService:
                     project_id=project_id,
                     repository_id=repository_id,
                 )
+                delivered |= git_delivered
                 members, deferred = select_members(
                     members,
                     inspected,
@@ -893,6 +983,7 @@ class TrainService:
         project_id: str,
         repository_id: str,
         project_mode: str | None,
+        git_delivered: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         members: list[dict[str, Any]] = []
         after: tuple[str, str] | None = None
@@ -938,6 +1029,8 @@ class TrainService:
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        git_delivered = git_delivered or set()
+        members = [member for member in members if member["task_id"] not in git_delivered]
         from src.integration.engine import current_admission
 
         admission = current_admission()
@@ -1026,6 +1119,7 @@ class TrainService:
         delivered = await self.db.delivered_root_task_ids_on(
             conn, project_id=project_id, repository_id=repository_id
         )
+        delivered |= git_delivered
         ordered, deferred = order_members(members, edges, delivered)
         for member in deferred:
             logger.info(

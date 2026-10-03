@@ -1710,6 +1710,7 @@ class IntegrationCommandsMixin:
             self.db,
             default_mode=self.config.integration.default_mode,
             migration_inspector=MigrationInspector(self._integration_promotion_service()),
+            delivery_observer=getattr(self.orchestrator, "delivery_observer", None),
         )
 
     def _integration_root_promotion_service(self):
