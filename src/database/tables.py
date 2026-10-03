@@ -1536,6 +1536,21 @@ ESCALATION_OUTCOMES = (
     "sweep",
 )
 
+#: Who authored a row in an incident's thread: ``inbound`` for a verified human
+#: reply, ``outbound`` for the supervisor answering in the thread, ``system``
+#: for the daemon writing its own audit note into the history.  A check-constrained
+#: vocabulary because the three are read apart in three places -- an inbound row
+#: is what moves an incident to §5.2's ``answered`` form and triggers an ack,
+#: an outbound row is the only one relayed into the channel thread
+#: (``src/escalations/plan.py``), and a ``system`` row is neither: it records why
+#: the daemon closed something without anybody speaking (spec §5.6's sweep audit
+#: trail).
+ESCALATION_MESSAGE_DIRECTIONS = (
+    "inbound",
+    "outbound",
+    "system",
+)
+
 # Transport-neutral human escalation state.  ``task_id`` and the source
 # identifiers are deliberately soft references: an escalation is an incident
 # record and must remain usable after its source task/session is archived or
@@ -1657,7 +1672,7 @@ escalation_messages = Table(
         name="uq_escalation_messages_external",
     ),
     CheckConstraint(
-        "direction IN ('inbound','outbound')",
+        "direction IN (" + ",".join(f"'{d}'" for d in ESCALATION_MESSAGE_DIRECTIONS) + ")",
         name="ck_escalation_messages_direction",
     ),
     CheckConstraint(

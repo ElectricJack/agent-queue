@@ -43,6 +43,10 @@ ESCALATION_OUTCOMES = frozenset(
         "sweep",
     }
 )
+#: Who may author a row in an incident's thread.  ``system`` is the daemon's
+#: own audit note (spec §5.6's sweep trail): neither a human reply nor a
+#: supervisor answer, so it is neither acknowledged nor relayed into the channel.
+ESCALATION_MESSAGE_DIRECTIONS = frozenset({"inbound", "outbound", "system"})
 ESCALATION_TRANSITIONS = {
     # ``reply_received`` is intentionally absent as a generic transition
     # target: only accept_escalation_reply may claim that state, because the
@@ -310,6 +314,31 @@ class EscalationQueriesMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
+
+    async def count_escalations(
+        self,
+        *,
+        project_id: str | None = None,
+        states: Sequence[str] | None = None,
+        source_kind: str | None = None,
+    ) -> int:
+        """How many incidents match, with no ``limit`` in the way.
+
+        ``list_escalations`` answers "which ones" and is bounded on purpose, so
+        it cannot answer "how big is the pile" -- which is exactly the number
+        the §5.6 sweep reports before and after it runs, and what
+        ``doctor --check escalations.pile`` judges against the spec's
+        ten-open-items target.
+        """
+        statement = select(func.count()).select_from(escalations)
+        if project_id is not None:
+            statement = statement.where(escalations.c.project_id == project_id)
+        if states is not None:
+            statement = statement.where(escalations.c.state.in_(tuple(states)))
+        if source_kind is not None:
+            statement = statement.where(escalations.c.source_kind == source_kind)
+        async with self._engine.connect() as conn:
+            return int((await conn.execute(statement)).scalar_one())
 
     async def transition_escalation(
         self,
@@ -711,8 +740,8 @@ class EscalationQueriesMixin:
         message_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Append a non-reply conversation fact, idempotently when externally identified."""
-        if direction not in {"inbound", "outbound"}:
-            raise ValueError("direction must be inbound or outbound")
+        if direction not in ESCALATION_MESSAGE_DIRECTIONS:
+            raise ValueError("direction must be inbound, outbound or system")
         _require_nonempty(
             {"transport": transport, "verified_actor": verified_actor, "text": text},
             ("transport", "verified_actor", "text"),

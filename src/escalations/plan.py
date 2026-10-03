@@ -235,6 +235,11 @@ def plan_deliveries(
                         )
                     )
                 continue
+            if message.get("direction") != "outbound":
+                # A ``system`` row is the daemon's own audit note (spec §5.6's
+                # sweep trail), not somebody speaking.  Relaying it would put
+                # "sweep: gate_resolved" in the human channel as chatter.
+                continue
             # Outbound history is supervisor-authored.  Only messages the
             # supervisor addressed to this incident are relayed; unrelated
             # supervisor chat stays in the dashboard (§7).
