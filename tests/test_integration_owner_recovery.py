@@ -650,6 +650,62 @@ async def test_candidates_are_quiet_rows_whose_writer_is_not_live(env):
     ]
 
 
+async def test_the_default_sweep_releases_a_stopped_writer_and_never_a_live_one(
+    env, monkeypatch
+):
+    """The sweep ships on; the recovery's own proof still guards every live writer."""
+    from types import SimpleNamespace
+
+    from src.config import IntegrationConfig
+    from src.orchestrator.core import Orchestrator
+
+    now = time.time()
+    env.branch("aq/gone")
+    env.branch("aq/live")
+    env.branch("aq/relaunched")
+    await env.task("relaunched")
+    await env.session("s-gone", work_dir=env.tmp / "gone")
+    await env.session("s-live", work_dir=env.tmp / "live", state="running", desired_state="running")
+    await env.session("s-old", work_dir=env.tmp / "old")
+    await env.session(
+        "s-new",
+        work_dir=env.tmp / "new",
+        state="running",
+        desired_state="running",
+        task_id="relaunched",
+    )
+    await env.owner("o-gone", "aq/gone", "gone", session_id="s-gone", updated_at=now - 900)
+    await env.owner("o-live", "aq/live", "live", session_id="s-live", updated_at=now - 900)
+    await env.owner(
+        "o-relaunched", "aq/relaunched", "relaunched", session_id="s-old", updated_at=now - 900
+    )
+    service = env.service(clock=lambda: now)
+    monkeypatch.setattr(
+        "src.integration.owner_recovery.owner_recovery_for", lambda _orchestrator: service
+    )
+    orchestrator = SimpleNamespace(
+        config=SimpleNamespace(integration=IntegrationConfig()),
+        _owner_recovery_next_due=0.0,
+    )
+
+    await Orchestrator._sweep_stranded_owners(orchestrator, now)
+
+    assert (await env.row("o-gone"))["handoff_state"] == "released"
+    [released] = await env.audits("o-gone")
+    assert (released["outcome"], released["principal"]) == ("released", "sweep")
+    live = await env.row("o-live")
+    assert (live["handoff_state"], live["fence_token"], live["session_id"]) == (
+        "attached",
+        3,
+        "s-live",
+    )
+    assert await env.audits("o-live") == []
+    relaunched = await env.row("o-relaunched")
+    assert (relaunched["handoff_state"], relaunched["fence_token"]) == ("attached", 3)
+    [refused] = await env.audits("o-relaunched")
+    assert (refused["outcome"], refused["reason"]) == ("not_eligible", "writer_live")
+
+
 # ---------------------------------------------------------------------------
 # Construction from the daemon
 # ---------------------------------------------------------------------------

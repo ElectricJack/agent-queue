@@ -1364,7 +1364,7 @@
       ]
     }
   },
-  "digest": "sha256:57cf6efbe2d11604bf49f89c223e3ea16a3598b0c12e46197b6da289c568cfc1",
+  "digest": "sha256:b766789f542c90ef6005af78a94c1f6ab96688e45a0fa508648f87064b1c60fa",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5547,6 +5547,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.stall_checks",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.github_review_poll",
         "src.integration.models",
@@ -7673,6 +7674,7 @@
         "src.integration.ownership",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.core",
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.provider",
@@ -7825,6 +7827,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.contracts.integration",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.config",
         "src.database.tables",
@@ -7837,6 +7840,7 @@
         "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.parent_intents",
         "src.integration.preserved_repair",
         "src.integration.promotion",
         "src.integration.repair",
@@ -7931,6 +7935,8 @@
       "default_arm": true,
       "imports": [
         "src.claim_file",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.config",
@@ -7945,6 +7951,7 @@
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.outbox",
+        "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.repair",
         "src.intelligence_classes",
@@ -8155,6 +8162,7 @@
         "src.integration.epic_dependencies",
         "src.integration.migration_heads",
         "src.integration.models",
+        "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models",
@@ -8171,13 +8179,15 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.database.tables",
         "src.integration",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.scheduler",
         "src.integration.service",
-        "src.integration.settling"
+        "src.integration.settling",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -11033,7 +11043,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "The CI gate on ``pr_merge`` — src/git/ci_gate.py + _check_ci_before_merge."
     },
@@ -12621,6 +12632,7 @@
         "src.integration.candidates",
         "src.integration.main_promotion",
         "src.integration.release",
+        "src.integration.scheduler",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",

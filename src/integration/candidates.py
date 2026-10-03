@@ -922,7 +922,7 @@ class CandidateService:
                         revision=next_revision,
                         operation_id=state["operation"]["id"],
                     )
-                if dispatched["outcome"] in {"busy", "configuration_blocked"}:
+                if dispatched["outcome"] in {"busy", "configuration_blocked", "unknown"}:
                     return CandidateBuildResult(
                         outcome="wait",
                         batch_id=batch_id,
