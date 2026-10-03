@@ -15,6 +15,7 @@ const CommandCenterGraph = lazy(loadWorkspaceGraph);
 const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
+const HostShell = lazy(() => import("./pages/host-shell/HostShell"));
 const Metrics = lazy(() => import("./pages/metrics/Metrics"));
 const ReviewsInbox = lazy(() => import("./pages/reviews/ReviewsInbox"));
 const ReviewPage = lazy(() => import("./pages/reviews/ReviewPage"));
@@ -176,6 +177,7 @@ export default function App() {
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
             <Route path="metrics" element={<Metrics />} />
+            <Route path="host-shell" element={<HostShell />} />
             <Route path="reviews" element={<ReviewsInbox />} />
             <Route path="reviews/:reviewId" element={<ReviewPage />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
