@@ -715,7 +715,8 @@
         "tests/test_metrics_host.py",
         "tests/test_metrics_perf.py",
         "tests/test_metrics_relay.py",
-        "tests/test_metrics_sampler.py"
+        "tests/test_metrics_sampler.py",
+        "tests/test_metrics_token_efficiency.py"
       ]
     },
     "migrations": {
@@ -1348,7 +1349,7 @@
       ]
     }
   },
-  "digest": "sha256:920d917dc8642eab9aa7141127e5fa827a06f328a0f417b4f295d5804a0d6d40",
+  "digest": "sha256:3ff7d6c9ecdd5e72463b2765b50e5cfe44d3d7a0634afae23cf62adee6a25032",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2200,6 +2201,7 @@
         "src.commands.contracts",
         "src.commands.principal",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.doctor",
         "src.doctor.models",
@@ -2207,6 +2209,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator.core",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.sessions",
@@ -4253,9 +4256,11 @@
         "src.config",
         "src.config_editor",
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
         "src.routing.sources",
+        "src.sessions.transcripts.base",
         "src.tools"
       ],
       "markers": [
@@ -4613,8 +4618,10 @@
       "default_arm": true,
       "imports": [
         "src.api.scope",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
+        "src.prompt_builder",
         "src.vault"
       ],
       "markers": [],
@@ -6348,8 +6355,11 @@
         "src.api.scope",
         "src.commands.contracts",
         "src.commands.contracts.handoff",
+        "src.config",
         "src.handoffs",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context",
+        "src.sessions.transcripts.base"
       ],
       "markers": [
         "parametrize"
@@ -7904,7 +7914,9 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.integration",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.scheduler",
         "src.integration.service",
         "src.integration.settling"
@@ -8318,13 +8330,16 @@
         "src.commands.contracts.job",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.handoffs",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context"
       ],
       "markers": [
         "parametrize"
@@ -8968,6 +8983,21 @@
         "parametrize"
       ],
       "summary": "The metrics sampler: one row per tick, honest roll-ups, real retention."
+    },
+    "tests/test_metrics_token_efficiency.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.metrics.token_efficiency",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Read-only token-efficiency report: corrected accounting, attribution, halts, export."
     },
     "tests/test_mid_chain_rebase.py": {
       "areas": [
@@ -9721,10 +9751,12 @@
         "src.integration.branch_materialization",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.outbox",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
         "src.playbooks.run_state",
+        "src.playbooks.runtime",
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
@@ -12367,8 +12399,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.routing.context",
         "src.routing.planner",
-        "src.routing.policy"
+        "src.routing.policy",
+        "src.routing.replay"
       ],
       "markers": [
         "parametrize"
@@ -12393,9 +12427,13 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
         "src.playbooks.invocation",
+        "src.providers",
+        "src.providers.availability",
+        "src.routing.planner",
         "src.routing.sources",
         "src.sessions.harness_parser"
       ],
@@ -12954,6 +12992,7 @@
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
+        "src.config",
         "src.intelligence_classes",
         "src.models",
         "src.sessions",
@@ -14361,6 +14400,7 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -14418,10 +14458,12 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
-        "src.sessions.transcripts.codex"
+        "src.sessions.transcripts.codex",
+        "src.sessions.transcripts.reconciliation"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Transcript reader tests (S3, Task B1)."
     },

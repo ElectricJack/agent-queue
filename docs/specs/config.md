@@ -565,9 +565,12 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `state_cache_ttl_seconds` | `int` | `2` | TTL of the provider state cache — the tmux provider does at most one `list-panes` and one `ps` per reconciler tick. |
 | `transcript_poll_seconds` | `int` | `2` | Transcript reader poll interval (Phase S3). |
 | `adopt_on_start` | `bool` | `True` | Run the boot-time adoption pass. With it off, surviving sessions are not re-bound and `_recover_stale_state` resets their tasks. |
+| `worker_claude_plugin_overrides` | `map<str, bool>` | `{}` | Per-worker Claude plugin switch. A `plugin_id → bool` map merged as `enabledPlugins` into the `.aq/hooks/claude.json` rendered for **worker-lifecycle (`task`/`pool`) Claude sessions only**; supervisors and named sessions are untouched, and the live user-scope `~/.claude/settings.json` is never read or written. The empty default leaves the hook file byte-identical to the shipped template. Keys are validated `name@marketplace`, values must be `bool`. |
 
 Validation (`SessionsConfig.validate`): `provider` must be one of the three
-names; every integer key must be `>= 0`.
+names; every integer key must be `>= 0`; `worker_claude_plugin_overrides` must
+be a mapping whose keys look like `name@marketplace`
+(e.g. `fast-jev-compaction@fast-jev-compaction`) and whose values are `bool`.
 
 **Rollout and rollback.** A task takes the session path only when
 `sessions.enabled` is true **and** its resolved profile sets `harness:`
@@ -575,6 +578,17 @@ names; every integer key must be `>= 0`.
 gives per-profile and per-project opt-in with no extra config. Rollback is
 flipping `enabled` back to `false` or removing `harness:` from one profile —
 live sessions then drain naturally, and `aq session kill` cleans stragglers.
+
+**Rollout and rollback — fast-jev compaction hold-out.** Stage
+`worker_claude_plugin_overrides: {"fast-jev-compaction@fast-jev-compaction":
+false}` in the same config change that turns on `92.3`'s 160k compaction
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`), so worker sessions neither inherit
+the user-scope plugin nor hand post-compaction tool results to its judge.
+Rollback is deleting that one key — sessions revert to the inherited set on
+their next launch. Re-admit the plugin only after the review's `E1` retention
+probe shows parity with the built-in summary. The override is per-launch only:
+an existing live session keeps whatever it was handed at start, and nothing is
+ever written to `~/.claude/settings.json`.
 
 Per-profile session knobs (`harness`, `lifecycle`, `mode`, `wake_mode`,
 `idle_timeout`, `max_session_age`) live in profile markdown, not here: they

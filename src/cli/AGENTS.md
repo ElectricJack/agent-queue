@@ -34,7 +34,8 @@ exceptions.py      CommandError, DaemonNotRunningError, ScopeDeniedError
 formatter_registry.py  Maps CommandHandler commands to Rich formatters
 formatters.py      Rich table/panel formatters for all entity types
 formulas.py        `aq formula show` / `aq formula cook`
-global_options.py  Copies --json / --brief / --api-url onto commands so they parse anywhere
+global_options.py  Copies --json / --brief / --save-output / --api-url onto commands
+                   so they parse anywhere
 integration.py     `aq integration` — hierarchical integration trains
 install.py         `aq install` — the daemon-free installer: builds the step registry,
                    runs src/install's engine in-process, maps outcomes to exit codes;
@@ -99,7 +100,9 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
   (`aq doctor`, `aq logs`, `aq system config get`) keeps its local meaning. Design §4.0.
 - **Output contract:** `--json` prints the versioned envelope from `envelope.py`;
   `--brief` trims to `BRIEF_PROJECTIONS`; `AQ_JSON_LEGACY=1` restores the raw payload for
-  one release. Route new output through `emit()`, never print JSON directly.
+  one release. `--save-output PATH` saves a full private JSON envelope and prints a
+  receipt; actionable results/instructions remain visible. Route new output through
+  `emit()`, never print JSON directly.
 - **Registration:** a module imports `cli` from `app.py` and decorates with
   `@cli.group()` / `@group.command()`; importing registers. Hand-crafted modules are
   imported *before* `register_auto_commands()` so their names win over generated ones.

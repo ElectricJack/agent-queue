@@ -213,7 +213,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
 | [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
-| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait and its bounded result pointer. |
+| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
 

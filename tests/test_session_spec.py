@@ -6,6 +6,7 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, asdict, dataclass, replace
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -331,6 +332,122 @@ class TestHookSettingsWiring:
         assert settings["promptSuggestionEnabled"] is False
 
 
+class TestWorkerClaudePluginOverrides:
+    """``sessions.worker_claude_plugin_overrides`` merges as ``enabledPlugins``
+    into the rendered ``.aq/hooks/claude.json`` of worker-lifecycle Claude
+    sessions only — never supervisors, never a re-serialisation that perturbs
+    the default."""
+
+    HARNESS = replace(
+        CLAUDE,
+        supports_hooks=True,
+        hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        settings_flag="--settings",
+    )
+
+    @staticmethod
+    def _builder(overrides):
+        """A builder whose ``config.sessions`` carries *overrides*."""
+        from src.sessions.spec import SessionSpecBuilder
+
+        class _S:
+            pass
+
+        class _C(_Cfg):
+            sessions = _S()
+
+        cfg = _C()
+        cfg.sessions.worker_claude_plugin_overrides = overrides
+        return SessionSpecBuilder(cfg)
+
+    def _worker(self, overrides):
+        from src.models import RepoSourceType
+
+        return self._builder(overrides).build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=self.HARNESS,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+
+    def test_empty_map_leaves_the_hook_file_byte_identical(self):
+        import json as _json
+
+        tpl = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "prime" / "templates" / "hooks" / "claude.json"
+        ).read_text(encoding="utf-8")
+        spec = self._worker({})
+        raw = dict(spec.files)[".aq/hooks/claude.json"]
+        assert raw == tpl
+        # and no invented key
+        assert "enabledPlugins" not in _json.loads(raw)
+
+    def test_override_appears_in_a_worker_claude_hook(self):
+        import json as _json
+
+        overrides = {"fast-jev-compaction@fast-jev-compaction": False}
+        spec = self._worker(overrides)
+        settings = _json.loads(dict(spec.files)[".aq/hooks/claude.json"])
+        assert settings["enabledPlugins"] == overrides
+        # the rest of the payload is untouched
+        assert settings["promptSuggestionEnabled"] is False
+        assert "SessionStart" in settings["hooks"]
+
+    def test_supervisor_named_session_never_sees_the_override(self, builder):
+        import json as _json
+
+        cfg_builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        spec = cfg_builder.build_named_spec(
+            profile=_Profile(),
+            harness=self.HARNESS,
+            project_id=None,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+        )
+        if ".aq/hooks/claude.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(
+                dict(spec.files)[".aq/hooks/claude.json"]
+            )
+
+    def test_no_claude_harness_gets_no_override(self):
+        """A non-Claude worker session never acquires ``enabledPlugins``."""
+        import json as _json
+
+        codex = replace(
+            CLAUDE,
+            id="codex",
+            command="codex",
+            supports_hooks=True,
+            hook_files=((".codex/hooks.json", "hooks/codex.json"),),
+            settings_flag="--settings",
+        )
+        builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        from src.models import RepoSourceType
+
+        spec = builder.build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=codex,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+        if ".codex/hooks.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(dict(spec.files)[".codex/hooks.json"])
+
+
 class TestCodexHookTrust:
     """Codex discovers its hook file by path and refuses to run it untrusted."""
 
@@ -408,13 +525,17 @@ class TestCodexHookTrust:
         )
         assert _build(builder, harness=inert).hooks_provisioned is False
 
-    def test_the_codex_payload_wires_only_the_two_subagent_events(self, builder):
+    def test_the_codex_payload_wires_subagents_and_compaction_recovery(self, builder):
         import json as _json
 
         payload = _json.loads(
             dict(_isolated(builder, harness=self.CODEX).files)[".codex/hooks.json"]
         )
-        assert set(payload["hooks"]) == {"SubagentStart", "SubagentStop"}
+        assert set(payload["hooks"]) == {
+            "SubagentStart", "SubagentStop", "SessionStart", "PreCompact"
+        }
+        assert payload["hooks"]["PreCompact"][0]["hooks"][0]["command"] == "aq handoff --auto"
+        assert payload["hooks"]["SessionStart"][0]["matcher"] == "resume|compact"
         entry = payload["hooks"]["SubagentStart"][0]["hooks"][0]
         # Codex refuses to parse a handler without "type" and then silently
         # runs no hooks at all — measured on codex-cli 0.151.0.
@@ -1302,3 +1423,49 @@ class TestHarnessIdSlice:
         )
         profile = _Profile(harness="opencode", default_class="deep-high")
         assert builder._resolve_model(profile, harness, None) == "provider-slice-model"
+
+
+@pytest.mark.parametrize("harness", [CLAUDE, replace(CLAUDE, id="codex", command="codex")])
+def test_worker_native_compaction_setting_is_applied_only_to_future_worker_specs(harness):
+    from src.config import SessionsConfig
+
+    config = _Cfg()
+    config.sessions = SessionsConfig()
+    builder = SessionSpecBuilder(config)
+    worker = _build(builder, harness=harness)
+    if harness.id == "claude":
+        assert worker.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "160000"
+    else:
+        assert "model_auto_compact_token_limit=160000" in worker.command
+    assert worker.env["AQ_SESSION_ID"] == "sess-abc"
+    assert worker.env["AQ_TASK_ID"] == "task-1"
+    named = builder.build_named_spec(
+        profile=_Profile(), harness=harness, project_id="proj-1", work_dir="/wd",
+        session_id="named", instance_token="named-token",
+    )
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in named.env
+    assert "model_auto_compact_token_limit=160000" not in named.command
+    config.sessions.worker_context_compact_tokens = 0
+    inherited = _build(builder, harness=harness)
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in inherited.env
+    assert "model_auto_compact_token_limit=160000" not in inherited.command
+    # Constructing another spec cannot mutate an already-launched worker's spec.
+    assert worker.command != named.command
+    assert worker.env["AQ_SESSION_ID"] == "sess-abc"
+
+
+def test_worker_compaction_honors_explicit_harness_overrides_and_actual_executable():
+    from src.config import SessionsConfig
+
+    config = _Cfg()
+    config.sessions = SessionsConfig()
+    builder = SessionSpecBuilder(config)
+    claude = _build(builder, harness=replace(
+        CLAUDE, env=(("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "200000"),)))
+    assert claude.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
+    for args in (("-c", "model_auto_compact_token_limit=200000"),
+                 ("--config=model_auto_compact_token_limit=200000",)):
+        codex = _build(builder, harness=replace(CLAUDE, id="codex", command="codex", args=args))
+        assert "model_auto_compact_token_limit=160000" not in codex.command
+    other = _build(builder, harness=replace(CLAUDE, command="other-client"))
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in other.env

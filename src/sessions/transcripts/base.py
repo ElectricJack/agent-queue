@@ -18,10 +18,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 from typing import ClassVar
 
 __all__ = ["TranscriptEntry", "TranscriptReader", "parse_iso_ts"]
+
+
+def transcript_usage_key(provider: str, conversation: str, call_id: str) -> str:
+    """Stable call identity across daemon/AQ session incarnations."""
+    identity = json.dumps([provider, conversation, call_id], separators=(",", ":"))
+    return f"{provider}:{hashlib.sha256(identity.encode()).hexdigest()}"
 
 
 def parse_iso_ts(raw) -> float:
@@ -79,6 +87,8 @@ class TranscriptEntry:
     rate_limits: dict | None = None
     #: Provenance of ``model`` (provider response, transcript context, etc.).
     model_source: str | None = None
+    #: Provider API call identity, independent of content-block ``uuid``.
+    usage_call_id: str | None = None
 
 
 class TranscriptReader(ABC):
@@ -113,6 +123,10 @@ class TranscriptReader(ABC):
     async def read_latest_provider_usage(self, path: Path) -> TranscriptEntry | None:
         """Recover a quota reading without replaying conversation or token usage."""
         return None
+
+    async def read_usage_baselines(self, path: Path, offset: int) -> dict[str, list[str]]:
+        """Legacy content UUIDs before a checkpoint, grouped by API call."""
+        return {}
 
     @abstractmethod
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:

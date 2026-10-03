@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 # Owner roles whose ``owner_id`` is a task id and whose reservation therefore
 # survives its writer session.  ``arelease_integration_writer_for_retry``
@@ -24,6 +31,11 @@ RETRYABLE_INTEGRATION_OWNER_ROLES = frozenset({"worker", "repair"})
 # weight that blocks every subsequent claim rather than a reusable writer.
 # ``collector`` stays out: its ``owner_id`` is an operation/batch, not a task.
 REQUEUE_INTEGRATION_OWNER_ROLES = RETRYABLE_INTEGRATION_OWNER_ROLES | {"verifier"}
+
+# The project ``max_wait`` of the train simplification spec (section 3.6):
+# the longest an undelivered integration event keeps retrying before the
+# outbox quarantines it as an explicit failed delivery.
+DEFAULT_INTEGRATION_MAX_WAIT_SECONDS = 3600.0
 
 
 class BranchKey(BaseModel):
@@ -192,6 +204,36 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
+    max_wait_seconds: float = Field(
+        default=DEFAULT_INTEGRATION_MAX_WAIT_SECONDS, gt=0, allow_inf_nan=False
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_max_wait(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # Batches, operations and stages compare frozen snapshots by dict
+        # equality, and snapshots written before this field existed lack it.
+        # Dumping the default would make every in-flight operation look
+        # corrupt after an upgrade, so only a configured bound is written.
+        dumped = handler(self)
+        if self.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS:
+            dumped.pop("max_wait_seconds", None)
+        return dumped
+
+
+def integration_max_wait_seconds(raw_policy: Any) -> float:
+    """The validated ``max_wait_seconds`` a stored project policy names.
+
+    Development mode stores a ``DevelopmentPolicy`` in the same column and an
+    unconfigured project stores nothing; neither names a bound, and neither
+    does a stored policy that no longer validates.  They get the shipped
+    default rather than an unbounded wait.
+    """
+    if raw_policy is None:
+        return DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
+    try:
+        return HierarchicalIntegrationPolicy.model_validate(raw_policy).max_wait_seconds
+    except (TypeError, ValueError):
+        return DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 
 
 # Profile fields mandatory routing retired.  Each stays on its model so stored
