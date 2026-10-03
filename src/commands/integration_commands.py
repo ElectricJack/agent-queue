@@ -390,7 +390,7 @@ class IntegrationCommandsMixin:
             _label, refusal = await integration_operator(self.db, repository.project_id)
             if refusal is not None:
                 return _failure("human_required", refusal)
-        if principal.kind is PrincipalKind.PLAYBOOK:
+        elif principal.kind is PrincipalKind.PLAYBOOK:
             explicitly_capable = not principal.unresolved and principal.policy.allows(
                 "aq_commands", "integration_transfer_owner"
             )
