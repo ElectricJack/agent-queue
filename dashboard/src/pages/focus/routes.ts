@@ -15,6 +15,31 @@ export function focusReportHref(reportId: string): string {
   return `${FOCUS_ROOT}/reports/${encodeURIComponent(reportId)}`;
 }
 
+export function focusReviewHref(reviewId: string): string {
+  return `${FOCUS_ROOT}/reviews/${encodeURIComponent(reviewId)}`;
+}
+
+export function focusEscalationHref(escalationId: string): string {
+  return `${FOCUS_ROOT}/escalations/${encodeURIComponent(escalationId)}`;
+}
+
+/** The one "needs you" page; the digest's link lands here (spec §6.1). */
+export const FOCUS_INBOX = `${FOCUS_ROOT}/inbox`;
+
+export function focusInboxHref(): string {
+  return FOCUS_INBOX;
+}
+
+export function focusBatchHref(batchId: string): string {
+  return `${FOCUS_ROOT}/batches/${encodeURIComponent(batchId)}`;
+}
+
+export const FOCUS_CONVERSATIONS = `${FOCUS_ROOT}/conversations`;
+
+export function focusConversationHref(conversationId: string): string {
+  return `${FOCUS_CONVERSATIONS}/${encodeURIComponent(conversationId)}`;
+}
+
 export function isFocusPath(pathname: string): boolean {
   return pathname === FOCUS_ROOT || pathname.startsWith(`${FOCUS_ROOT}/`);
 }
