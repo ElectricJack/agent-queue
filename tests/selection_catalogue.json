@@ -588,6 +588,7 @@
         "tests/test_integration_settling.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
+        "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py"
       ]
@@ -1364,7 +1365,7 @@
       ]
     }
   },
-  "digest": "sha256:71ad66efbb4c77bc9556d0dfb363ee9a448f707649c09794f2d516239e241c32",
+  "digest": "sha256:251d3d590b810a045921c32628b2dae57f00860ce0ebf6b734bd6b941fa1edbb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8275,6 +8276,23 @@
         "parametrize"
       ],
       "summary": "A train request whose batch can never release it must not wedge the schedule."
+    },
+    "tests/test_integration_stall_recovery.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.outbox",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.scheduler",
+        "src.integration.service",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "P0 acceptance: durable ticks recover stalls on disposable PostgreSQL and Git."
     },
     "tests/test_integration_state.py": {
       "areas": [

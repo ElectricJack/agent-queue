@@ -358,6 +358,7 @@ areas:
     match:
       - tests/test_integration_state.py
       - tests/test_integration_service.py
+      - tests/test_integration_stall_recovery.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_settling.py
