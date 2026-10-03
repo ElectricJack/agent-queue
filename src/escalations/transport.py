@@ -13,7 +13,14 @@ An external send can never be transactionally exactly-once with the database
 * :class:`TransportUnavailable` is a missing channel or a missing permission:
   an actionable delivery fault, never a reason to create a channel;
 * :class:`TransportMissing` means the post or thread this incident is bound to
-  is gone, which is the only thing that earns a replacement generation.
+  is gone, which is the only thing that earns a replacement generation;
+* :class:`TransportRejected` means the platform refused the request itself (a
+  Discord 400 such as error code 50035): the same request gets the same answer
+  every time, so it is never retried.
+
+Every send path fits its content under :data:`MAX_CONTENT_CHARS` with
+:func:`bound_content`, which keeps the last line -- the delivery marker or the
+dashboard link -- intact.
 
 Tests use :class:`SinkTransport`; no test may touch a real Discord client.
 """
@@ -42,6 +49,67 @@ class TransportUnavailable(TransportError):
 
 class TransportMissing(TransportError):
     """The bound root message or thread no longer exists."""
+
+
+class TransportRejected(TransportError):
+    """The platform refused this exact request; sending it again cannot succeed."""
+
+
+#: Discord's hard per-message ceiling.
+MAX_CONTENT_CHARS = 2000
+#: Appended where :func:`bound_content` cut the text.
+TRUNCATION_NOTICE = "… (truncated; full text in dashboard)"
+_FENCE = "```"
+
+
+def _units(text: str) -> int:
+    """Length in UTF-16 code units, never less than Python's ``len``.
+
+    Whether Discord counts code points or UTF-16 units, a text this short in
+    units is short enough.
+    """
+    return len(text) + sum(1 for char in text if ord(char) > 0xFFFF)
+
+
+#: Room a cut keeps for the notice and for closing a code block it left open.
+_RESERVE = _units(TRUNCATION_NOTICE) + len(_FENCE) + 2
+
+
+def _cut(text: str, budget: int) -> str:
+    """The longest prefix of ``text`` that fits ``budget`` UTF-16 units."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > budget:
+            return text[:index]
+    return text
+
+
+def _cut_body(body: str, budget: int) -> str:
+    """Cut ``body`` and mark the cut, closing a code block the cut left open."""
+    kept = _cut(body, max(0, budget - _RESERVE)).rstrip()
+    if kept.count(_FENCE) % 2:
+        kept += f"\n{_FENCE}\n"
+    return kept + TRUNCATION_NOTICE
+
+
+def bound_content(content: str, *, limit: int = MAX_CONTENT_CHARS) -> str:
+    """Fit ``content`` into one message without losing its last line.
+
+    The last line is the one a reader or a reconciliation pass needs: the
+    dashboard link of a review notice, the ``aq-esc``/``aq-dig`` marker of an
+    escalation or digest post.  So the text above it is cut from its end, which
+    keeps the heading and gives up the long free-text note first, and a visible
+    notice says the full text is in the dashboard.  A last line too long to
+    keep leaves no room for anything else, so then the whole text is cut.
+    """
+    if _units(content) <= limit:
+        return content
+    body, newline, last = content.rstrip().rpartition("\n")
+    budget = limit - _units(last) - 1
+    if not newline or budget < _RESERVE:
+        return _cut_body(content, limit)
+    return f"{_cut_body(body, budget)}\n{last}"
 
 
 @dataclass(frozen=True)

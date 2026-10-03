@@ -2,8 +2,9 @@
 
 Everything Discord-specific about §7 lives here: how a channel is resolved by
 ID, how a thread is created from the root message, how a deleted post is told
-apart from a rate limit, and how the marker search reads back recent history
-after an ambiguous send.
+apart from a rate limit or a refused request, how every send is fitted under
+the 2000-character message ceiling, and how the marker search reads back
+recent history after an ambiguous send.
 
 The rest of the feature never imports ``discord``.  That is deliberate: the
 planner, renderer and dispatcher are exercised against
@@ -23,8 +24,10 @@ from src.escalations.transport import (
     ThreadHandle,
     TransportAmbiguous,
     TransportMissing,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
+    bound_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,8 +115,10 @@ class DiscordEscalationTransport:
             return TransportUnavailable(f"missing permission ({exc})")
         if status == 404:
             return TransportMissing(str(exc))
-        if status == 429 or status >= 500:
-            return TransportRetryable(f"discord {status}: {exc}")
+        if 400 <= status < 500 and status not in (401, 408, 429):
+            # Discord refused the request itself -- a 400 "Invalid Form Body"
+            # (error code 50035) answers the same way to every resend.
+            return TransportRejected(f"discord {status}: {exc}")
         return TransportRetryable(f"discord {status}: {exc}")
 
     def _guard(self) -> None:
@@ -165,7 +170,7 @@ class DiscordEscalationTransport:
         channel = await self._channel(channel_id)
         try:
             message = await channel.send(
-                content, allowed_mentions=_allowed_mentions(self._settings)
+                bound_content(content), allowed_mentions=_allowed_mentions(self._settings)
             )
         except discord.Forbidden as exc:
             self._record(403)
@@ -221,7 +226,9 @@ class DiscordEscalationTransport:
         try:
             if getattr(thread, "archived", False):
                 await thread.edit(archived=False)
-            message = await thread.send(content, allowed_mentions=discord.AllowedMentions.none())
+            message = await thread.send(
+                bound_content(content), allowed_mentions=discord.AllowedMentions.none()
+            )
         except discord.Forbidden as exc:
             self._record(403)
             raise TransportUnavailable(f"cannot post in thread {thread_id}: {exc}") from exc
@@ -238,7 +245,9 @@ class DiscordEscalationTransport:
         channel = await self._channel(channel_id)
         try:
             message = await channel.fetch_message(int(root_message_id))
-            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+            await message.edit(
+                content=bound_content(content), allowed_mentions=discord.AllowedMentions.none()
+            )
         except discord.NotFound as exc:
             raise TransportMissing(f"root message {root_message_id} was deleted") from exc
         except discord.Forbidden as exc:

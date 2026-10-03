@@ -25,6 +25,7 @@ from src.digest.dispatch import MARKER_PREFIX, marker_for
 from src.escalations.transport import (
     SinkTransport,
     TransportAmbiguous,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
 )
@@ -537,6 +538,20 @@ async def test_a_lost_acknowledgement_is_recovered_from_the_marker(db):
     assert report.sent == 1
     assert len(transport.messages) == 1  # recovered, never reposted
     assert (await db.get_digest_window(row["id"]))["send_status"] == "sent"
+
+
+async def test_a_rejected_post_ends_at_once_instead_of_retrying(db):
+    clock = Clock(BASE + HOUR + 30)
+    transport = SinkTransport()
+    transport.faults.append(("post_root", TransportRejected("discord 400 (error code: 50035)")))
+    service = make_service(db, transport, clock=clock)
+    row = await _reserve_sendable(db, clock=clock, service=service)
+
+    await service.pump()
+    after = await db.get_digest_window(row["id"])
+    assert after["send_status"] == "unknown"
+    assert "50035" in after["last_error"]
+    assert transport.calls == ["post_root"]
 
 
 async def test_a_missing_permission_is_bounded_and_ends_in_attention_needed(db):
