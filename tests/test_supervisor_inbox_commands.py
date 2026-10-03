@@ -127,7 +127,7 @@ async def test_gateway_atomic_rows_stable_brief_outbox_and_event(env):
     ) == (
         None,
         "session",
-        "supervisor-global",
+        "conversation-queued",
         "conversation_input",
         f"conversation:{result['conversation_id']}",
         None,

@@ -52,6 +52,7 @@ MAX_INPUT_CHARS = 4000
 IDLE_CLOSABLE_STATES = ("open", "delivery_blocked")
 
 SUPERVISOR_RECIPIENT = "supervisor-global"
+QUEUED_SUPERVISOR_RECIPIENT = "conversation-queued"
 _SUPERVISOR_PRIORITY = 50
 _UNIQUE_INPUT = "uq_conversation_inputs_external"
 
@@ -116,6 +117,67 @@ class ConversationQueriesMixin:
     # Intake
     # ------------------------------------------------------------------
 
+    async def resolve_conversation_supervisor(
+        self, project_id: str = ""
+    ) -> tuple[str | None, str | None]:
+        """Choose a live project supervisor, then global, otherwise keep the input queued."""
+        from src.sessions.spec import named_session_name
+
+        if not project_id:
+            projects = await self.list_projects()
+            if len(projects) == 1:
+                project_id = projects[0].id
+            elif len(projects) > 1:
+                # A shared channel cannot guess which project's supervisor owns it.
+                return None, None
+        for scope in [project_id, None] if project_id else [None]:
+            live = await self.get_session_by_name(
+                named_session_name("supervisor", scope or "global")
+            )
+            if (
+                live is not None
+                and live.state in {"starting", "running"}
+                and live.desired_state == "running"
+                and live.profile_id == "supervisor"
+                and live.lifecycle == "named"
+                and live.project_id == scope
+            ):
+                return f"supervisor-{scope or 'global'}", scope
+        return None, project_id or None
+
+    async def route_queued_conversation_inputs(self, project_id: str = "") -> int:
+        """Drain only unassigned notices; assigned envelopes retain their recipient."""
+        recipient, scope = await self.resolve_conversation_supervisor(project_id)
+        if recipient is None:
+            return 0
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(messages)
+                .where(
+                    messages.c.to_kind == "session",
+                    messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
+                    messages.c.body_kind == "conversation_input",
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+                .values(to_id=recipient, project_id=scope)
+            )
+            return result.rowcount
+
+    async def find_conversation_input_by_supervisor_message(self, message_id: str) -> dict | None:
+        async with self._engine.connect() as conn:
+            return _row(
+                (
+                    await conn.execute(
+                        select(conversation_inputs).where(
+                            conversation_inputs.c.supervisor_message_id == message_id
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+
     async def accept_conversation_input(
         self,
         *,
@@ -134,6 +196,7 @@ class ConversationQueriesMixin:
         conversation_id: str | None,
         brief: str | Callable[[str, str], str],
         supervisor_recipient: str = SUPERVISOR_RECIPIENT,
+        supervisor_project_id: str | None = None,
         now: float | None = None,
         enforce_limits: bool = False,
     ) -> dict[str, Any]:
@@ -211,6 +274,7 @@ class ConversationQueriesMixin:
                 conversation_id=conversation_id,
                 brief=brief,
                 supervisor_recipient=supervisor_recipient,
+                supervisor_project_id=supervisor_project_id,
                 now=stamp,
                 enforce_limits=enforce_limits,
             )
@@ -243,6 +307,7 @@ class ConversationQueriesMixin:
         conversation_id: str | None,
         brief: str | Callable[[str, str], str],
         supervisor_recipient: str,
+        supervisor_project_id: str | None,
         now: float,
         enforce_limits: bool,
     ) -> dict[str, Any]:
@@ -250,7 +315,10 @@ class ConversationQueriesMixin:
             if enforce_limits:
                 # Shared across handlers/restarts and gateway/backfill. Always
                 # acquire author then channel to keep the lock order stable.
-                for key in (f"conversation:author:{author_id}", f"conversation:channel:{channel_id}"):
+                for key in (
+                    f"conversation:author:{author_id}",
+                    f"conversation:channel:{channel_id}",
+                ):
                     await conn.execute(
                         select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
                     )
@@ -262,7 +330,9 @@ class ConversationQueriesMixin:
                     ("channel", conversation_inputs.c.channel_id, channel_id, CHANNEL_WINDOW_LIMIT),
                 ):
                     total = await conn.scalar(
-                        select(func.count()).select_from(conversation_inputs).where(
+                        select(func.count())
+                        .select_from(conversation_inputs)
+                        .where(
                             conversation_inputs.c.created_at >= now - WINDOW_SECONDS,
                             conversation_inputs.c.state != "revoked",
                             column == value,
@@ -362,7 +432,7 @@ class ConversationQueriesMixin:
             await conn.execute(
                 pg_insert(messages).values(
                     id=supervisor_message_id,
-                    project_id=None,
+                    project_id=supervisor_project_id,
                     from_kind="user",
                     from_id=f"discord:{author_id}",
                     to_kind="session",
@@ -603,7 +673,7 @@ class ConversationQueriesMixin:
         nothing.  Raises :class:`ConversationNotFound`,
         :class:`ConversationConflict` (input from another conversation, or the
         id already names an unrelated message), :class:`ConversationClosed`
-        and :class:`ConversationStateError` (revoked input).
+        and :class:`ConversationStateError` (revoked or already answered input).
 
         Returns ``{"created", "conversation", "input", "message"}``.
         """
@@ -662,6 +732,8 @@ class ConversationQueriesMixin:
                     "input": dict(item),
                     "message": dict(existing),
                 }
+            if item["reply_message_id"] is not None:
+                raise ConversationStateError(f"input {input_id} already has an answer")
             if conversation["state"] == "closed":
                 raise ConversationClosed(f"conversation {conversation_id} is closed")
             if item["state"] == "revoked":
@@ -670,7 +742,7 @@ class ConversationQueriesMixin:
             notice = (
                 (
                     await conn.execute(
-                        select(messages.c.to_id, messages.c.read_at).where(
+                        select(messages.c.to_id, messages.c.read_at, messages.c.project_id).where(
                             messages.c.id == item["supervisor_message_id"]
                         )
                     )
@@ -685,7 +757,7 @@ class ConversationQueriesMixin:
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,
-                            project_id=None,
+                            project_id=notice["project_id"] if notice is not None else None,
                             from_kind="session",
                             from_id=sender,
                             to_kind="user",

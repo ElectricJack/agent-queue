@@ -2,7 +2,8 @@
 
 An allowlisted operator can mention the bot user, for example `@Agent Q what
 is blocking the build?`, in the configured channel to open a thread with the
-global supervisor. This route is off by default. It deliberately relaxes the
+project supervisor, falling back to the global supervisor. This route is off by default.
+It deliberately relaxes the
 2026-09-08 Discord simplification without restoring slash commands, task
 controls, gate buttons, worker input or unrestricted channel chat.
 
@@ -24,8 +25,14 @@ text itself cannot resolve gates, create approval evidence or call
 `escalation_apply_reply`. Prompt instructions cannot hard-restrict the tools of
 an already-running elevated session. An installation requiring enforced
 read-only chat must keep this feature off until a separately scoped author
-session exists. There is no per-project routing syntax in this version; the
-supervisor clarifies project identity when needed.
+session exists.
+
+The approved 2026-10-03 chat-extension spec adds project routing. Set
+`discord.project_id` to the project served by this channel. AQ infers it when
+there is exactly one project; installations with multiple projects must set it
+explicitly. Inputs go to that project's live named supervisor, then to the live
+global supervisor. When neither is running, inputs remain queued until a
+supervisor starts; conversation intake does not cold-start a session.
 
 ## Enable the route
 
@@ -38,6 +45,7 @@ discord:
   bot_token: "${DISCORD_BOT_TOKEN}"
   guild_id: "123456789012345678"
   channel_id: "234567890123456789"
+  project_id: "agent-queue"
   authorized_users: ["345678901234567890"]
   conversation:
     enabled: true
@@ -56,7 +64,7 @@ Both the gateway and `supervisor_inbox_post` require all eight preconditions:
 | Configured `discord.guild_id` | `no_guild` |
 | Configured `discord.channel_id` | `no_channel` |
 | `messages.enabled: true` | `messages_disabled` |
-| `sessions.enabled: true` for supervisor delivery/cold start | `sessions_disabled` |
+| `sessions.enabled: true` for supervisor delivery | `sessions_disabled` |
 | Discord cutover status `complete` | `cutover_incomplete` |
 | Conversation delivery outbox bound by the daemon | `outbox_unbound` |
 
@@ -97,13 +105,17 @@ normalized input, which must contain some remaining text.
 
 AQ persists the conversation, verified author and input before queuing any
 Discord delivery. It queues one thread-open acknowledgement on the operator's
-root message and sends a durable input notice to `supervisor-global`. Follow-up
+root message and addresses a durable input notice to `supervisor-<project_id>`
+or `supervisor-global`. If both are offline, the pending notice is assigned when
+a supervisor becomes available. Follow-up
 messages in the bound thread need no new mention; each is checked against the
 current allowlist and conversation audience.
 
-Only an explicit `supervisor_inbox_reply` from the assigned global supervisor
-or local operator queues an answer. Generic mailbox messages, `message.sent`
-events and transcript-tail fallback replies are never relayed. The Discord
+An explicit `supervisor_inbox_reply` or `message_reply` to the input notice from
+the assigned supervisor or local operator queues one answer per input. The
+supervisor's live launch and instance token must match its recipient address.
+Unrelated mailbox messages, `message.sent` events and transcript-tail fallback
+replies are never relayed. The Discord
 reply is at most 1,900 characters including its marker and dashboard pointer;
 a longer answer stays in conversation content with a dashboard pointer. Sends
 disable all mentions, remove control characters and mention tokens, and retain
@@ -132,6 +144,7 @@ These values are shared code constants, not operator tuning settings.
 | Accepted inputs per channel | 60 per sliding 10 minutes |
 | Rate-limit notice | At most one per author per 10-minute bucket |
 | Outbound reply, including pointer and marker | 1,900 characters |
+| Shared Discord outbound posts and edits | 20 operations per minute |
 | Reconnect history | Last 24 hours, at most 1,000 messages per pass |
 | Unanswered-input delay notice | After 15 minutes |
 | Conversation text retention | 30 days |
