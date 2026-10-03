@@ -22,7 +22,13 @@ from src.knowledge.deprecation import (
 )
 from src.knowledge.imports.compatibility import CompatibilityFence
 from src.knowledge.imports.manifest import Inventory, seal_manifest, verify_manifest
-from tests.test_knowledge_import import LOCAL, args, importer as importer_fixture, manifest
+from tests.test_knowledge_import import (
+    LOCAL,
+    _container_publishing,
+    args,
+    importer as importer_fixture,
+    manifest,
+)
 
 importer = importer_fixture
 NOW = datetime(2026, 11, 2, tzinfo=UTC)
@@ -247,24 +253,30 @@ async def test_synthetic_full_database_and_vault_restore_preserves_exact_evidenc
     shutil.copytree(importer.vault_root, restored_vault)
     engine = create_postgres_engine(await create_scratch_database("knowledge-deprecation-restore"))
 
-    def pg_command(tool, url):
-        if url.host in {"localhost", "127.0.0.1"} and url.port == 5534:
-            return [
-                "docker",
-                "exec",
-                "-i",
-                "aq-postgres-test",
-                tool,
-                "-U",
-                "agent_queue_test",
-                "-d",
-                url.database,
-            ]
-        return [tool, "-d", url.render_as_string(hide_password=False)]
-
     try:
+        dump_url = importer.db._engine.url.set(drivername="postgresql")
+        target_url = engine.url.set(drivername="postgresql")
+        # Use the serving container's clients so pg_dump matches its server
+        # version, including CI's cluster on a dynamically published port.
+        container = await _container_publishing(dump_url)
+
+        def pg_command(tool, url):
+            if container is not None:
+                return [
+                    "docker",
+                    "exec",
+                    "-i",
+                    container,
+                    tool,
+                    "-U",
+                    url.username,
+                    "-d",
+                    url.database,
+                ]
+            return [tool, "-d", url.render_as_string(hide_password=False)]
+
         dump = await asyncio.create_subprocess_exec(
-            *pg_command("pg_dump", importer.db._engine.url.set(drivername="postgresql")),
+            *pg_command("pg_dump", dump_url),
             "--no-owner",
             "--no-acl",
             stdout=asyncio.subprocess.PIPE,
@@ -280,7 +292,7 @@ async def test_synthetic_full_database_and_vault_restore_preserves_exact_evidenc
         erasure = redact_args(current)
         await importer.redact(**erasure)
         restore = await asyncio.create_subprocess_exec(
-            *pg_command("psql", engine.url.set(drivername="postgresql")),
+            *pg_command("psql", target_url),
             "-X",
             "-v",
             "ON_ERROR_STOP=1",
