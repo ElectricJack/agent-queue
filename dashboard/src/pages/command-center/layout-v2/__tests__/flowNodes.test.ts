@@ -8,6 +8,10 @@ const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
   container_id: null, kind, context_only: false,
   agg_children: 2, agg_descendants: 3, agg_completed: 1, agg_running: 0, agg_blocked: 0, agg_active: 2, ...extra,
 });
+const REVIEW_WAIT = {
+  review_id: "brisk-lantern-7", review_state: "changes_requested", review_kind: "spec", review_title: "Spec",
+  gate_id: "g-1", gate_type: "review", gate_status: "open", blocking: true,
+};
 const ctx = { projectId: "p1", offsetY: 0, focusId: null, handlers: { onOpenTask: () => {}, onFocus: () => {} } };
 
 describe("toFlowElements", () => {
@@ -261,6 +265,33 @@ describe("toFlowElements", () => {
     const same = toFlowElements(wire(tiles), ctx, first.cache);
     const changed = { ...tiles, nodes: [n("a", "collapsed", 0, 0, { delivery: EPIC_DELIVERY.activeIntegration })] };
     const second = toFlowElements(wire(changed), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(same, "a")).toBe(byId(first, "a"));
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
+  });
+
+  it("carries a card's review waits in its payload, defaulting to none", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("w", "card", 0, 0, { review_waits: [REVIEW_WAIT] }), n("z", "card", 1, 0)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const byId = Object.fromEntries(nodes.map((x) => [x.id, x]));
+    expect((byId.w!.data as { reviewWaits: unknown[] }).reviewWaits).toEqual([REVIEW_WAIT]);
+    expect((byId.z!.data as { reviewWaits: unknown[] }).reviewWaits).toEqual([]);
+  });
+
+  it("rebuilds a card when only its review's state changes", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0, { review_waits: [REVIEW_WAIT] })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    const same = toFlowElements(wire(tiles), ctx, first.cache);
+    const approved = { ...REVIEW_WAIT, review_state: "approved", gate_status: "resolved", blocking: false };
+    const second = toFlowElements(wire({ ...tiles, nodes: [n("a", "card", 0, 0, { review_waits: [approved] })] }),
+      ctx, first.cache);
     const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
     expect(byId(same, "a")).toBe(byId(first, "a"));
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
