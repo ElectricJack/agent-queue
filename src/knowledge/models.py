@@ -313,7 +313,9 @@ class ContextItem:
             f"Record {self.record_id} revision {self.revision_id} sha256:{self.content_sha256}\n"
             f"Selection: {self.reason}; verification: {self.verification}; "
             f"lifecycle: {self.lifecycle}; freshness: {self.freshness}; "
-            f"authority: {self.authority}.\n{body}"
+            f"authority: {self.authority}; sources: {len(self.sources)} retained descriptors.\n{body}"
+            + ("\n> Sources: " + json.dumps(self.sources, sort_keys=True, ensure_ascii=False)
+               if self.sources else "")
         )
 
 

@@ -631,8 +631,11 @@
         "tests/test_api_knowledge.py",
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_budget.py",
+        "tests/test_knowledge_citations.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
+        "tests/test_knowledge_context.py",
         "tests/test_knowledge_evaluation.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
@@ -1382,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:816d14e683e6dc80625892c91ef3156ccb2eff4123dcbd0299de9dd4b831a38e",
+  "digest": "sha256:9fa1639315fb128b62fb4344319c1e8f0ee412d8fa50051b3344bcf9028fa222",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8798,6 +8801,38 @@
       ],
       "summary": "Core access remains fail closed with legacy capability enforcement disabled."
     },
+    "tests/test_knowledge_budget.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.knowledge.budget",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Hard aggregate caps include required text, tools, wrappers and output."
+    },
+    "tests/test_knowledge_citations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.profiles.capabilities",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Only observed, authorized delivery becomes persistent injected evidence."
+    },
     "tests/test_knowledge_commands.py": {
       "areas": [
         "knowledge-records"
@@ -8823,6 +8858,38 @@
       ],
       "markers": [],
       "summary": "Ownership stays fenced across disabled writes and filesystem divergence."
+    },
+    "tests/test_knowledge_context.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.budget",
+        "src.knowledge.context",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.messages",
+        "src.models",
+        "src.prime.models",
+        "src.prime.renderer",
+        "src.profiles.capabilities",
+        "src.prompt_builder",
+        "src.records.auth",
+        "src.records.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
     },
     "tests/test_knowledge_evaluation.py": {
       "areas": [

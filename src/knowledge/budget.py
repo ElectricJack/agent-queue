@@ -5,8 +5,8 @@ reuse the historical characters/4 display estimate. Required instructions are
 never truncated: callers must refuse delivery when they do not fit.
 """
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 
 from src.records.models import RecordError
 
@@ -52,6 +52,8 @@ class ContextBudget:
     def account(self, required: str, knowledge: str = "", *, tools=()) -> dict:
         tool_text = json.dumps(tools, ensure_ascii=False, sort_keys=True) if tools else ""
         required_tokens = len(required.encode("utf-8")) + len(tool_text.encode("utf-8"))
+        # The shared delivery paths append evidence with a blank-line separator.
+        required_tokens += 2 if knowledge else 0
         knowledge_bytes = len(knowledge.encode("utf-8"))
         reserved = self.output_tokens + self.wrapper_tokens
         effective = max(0, min(self.knowledge_tokens, self.input_tokens - required_tokens - reserved))

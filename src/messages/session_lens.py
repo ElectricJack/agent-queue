@@ -488,6 +488,7 @@ class SessionLens:
         elif wake == "fresh":
             resume_key = None
         handle = None
+        context_service = bundle = bootstrap = None
         try:
             spec = self._spec_builder.build_named_spec(
                 profile=profile,
@@ -501,6 +502,42 @@ class SessionLens:
                 wake="resume" if resume_key else "fresh",
                 resume_key=resume_key,
             )
+            from src.knowledge.context import (
+                ContextService, context_enabled, supervisor_bootstrap_principal,
+            )
+            if context_enabled(self._config) and (
+                harness_project is None
+                or harness_project in self._config.knowledge.enabled_projects
+            ):
+                context_service = ContextService(self._db, self._config)
+                bootstrap = supervisor_bootstrap_principal(
+                    profile, project_id=harness_project, session_id=session_id,
+                    instance_token=instance_token,
+                )
+                # The default global bootstrap selects no private projects.
+                # A project bootstrap uses the same selector as worker prime.
+                required = spec.prompt or ""
+                bundle = await context_service.prepare(
+                    principal=bootstrap, required=required,
+                    query=self._config.knowledge.context.supervisor_query,
+                    project_ids=([harness_project] if harness_project else
+                                 self._config.knowledge.context.supervisor_project_ids),
+                    global_scope=(self._config.knowledge.context.supervisor_global_scope
+                                  if harness_project is None else False),
+                )
+                from src.knowledge.budget import ContextBudget
+
+                ContextBudget(**bundle.budget["requested"]).enforce(
+                    required, bundle.to_markdown(),
+                )
+                if bundle.items:
+                    spec = self._spec_builder.build_named_spec(
+                        profile=profile, harness=harness, project_id=harness_project,
+                        work_dir=work_dir, session_id=session_id, instance_token=instance_token,
+                        epoch=self._epoch, api_token=api_token,
+                        wake="resume" if resume_key else "fresh", resume_key=resume_key,
+                        prompt=required + "\n\n" + bundle.to_markdown(),
+                    )
             # Precompute our fenced handle so partial starts can also be cleaned up.
             handle = SessionHandle(spec.session_name, provider_name, instance_token)
             launched_at = time.time()
@@ -526,6 +563,14 @@ class SessionLens:
                     hooks_provisioned=spec.hooks_provisioned,
                 )
             )
+            if bundle is not None and spec.prompt is not None:
+                from src.knowledge.context import live_bootstrap_principal
+
+                await context_service.observe_delivery(
+                    bundle_id=bundle.bundle_id, principal=live_bootstrap_principal(bootstrap),
+                    transport="session_start", transport_key=f"session-start:{session_id}",
+                    rendered_sha256=bundle.content_sha256,
+                )
         except BaseException as exc:
             # Adoption can publish our exact row during a slow launch. A
             # different instance is never ours to keep, stop, or overwrite.
@@ -533,6 +578,8 @@ class SessionLens:
             if own is not None and own.instance_token == instance_token:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
+                logger.warning("supervisor %s started; post-start acknowledgement failed",
+                               target_id, exc_info=True)
                 return True
             if handle is not None:
                 try:

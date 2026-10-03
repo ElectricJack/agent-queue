@@ -223,6 +223,9 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_import_runs",
         "record_legacy_mappings",
         "record_import_items",
+        "knowledge_context_bundles",
+        "knowledge_context_deliveries",
+        "knowledge_citations",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
     }

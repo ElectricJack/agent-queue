@@ -28,6 +28,34 @@ def _knowledge_scope(args):
 
 
 class KnowledgeCommandsMixin:
+    def _knowledge_context_service(self):
+        from src.knowledge.context import ContextService
+
+        return ContextService(self.db, self.config)
+
+    async def _cmd_knowledge_context_deliver(self, args):
+        try:
+            return await self._knowledge_context_service().observe_delivery(
+                principal=current_principal(), bundle_id=args["bundle_id"],
+                transport=args["transport"], transport_key=args["idempotency_key"],
+                rendered_sha256=args["rendered_sha256"], state=args.get("state", "delivered"),
+                claim_epoch=args.get("claim_epoch"),
+            )
+        except RecordError as exc:
+            return exc.result()
+
+    async def _cmd_knowledge_cite(self, args):
+        try:
+            citation_id = await self._knowledge_context_service().cite(
+                principal=current_principal(), project_id=_knowledge_scope(args),
+                identity=args["identity"], revision_id=args["revision_id"],
+                kind=args["kind"], idempotency_key=args["idempotency_key"],
+                claim_epoch=args.get("claim_epoch"),
+            )
+            return dict(success=True, citation_id=citation_id)
+        except RecordError as exc:
+            return exc.result()
+
     async def _cmd_knowledge_create_task(self, args):
         from src.knowledge.task_creation import create_task_from_knowledge
 
