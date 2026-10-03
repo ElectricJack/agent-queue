@@ -634,12 +634,15 @@
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_evaluation.py",
         "tests/test_knowledge_import_inventory.py",
+        "tests/test_knowledge_index_receipts.py",
         "tests/test_knowledge_inventory.py",
+        "tests/test_knowledge_memory_adapter.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_proposals.py",
         "tests/test_knowledge_provider_absence.py",
         "tests/test_knowledge_redaction.py",
         "tests/test_knowledge_retrieval.py",
+        "tests/test_knowledge_retrieval_benchmark.py",
         "tests/test_knowledge_service.py",
         "tests/test_knowledge_task_creation.py",
         "tests/test_record_backfill.py",
@@ -1382,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:57b53dbe8dc51ee0695de11eaa0f43c2a70d1e611590534afc31abdbce9a8ab3",
+  "digest": "sha256:bd3779c3ebc00c22a113d2dfcb38331f5e0b0f8014da7b75c530929b1e6d1ec6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8842,6 +8845,28 @@
       ],
       "summary": "K06 legacy read-only import inventory: schema, authorization and dry-run CLI."
     },
+    "tests/test_knowledge_index_receipts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Derived index receipts, the chunk manifest and local provider registration."
+    },
     "tests/test_knowledge_inventory.py": {
       "areas": [
         "knowledge-inventory",
@@ -8857,6 +8882,25 @@
         "parametrize"
       ],
       "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
+    },
+    "tests/test_knowledge_memory_adapter.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.knowledge.memory_port",
+        "src.knowledge.providers",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The legacy aq-memory adapter port: scope isolation and summary suppression."
     },
     "tests/test_knowledge_migrations.py": {
       "areas": [
@@ -8942,6 +8986,23 @@
         "parametrize"
       ],
       "summary": "Reference-only optional ranking with real core PostgreSQL authorization."
+    },
+    "tests/test_knowledge_retrieval_benchmark.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.benchmark",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service"
+      ],
+      "markers": [],
+      "summary": "The G5 pre-gate comparison: lexical vs offline semantic over one corpus."
     },
     "tests/test_knowledge_service.py": {
       "areas": [

@@ -22,6 +22,7 @@ from src.database.tables import (
     tasks,
 )
 from src.doctor.models import CheckResult, DoctorCheck, Severity
+from src.knowledge.index_receipts import indexed_provider_ids, provider_lag_counts
 from src.knowledge.models import content_hash
 from src.records.backfill import task_mapping_inventory
 from src.records.export import read_managed
@@ -262,8 +263,19 @@ async def _index(ctx):
                 ),
             )
         )
+    # Derived provider receipts are read, never initialized: an absent provider
+    # simply has no receipts, and that is not a finding.
+    providers = await indexed_provider_ids(ctx.db)
+    receipts = await provider_lag_counts(ctx.db, providers)
+    behind = sum(entry["lag"] for entry in receipts.values())
     return _result(
-        "index_lag", count, data={"index": "lexical", "optional_provider_initialized": False}
+        "index_lag",
+        count + behind,
+        data={
+            "index": "lexical",
+            "optional_provider_initialized": False,
+            "provider_receipts": receipts,
+        },
     )
 
 
@@ -300,10 +312,20 @@ async def _redaction(ctx):
                 knowledge_redactions.c.completed_at.is_(None),
             )
         )
+    # A derived semantic index must acknowledge erasure before activation; an
+    # unacknowledged receipt is part of the cleanup the ledger describes.
+    providers = await indexed_provider_ids(ctx.db)
+    receipts = await provider_lag_counts(ctx.db, providers)
+    unacknowledged = sum(entry["erasure_pending"] for entry in receipts.values())
     return _result(
         "redaction_cleanup",
-        exports + index + pending,
-        data={"export_checkpoints": exports, "lexical_rows": index, "pending_redactions": pending},
+        exports + index + pending + unacknowledged,
+        data={
+            "export_checkpoints": exports,
+            "lexical_rows": index,
+            "pending_redactions": pending,
+            "provider_receipts": receipts,
+        },
     )
 
 
