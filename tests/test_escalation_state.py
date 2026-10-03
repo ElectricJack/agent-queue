@@ -21,6 +21,7 @@ Nothing here touches a gateway: the delivery side runs against
 from __future__ import annotations
 
 import asyncio
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1087,6 +1088,20 @@ async def test_with_the_flag_off_a_closed_post_keeps_todays_wording(world):
     assert "No longer needed" not in collapsed
     # The retention clock is a stateful-phase fact; off means never stamped.
     assert (await world.db.get_escalation(row["id"]))["collapsed_at"] is None
+
+
+def test_there_is_no_retention_timer_for_collapsed_posts():
+    """§8 Q3, answered by Jack on 2026-10-03: keep them forever.
+
+    Spec §5.2 sketches an opt-in ``delete_collapsed_after_hours``; the decision
+    was "keep as one-line posts forever".  Pinning the *absence* of the key is
+    the point — a later reader of §5.2 must not reintroduce a deletion timer on
+    the strength of the spec text alone.  ``escalations.collapsed_at`` records
+    when a post collapsed and is never read as a countdown.
+    """
+    assert {f.name for f in fields(DiscordEscalationsConfig)} == {"stateful"}
+    with pytest.raises(TypeError):
+        DiscordEscalationsConfig(delete_collapsed_after_hours=1)
 
 
 # ======================================================================

@@ -7,11 +7,12 @@ Adds the two additive columns the stateful-escalations phase (spec §5.2, §5.5,
   ``task_terminal``, ``stale_expired``, …).  It is what the collapsed post's "no
   longer needed: …" line names and what the §5.6 sweep reads back.
 * ``collapsed_at`` — when the incident's one channel post was last edited into
-  its collapsed one-line form.  It is the retention clock §5.2's
-  ``delete_collapsed_after_hours`` needs, and it makes "already collapsed" a
-  durable idempotency check instead of a guess about the channel.  A closed
-  incident is not *required* to carry one: an incident closed before this
-  revision, or one whose post never reached the channel, reads as NULL.
+  its collapsed one-line form.  It makes "already collapsed" a durable
+  idempotency check instead of a guess about the channel, and it is the audit
+  trail for when a question stopped asking.  It is *not* a countdown: §8 Q3
+  keeps collapsed posts forever, so nothing deletes on it.  A closed incident
+  is not required to carry one: an incident closed before this revision, or one
+  whose post never reached the channel, reads as NULL.
 
 Both are nullable and unbacked: an incident created before this revision has
 NULL for each and keeps the create-only post behaviour, which is exactly the

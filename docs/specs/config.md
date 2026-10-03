@@ -189,7 +189,13 @@ numeric Discord IDs.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `stateful` | `bool` | `false` | One channel post per incident, edited in place as it moves and collapsed to one line when it closes; incidents whose source went away close themselves. |
-| `delete_collapsed_after_hours` | `int` | `0` | Retention opt-in for collapsed posts. 0 (the default) never deletes: a closed incident stays in the channel forever as the one-line form Discord can express. |
+
+There is no retention timer. Spec §5.2 sketched an opt-in
+`delete_collapsed_after_hours`, and the §8 Q3 decision (2026-10-03) was
+"keep as one-line posts forever": a closed incident's collapsed post stays in the
+channel permanently and nothing deletes it. `escalations.collapsed_at` records
+*when* a post collapsed — the audit trail and the idempotency check for a
+replayed edit, not a countdown.
 
 `discord.escalations.stateful: false` is not a degraded mode — it is exactly the
 behaviour that shipped before the phase: one root post per incident, edited only

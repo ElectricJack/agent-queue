@@ -1169,9 +1169,9 @@ class EscalationDeliveryService:
         report.edits += 1
         if self._stateful:
             # Write-once, and only once the post really carries the collapsed
-            # form: this is the retention clock §5.2's
-            # ``delete_collapsed_after_hours`` and the §5.6 sweep both read, and
+            # form: it is the audit trail for "when did this stop asking", and
             # the idempotency check every later replay of this edit relies on.
+            # It is not a countdown — §8 Q3 keeps collapsed posts forever.
             try:
                 await self.db.record_escalation_collapse(facts.id, now=self._clock())
             except Exception:  # pragma: no cover - the post is already correct

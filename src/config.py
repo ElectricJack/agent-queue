@@ -389,33 +389,21 @@ class DiscordEscalationsConfig:
     exactly what shipped before the phase -- one root post per incident, edited
     only when it is closed, no auto-resolution and no collapse bookkeeping.
 
-    ``delete_collapsed_after_hours`` is the retention opt-in §5.2 and §8 Q3
-    describe.  It defaults off, and off means "never": a resolved or obsolete
-    post stays in the channel forever as the one-line form Discord can express.
-    Nothing in this phase deletes posts; the key exists so the §5.6 sweep and
-    an operator decision have one place to read.
+    There is deliberately **no** retention timer here.  Spec §5.2 sketched an
+    opt-in ``delete_collapsed_after_hours``, and Jack answered §8 Q3 on
+    2026-10-03 with "keep as one-line posts forever": a resolved or obsolete
+    post stays in the channel as the one-line form Discord can express, and
+    nothing in this code deletes it.  ``escalations.collapsed_at`` still
+    records when a post collapsed — that is the audit trail and the idempotency
+    check for a replayed edit, not a countdown.
     """
 
     stateful: bool = False
-    delete_collapsed_after_hours: int = field(
-        default=0, metadata={"json_schema": {"minimum": 0, "maximum": 8760}}
-    )
 
     def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
         if not isinstance(self.stateful, bool):
-            errors.append(ConfigError("discord.escalations", "stateful", "must be a boolean"))
-        hours = self.delete_collapsed_after_hours
-        if isinstance(hours, bool) or not isinstance(hours, int) or not 0 <= hours <= 8760:
-            errors.append(
-                ConfigError(
-                    "discord.escalations",
-                    "delete_collapsed_after_hours",
-                    "must be 0 (never delete a collapsed post) or between 1 and 8760 hours; "
-                    f"got {hours}",
-                )
-            )
-        return errors
+            return [ConfigError("discord.escalations", "stateful", "must be a boolean")]
+        return []
 
 
 @dataclass
@@ -4788,10 +4776,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         conv = d.get("conversation", {}) or {}
         conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
         escs = d.get("escalations", {}) or {}
-        escalations_cfg = DiscordEscalationsConfig(
-            stateful=bool(escs.get("stateful", False)),
-            delete_collapsed_after_hours=int(escs.get("delete_collapsed_after_hours", 0)),
-        )
+        escalations_cfg = DiscordEscalationsConfig(stateful=bool(escs.get("stateful", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),

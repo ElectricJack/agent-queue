@@ -28,7 +28,9 @@ and :func:`display_state` is the only thing that decides a form.
 
 :func:`is_collapsed` marks the two forms Discord cannot show as an open
 question any more (resolved, obsolete).  §5.2 keeps those posts forever as one
-lines; ``escalations.collapsed_at`` records when a post reached one.
+lines -- Jack answered §8 Q3 on 2026-10-03 with "keep as one-line posts
+forever", so there is no retention timer anywhere in this feature — and
+``escalations.collapsed_at`` records when a post reached one.
 """
 
 from __future__ import annotations

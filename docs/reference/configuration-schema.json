@@ -321,7 +321,6 @@
           "supervisor_delivery_timeout_minutes": 15
         },
         "escalations": {
-          "delete_collapsed_after_hours": 0,
           "stateful": false
         },
         "guild_id": "",
@@ -463,16 +462,9 @@
         "escalations": {
           "additionalProperties": false,
           "default": {
-            "delete_collapsed_after_hours": 0,
             "stateful": false
           },
           "properties": {
-            "delete_collapsed_after_hours": {
-              "default": 0,
-              "maximum": 8760,
-              "minimum": 0,
-              "type": "integer"
-            },
             "stateful": {
               "default": false,
               "type": "boolean"
