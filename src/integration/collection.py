@@ -206,6 +206,7 @@ class CollectionService:
                         .where(
                             integration_promotion_intents.c.repository_id == parent.repo_id,
                             integration_promotion_intents.c.target_branch == parent.branch_name,
+                            integration_promotion_intents.c.state != "superseded",
                             (integration_promotion_intents.c.state != "committed")
                             | (
                                 (integration_promotion_intents.c.source_task_id == child.id)
@@ -273,7 +274,7 @@ class CollectionService:
             pending = (await conn.execute(select(integration_promotion_intents.c.id).where(
                 integration_promotion_intents.c.repository_id == parent.repo_id,
                 integration_promotion_intents.c.target_branch == parent.branch_name,
-                integration_promotion_intents.c.state != "committed",
+                integration_promotion_intents.c.state.not_in(("committed", "superseded")),
             ).limit(1))).first()
             if pending is not None:
                 return

@@ -848,10 +848,14 @@ leave a subject waiting:
   is pushed again with its own frozen identity under the parent's *current*
   reserved collector fence (the same expected-old push the original run would
   have made), after a 60 s grace and with the same backoff. A branch held by a
-  repair or verifier writer is a wait. A diverged target, an intent whose commit
-  was never built (`reserved`), an ended collection operation and an operator
-  pause on the parent are reported once (`parent delivery intent <id> …`) and
-  left alone.
+  repair or verifier writer is a wait. Under the current collector fence, a
+  diverged prepared intent is superseded only after read-back proves its commit
+  is absent from the target. Collection then queues a fresh attempt, retaining
+  the old intent, recovery ref and receipt identity. An intent whose commit was
+  never built (`reserved`) gets a durable `delivery.ready` continuation so the
+  parent playbook can rebuild it and handle any conflict. Pending continuations
+  deduplicate across restarts; delivered but refused continuations retry with
+  exponential backoff. Ended operations and operator pauses remain held.
 
 Every source of the pass and every item of a page the service iterates itself
 runs under a budget: `integration.service_source_timeout_seconds` (300 s),
