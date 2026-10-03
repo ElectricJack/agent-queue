@@ -2867,6 +2867,102 @@ class TestEndToEndOnFakeProvider:
             "claim_epoch": (await db.get_task("t1")).claim_epoch,
         }
 
+    async def _aggregate_failure_session(self, db, provider, tmp_path):
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.integration.parent_completion import ParentCompletion
+
+        await self._setup(db, tmp_path)
+        ownership, worker_fence = await self._enable_hierarchy_launch(db, tmp_path)
+        await self._install_hierarchy_policy(db)
+        head = "a" * 40
+        hierarchy = HierarchyIntegration(
+            db, default_head_resolver=lambda _repo, _branch: head,
+            checkpoint_verifier=lambda _task, _repo, requested: requested,
+        )
+        await hierarchy.checkpoint_parent("t1", head, 0)
+        async with db.immediate() as conn:
+            await db._apply_transition(
+                conn, "t1", TaskStatus.PAUSED, context="integration_parent_suspended",
+                assigned_agent_id=None, _manual_pause_control=True,
+            )
+        completion = ParentCompletion(db)
+        async with db.immediate() as conn:
+            assert (await completion.mark_ready_on(conn, "t1"))["outcome"] == "ready"
+        operation = await db.get_active_parent_integration_operation("t1")
+        verifier_id = operation["verifier_task_id"]
+        collector = await ownership.transfer(worker_fence, operation["id"], "collector")
+        fence = await ownership.transfer(collector, verifier_id, "verifier")
+        assert (await completion.wake_verifier("t1", fence))["outcome"] == "woken"
+        await db.transition_task(verifier_id, TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
+        await db.update_workspace("ws1", locked_by_agent_id="a1", locked_by_task_id=verifier_id)
+        session = await _make_session(db, provider, sid="verifier-session", task_id=verifier_id)
+        return verifier_id, session, head
+
+    @pytest.mark.parametrize("crash", [False, True])
+    async def test_aggregate_failure_captures_immutable_head_before_transition(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, crash
+    ):
+        from unittest.mock import AsyncMock
+
+        from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+        class _Restart(BaseException):
+            pass
+
+        verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
+        # A later local ref lookup cannot replace the original verification subject.
+        real_orch.git = SimpleNamespace(
+            arev_parse=AsyncMock(return_value="b" * 40),
+            avalidate_checkout=AsyncMock(return_value=False),
+        )
+        save = db.save_task_completion
+
+        async def die(*_args, **_kwargs):
+            raise _Restart()
+
+        args = {"task_id": verifier_id, "session_id": session.id, "outcome": "fail",
+                "failure_class": "hard", "summary": "found aggregate scope failure"}
+        if crash:
+            monkeypatch.setattr(db, "save_task_completion", die)
+            with pytest.raises(_Restart):
+                await real_handler.execute("task_close", args)
+            draft = await db.get_task_meta(verifier_id, PENDING_COMPLETION_KEY)
+            assert draft["completion"]["commits"] == [head]
+            monkeypatch.setattr(db, "save_task_completion", save)
+            assert await db.recover_pending_completions() == [verifier_id]
+        else:
+            result = await real_handler.execute("task_close", args)
+            assert result["success"] is True, result
+        failure = await db.get_task_completion(verifier_id)
+        assert failure.outcome == "fail"
+        assert failure.commits == [head]
+        assert (await db.get_task(verifier_id)).status is TaskStatus.BLOCKED
+
+    @pytest.mark.parametrize("problem", ["missing_subject", "wrong_commit", "wrong_branch"])
+    async def test_aggregate_failure_refuses_unproven_subject_before_transition(
+        self, db, real_handler, provider, tmp_path, problem
+    ):
+        from sqlalchemy import delete
+
+        from src.database.tables import integration_outbox
+
+        verifier_id, session, _ = await self._aggregate_failure_session(db, provider, tmp_path)
+        args = {"task_id": verifier_id, "session_id": session.id, "outcome": "fail",
+                "failure_class": "hard", "summary": "unproven head"}
+        if problem == "missing_subject":
+            async with db.immediate() as conn:
+                await conn.execute(delete(integration_outbox)
+                                   .where(integration_outbox.c.event_type == "task.integration_ready"))
+        elif problem == "wrong_commit":
+            args["commit"] = "b" * 40
+        else:
+            await db.update_task(verifier_id, branch_name="aq/other")
+        result = await real_handler.execute("task_close", args)
+        assert result["result"] == "verification_failed", result
+        assert (await db.get_task(verifier_id)).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion(verifier_id) is None
+        assert await db.get_task_meta(verifier_id, "outcome") is None
+
     @pytest.mark.parametrize("manual_hold", [False, True])
     async def test_branchless_verifier_close_proves_aggregate_without_pr_to_main(
         self, db, real_orch, real_handler, provider, tmp_path, manual_hold
