@@ -21,8 +21,18 @@ KIND_ROOT = "root"
 KIND_ACK = "ack"
 KIND_RELAY = "relay"
 KIND_RESOLUTION = "resolution"
+#: The §5.1/§5.2 in-place root edit: one post per incident, rewritten as the
+#: incident moves rather than appended to.  Defined here with the rest of the
+#: kinds so the query layer's vocabulary and the delivery kinds stay one list.
+KIND_STATE = "state"
 
-DELIVERY_KINDS: tuple[str, ...] = (KIND_ROOT, KIND_ACK, KIND_RELAY, KIND_RESOLUTION)
+DELIVERY_KINDS: tuple[str, ...] = (
+    KIND_ROOT,
+    KIND_ACK,
+    KIND_RELAY,
+    KIND_RESOLUTION,
+    KIND_STATE,
+)
 
 #: Lower number wins in :meth:`claim_escalation_deliveries`' ordering.  A root
 #: post goes out before its own follow-ups, and every escalation delivery
@@ -32,6 +42,11 @@ DELIVERY_KINDS: tuple[str, ...] = (KIND_ROOT, KIND_ACK, KIND_RELAY, KIND_RESOLUT
 PRIORITY_ROOT = 0
 PRIORITY_RESOLUTION = 2
 PRIORITY_FOLLOWUP = 5
+#: A state edit rewrites a post that already exists, so it must not overtake
+#: the root that creates it.  It sits with the thread follow-ups: both are
+#: "the incident moved on" messages, and the resolution outranks them because
+#: it is the same post entering its final form.
+PRIORITY_STATE = 5
 PRIORITY_DIGEST = 20
 
 #: States in which the incident still wants a human in the channel.
@@ -65,6 +80,20 @@ class EscalationFacts:
     choices: Sequence[str] = field(default_factory=tuple)
     terminal_outcome: str | None = None
     source_kind: str = ""
+    #: Which §5.5 rule closed the incident (``human`` for one a person closed).
+    #: NULL for an incident closed before the stateful phase, which renders
+    #: exactly as it always did.
+    outcome: str | None = None
+    #: When the channel post last entered its collapsed one-line form.  Set by
+    #: the dispatcher after a successful edit, so a replay can tell "already
+    #: collapsed" from "not yet".
+    collapsed_at: float | None = None
+    #: When the incident was raised, which §5.2's stale row prints as the date
+    #: it has been sitting since.
+    created_at: float | None = None
+    #: When anyone last changed the incident, which is what §5.2's stale timer
+    #: and §5.5's "no activity for 7 days" rule both measure from.
+    updated_at: float | None = None
 
     @property
     def wants_human_delivery(self) -> bool:
@@ -104,6 +133,10 @@ class EscalationFacts:
                 str(row["terminal_outcome"]) if row.get("terminal_outcome") else None
             ),
             source_kind=str(row.get("source_kind") or ""),
+            outcome=(str(row["outcome"]) if row.get("outcome") else None),
+            collapsed_at=(float(row["collapsed_at"]) if row.get("collapsed_at") else None),
+            created_at=(float(row["created_at"]) if row.get("created_at") else None),
+            updated_at=(float(row["updated_at"]) if row.get("updated_at") else None),
         )
 
 

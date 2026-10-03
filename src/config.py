@@ -379,6 +379,34 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordEscalationsConfig:
+    """The §5.2/§5.5 stateful-escalation phase, behind one rollback flag.
+
+    Distinct from :class:`DiscordEscalationConfig`, which holds the older
+    *post-delivery* switches.  This section is the phase the Discord design
+    spec §7.1 calls P1: the escalation state machine, edit-in-place posts and
+    the collapsed one-line form.  With ``stateful`` off, the behaviour is
+    exactly what shipped before the phase -- one root post per incident, edited
+    only when it is closed, no auto-resolution and no collapse bookkeeping.
+
+    There is deliberately **no** retention timer here.  Spec §5.2 sketched an
+    opt-in ``delete_collapsed_after_hours``, and Jack answered §8 Q3 on
+    2026-10-03 with "keep as one-line posts forever": a resolved or obsolete
+    post stays in the channel as the one-line form Discord can express, and
+    nothing in this code deletes it.  ``escalations.collapsed_at`` still
+    records when a post collapsed — that is the audit trail and the idempotency
+    check for a replayed edit, not a countdown.
+    """
+
+    stateful: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.stateful, bool):
+            return [ConfigError("discord.escalations", "stateful", "must be a boolean")]
+        return []
+
+
+@dataclass
 class DiscordConversationConfig:
     """Opt-in @mention conversations with the addressed supervisor.
 
@@ -410,6 +438,9 @@ class DiscordConfig:
     project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
+    #: §7.1 P1: the stateful escalation phase.  Separate from ``escalation``
+    #: so one rollback flag turns the whole phase off and nothing else.
+    escalations: DiscordEscalationsConfig = field(default_factory=DiscordEscalationsConfig)
     conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
@@ -467,6 +498,7 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.escalations.validate())
         errors.extend(self.conversation.validate())
         if self.conversation.enabled and not (
             self.has_allowlist and self.guild_id and self.channel_id
@@ -4743,6 +4775,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         conv = d.get("conversation", {}) or {}
         conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
+        escs = d.get("escalations", {}) or {}
+        escalations_cfg = DiscordEscalationsConfig(stateful=bool(escs.get("stateful", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
@@ -4751,6 +4785,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
+            escalations=escalations_cfg,
             conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),

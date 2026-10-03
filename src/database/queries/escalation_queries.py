@@ -28,6 +28,21 @@ from src.database.tables import (
 
 OPEN_ESCALATION_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 TERMINAL_ESCALATION_STATES = frozenset({"resolved", "cancelled", "stale"})
+#: Which closed reasons an incident may record.  Duplicated from
+#: :data:`src.database.tables.ESCALATION_OUTCOMES` so the query layer validates
+#: before the database's check constraint does, and names the vocabulary in the
+#: error a command surface prints.
+ESCALATION_OUTCOMES = frozenset(
+    {
+        "human",
+        "gate_resolved",
+        "notice_delivered",
+        "supervisor_started",
+        "task_terminal",
+        "stale_expired",
+        "sweep",
+    }
+)
 ESCALATION_TRANSITIONS = {
     # ``reply_received`` is intentionally absent as a generic transition
     # target: only accept_escalation_reply may claim that state, because the
@@ -310,6 +325,7 @@ class EscalationQueriesMixin:
         severity: str | None = None,
         terminal_outcome: str | None = None,
         terminal_evidence: Mapping[str, Any] | None = None,
+        outcome: str | None = None,
     ) -> dict[str, Any] | None:
         """Apply one legal state transition with a revision compare-and-set.
 
@@ -317,6 +333,10 @@ class EscalationQueriesMixin:
         race.  An invalid transition raises before writing.  This distinction
         lets command surfaces report a normal stale-revision conflict without
         conflating it with a malformed requested transition.
+
+        ``outcome`` is the §5.5 rule that closed the incident, written only on
+        a terminal transition and only for a rule this code owns; it is what the
+        collapsed post names and what the sweep's audit trail reads back.
         """
         if new_state not in ESCALATION_TRANSITIONS:
             raise EscalationStateError(f"unknown escalation state: {new_state}")
@@ -337,6 +357,8 @@ class EscalationQueriesMixin:
             raise EscalationStateError("terminal escalation state requires an outcome")
         if not terminal and (terminal_outcome is not None or terminal_evidence is not None):
             raise EscalationStateError("open escalation state cannot record terminal evidence")
+        if outcome is not None and outcome not in ESCALATION_OUTCOMES:
+            raise EscalationStateError(f"unknown escalation outcome: {outcome}")
 
         changed: dict[str, Any] = {
             "state": new_state,
@@ -345,6 +367,7 @@ class EscalationQueriesMixin:
             "terminal_at": float(now if now is not None else time.time()) if terminal else None,
             "terminal_outcome": terminal_outcome if terminal else None,
             "terminal_evidence": dict(terminal_evidence) if terminal_evidence is not None else None,
+            "outcome": outcome if terminal else None,
         }
         for name, value in (
             ("summary", summary),
@@ -572,6 +595,7 @@ class EscalationQueriesMixin:
                             terminal_at=now,
                             terminal_outcome="Answer was accepted before the Discord cutover.",
                             terminal_evidence=dict(terminal_evidence),
+                            outcome="human",
                         )
                         .returning(escalations)
                     )
@@ -589,6 +613,7 @@ class EscalationQueriesMixin:
         source_kind: str,
         terminal_outcome: str,
         terminal_evidence: Mapping[str, Any],
+        outcome: str | None = None,
         now: float | None = None,
     ) -> dict[str, Any] | None:
         """Close an open incident whose source condition cleared on its own.
@@ -601,9 +626,14 @@ class EscalationQueriesMixin:
         the source kind, so it can never close another producer's incident,
         and ``None`` when the row changed underneath (a human reply, a
         supervisor turn) so the caller re-reads rather than overwrites.
+
+        ``outcome`` names the §5.5 rule that fired, so a post closed by
+        recovery reads differently from one a person closed.
         """
         if not terminal_outcome:
             raise EscalationStateError("terminal escalation state requires an outcome")
+        if outcome is not None and outcome not in ESCALATION_OUTCOMES:
+            raise EscalationStateError(f"unknown escalation outcome: {outcome}")
         at = float(now if now is not None else time.time())
         async with self.immediate() as conn:
             row = (
@@ -623,6 +653,7 @@ class EscalationQueriesMixin:
                             terminal_at=at,
                             terminal_outcome=terminal_outcome[:4000],
                             terminal_evidence=dict(terminal_evidence),
+                            outcome=outcome,
                         )
                         .returning(escalations)
                     )
@@ -631,6 +662,40 @@ class EscalationQueriesMixin:
                 .one_or_none()
             )
         return _row_dict(row)
+
+    async def record_escalation_collapse(
+        self, escalation_id: str, *, now: float | None = None
+    ) -> dict[str, Any] | None:
+        """Stamp the incident's collapsed post the first time it is edited.
+
+        Write-once on purpose.  A closed incident is immutable, so its post can
+        only ever enter the collapsed form once, and stamping it durably is what
+        lets a replayed delivery, a second daemon or the §5.6 sweep all read
+        "this post is already the one-line form" instead of editing it again.
+        The where-clause keeps a NULL ``collapsed_at`` in the CAS, so a
+        concurrent retry is a no-op rather than a second stamp.
+        """
+        at = float(now if now is not None else time.time())
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        update(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.collapsed_at.is_(None),
+                            escalations.c.state.in_(tuple(TERMINAL_ESCALATION_STATES)),
+                        )
+                        .values(collapsed_at=at)
+                        .returning(escalations)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return await self.get_escalation(escalation_id)
+        return dict(row)
 
     async def append_escalation_message(
         self,

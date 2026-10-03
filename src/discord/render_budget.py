@@ -46,6 +46,12 @@ GLYPH_NEEDS_YOU = "❓"
 GLYPH_REVIEW = "📄"
 GLYPH_DIGEST = "📊"
 GLYPH_OFFLINE = "⏸"
+#: §5.2's state table names two further glyphs for the escalation rows the
+#: other seven do not cover: a post a human has already answered, and one that
+#: no longer needs anyone.  They join the same fixed set rather than living
+#: beside it, so "one glyph from the set" stays the invariant every post obeys.
+GLYPH_ANSWERED = "💬"
+GLYPH_OBSOLETE = "⚪"
 GLYPHS = frozenset(
     {
         GLYPH_LANDED,
@@ -55,6 +61,8 @@ GLYPHS = frozenset(
         GLYPH_REVIEW,
         GLYPH_DIGEST,
         GLYPH_OFFLINE,
+        GLYPH_ANSWERED,
+        GLYPH_OBSOLETE,
     }
 )
 

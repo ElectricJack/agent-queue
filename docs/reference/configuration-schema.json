@@ -320,6 +320,9 @@
           "reminder_minutes": 0,
           "supervisor_delivery_timeout_minutes": 15
         },
+        "escalations": {
+          "stateful": false
+        },
         "guild_id": "",
         "project_id": "",
         "rate_guard_critical": 5000,
@@ -452,6 +455,19 @@
               "maximum": 1440,
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "escalations": {
+          "additionalProperties": false,
+          "default": {
+            "stateful": false
+          },
+          "properties": {
+            "stateful": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
