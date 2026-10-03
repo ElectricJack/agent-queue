@@ -7,6 +7,8 @@ authority are enforced.
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -64,6 +66,43 @@ def integration_engine_transfer(
         "reason": reason, "evidence": list(evidence), "dry_run": not apply,
         **({"parent_task_id": parent_task_id} if parent_task_id else {}),
     })
+
+
+@integration.command("shadow-report")
+@click.argument("project_id")
+@click.option("--since", type=float, required=True,
+              help="UTC start of the evidence window as epoch seconds.")
+@click.option("--until", type=float, help="UTC end as epoch seconds (defaults to now).")
+@click.option("--acknowledge-unknown", "acknowledge_unknown", multiple=True, type=int,
+              help="Journal sequence of an unknown observation an operator reviewed.")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False, path_type=Path),
+              help="Write the Markdown artifact to PATH.")
+@click.pass_context
+@_handle_errors
+def integration_shadow_report(ctx, project_id, since, until, acknowledge_unknown, output_path):
+    """Compare the shadow loop's decisions against legacy's over one window.
+
+    Both bounds are epoch seconds and the window is never widened for you; a
+    short window is reported incomplete. Read-only: this never transfers a
+    subject or enables the active loop.
+    """
+    end = time.time() if until is None else until
+    if end <= since:
+        raise click.UsageError("--until must be after --since")
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_shadow_report", {
+                "project_id": project_id, "since": since, "until": end,
+                "acknowledge_unknown": list(acknowledge_unknown),
+            })
+
+    data = dict(_run(_request()))
+    if output_path:
+        output_path.write_text(data["markdown"], encoding="utf-8")
+        data["written"] = str(output_path)
+    emit(ctx, data, render=lambda value: value["markdown"])
 
 
 @integration.command("status")
