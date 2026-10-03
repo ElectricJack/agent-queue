@@ -70,11 +70,19 @@ def wait_register(
 
 @wait.command("show")
 @click.argument("wait_id")
+@click.option("--consume", is_flag=True, help="Consume only this terminal result's notification.")
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
-def wait_show(ctx, wait_id):
+def wait_show(ctx, wait_id, consume, claim_epoch):
     """Read the wait's state, bounded digest and result reference."""
-    emit(ctx, _execute(ctx, "wait_get", {"wait_id": wait_id}))
+    params = {"wait_id": wait_id}
+    if consume:
+        params["consume"] = True
+        epoch = resolve_claim_epoch(claim_epoch)
+        if epoch is not None:
+            params["claim_epoch"] = epoch
+    emit(ctx, _execute(ctx, "wait_get", params))
 
 
 @wait.command("list")

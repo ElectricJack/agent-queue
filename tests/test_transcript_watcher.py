@@ -62,6 +62,135 @@ def _append(path: Path, entries: list[dict]) -> None:
             f.write(json.dumps(e) + "\n")
 
 
+def _claude_usage(uuid, call_id, **usage):
+    return {
+        "type": "assistant", "uuid": uuid,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+        "message": {"id": call_id, "model": "claude-x", "content": uuid, "usage": usage},
+    }
+
+
+async def _ledger(db):
+    from sqlalchemy import select
+    from src.database.tables import token_ledger
+
+    async with db._engine.connect() as conn:
+        return [dict(row) for row in (await conn.execute(
+            select(token_ledger).order_by(token_ledger.c.timestamp, token_ledger.c.id)
+        )).mappings()]
+
+
+async def test_api_call_usage_counts_blocks_once_and_retains_changed_counters(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api", "api")
+    await _make_session(db, "/work/api", "api")
+    _append(path, [
+        _claude_usage("thinking", "msg-1", input_tokens=10, output_tokens=2,
+                      cache_read_input_tokens=100, cache_creation_input_tokens=20),
+        _claude_usage("text", "msg-1", input_tokens=10, output_tokens=2,
+                      cache_read_input_tokens=100, cache_creation_input_tokens=20),
+        _claude_usage("other", "msg-2", input_tokens=10, output_tokens=2),
+    ])
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher.tick()
+    original = await _ledger(db)
+    assert len(original) == 2
+    assert sum(row["tokens_used"] for row in original) == 144
+    # A changed usage record may reuse the content UUID; absent/lower
+    # counters must not erase input or cache usage already observed.
+    _append(path, [_claude_usage("text", "msg-1", input_tokens=0, output_tokens=7)])
+    await watcher.tick()
+    rows = await _ledger(db)
+    assert rows[:2] == original  # the audit rows remain byte-for-byte intact
+    assert rows[-1]["tokens_used"] == 5
+    assert rows[-1]["input_tokens"] == rows[-1]["cache_read_tokens"] == 0
+    assert rows[-1]["output_tokens"] == 5
+    assert len(bus.payloads("notify.task_message")) == 4
+
+
+async def test_api_usage_survives_restart_replay_partial_line_and_new_session(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api-replay", "api-replay")
+    await _make_session(db, "/work/api-replay", "api-replay")
+    initial = _claude_usage("block-1", "msg-1", input_tokens=10, output_tokens=2)
+    _append(path, [initial])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    original = await _ledger(db)
+    await db.delete_session("s1")
+    await _make_session(db, "/work/api-replay", "api-replay", session_id="s2", task_id="t2")
+    final = json.dumps(_claude_usage("block-2", "msg-1", input_tokens=10, output_tokens=8))
+    with path.open("a") as stream:
+        stream.write(final[:len(final) // 2])
+    restarted = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await restarted.tick()
+    assert await _ledger(db) == original
+    with path.open("a") as stream:
+        stream.write(final[len(final) // 2:] + "\n")
+    await restarted.tick()
+    rows = await _ledger(db)
+    assert sum(row["tokens_used"] for row in rows) == 18
+    assert rows[-1]["session_id"] == "s1"
+    assert rows[-1]["task_id"] == "t1"
+    # Lost checkpoints and a full replay cannot recharge any completed call.
+    await db.delete_transcript_checkpoint(str(path))
+    _append(path, [initial])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert await _ledger(db) == rows
+
+
+async def test_api_usage_retries_failed_batch_without_losing_or_recharging(tmp_path, db, bus,
+                                                                         monkeypatch):
+    path = _make_transcript(tmp_path, "/work/api-retry", "api-retry")
+    await _make_session(db, "/work/api-retry", "api-retry")
+    _append(path, [_claude_usage("a1", "msg-1", output_tokens=2),
+                   _claude_usage("a2", "msg-2", output_tokens=3)])
+    real = db.record_transcript_usage
+    async def fail_second(**kwargs):
+        if kwargs["counters"]["output_tokens"] == 3:
+            raise RuntimeError("transient write failure")
+        await real(**kwargs)
+    monkeypatch.setattr(db, "record_transcript_usage", fail_second)
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await watcher.tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 2
+    assert await db.get_transcript_checkpoint(str(path)) is None
+    monkeypatch.setattr(db, "record_transcript_usage", real)
+    # Restart as well as retry: successful writes survive a lost byte mark.
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 5
+    assert (await db.get_transcript_checkpoint(str(path)))["byte_offset"] == path.stat().st_size
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_upgrade_seeds_existing_uuid_rows_without_rewriting_them(tmp_path, db, bus,
+                                                                    checkpointed):
+    path = _make_transcript(tmp_path, "/work/api-upgrade", "api-upgrade")
+    await _make_session(db, "/work/api-upgrade", "api-upgrade")
+    _append(path, [_claude_usage("legacy-1", "msg-1", input_tokens=10, output_tokens=2),
+                   _claude_usage("legacy-2", "msg-1", input_tokens=10, output_tokens=2)])
+    for uuid in ("legacy-1", "legacy-2"):
+        await db.record_token_usage("p1", "s1", "t1", 12, input_tokens=10, output_tokens=2,
+                                    session_id="s1", call_id=uuid)
+    original = await _ledger(db)
+    if checkpointed:
+        await db.set_transcript_checkpoint(str(path), byte_offset=path.stat().st_size)
+    _append(path, [_claude_usage("new-3", "msg-1", input_tokens=10, output_tokens=8)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    rows = await _ledger(db)
+    assert rows[:2] == original
+    assert len(rows) == 3
+    assert rows[-1]["tokens_used"] == 6
+    # Historical inflation stays visible for the separate correction report.
+    assert sum(row["tokens_used"] for row in rows) == 30
+
+
+async def test_missing_api_id_falls_back_to_content_uuid(tmp_path, db, bus):
+    path = _make_transcript(tmp_path, "/work/api-fallback", "api-fallback")
+    await _make_session(db, "/work/api-fallback", "api-fallback")
+    _append(path, [_claude_usage("a1", None, output_tokens=2),
+                   _claude_usage("a2", None, output_tokens=3)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 5
+
+
 async def _make_session(db, work_dir: str, session_key: str,
                          *, session_id="s1", task_id="t1", started_at: float | None = None) -> SessionRecord:
     if task_id:

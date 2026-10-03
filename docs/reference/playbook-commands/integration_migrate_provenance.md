@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:6140d99e577d1805df3730ee4dc638fef57e2b97dfe9d6100e2df38c761bed56` |
+| Contract fingerprint | `sha256:4834a40707508954be429fc0f7f106ec6e54848bc081cf7ce24d7fea02f9afa1` |
 
 ## Parameters
 
@@ -26,6 +26,10 @@
 | `offset` | `integer` | no | `0` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `source` | `string \| null` | no | `null` | — |
+| `no_artifact` | `boolean` | no | `false` | — |
+| `reason` | `string \| null` | no | `null` | — |
+
+Redacted in receipts and explanations: `reason`.
 
 ## Result
 

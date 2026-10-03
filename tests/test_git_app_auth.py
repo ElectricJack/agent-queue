@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import logging
 import os
 import signal
@@ -2203,6 +2204,14 @@ def _open_fd_count() -> int:
     return len(os.listdir("/proc/self/fd"))
 
 
+def _fd_baseline() -> int:
+    # The count is process-wide: an earlier test's socket held in a reference
+    # cycle would otherwise be collected mid-test and read as fds "closed" by
+    # this one. Only the baseline is settled, so a leak in a cycle still fails.
+    gc.collect()
+    return _open_fd_count()
+
+
 def _assert_no_broker_tasks() -> None:
     assert not [
         task
@@ -2246,7 +2255,7 @@ async def test_app_push_aggregate_budget_exhaustion_during_prep_never_starts_rem
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", delayed_import)
     observed = _recording_zeroize(monkeypatch)
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
     started_at = asyncio.get_running_loop().time()
 
     with pytest.raises(GitError):
@@ -2318,7 +2327,7 @@ async def test_source_import_failure_zeroizes_dummy_credential(tmp_path, monkeyp
     checkout = tmp_path / "not-a-repository"
     checkout.mkdir()
     observed = _recording_zeroize(monkeypatch)
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
 
     with pytest.raises(GitError, match="push preparation failed"):
         await GitManager()._apush_oid_with_app_auth_to_url(
@@ -2350,7 +2359,7 @@ async def test_cancellation_during_source_import_zeroizes_dummy_credential(tmp_p
         await asyncio.Future()
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", block_import)
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
     task = asyncio.create_task(
         manager._apush_oid_with_app_auth_to_url(
             str(checkout),
@@ -2373,7 +2382,7 @@ async def test_cancellation_during_source_import_zeroizes_dummy_credential(tmp_p
 
 @pytest.mark.asyncio
 async def test_oversized_broker_request_setup_closes_and_zeroizes():
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
     topology = await GitManager()._app_git_credential_topology(home=Path("/tmp"))
     broker, request = make_request_channel()
     token = bytearray(b"dummy-oversized-request-token")
@@ -2428,7 +2437,7 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
     timeout = 2.0 if not cancel else 30
     manager._GIT_TIMEOUT = timeout
     monkeypatch.setattr(manager_module, "APP_AUTH_PUSH_TIMEOUT_SECONDS", timeout)
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
     task = asyncio.create_task(
         manager._apush_oid_with_app_auth_to_url(
             str(checkout),
@@ -2465,7 +2474,7 @@ async def test_app_push_spawn_failure_closes_broker_reader_before_waiting(tmp_pa
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(tmp_path / "missing-git")
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
 
     with pytest.raises(GitError, match="authenticated Git push failed"):
         await manager._apush_oid_with_app_auth_to_url(
@@ -2498,7 +2507,7 @@ async def test_broker_timeout_closes_request_channel_without_waiting_for_eof(tmp
     manager._APP_GIT_EXECUTABLE = str(late_git)
     manager._APP_CREDENTIAL_BROKER_TIMEOUT = 0.02
     manager._GIT_TIMEOUT = 2
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
 
     result = await manager._apush_oid_with_app_auth_to_url(
         str(checkout),
@@ -2524,7 +2533,7 @@ async def test_unsupported_credential_broker_fails_closed(tmp_path, monkeypatch,
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     monkeypatch.delattr(broker_module.socket, capability)
     manager = GitManager()
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
 
     with pytest.raises(GitError, match="credential broker is unavailable"):
         await manager._apush_oid_with_app_auth_to_url(
@@ -2601,7 +2610,7 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
     secret = "installation-token-sentinel"
     daemon_secret = "unrelated-daemon-secret-sentinel"
     monkeypatch.setenv("DAEMON_SECRET", daemon_secret)
-    open_fds_before = _open_fd_count()
+    open_fds_before = _fd_baseline()
     leader = None
     try:
         result = await asyncio.wait_for(

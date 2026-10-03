@@ -67,6 +67,8 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/knowledge/__init__.py", "src/knowledge/imports/**", "tests/fixtures/knowledge/**"], areas: ["knowledge-inventory"] }
+  - { paths: ["src/records/**", "src/knowledge/**", "src/database/queries/record_queries.py", "src/database/queries/knowledge_queries.py", "tests/record_helpers.py"], areas: ["knowledge-records"] }
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }
   # Match the core now and the sibling command/CLI files as they land.
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
@@ -106,6 +108,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
   - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
+  - { paths: ["scripts/reconcile-claude-usage.py"], areas: ["transcripts"] }
+  - { paths: ["scripts/token-efficiency-report.py"], areas: ["metrics"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
   - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }
   - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
@@ -113,6 +117,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
   - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
   - { paths: ["scripts/generate-selection-catalogue.py", "scripts/replay-test-selection.py"], areas: ["test-selection"] }
+  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**"], areas: ["knowledge-evaluation"] }
 
   # ---- test helpers, fixtures and the selection artifacts
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }
@@ -178,7 +183,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
-  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
+  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/host_shell.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
   - { paths: ["src/api/messages.py", "src/api/models/message.py"], areas: ["messages"] }
   - { paths: ["src/api/websocket.py"], areas: ["events", "agent-questions"] }
   - { paths: ["src/api/routers/proposals.py", "src/api/models/review.py"], areas: ["document-reviews"] }
@@ -334,8 +339,9 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
-  - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
+  - { paths: ["src/integration/development*.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
   - { paths: ["src/integration/train_onboarding.py", "src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
@@ -395,7 +401,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/services/**"], areas: ["plugins"] }
 
   - { paths: ["src/sessions/**"], areas: ["session-runtime"] }
-  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
+  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/host_shell.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
   - { paths: ["src/sessions/transcripts/**"], areas: ["transcripts"] }
   - { paths: ["src/sessions/pane_broadcaster.py"], areas: ["panes-streams"] }
   - { paths: ["src/sessions/questions.py"], areas: ["agent-questions"] }

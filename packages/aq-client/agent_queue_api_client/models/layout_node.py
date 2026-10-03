@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.phase_hold_detail import PhaseHoldDetail
 
 
@@ -49,6 +50,7 @@ class LayoutNode:
         phase_order (int | None | Unset):
         phase_label (None | str | Unset):
         phase_hold (None | PhaseHoldDetail | Unset):
+        delivery (EpicDeliveryStatus | None | Unset):
     """
 
     id: str
@@ -81,9 +83,11 @@ class LayoutNode:
     phase_order: int | None | Unset = UNSET
     phase_label: None | str | Unset = UNSET
     phase_hold: None | PhaseHoldDetail | Unset = UNSET
+    delivery: EpicDeliveryStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.phase_hold_detail import PhaseHoldDetail
 
         id = self.id
@@ -188,6 +192,14 @@ class LayoutNode:
         else:
             phase_hold = self.phase_hold
 
+        delivery: dict[str, Any] | None | Unset
+        if isinstance(self.delivery, Unset):
+            delivery = UNSET
+        elif isinstance(self.delivery, EpicDeliveryStatus):
+            delivery = self.delivery.to_dict()
+        else:
+            delivery = self.delivery
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -245,11 +257,14 @@ class LayoutNode:
             field_dict["phase_label"] = phase_label
         if phase_hold is not UNSET:
             field_dict["phase_hold"] = phase_hold
+        if delivery is not UNSET:
+            field_dict["delivery"] = delivery
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.phase_hold_detail import PhaseHoldDetail
 
         d = dict(src_dict)
@@ -391,6 +406,23 @@ class LayoutNode:
 
         phase_hold = _parse_phase_hold(d.pop("phase_hold", UNSET))
 
+        def _parse_delivery(data: object) -> EpicDeliveryStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_type_0 = EpicDeliveryStatus.from_dict(data)
+
+                return delivery_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatus | None | Unset, data)
+
+        delivery = _parse_delivery(d.pop("delivery", UNSET))
+
         layout_node = cls(
             id=id,
             title=title,
@@ -422,6 +454,7 @@ class LayoutNode:
             phase_order=phase_order,
             phase_label=phase_label,
             phase_hold=phase_hold,
+            delivery=delivery,
         )
 
         layout_node.additional_properties = d

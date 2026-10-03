@@ -74,7 +74,8 @@ once.
 5. Call `task_route_apply` with `task_id` and `plan`, the plan the previous
    step bound: `plan_a`, `plan_b` or `plan_c`. It re-selects among the plan's
    candidates on fresh capacity, so a burst of routes spreads out, writes the
-   route with `route_source` `router`, resolves the task's routing gate and
+   route with `route_source` `router` and fresh fit/capacity/quota evidence
+   (including snapshot and quota age), resolves the task's routing gate and
    emits `task.routed`. A `routed` outcome ends the rule. A `stale` outcome
    also ends it and writes nothing: the task was claimed, finished or routed
    after it was planned. A `rejected` or `runtime_error` outcome fails the
@@ -99,13 +100,22 @@ harness, never by rung id. Key by key:
   writes the provider intent `pinned`, so art design waits for its provider
   rather than going elsewhere. `narrow` sends narrow, test-verified work to
   OpenCode while it has a free slot; `narrow-unverified-model` does the same
-  only when an independent verifier checks the result.
+  only when an independent verifier checks the result. `narrow-hosted` sends
+  narrow, test-verified standard-high work to OpenCode on a hosted gateway, the
+  `opencode-zen` harness: a harness of its own so that its availability is not
+  local OpenCode's, and a lane of its own so that it can be tightened alone.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
   hard bug fix hinted deep-high lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
   over its slots times its harness weight, its provider's usage factor and its
   availability factor. The least-pressed candidate wins, and `tie_order`
-  breaks a tie, Codex first.
+  breaks a tie, Codex first and hosted OpenCode last. `prefer_harnesses` on ordinary implementation
+  kinds favors compatible Codex while available, within its own usage soft
+  limit and with positive effective headroom. Eligible OpenCode lanes are
+  considered first. Saturated, unavailable, degraded or quota-pressured Codex
+  falls back to compatible free hosted capacity, then queued pressure. Unknown
+  usage stays unknown; stale/reset quota is evidence only. No percentages are
+  compared across providers or unlike windows, and load never raises a class.
 
 ```yaml
 version: 1
@@ -115,13 +125,13 @@ kinds:
   design:   {class: deep-high,     max_class: deep-high,     lane: code-design}
   art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
   research: {class: standard-high, max_class: deep-high}
-  feature:  {class: standard-high, max_class: deep-high,     narrow: true}
-  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true}
-  refactor: {class: standard-high, max_class: deep-high,     narrow: true}
-  test:     {class: standard-high, max_class: standard-high, narrow: true}
-  docs:     {class: standard-high, max_class: standard-high, narrow: true}
-  chore:    {class: fast-high,     max_class: standard-high, narrow: true}
-  sync:     {class: fast-high,     max_class: standard-high, narrow: true}
+  feature:  {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  refactor: {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  test:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  docs:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  chore:    {class: fast-high,     max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  sync:     {class: fast-high,     max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
   plan:     {class: deep-high,     max_class: deep-high,     lane: code-design}
 origins:
   integration_repair: {narrow: false}
@@ -141,21 +151,32 @@ lanes:
     classes: {fast-low: fast-off}
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
+  narrow-hosted:
+    harnesses: [opencode-zen]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode]
+  tie_order: [codex, claude, opencode, opencode-zen]
 ```
 
 ## Classifying a task
 
 You classify one task for the router. You do not choose a model, a provider or
 a profile: the router chooses those from your answer, its policy and live
-capacity. Every field of the answer is required. `questions` names the fields
+capacity. Ordinary hosted implementation, tests and fixes prefer Codex
+when compatible capacity permits, to conserve Claude budget; eligible narrow
+local work still takes its verified lane first. This preference is applied by
+the policy, not by your JSON answer. Classify the actual deliverable and keep
+operator hints, design/art requirements and verification requirements intact.
+Provider busyness is never evidence for a higher intelligence class. Every field
+of the answer is required. `questions` names the fields
 the router actually needs, so take the most care with those.
 
 - `task_type`: one of `allowed_kinds`. Keep the task's own `task_type` when it

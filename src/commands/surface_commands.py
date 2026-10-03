@@ -360,7 +360,11 @@ class SurfaceCommandsMixin:
         messages_cfg = getattr(self.config, "messages", None)
         mark_messages_delivered = bool(getattr(messages_cfg, "enabled", False))
 
-        renderer = PrimeRenderer(self.db, self.config)
+        renderer = PrimeRenderer(
+            self.db,
+            self.config,
+            harness_registry=getattr(self.orchestrator, "harness_registry", None),
+        )
         try:
             doc = await renderer.render_for_task(
                 task_id,
@@ -371,7 +375,24 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"error": str(exc)}
 
-        return {
+        from src.commands.principal import current_principal
+        from src.knowledge.context import context_enabled
+        from src.records.models import RecordError
+
+        bundle = None
+        # Disabled context leaves prime's reads unchanged.
+        task = await self.db.get_task(task_id) if context_enabled(self.config) else None
+        if task is not None and task.project_id in self.config.knowledge.enabled_projects:
+            try:
+                bundle = await self._knowledge_context_service().prepare(
+                    principal=current_principal(), required=doc.to_markdown(),
+                    query=task.title, project_ids=[task.project_id], claim_epoch=task.claim_epoch,
+                    task_id=task.id,
+                )
+                doc = renderer.with_context(doc, bundle)
+            except RecordError as exc:
+                return exc.result()
+        result = {
             "success": True,
             "body": doc.to_markdown(),
             "sections": [{"key": s.key, "title": s.title, "body": s.body} for s in doc.sections],
@@ -379,6 +400,11 @@ class SurfaceCommandsMixin:
             "tokens_est": doc.tokens_est(),
             "tokens_est_method": "estimated characters / 4; not a measured token count",
         }
+        if bundle is not None:
+            result.update(context_bundle=bundle.to_dict(), context_state="prepared",
+                          tokens_est=bundle.budget["total_tokens"],
+                          tokens_est_method=bundle.budget["method"])
+        return result
 
     # ------------------------------------------------------------------
     # task_handoff — backs `aq handoff` (design §6.1, implementation §3)
@@ -407,6 +433,11 @@ class SurfaceCommandsMixin:
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
             task_id = scope.get("task_id")
+        if not task_id and scope.get("session_id"):
+            # Pool tokens have no fixed task: resolve the daemon-held claim,
+            # then apply the same ownership and epoch fence as explicit IDs.
+            held_session = await self.db.get_session(scope["session_id"])
+            task_id = held_session.task_id if held_session else None
         if not task_id:
             return {
                 "error": (
@@ -427,15 +458,6 @@ class SurfaceCommandsMixin:
 
         auto = validated.auto
         note = agent_note(validated.model_dump())
-        if auto and not meaningful(note):
-            return {
-                "success": True,
-                "handoff_id": None,
-                "restart_requested": False,
-                "created": False,
-                "noop": True,
-            }
-
         # A bearer session's identity always comes from daemon scope.
         session_id = scope.get("session_id") or validated.session_id
         session = await self.db.get_session(session_id) if session_id else None

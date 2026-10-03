@@ -5,7 +5,7 @@ import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupp
 import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 import { formatIdle, type PoolEntry } from "./pools";
-import TerminalPane from "../../components/TerminalPane";
+import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
 
 function instanceLabel(instance: PoolEntry["instances"][number]) {
   return [
@@ -75,6 +75,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
       className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
       <TerminalPane title={title} status={instance?.stalled ? "Stalled" : instance?.state || "Idle"} onClose={onClose} titleId={id + "-title"}
         primary={instances.length > 1 ? <InstancePicker entry={entry} instance={instance} onChange={onInstanceChange} compact /> : undefined}
+        tabs={<TerminalTabs label={title + " view"} idPrefix={id} tabs={tabs} value={tab} onChange={setTab} />}
         details={<>
         <PoolBadge />
         <p className="mt-0.5"><PoolSupplyRow pool={pool} /></p>
@@ -104,16 +105,6 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
           {instance ? (instance.task_id || "Idle — waiting to claim work") : "This pool has no running worker."}
         </p>
         {instance && <p className="text-xs">Session: {instance.id}</p>}
-        <div role="tablist" aria-label={title + " view"} className="flex gap-2">
-          {tabs.map(({ id: key, label, Icon }) => (
-            <button key={key} type="button" role="tab" id={id + "-" + key} data-primary-control
-              aria-controls={id + "-panel"} aria-selected={tab === key} onClick={() => setTab(key)}
-              className={"flex items-center gap-1.5 rounded border px-2 py-1 text-xs "
-                + (tab === key ? "border-indigo-400/60 bg-indigo-500/10 text-indigo-200" : "border-transparent text-gray-400 hover:text-gray-200")}>
-              <Icon aria-hidden="true" className="h-3.5 w-3.5" />{label}
-            </button>
-          ))}
-        </div>
       </>}>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-title"} className="min-h-0 flex-1 overflow-hidden">
         {tab === "terminal" ? <PoolInstanceTerminal instance={instance} focusRequest={focusRequest} /> : (

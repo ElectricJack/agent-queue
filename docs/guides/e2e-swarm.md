@@ -100,12 +100,16 @@ To reproduce a shard or selected scenario:
 
 ```bash
 # One shard, matching CI:
-aq test tests/test_e2e_cli_stateful.py -k claims -m integration -s
+aq test tests/test_e2e_cli_stateful.py -k 'claims-' -m integration -s
 # One scenario, with independent setup and teardown:
 aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_scenario[graphs-S16b]' -m integration -s
 # Four parallel shards; loadgroup preserves fixture reuse:
 aq test tests/test_e2e_cli_stateful.py -m integration -n auto --dist loadgroup -s
 ```
+
+The shard selector includes the trailing hyphen from the scenario IDs (for
+example, `cli-S5`). Using `-k cli` also matches the module's name and selects
+every scenario instead of just the CLI shard.
 
 Pytest uses a one-second periodic scheduler backstop, a half-second config
 watcher, one-second graph sweeps and quarter-second condition polls.

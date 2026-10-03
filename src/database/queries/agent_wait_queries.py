@@ -588,6 +588,54 @@ class AgentWaitQueriesMixin:
             )
             return dict(row) if row else None
 
+    async def consume_agent_wait(self, wait_id: str, *, identity: dict, now: float) -> dict:
+        """Read a terminal result and consume its wake under the current owner fence.
+
+        Historical results can follow their task to a new claim. Their wait state,
+        version and lease baseline remain immutable; only delivery is consumed.
+        Lock order matches registration and reconciliation: session, task, wait.
+        """
+        async with self._engine.begin() as conn:
+            owner = await self._wait_owner(conn, **identity)
+            row = (
+                (await conn.execute(select(waits).where(waits.c.id == wait_id).with_for_update()))
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise WaitError("not_found", "wait not found")
+            if any(row[key] != owner[key] for key in ("project_id", "owner_kind", "owner_id")):
+                raise WaitError("out_of_scope", "result belongs to another owner or project")
+            row = dict(row)
+            if row["state"] == "active":
+                if any(row[key] != owner[key] for key in (
+                    "claim_epoch", "session_id", "session_instance_token",
+                )):
+                    raise WaitError(
+                        "stale_claim", "active wait belongs to an earlier claim or instance"
+                    )
+                return row
+            if row["result_message_id"] is None:
+                await self._enqueue_wait_result(conn, row, now)
+                row = dict(
+                    (await conn.execute(select(waits).where(waits.c.id == wait_id)))
+                    .mappings().one()
+                )
+                if row["result_message_id"] is None:
+                    raise WaitError(
+                        "wait.result_pending", "result delivery is unavailable; retry consumption"
+                    )
+            await conn.execute(
+                update(messages)
+                .where(
+                    messages.c.id == row["result_message_id"],
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+                .values(delivered_at=now, via="wait_consume")
+            )
+            return row
+
     async def list_agent_waits(
         self,
         *,
@@ -596,8 +644,18 @@ class AgentWaitQueriesMixin:
         owner_id: str | None = None,
         limit=100,
         offset=0,
+        continuation: bool = False,
     ) -> list[dict]:
+        """List scoped waits, optionally retaining active waits and result pointers.
+
+        wait_resumed_at marks producer resolution, not agent consumption. A
+        continuation must retain resolved result pointers as well as active IDs.
+        """
         stmt = select(waits)
+        if continuation:
+            stmt = stmt.where(
+                (waits.c.state == "active") | waits.c.result_ref.is_not(None)
+            )
         for key, value in (
             ("project_id", project_id),
             ("owner_kind", owner_kind),

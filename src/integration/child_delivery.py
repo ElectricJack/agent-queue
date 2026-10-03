@@ -269,7 +269,11 @@ def _parent_refusal(snapshot: dict[str, Any]) -> str | None:
     if parent_checkpoint is None or parent_checkpoint["state"] != "awaiting_children":
         return "the parent's checkpoint is not awaiting children"
     if snapshot["operation"] is None:
-        return "the parent has no live collection operation for its current episode"
+        return (
+            "the parent has no live collection operation for its current episode; "
+            "a cancelled one is reopened with `aq integration reopen-collection "
+            f"{parent['id']}`"
+        )
     return None
 
 

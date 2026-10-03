@@ -697,6 +697,7 @@ class PlaybookEngine:
         visits = 0
         while work:
             cursor = work.pop(0)
+            cursor = replace(cursor, scope=self._loop_scope(cursor.scope, artifact, cursor.loop))
             if visits >= max_step_visits:
                 paths.append(
                     DryRunPath(
@@ -846,6 +847,12 @@ class PlaybookEngine:
             next_scope = cursor.scope
             if result.value is not None and getattr(step, "save_result_as", None):
                 try:
+                    # The same body step may produce a new result on each
+                    # foreach iteration, just like live bind_step_output.
+                    if cursor.loop is not None:
+                        bindings = dict(next_scope.bindings)
+                        bindings.pop(step.save_result_as, None)
+                        next_scope = next_scope.model_copy(update={"bindings": bindings})
                     next_scope = next_scope.with_binding(step.save_result_as, result.value)
                 except ValueResolutionError as exc:
                     paths.append(
@@ -3450,7 +3457,14 @@ class PlaybookEngine:
             bindings=dict(snapshot.bindings),
             loop={},
         )
-        frame = snapshot.loop
+        return self._loop_scope(scope, artifact, snapshot.loop)
+
+    @staticmethod
+    def _loop_scope(
+        scope: ResolutionScope, artifact: PlaybookDefinition, frame: LoopFrame | None,
+    ) -> ResolutionScope:
+        """Resolve the current foreach item identically in live and symbolic runs."""
+        scope = scope.model_copy(update={"loop": {}})
         if frame is None:
             return scope
         loop_step = artifact.steps.get(frame.step_id)

@@ -370,7 +370,7 @@ def test_integration_config_defaults():
     integ = IntegrationConfig()
     assert integ.merge_ci_policy == "warn"
     assert integ.merge_required_checks == []
-    assert integ.owner_recovery_sweep is False
+    assert integ.owner_recovery_sweep is True
     assert integ.validate() == []
 
 
@@ -638,3 +638,38 @@ def test_loader_reads_owner_recovery_sweep(tmp_path):
         "  owner_recovery_sweep: true\n"
     )
     assert load_config(str(path)).integration.owner_recovery_sweep is True
+
+
+def _owner_recovery_sweep(tmp_path, integration: str) -> bool:
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n"
+        "  bot_token: t\n"
+        "  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        + integration
+    )
+    return load_config(str(path)).integration.owner_recovery_sweep
+
+
+def test_owner_recovery_sweep_is_on_when_the_config_does_not_name_it(tmp_path):
+    assert _owner_recovery_sweep(tmp_path, "") is True
+    assert _owner_recovery_sweep(tmp_path, "integration:\n  default_mode: pull_request\n")
+
+
+@pytest.mark.parametrize(
+    "value", ["false", "no", "off", "'false'", "'False'", "'off'", "'0'", "''", "~", "0"]
+)
+def test_an_explicit_owner_recovery_sweep_off_stays_off(tmp_path, value):
+    assert _owner_recovery_sweep(
+        tmp_path, f"integration:\n  owner_recovery_sweep: {value}\n"
+    ) is False
+
+
+def test_an_owner_recovery_sweep_off_from_the_environment_stays_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("AQ_TEST_OWNER_RECOVERY_SWEEP", "false")
+    assert _owner_recovery_sweep(
+        tmp_path, "integration:\n  owner_recovery_sweep: ${AQ_TEST_OWNER_RECOVERY_SWEEP}\n"
+    ) is False

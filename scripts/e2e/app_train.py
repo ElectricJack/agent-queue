@@ -69,6 +69,10 @@ REVIEWER_PROFILE = "reviewer"
 TRAIN_CLASS = "standard-high"
 CHECK_V1 = ("fixture-v1", "fixture")
 CHECK_V2 = ("fixture-v2", "fixture (v2)")
+#: Close refusals that mean "the daemon has not recorded the trusted CI
+#: evidence for this generation and head yet" rather than a real failure:
+#: the verifier keeps its claim and the driver keeps polling until it lands.
+_VERIFIER_WAIT_REFUSALS = ("stale_verification", "awaiting_trusted_verification")
 
 SHARED_ROUTES = {
     "parent-integration": (
@@ -1524,10 +1528,17 @@ def _verifier_close(scenario: str, claimed: dict, workspace: Path) -> dict | Non
             and result.get("pipeline_ok") is True):
         return result
     issues = result.get("issues") if isinstance(result, dict) else None
+    # Two refusals mean the same thing here: the verifier's own aggregate proof
+    # is done and the close waits for the trusted CI evidence the daemon records
+    # for this generation and head.  ``awaiting_trusted_verification`` is the
+    # named form of that wait and escalates on an unchanged replay (the task is
+    # then flagged for an operator), which is still a wait, not a failure.
     if (isinstance(result, dict) and result.get("result") == "verification_failed"
-            and not result.get("escalated") and isinstance(issues, list) and issues
-            and all("stale_verification" in issue for issue in issues)):
+            and isinstance(issues, list) and issues
+            and all(any(token in issue for token in _VERIFIER_WAIT_REFUSALS)
+                    for issue in issues)):
         record(scenario, "verifier_close_retry", {"task": claimed["task_id"],
+                                                  "escalated": result.get("escalated"),
                                                   "issues": issues})
         return None
     raise Failure(f"parent verifier close failed: {json.dumps(result, default=str)[:1500]}")

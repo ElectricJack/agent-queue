@@ -410,6 +410,13 @@ class PluginRegistry:
             ImportError: If the plugin module fails to import.
             ValueError: If the plugin is invalid.
         """
+        # A memory master flip must never revive legacy authoritative writes.
+        # Check before importing code, fetching a missing install, or unloading
+        # an existing instance. K07 supplies the versioned adapter handshake.
+        from src.knowledge.legacy import check_legacy_plugin_load
+
+        check_legacy_plugin_load(name)
+
         # Unload first if already loaded
         if name in self._plugins:
             await self.unload_plugin(name)

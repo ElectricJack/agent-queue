@@ -5,6 +5,8 @@ type Pane = EntryView["pane"];
 const PROJECT_TABS: Record<string, string> = {
   graph: "Graph",
   tasks: "Tasks",
+  knowledge: "Knowledge",
+  records: "All records",
   overview: "Overview",
   sessions: "Sessions",
   workspaces: "Workspaces",
@@ -66,6 +68,8 @@ export function routeTitle(pathname: string, search: string, names: TitleNames =
       return ["Settings", id ? SETTINGS_SECTIONS[id] ?? id : null].filter(Boolean).join(" · ");
     case "metrics":
       return "Metrics";
+    case "host-shell":
+      return "Host shell";
     case "command-center":
       return "Command Center";
     default:

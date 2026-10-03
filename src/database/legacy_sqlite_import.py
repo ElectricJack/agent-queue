@@ -188,6 +188,56 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "integration_source_ci",
         # Exact per-root operator authorizations shipped in revision 54.
         "integration_root_authorizations",
+        # Reconciler subjects and their journal shipped in revision 57.
+        "integration_subjects",
+        "integration_subject_journal",
+        # Durable record/knowledge tables shipped after SQLite removal in
+        # revision 55. Legacy files have no record identities, revisions,
+        # informational links or outbox state; backfill/import is explicit.
+        "record_installation",
+        "record_scopes",
+        "records",
+        "knowledge_records",
+        "knowledge_revisions",
+        "knowledge_revision_payloads",
+        "knowledge_search",
+        "record_link_heads",
+        "record_link_versions",
+        "task_record_link_state",
+        "record_source_artifacts",
+        "record_requests",
+        "record_outbox",
+        "record_consumer_receipts",
+        "record_export_state",
+        "record_backfill_state",
+        # K05 protection state shipped in PostgreSQL revision 59. Legacy
+        # SQLite has no proposals, authority grants, shares or erasure ledger;
+        # these tables depend on the excluded record/revision domain above.
+        "knowledge_proposals",
+        "knowledge_authority_grants",
+        "knowledge_global_shares",
+        "knowledge_redactions",
+        "knowledge_redaction_targets",
+        # K06 sealed knowledge-import inventory shipped in revision 60, not
+        # in the legacy SQLite format. Its runs depend on record_scopes.
+        "record_import_runs",
+        "record_legacy_mappings",
+        "record_import_items",
+        "knowledge_context_bundles",
+        "knowledge_context_deliveries",
+        "knowledge_citations",
+        # K12 derived provider index receipts shipped in revision 61. A legacy
+        # SQLite file predates every record revision, so it has no index state;
+        # the derived index is rebuilt by reindexing authorized records.
+        "record_index_state",
+        "knowledge_extraction_jobs",
+        "knowledge_extraction_inputs",
+        "knowledge_capture_checkpoints",
+        "knowledge_feature_budgets",
+        "knowledge_budget_reservations",
+
+        # Per-API-call transcript usage maxima shipped in revision 56.
+        "transcript_usage_calls",
     }
 )
 
@@ -468,12 +518,13 @@ async def migrate_sqlite_to_postgres(
 
 
 async def _check_pg_empty(engine: AsyncEngine) -> None:
-    """Raise if any user tables in PostgreSQL already contain data."""
+    """Refuse user data while preserving the schema's installation identity seed."""
     async with engine.connect() as conn:
         result = await conn.execute(
             text(
                 "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
+                "WHERE schemaname = 'public' "
+                "AND tablename NOT IN ('alembic_version', 'record_installation')"
             )
         )
         for row in result:

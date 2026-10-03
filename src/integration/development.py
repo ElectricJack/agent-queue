@@ -31,12 +31,16 @@ from src.database.queries.blocked_state import (
     obsolete_marker,
 )
 from src.database.tables import (
-    events, projects, sessions, task_completion_records,
-    task_metadata, tasks,
+    events,
+    projects,
+    repos,
+    sessions,
+    task_completion_records,
+    task_metadata,
+    tasks,
 )
 from src.git.manager import GitError, GitManager, commit_identity, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
-from src.jobs.policy import JobError, presets, validate_args
 from src.integration.delegate_release import release_delegates_on
 from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
@@ -50,23 +54,43 @@ from src.integration.delivery_branches import (
     released_integration_refs,
     remote_heads,
 )
-from src.integration.development_stalls import (
-    DEFAULT_STALL_AFTER, PUBLISHER_SKIP_KEY, PublisherStalls, SweepObservation,
+from src.integration.delivery_truth import (
+    SETTLEMENT_KEY,
+    DeliverySnapshot,
+    DeliveryState,
+    delivery_snapshot,
+    load_delivery_requests,
+    settlement_fields,
 )
 from src.integration.development_settlement import (
-    DELIVERED_TO_PREVIOUS_TARGET, OPERATOR_SETTLED, REPAIR_FOR_PREVIOUS_TARGET,
-    SOURCES_NOT_OWED, notify_settlements_on, previous_target, repair_target_of, retarget_of,
-    settlement_record, write_settlements_on,
+    DELIVERED_TO_PREVIOUS_TARGET,
+    OPERATOR_SETTLED,
+    REPAIR_FOR_PREVIOUS_TARGET,
+    SOURCES_NOT_OWED,
+    notify_settlements_on,
+    previous_target,
+    repair_target_of,
+    retarget_of,
+    settlement_record,
+    write_settlements_on,
+)
+from src.integration.development_stalls import (
+    DEFAULT_STALL_AFTER,
+    PUBLISHER_SKIP_KEY,
+    PublisherStalls,
+    SweepObservation,
+    delivery_skip_reason,
 )
 from src.integration.development_validation import run_check as run_validation_check
-from src.integration.delivery_truth import (
-    MISSING_PROVENANCE, SETTLEMENT_KEY, DeliverySnapshot, DeliveryState, delivery_snapshot,
-    load_delivery_requests, settlement_fields,
-)
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.publishable_artifact import (
-    EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY, has_publishable_artifact,
+    EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY,
 )
+from src.integration.publishable_artifact import (
+    has_publishable_artifact,
+)
+from src.jobs.policy import JobError, presets, validate_args
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -451,13 +475,21 @@ class DevelopmentBusy(RuntimeError):
 
 
 @asynccontextmanager
-async def publisher_exclusion(db, repository_id):
+async def publisher_exclusion(db, repository_id, subject=None):
     """Hold *repository_id*'s development publisher lock, or raise ``DevelopmentBusy``.
 
     A dedicated connection owns a session advisory lock across short DB
     commits.  A process death releases it; durable publishing rows retain
     ambiguous writes.  Anything that rewrites a batch row outside the
     publisher (an obsolete close dropping a parked batch) takes it too.
+
+    *subject* names the root subject whose own mutation this exclusion
+    authorizes.  A repository the reconciler engine owns refuses an unnamed
+    root mutation outright ("repository root publisher belongs to the
+    reconciler"), so the shared primitives have to present the exact subject
+    they act for; the ownership check then admits it only while that subject is
+    still a live root at the pinned engine version.  Omitting it keeps the
+    legacy publisher's meaning unchanged.
     """
     key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
     async with db._engine.connect() as conn:
@@ -465,7 +497,15 @@ async def publisher_exclusion(db, repository_id):
         if not acquired:
             raise DevelopmentBusy("repository publisher is already running")
         try:
-            yield
+            from src.integration.engine import EngineRefused, RootEngineOwnership
+
+            try:
+                async with RootEngineOwnership(db).operation(
+                    repository_id, subject=subject, publisher=True
+                ):
+                    yield
+            except EngineRefused as exc:
+                raise DevelopmentBusy(str(exc)) from exc
         finally:
             await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
 
@@ -1178,6 +1218,13 @@ class DevelopmentIntegration:
         self, repo, store, target_ref, head, expected, manifest, evidence, reason,
         *, arm_branch_cleanup=False,
     ):
+        if target_ref == "refs/heads/" + repo.default_branch:
+            from src.integration.development_adapter import development_subject_owns_target
+
+            if await development_subject_owns_target(
+                self.db, repo.project_id, repo.id, target_ref,
+            ):
+                return {"outcome": "subject_owned", "parked": []}
         now = time.time()
         row = {
             "id": str(uuid4()),
@@ -1282,16 +1329,25 @@ class DevelopmentIntegration:
                 ).mappings()
             }
             generations = await self._completion_generations(conn, task_ids)
+            requests = await load_delivery_requests(
+                self.db, task_ids, repository_id=repo.id, target_ref=target_ref, conn=conn,
+            )
         for task_id in task_ids:
             row = rows.get(task_id)
             if row is None or row["project_id"] != project_id or row["repo_id"] not in {
                 None, repo.id,
             }:
                 raise ValueError(f"task {task_id} does not belong to the repository project")
-            if row["status"] == "COMPLETED" and task_id not in generations:
+            request = requests[task_id]
+            if request.requires_parent_completion and request.parent_completion is None:
+                raise ValueError(f"{task_id}: current verified parent completion is required")
+            if row["status"] == "COMPLETED" and (
+                not request.completion_id or request.completed_at is None
+            ):
                 raise ValueError(f"{task_id}: completion generation requires provenance migration")
         identities = {
-            task_id: self._adoption_fence(rows[task_id], generations) for task_id in task_ids
+            task_id: self._adoption_fence(rows[task_id], generations, requests)
+            for task_id in task_ids
         }
         manifest = await self._observe_adoption(repo, target_ref, head_sha, identities)
         equivalent = [m["task_id"] for m in manifest if m["acceptance"] != "ancestry"]
@@ -1326,8 +1382,9 @@ class DevelopmentIntegration:
         }
 
     @staticmethod
-    def _adoption_fence(row, generations):
-        return (row["status"], row["branch_name"], row["claim_epoch"], generations.get(row["id"]))
+    def _adoption_fence(row, generations, requests):
+        return (row["status"], row["branch_name"], row["claim_epoch"], generations.get(row["id"]),
+                row["repo_id"], requests.get(row["id"]))
 
     async def _observe_adoption(self, repo, target_ref, head_sha, identities):
         """Name each task's current branch head and whether *head_sha* contains it."""
@@ -1340,13 +1397,19 @@ class DevelopmentIntegration:
                 self.db, identities, repository_id=repo.id, target_ref=target_ref,
             )
             manifest = []
-            for task_id, (_status, branch, _epoch, _generation) in identities.items():
+            for task_id, (_status, branch, _epoch, _generation, _repo_id, observed) in (
+                identities.items()
+            ):
                 source = truth.source_heads.get(
                     "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
                 ) if branch else None
                 request = requests.get(task_id)
+                if request != observed:
+                    raise DevelopmentBusy("a selected completion changed; adopt again")
                 if request and request.completion_id and _status == "COMPLETED":
                     proof = await truth.evaluate(request)
+                    if request.parent_completion is not None and not proof.source_oid:
+                        raise ValueError(f"{task_id}: verified parent source could not be observed")
                     if proof.source_oid:
                         source = proof.source_oid
                 probe = await self.git.ais_ancestor(
@@ -1385,7 +1448,21 @@ class DevelopmentIntegration:
                 .all()
             )
             generations = await self._completion_generations(conn, task_ids)
-            if {row["id"]: self._adoption_fence(row, generations) for row in selected} != (
+            requests = await load_delivery_requests(
+                self.db, task_ids, repository_id=repo.id, target_ref=target_ref, conn=conn,
+            )
+            current_repository = (await conn.execute(select(repos).where(
+                repos.c.id == repo.id,
+            ).with_for_update())).mappings().one_or_none()
+            designated = await conn.scalar(select(projects.c.integration_repository_id).where(
+                projects.c.id == project_id,
+            ).with_for_update())
+            if (designated != repo.id or current_repository is None
+                or current_repository["project_id"] != project_id
+                or current_repository["url"] != repo.url
+                or current_repository["default_branch"] != repo.default_branch):
+                raise DevelopmentBusy("repository or delivery target changed; adopt again")
+            if {row["id"]: self._adoption_fence(row, generations, requests) for row in selected} != (
                 identities
             ):
                 raise DevelopmentBusy(
@@ -1428,12 +1505,7 @@ class DevelopmentIntegration:
                     source = sources[task_id]
                     if not is_valid_git_oid(source):
                         raise ValueError(f"{task_id}: missing exact completion source")
-                    completion_row = (await conn.execute(select(task_completion_records).where(
-                        task_completion_records.c.task_id == task_id,
-                    ).order_by(task_completion_records.c.completed_at.desc(),
-                               task_completion_records.c.id.desc()).limit(1))).mappings().first()
-                    completion = self.db._row_to_task_completion(completion_row) if completion_row else None
-                    generation = recorded.get(task_id) or (completion and completion.id)
+                    generation = recorded.get(task_id) or requests[task_id].completion_id
                     if generation is None:
                         raise ValueError(f"{task_id}: completion generation requires provenance migration")
                     original = CompletedSource(
@@ -1540,9 +1612,28 @@ class DevelopmentIntegration:
         project_id = project.id
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
-        await self.rebind_foreign_repositories(project_id, repo)
-        await self.refresh_dependencies(project_id)
+        # A reconciler-owned target is an expected no-op for the legacy sweep.
+        # Check before entering the root ownership guard so its fail-closed
+        # refusal does not turn ordinary ownership into a publisher failure.
+        # The check inside exclusion remains necessary for concurrent transfers.
+        from src.integration.development_adapter import development_subject_owns_target
+
+        if await development_subject_owns_target(
+            self.db, project_id, repo.id, "refs/heads/" + repo.default_branch,
+        ):
+            return {"outcome": "subject_owned", "parked": []}
         async with nullcontext() if _moved else self.exclusion(repo.id):
+            # Shadow subjects and an unowned subject leave this path active.
+            # The shared writer takes this same repository exclusion, so a
+            # target with durable reconciler ownership cannot publish twice.
+            from src.integration.development_adapter import development_subject_owns_target
+
+            if await development_subject_owns_target(
+                self.db, project_id, repo.id, "refs/heads/" + repo.default_branch,
+            ):
+                return {"outcome": "subject_owned", "parked": []}
+            await self.rebind_foreign_repositories(project_id, repo)
+            await self.refresh_dependencies(project_id)
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):
@@ -1831,12 +1922,15 @@ class DevelopmentIntegration:
                         dependency_kind = (
                             dependency_reason if dependency_reason in {
                                 "dependency_cycle", "missing_ref", "missing_provenance",
+                                "invalid_parent_completion", "parent_provenance_mismatch",
                             } else "undelivered_dependency"
                         )
                         detail = {
                             "dependency_cycle": "dependency cycle with",
                             "missing_ref": "missing ref for dependency",
                             "missing_provenance": "missing git provenance for dependency",
+                            "invalid_parent_completion": "invalid parent completion for dependency",
+                            "parent_provenance_mismatch": "parent provenance mismatch for dependency",
                             "undelivered_dependency": "undelivered dependency",
                         }[dependency_kind]
                         logger.warning(
@@ -1852,6 +1946,7 @@ class DevelopmentIntegration:
                     skipped[task["id"]] = (
                         first_reason if first_reason in {
                             "dependency_cycle", "missing_ref", "missing_provenance",
+                            "invalid_parent_completion", "parent_provenance_mismatch",
                         } else "undelivered_dependency", held[0],
                     )
                     continue
@@ -1862,11 +1957,8 @@ class DevelopmentIntegration:
                 ) else None
                 if not source:
                     skipped[task["id"]] = (
-                        "source_parked" if task["id"] in parked_ids else (
-                            "git_error" if evidence.reason == "git_error" else
-                            "missing_provenance" if evidence.reason == MISSING_PROVENANCE else
-                            "missing_ref"
-                        ),
+                        "source_parked" if task["id"] in parked_ids else
+                        delivery_skip_reason(evidence.reason),
                         task["id"],
                     )
                     logger.warning(
@@ -3377,6 +3469,7 @@ class DevelopmentIntegration:
             result["evidence"] = {"protection": reading.as_dict()}
         return result
 
+    @parent_engine_guard("operation", outcome="blocked")
     async def cancel_preserving(self, operation_id, *, reason):
         from src.database.tables import integration_batches
         from src.database.tables import integration_branch_owners as owners

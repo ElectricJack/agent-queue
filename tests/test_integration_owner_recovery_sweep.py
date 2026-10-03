@@ -48,6 +48,25 @@ async def test_sweep_does_nothing_while_the_switch_is_off(monkeypatch):
     recovery.recover_many.assert_not_awaited()
 
 
+async def test_sweep_runs_under_the_default_configuration(monkeypatch):
+    recovery = SimpleNamespace(
+        candidates=AsyncMock(return_value=[{"id": "stranded"}]),
+        recover_many=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "src.integration.owner_recovery.owner_recovery_for", lambda _orchestrator: recovery
+    )
+    orchestrator = SimpleNamespace(
+        config=SimpleNamespace(integration=IntegrationConfig()),
+        _owner_recovery_next_due=0.0,
+    )
+
+    await Orchestrator._sweep_stranded_owners(orchestrator, 100.0)
+
+    recovery.candidates.assert_awaited_once_with(quiet_seconds=600, limit=50)
+    recovery.recover_many.assert_awaited_once_with(["stranded"], principal="sweep")
+
+
 async def test_sweep_recovers_quiet_candidates_only_once_per_five_minutes(monkeypatch):
     recovery = SimpleNamespace(
         candidates=AsyncMock(return_value=[{"id": "first"}, {"id": "second"}]),

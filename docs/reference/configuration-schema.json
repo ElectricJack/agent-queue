@@ -603,6 +603,25 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "host_shell": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": false,
+        "max_shells": 4
+      },
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_shells": {
+          "default": 4,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "inbox": {
       "default": {
         "client_secret": "$GOOGLE_CLIENT_SECRET",
@@ -621,9 +640,14 @@
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
-        "owner_recovery_sweep": false,
+        "owner_recovery_sweep": true,
         "publisher_stall_after": 5,
-        "scratch_probe": null
+        "reconciler_active": false,
+        "reconciler_shadow": false,
+        "scratch_probe": null,
+        "service_item_timeout_seconds": 60.0,
+        "service_source_timeout_seconds": 300.0,
+        "service_source_timeouts": {}
       },
       "properties": {
         "default_mode": {
@@ -690,12 +714,20 @@
           "type": "array"
         },
         "owner_recovery_sweep": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "publisher_stall_after": {
           "default": 5,
           "type": "integer"
+        },
+        "reconciler_active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "reconciler_shadow": {
+          "default": false,
+          "type": "boolean"
         },
         "scratch_probe": {
           "additionalProperties": false,
@@ -757,10 +789,319 @@
             "object",
             "null"
           ]
+        },
+        "service_item_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        },
+        "service_source_timeout_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "service_source_timeouts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "type": "object"
         }
       },
       "type": "object",
       "x-reload": "restart"
+    },
+    "knowledge": {
+      "additionalProperties": false,
+      "default": {
+        "authority_review_required": true,
+        "consolidation": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "context": {
+          "bundle_ttl_seconds": 300,
+          "discovery_max_items": 8,
+          "discovery_max_tokens": 1000,
+          "enabled": false,
+          "input_max_tokens": 32768,
+          "max_bytes": 16384,
+          "max_tokens": 4096,
+          "output_reserve_tokens": 4096,
+          "supervisor_global_scope": false,
+          "supervisor_project_ids": [],
+          "supervisor_query": "",
+          "wrapper_reserve_tokens": 256
+        },
+        "enabled": false,
+        "enabled_projects": [],
+        "export": {
+          "enabled": false
+        },
+        "extraction": {
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
+        },
+        "global_enabled": false,
+        "import_apply": {
+          "enabled": false
+        },
+        "import_inventory": {
+          "enabled": false
+        },
+        "legacy_memory_mode": "disabled",
+        "semantic": {
+          "enabled": false
+        },
+        "ui_enabled": false,
+        "writes_enabled": false
+      },
+      "properties": {
+        "authority_review_required": {
+          "default": true,
+          "type": "boolean"
+        },
+        "consolidation": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "context": {
+          "additionalProperties": false,
+          "default": {
+            "bundle_ttl_seconds": 300,
+            "discovery_max_items": 8,
+            "discovery_max_tokens": 1000,
+            "enabled": false,
+            "input_max_tokens": 32768,
+            "max_bytes": 16384,
+            "max_tokens": 4096,
+            "output_reserve_tokens": 4096,
+            "supervisor_global_scope": false,
+            "supervisor_project_ids": [],
+            "supervisor_query": "",
+            "wrapper_reserve_tokens": 256
+          },
+          "properties": {
+            "bundle_ttl_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "discovery_max_items": {
+              "default": 8,
+              "type": "integer"
+            },
+            "discovery_max_tokens": {
+              "default": 1000,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "input_max_tokens": {
+              "default": 32768,
+              "type": "integer"
+            },
+            "max_bytes": {
+              "default": 16384,
+              "type": "integer"
+            },
+            "max_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "output_reserve_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "supervisor_global_scope": {
+              "default": false,
+              "type": "boolean"
+            },
+            "supervisor_project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "supervisor_query": {
+              "default": "",
+              "type": "string"
+            },
+            "wrapper_reserve_tokens": {
+              "default": 256,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled_projects": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "export": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "extraction": {
+          "additionalProperties": false,
+          "default": {
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
+          },
+          "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "global_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "import_apply": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "import_inventory": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "legacy_memory_mode": {
+          "default": "disabled",
+          "type": "string"
+        },
+        "semantic": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "ui_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "writes_enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "llm": {
       "additionalProperties": false,
@@ -2519,7 +2860,11 @@
         "state_cache_ttl_seconds": 2,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
-        "transcript_startup_replay_limit": 100
+        "transcript_startup_replay_limit": 100,
+        "worker_claude_plugin_overrides": {},
+        "worker_context_checkpoint_tokens": 120000,
+        "worker_context_compact_tokens": 160000,
+        "worker_context_unknown_checkpoint_turns": 40
       },
       "properties": {
         "adopt_on_start": {
@@ -2600,6 +2945,25 @@
         },
         "transcript_startup_replay_limit": {
           "default": 100,
+          "type": "integer"
+        },
+        "worker_claude_plugin_overrides": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "worker_context_checkpoint_tokens": {
+          "default": 120000,
+          "type": "integer"
+        },
+        "worker_context_compact_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
+        "worker_context_unknown_checkpoint_turns": {
+          "default": 40,
           "type": "integer"
         }
       },
@@ -2981,6 +3345,8 @@
       "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "host_shell",
+      "knowledge",
       "llm_logging",
       "logging",
       "max_concurrent_playbook_runs",

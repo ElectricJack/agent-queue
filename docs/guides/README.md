@@ -29,6 +29,7 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [End-to-end testing the swarm](e2e-swarm.md) | Proving claims, pools, formulas or the task hierarchy still compose, against a real daemon. |
 | [Feature history and integration merges](feature-merge-history.md) | Reading ancestry in the **optional strict** integration modes. |
 | [Hierarchical integration trains](hierarchical-integration-trains.md) | Rolling out the **optional, off-by-default** train mode for a project. |
+| [Shadow week and the guarded root cutover](reconciler-shadow-cutover-runbook.md) | Observing the root subject engine in shadow mode for a week, comparing its decisions with legacy's, and transferring root subjects behind an explicit human approval. |
 | [Agent collaboration threads](agent-collaboration.md) | Settling a shared goal *now*, between 2-4 running agents: creating a thread, exchanging the small ordered messages it carries, and waiting on a reply or a typed end reason. |
 
 Guides for the dashboard, plugins and MCP, and day-to-day operations are part of

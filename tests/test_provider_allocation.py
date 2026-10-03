@@ -1160,6 +1160,34 @@ async def test_api_previews_and_maps_refusals(orch):
     assert allowed.json()["preference"]["after"] == "claude"
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"receive_new_work": {"project_id": BRAVO, "mode": "prefer"}},
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "participation": "task",
+        },
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "bounds": {"max": 1},
+        },
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "drain": "interrupt-busy",
+        },
+    ],
+)
+async def test_api_project_preference_target_does_not_grant_global_allocation(orch, fields):
+    supervisor = RequestScope(kind="session", session_id="sup", project_id=ALPHA, elevated=True)
+    async with _client(orch, supervisor) as client:
+        response = await client.post(
+            "/api/providers/allocation/preview", json={"provider": "claude", **fields}
+        )
+    assert response.status_code == 403, response.text
+    assert "out of scope" in response.json()["error"]
+
+
 async def test_the_preview_contract_is_a_read(orch):
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.builtin import (
@@ -1810,4 +1838,3 @@ async def test_api_applies_and_returns_refusals_with_their_data(orch, stops):
     assert applied.status_code == 200, applied.text
     assert applied.json()["status"] == "applied"
     assert replay.status_code == 409 and replay.json()["error_code"] == "preview_unknown"
-

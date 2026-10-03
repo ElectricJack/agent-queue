@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useKnowledgeCapabilities } from "../../api/knowledge";
 import { useProjects } from "../../api/hooks";
 import type { RunningTarget } from "../../api/graphLayout";
 import { useGraphLive } from "./useGraphLive";
@@ -10,6 +11,7 @@ type Projects = NonNullable<ReturnType<typeof useProjects>["data"]>;
 const EMPTY_PROJECTS: Projects = [];
 interface TaskWorkspaceValue {
   projectId: string | undefined;
+  knowledgeAvailable: boolean;
   projectIds: string[];
   projects: Projects;
   isLoadingProjects: boolean;
@@ -36,6 +38,8 @@ export function TaskWorkspaceProvider({ children, scope }: { children: ReactNode
   const route = useParams<{ projectId: string }>();
   const projectId = scope ? scope.projectId : route.projectId;
   const navigate = useNavigate();
+  const knowledge = useKnowledgeCapabilities(projectId);
+  const knowledgeAvailable = knowledge.data?.available === true;
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
@@ -92,10 +96,10 @@ export function TaskWorkspaceProvider({ children, scope }: { children: ReactNode
     const query = next.toString();
     navigate(`/projects/${encodeURIComponent(target.project_id)}/graph${query ? `?${query}` : ""}`);
   }, [projectId, setParams, navigate]);
-  const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
+  const value = useMemo(() => ({ knowledgeAvailable, projectId, projectIds, projects, isLoadingProjects, projectsError,
     filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters,
     goToRunningWork }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork]);
+  [knowledgeAvailable, projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork]);
   return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 

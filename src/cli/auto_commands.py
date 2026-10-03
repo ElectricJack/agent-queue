@@ -141,10 +141,12 @@ HANDCRAFTED_COVERAGE = {
     "integration_materialize_root",
     "integration_authorize_root",
     "integration_redrive_child",
+    "integration_reopen_collection",
     "integration_rebind_reused_identity",
     "integration_rebind_repair",
     "integration_rebind_detached_repair",
     "integration_recover_preserved_repair",
+    "integration_recover_parent_head",
     "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories",
     "integration_close_delivered_pr",
@@ -528,6 +530,10 @@ def _make_auto_command(
             from . import app as _app
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
+            if name == "knowledge_propose" and kwargs.get("claim_epoch") is None:
+                from .claim_epoch import resolve_claim_epoch
+
+                kwargs["claim_epoch"] = resolve_claim_epoch(None)
             if name == "supervisor_inbox_history":
                 states = kwargs.pop("history_states", ())
                 if states:

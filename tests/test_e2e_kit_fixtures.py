@@ -158,8 +158,31 @@ def test_app_train_verifier_retries_fixable_close_before_draining(monkeypatch, t
 
     assert app._verifier_close("S4", claimed, tmp_path) is None
     assert recorded == [("S4", "verifier_close_retry", {
-        "task": "verify-1", "issues": [
+        "task": "verify-1", "escalated": False, "issues": [
             "Parent integration completion was refused: stale_verification."]})]
+    assert app._verifier_close("S4", claimed, tmp_path) == {
+        "status": "COMPLETED", "pipeline_ok": True}
+
+
+def test_app_train_verifier_keeps_waiting_for_the_named_trusted_evidence_refusal(
+    monkeypatch, tmp_path
+):
+    """The named wait refusal (escalated on an unchanged replay) still waits."""
+    app = _load_app_train(monkeypatch, tmp_path)
+    results = iter([
+        {"status": "IN_PROGRESS", "result": "verification_failed", "escalated": True,
+         "issues": ["Parent integration completion was refused: "
+                    "awaiting_trusted_verification (verification_not_recorded)."]},
+        {"status": "COMPLETED", "pipeline_ok": True},
+    ])
+    recorded = []
+    monkeypatch.setattr(app, "worker_aq", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(app, "record", lambda *args: recorded.append(args))
+    claimed = {"task_id": "verify-1", "claim_epoch": 1}
+
+    assert app._verifier_close("S4", claimed, tmp_path) is None
+    assert recorded[0][0:2] == ("S4", "verifier_close_retry")
+    assert recorded[0][2]["escalated"] is True
     assert app._verifier_close("S4", claimed, tmp_path) == {
         "status": "COMPLETED", "pipeline_ok": True}
 
@@ -1082,15 +1105,16 @@ def test_race_and_plugin_probes_bypass_cli_preloading(tmp_path, argv):
     assert "Traceback" not in result.stderr
 
 
-def test_pytest_collection_selects_only_the_requested_shard():
+@pytest.mark.parametrize("group", SCENARIO_GROUPS)
+def test_pytest_collection_selects_only_the_requested_shard(group):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/test_e2e_cli_stateful.py", "--co", "-q",
-         "-m", "integration", "-k", "graphs"],
+         "-m", "integration", "-k", f"{group}-"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     nodes = [line for line in result.stdout.splitlines()
              if line.startswith("tests/test_e2e_cli_stateful.py::")]
     assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
-        f"graphs-{key}" for key in SCENARIO_GROUPS["graphs"]
+        f"{group}-{key}" for key in SCENARIO_GROUPS[group]
     }

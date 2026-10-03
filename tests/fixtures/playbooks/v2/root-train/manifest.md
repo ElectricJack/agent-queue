@@ -1,7 +1,7 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:569738076ce63a7b91173b7aaa91b86e81818cd70951b82634b1331644ce550c
-source_sha256: sha256:9714e0d25da8df79d9b2e713b10746a623d1e2f979f10238691d19147b28d485
+artifact_sha256: sha256:6681dd209a52e011b7f8f49f32a6d952782ec64a5e3df68da2ab7a34a01a25cf
+source_sha256: sha256:723b8dca06fb081ca3daf410e2eeeaa382d515bb84b6968f0a4e5fe516b2e07b
 contract_fingerprint: sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd
 questions_resolved: 0
 capabilities_granted:
@@ -29,3 +29,13 @@ activation serves only projects whose frozen policy route names this playbook
 receive durable subject identities; CI trust, Git refs, repair budgets, and
 promotion authority stay server-owned. Import and activation require operator
 review. The bundle has no automatic activation.
+
+## Subject table handoff
+
+The disabled bundle includes a source-owned integration decision table.
+Existing event rules remain available for feature-off rollback. Each subject
+retains its exact artifact pin. Gate choices and replay deadlines are explicit;
+root publication needs the observed publisher fence, distinct from repair
+writer authority. Agent Queue retains authorized continuation; the generic
+template retains a no-default exhaustion gate. Import/activation and production
+cutover evidence remain operator-owned.

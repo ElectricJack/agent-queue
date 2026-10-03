@@ -262,7 +262,20 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # invariant tests exist to catch.
     "task.stalled": {
         "required": ["task_id", "project_id", "title", "session_id"],
-        "optional": ["idle_seconds"],
+        # ``deferred_reason`` is the structured NudgeReason when the rung was
+        # spent on a composer that could not be read: the stall is real, but
+        # no text was typed, so no ``task.nudged`` follows.  ``evidence`` is
+        # ``"unverified"`` on the rarer event where the stall is announced
+        # *without* a rung, because no progress record exists to corroborate
+        # it — nothing downstream may read that one as a climb — and
+        # ``screen_unchanged_seconds`` is the terminal observation quoted
+        # alongside it, for the human, not for a decision.
+        "optional": [
+            "idle_seconds",
+            "deferred_reason",
+            "evidence",
+            "screen_unchanged_seconds",
+        ],
     },
     "task.nudged": {
         "required": ["task_id", "project_id", "title", "session_id"],

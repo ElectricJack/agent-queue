@@ -2,7 +2,9 @@
 
 Completion refs retain the exact source as their parent; their metadata commits
 are never delivery proof. Readers test the *source*, not a trailer or marker.
-The caller supplies an existing completion id, never a new delivery identity.
+The caller supplies the generation id used by the shared delivery evaluator:
+an existing close/verification id, or a version-fenced legacy generation for
+an operator-attested completed task without a descriptive completion row.
 All writes are invoked by CommandHandler's completion/operator paths.
 """
 from __future__ import annotations
@@ -55,7 +57,7 @@ class CompletionIdentity:
     project_id: str
     repository_id: str
     task_id: str
-    generation: str  # task_completion_records.id; claim_epoch is supplementary
+    generation: str  # leaf close id or parent:<verification id>; claim_epoch is supplementary
 
     def __post_init__(self):
         if any(not isinstance(v, str) or not v or len(v) > 500

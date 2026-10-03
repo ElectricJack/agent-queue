@@ -1,0 +1,198 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-stale-claim-recycled-slot",
+    "claim_epoch": 2,
+    "events": [
+      {
+        "bundle_id": "bundle-stale-claim-recycled-slot",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-stale-claim-recycled-slot:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-stale-claim-recycled-slot",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence",
+      "rec-guidance-small@rev-0001:guidance"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-stale-claim-recycled-slot",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-stale-claim-recycled-slot:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {
+      "rec-procedure-deploy@rev-0007:procedure": {
+        "body": "Deploy to the staging rail: run the health gate, then freeze the schema and release."
+      }
+    },
+    "omitted_reasons": {
+      "rec-procedure-deploy@rev-0007:procedure": "stale-claim"
+    },
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "stale-claim-recycled-slot",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "48648f0c9a7e3323979aca06e9797a798fac5d10f3ccb3a81c2ecd35a47d25e4",
+    "expected": "b5f220a556a279ae58cb2e54b3a93def5f730c4aeeb9e623f015acd765127851",
+    "fixture_id": "d5beb1d78f2806430e99f5e3a37d3309c1d7623bc98d43540262050fc0dde7a7",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "9c770ee883fc3e68e46ee946717023af47b115431d1a1361504b8f780e5de15b",
+    "records": "b024978fea12897001648c6887b7d69c257eab1fd906b6a781068d475dac265a",
+    "scenario": "413f69f3c3bee0bff0e6e05e80e30c2eb56b194250e413338866070814a1fdc2",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "stale_claim": "f6a280f1e5c8dd034811a68141a749998cf8283224b10b083b3fa6e5eec618b6",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 2,
+          "owner_id": "attempt-stale-claim-recycled-slot",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "content_sha256": "224d667f6e065982371a46945ae223856618eabeb8c5782d923a3a4be7a4a65c",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 2,
+          "owner_id": "attempt-stale-claim-recycled-slot",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-guidance-small",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-stale-claim-recycled-slot",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-stale-claim-recycled-slot:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [
+      {
+        "identity": "rec-procedure-deploy@rev-0007:procedure",
+        "reason": "stale-claim"
+      }
+    ],
+    "owner": {
+      "claim_epoch": 2,
+      "owner_id": "attempt-stale-claim-recycled-slot",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-evidence-log-retained@rev-0002:evidence] synthetic-log-evidence; unverified; current\nObserved log line: the rail rejected the schema change at step three.\n[rec-guidance-small@rev-0001:guidance] synthetic-agent-assertion; unverified; current\nSmall guidance: check the rail lease before restart.\n",
+    "rendered_sha256": "108d668a2e8f761c9d003ce98ac5ba208a0af281d205daab84cddde24c6e0227",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Observed log line: the rail rejected the schema change at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "authority": "unverified",
+        "content_sha256": "224d667f6e065982371a46945ae223856618eabeb8c5782d923a3a4be7a4a65c",
+        "evidence": "synthetic-agent-assertion",
+        "excerpt": "Small guidance: check the rail lease before restart.",
+        "freshness": "current",
+        "kind": "guidance",
+        "record_id": "rec-guidance-small",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "usage": {
+      "bytes": 403,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 403
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Small guidance: check the rail lease before restart."
+      },
+      "freshness": "current",
+      "kind": "guidance",
+      "record_id": "rec-guidance-small",
+      "revision_id": "rev-0001"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Deploy to the staging rail: run the health gate, then freeze the schema and release."
+      },
+      "freshness": "current",
+      "kind": "procedure",
+      "record_id": "rec-procedure-deploy",
+      "revision_id": "rev-0007"
+    }
+  ],
+  "scenario": "Reauthorize exact references, lower budget reduces selection, stale claim cannot receive prior context",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "stale_claim": {
+    "claim_epoch": 2,
+    "expected_forbidden_identity": "rec-procedure-deploy@rev-0007:procedure",
+    "stale_epoch": 1
+  },
+  "synthetic": true
+}

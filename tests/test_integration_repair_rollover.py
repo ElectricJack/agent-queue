@@ -31,14 +31,14 @@ from tests.test_integration_repair import _artifact, _policy
 env = owner_tests.env
 
 
-async def _batch_writer(env, *, dirty=False):
+async def _batch_writer(env, *, dirty=False, on_exhausted="continue"):
     db = env.db
     branch = "aq/integration/batch"
     partial = env.branch(branch)
     sources = [env.branch(f"source-{n}") for n in range(2)]
     artifact = _artifact()
     policy = _policy()
-    policy["root"]["repair"].update(conflict_scope="batch", on_exhausted="continue")
+    policy["root"]["repair"].update(conflict_scope="batch", on_exhausted=on_exhausted)
     await db.update_project(
         "p", hierarchical_integration_mode="train", hierarchical_integration_policy=policy
     )
@@ -125,6 +125,13 @@ async def _batch_writer(env, *, dirty=False):
     )
 
 
+async def _ordinals(case):
+    async with case.db._engine.connect() as conn:
+        return (await conn.execute(select(integration_repair_stages.c.ordinal).where(
+            integration_repair_stages.c.operation_id == case.operation,
+        ).order_by(integration_repair_stages.c.ordinal))).scalars().all()
+
+
 async def _stage(case, ordinal):
     async with case.db._engine.connect() as conn:
         return dict((await conn.execute(select(integration_repair_stages).where(
@@ -149,17 +156,26 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
         repair_dispatch_handler=dispatch_due,
         clock=lambda: 130.0,
     )
-    # Natural persisted deadline pass and reservation retry, with no CI event.
+    # Natural persisted deadline pass, with no CI event: the writer is still
+    # draining, so the clock neither retires it nor allocates a successor.
     await service.tick(130.0)
-    before = await _stage(case, 1)
-    next_id = before["repair_task_id"]
-    assert before["state"] == "active" and before["deadline_at"] == 190.0
-    assert (await case.db.get_task(next_id)).status is TaskStatus.PAUSED
+    waiting = await _stage(case, 0)
+    assert waiting["state"] == "active" and waiting["deadline_at"] == 430.0
+    assert waiting["dossier"]["deadline_deferrals"][-1]["reason"] == "writer_live"
+    assert await _ordinals(case) == [0]
     assert (await BranchOwnership(case.db).get_owner(case.target))["owner_id"] == case.primary
     assert remote_sha(env.origin, f"aq/preserved/{case.owner['id']}") is None
 
     await case.db.update_session("old-session", state="stopped", desired_state="stopped")
     await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # Stopped with unpublished commits: the stop proof's dry run sees work to
+    # preserve, so the bounded successor resumes it (no same-ordinal refile).
+    expired = await repair.expire(case.operation, 0, now=430.0)
+    assert (expired["action"], expired["stage"]) == ("dispatch_debug", 1)
+    before = await _stage(case, 1)
+    assert before["state"] == "active" and before["deadline_at"] == 490.0
+    assert before["repair_task_id"] is None
+    assert remote_sha(env.origin, f"aq/preserved/{case.owner['id']}") is None
     push = AsyncMock(wraps=case.recovery.git.apush_validated_ref)
     monkeypatch.setattr(case.recovery.git, "apush_validated_ref", push)
     if crash != "none":
@@ -183,9 +199,10 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
 
     # Reconstruct the repair service as on daemon restart. The audit is the
     # progress source even when the old owner was already released/reassigned.
-    restarted = RepairService(case.db, owner_recovery=case.recovery, clock=lambda: 132.0)
+    restarted = RepairService(case.db, owner_recovery=case.recovery, clock=lambda: 432.0)
     result = await restarted.dispatch(case.operation, 1)
     assert result["outcome"] in {"dispatched", "already_dispatched"}
+    next_id = result["repair_task_id"]
     after = await _stage(case, 1)
     progress = after["dossier"]["preserved_progress"]
     tip = progress["sha"]
@@ -229,7 +246,7 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
         assert (await case.db.get_workspace("ws-slot")).enabled is False
     for _ in range(2):
         assert (await restarted.dispatch(case.operation, 1))["outcome"] == "already_dispatched"
-        await restarted.reconcile_delegate_reservations(133.0)
+        await restarted.reconcile_delegate_reservations(433.0)
     assert push.await_count == 1
     assert len([r for r in await env.audits(case.owner["id"])
                 if r["outcome"] == "preserved_and_released"]) == 1
@@ -237,12 +254,72 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert remote_sha(env.origin, case.target.branch) == case.partial
 
 
+@pytest.mark.parametrize("on_exhausted", ["human", "continue"])
+async def test_service_retries_a_busy_successor_dispatch_without_any_event(env, on_exhausted):
+    """The lost ``repair_exhausted`` run and a ``busy`` refusal both still advance.
+
+    No playbook runs here: the deadline pass allocates the debug stage, the
+    service's dispatch source finds it under either policy, the attached
+    predecessor makes the first dispatch answer ``busy``, and the paced retry
+    hands the stage to its delegate once the old writer has stopped.
+    """
+    import src.integration.service as service_module
+
+    case = await _batch_writer(env, on_exhausted=on_exhausted)
+    repair = case.repair
+    # A conclusive attempt lets this stage's deadline escalate. A live writer
+    # without an attempt now defers its deadline instead of allocating debug.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == case.operation,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(attempts=1))
+    outcomes = []
+
+    async def dispatcher(row):
+        result = await repair.dispatch(row["operation_id"], int(row["ordinal"]))
+        outcomes.append(result["outcome"])
+        return result
+
+    now = [130.0]
+    # Only the deadline and dispatch sources: the reservation reconciler would
+    # also hand a stopped writer's branch over and hide the retry under test.
+    service = IntegrationService(
+        case.db, SimpleNamespace(mark_due=AsyncMock()),
+        SimpleNamespace(expire=repair.expire, pending_dispatches=repair.pending_dispatches),
+        SimpleNamespace(dispatch_due=AsyncMock()),
+        repair_dispatcher=dispatcher, clock=lambda: now[0],
+    )
+    await service.tick(130.0)
+    stage = await _stage(case, 1)
+    assert stage["state"] == "active" and outcomes == ["busy"]
+    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.PAUSED
+
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    now[0] = 131.0
+    await service.tick(131.0)
+    assert outcomes == ["busy"]  # paced: the retry is not due yet
+
+    now[0] = 130.0 + service_module.DISPATCH_RETRY_BASE_SECONDS
+    await service.tick(now[0])
+    assert outcomes == ["busy", "dispatched"]
+    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.READY
+    owner = await BranchOwnership(case.db).get_owner(case.target)
+    assert owner["owner_id"] == stage["repair_task_id"] and owner["handoff_state"] == "reserved"
+
+    now[0] += 1000.0
+    await service.tick(now[0])
+    assert outcomes == ["busy", "dispatched"]  # a launched writer leaves the selection
+
+
 @pytest.mark.parametrize("corruption", ["manifest", "ref", "lineage"])
 async def test_preserved_rollover_corruption_remains_an_explicit_blocker(env, corruption):
     case = await _batch_writer(env)
-    await case.repair.expire(case.operation, 0, now=130.0)
     await case.db.update_session("old-session", state="stopped", desired_state="stopped")
     await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # A stopped writer with unpublished commits rolls over to the successor.
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
     recovered = await case.recovery.recover(case.owner["id"], principal="sweep")
     assert recovered.outcome == "preserved_and_released"
     if corruption == "manifest":
@@ -265,7 +342,9 @@ async def test_preserved_rollover_corruption_remains_an_explicit_blocker(env, co
                 integration_repair_stages.c.ordinal == 1,
             ).values(current_subject=subject))
     result = await case.repair.dispatch(case.operation, 1)
+    # Preserved history that stopped proving its lineage is a human decision.
     assert result["outcome"] == "human_required"
+    assert result["reason"].startswith("preserved repair progress is unusable")
     stage = await _stage(case, 1)
     assert "preserved_progress_blocker" in stage["dossier"]
     assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.PAUSED
@@ -274,9 +353,10 @@ async def test_preserved_rollover_corruption_remains_an_explicit_blocker(env, co
 
 async def test_preserved_checkout_ref_movement_fails_without_resetting_work(env):
     case = await _batch_writer(env)
-    await case.repair.expire(case.operation, 0, now=130.0)
     await case.db.update_session("old-session", state="stopped", desired_state="stopped")
     await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # A stopped writer with unpublished commits rolls over to the successor.
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
     result = await case.repair.dispatch(case.operation, 1)
     orch = Orchestrator.__new__(Orchestrator)
     orch.db, orch.git = case.db, case.recovery.git
@@ -292,9 +372,10 @@ async def test_preserved_checkout_ref_movement_fails_without_resetting_work(env)
 async def test_accepted_new_revision_supersedes_historical_preservation(env):
     """A later accepted candidate must not be rewound by the old recovery audit."""
     case = await _batch_writer(env)
-    await case.repair.expire(case.operation, 0, now=130.0)
     await case.db.update_session("old-session", state="stopped", desired_state="stopped")
     await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # A stopped writer with unpublished commits rolls over to the successor.
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
     first = await case.repair.dispatch(case.operation, 1)
     prior = await _stage(case, 1)
     # Model the constructor's durable accepted revision and normal subject bind.

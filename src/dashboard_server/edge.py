@@ -31,6 +31,7 @@ from src.dashboard_server.settings import DashboardServerSettings, normalise_ori
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::"})
 _BEARER_PREFIX = "aq-bearer."
 _TERMINAL_PREFIX = "/ws/terminal/"
+_HOST_SHELL_PATH = "/api/host-shell"
 _TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 _TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
@@ -200,6 +201,9 @@ class EdgeGate:
         if any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope)):
             return True
         path = scope.get("path", "")
+        if path == _HOST_SHELL_PATH or path.startswith(_HOST_SHELL_PATH + "/"):
+            # Remote code execution by design: a trusted origin or loopback only.
+            return origin not in self._trusted
         if path == _TERMINAL_PREFIX.rstrip("/") or path.startswith(_TERMINAL_PREFIX):
             if scope.get("type") == "websocket":
                 return origin not in self._trusted

@@ -1064,6 +1064,9 @@ async def write_plan(
                 insert(task_gates),
                 [{"task_id": task_id, "gate_id": review_gate_id} for task_id in plan.task_ids],
             )
+        from src.object_loop.formulas import guard_formula
+
+        await guard_formula(db, conn, plan, provenance)
         # The phases are in the projection too, or the inter-phase gate is
         # never computed and phase 2 is claimable the moment it is released.
         # So is a worker's gated root container, which withholds its nodes.
@@ -1179,6 +1182,11 @@ async def create_graph(
         else None
     )
     if dry_run:
+        from src.object_loop.formulas import guard_formula
+
+        if provenance is not None and provenance.name in {"object", "variation"}:
+            async with db._engine.connect() as conn:
+                await guard_formula(db, conn, plan, provenance, dry_run=True)
         if hierarchy_service is not None or filing is not None:
             # Same route check the real run performs first, so a dry run
             # refuses what the real run would refuse instead of reporting a

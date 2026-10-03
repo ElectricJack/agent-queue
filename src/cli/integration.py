@@ -7,6 +7,8 @@ authority are enforced.
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -29,6 +31,78 @@ def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
 @cli.group("integration")
 def integration() -> None:
     """Inspect and control hierarchical integration trains."""
+
+
+@integration.command("engine-transfer")
+@click.argument("repository_id")
+@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--parent-task-id", default=None,
+              help="Transfer this parent instead of repository roots.")
+@click.option("--expected-subject", "expected_subjects", multiple=True,
+              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every selected subject.")
+@click.option("--reason", default="", help="Required explanation when applying the transfer.")
+@click.option("--evidence", multiple=True, help="Shadow, scenario and operator approval references.")
+@click.option("--apply", is_flag=True, help="Apply the exact previewed versions; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_engine_transfer(
+    ctx, repository_id, engine, parent_task_id, expected_subjects, reason, evidence, apply,
+):
+    """Preview or transfer exclusive integration ownership for REPOSITORY_ID."""
+    versions = {}
+    for item in expected_subjects:
+        try:
+            subject_id, version = item.rsplit(":", 1)
+            if not subject_id or int(version) < 0 or subject_id in versions:
+                raise ValueError
+            versions[subject_id] = int(version)
+        except ValueError:
+            raise click.BadParameter("use unique SUBJECT_ID:VERSION with a nonnegative version",
+                                     param_hint="--expected-subject") from None
+    if apply and (not versions or not reason.strip() or (engine == "reconciler" and not evidence)):
+        raise click.UsageError("--apply needs exact subject versions, a reason and cutover evidence")
+    _execute(ctx, "integration_engine_transfer", {
+        "repository_id": repository_id, "engine": engine, "expected_versions": versions,
+        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
+        **({"parent_task_id": parent_task_id} if parent_task_id else {}),
+    })
+
+
+@integration.command("shadow-report")
+@click.argument("project_id")
+@click.option("--since", type=float, required=True,
+              help="UTC start of the evidence window as epoch seconds.")
+@click.option("--until", type=float, help="UTC end as epoch seconds (defaults to now).")
+@click.option("--acknowledge-unknown", "acknowledge_unknown", multiple=True, type=int,
+              help="Journal sequence of an unknown observation an operator reviewed.")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False, path_type=Path),
+              help="Write the Markdown artifact to PATH.")
+@click.pass_context
+@_handle_errors
+def integration_shadow_report(ctx, project_id, since, until, acknowledge_unknown, output_path):
+    """Compare the shadow loop's decisions against legacy's over one window.
+
+    Both bounds are epoch seconds and the window is never widened for you; a
+    short window is reported incomplete. Read-only: this never transfers a
+    subject or enables the active loop.
+    """
+    end = time.time() if until is None else until
+    if end <= since:
+        raise click.UsageError("--until must be after --since")
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_shadow_report", {
+                "project_id": project_id, "since": since, "until": end,
+                "acknowledge_unknown": list(acknowledge_unknown),
+            })
+
+    data = dict(_run(_request()))
+    if output_path:
+        output_path.write_text(data["markdown"], encoding="utf-8")
+        data["written"] = str(output_path)
+    emit(ctx, data, render=lambda value: value["markdown"])
 
 
 @integration.command("status")
@@ -221,6 +295,27 @@ def integration_resume(ctx: click.Context, operation_id: str) -> None:
 def integration_abort(ctx: click.Context, operation_id: str, reason: str) -> None:
     """Abort a safe, human-required integration OPERATION_ID."""
     _execute(ctx, "integration_abort", {"operation_id": operation_id, "reason": reason})
+
+
+@integration.command("settle-delivered-batch")
+@click.argument("batch_id")
+@click.option("--apply", is_flag=True, help="Apply the exact preview; default is read-only.")
+@click.option("--candidate", default=None, help="Full candidate SHA from the preview.")
+@click.option("--target-head", default=None, help="Full default-branch SHA from the preview.")
+@click.option("--snapshot", default=None, help="Durable state digest from the preview.")
+@click.option("--reason", default=None)
+@click.pass_context
+@_handle_errors
+def integration_settle_delivered_batch(ctx, batch_id, apply, candidate, target_head, snapshot, reason):
+    """Retire a train whose complete candidate is already on the default branch."""
+    if apply and not (candidate and target_head and snapshot and (reason or "").strip()):
+        raise click.UsageError("--apply requires --candidate, --target-head, --snapshot and --reason")
+    args = {"batch_id": batch_id, "dry_run": not apply}
+    for key, value in (("expected_candidate_sha", candidate), ("expected_target_sha", target_head),
+                       ("expected_snapshot_digest", snapshot), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_settle_delivered_batch", args)
 
 
 @integration.command("retry-cleanup")
@@ -590,6 +685,53 @@ def integration_redrive_child(
     _execute(ctx, "integration_redrive_child", args)
 
 
+@integration.command("reopen-collection")
+@click.argument("task_id")
+@click.option(
+    "--apply", is_flag=True, help="Reopen the parent's collection; default is a dry run."
+)
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The parent branch head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_reopen_collection(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Reopen parent TASK_ID's collection after cancellation or failed verification.
+
+    The parent keeps its episode, so delivered receipts stay bound as recorded.
+    The dry run proves the parent branch tip is the recorded collection head and
+    that no writer, hold or unresolved push remains, then answers
+    `would_reopen`, `nothing_to_reopen`, `ambiguous`, `blocked` or
+    `not_eligible` with the head, receipts, owner, delegates and any conflict.
+    `--apply` needs that head and a reason: it reclaims the collector fence for
+    the same operation and, for one current conflict, opens a fresh repair stage
+    that files a new delegate. Archived delegates are never restored.
+    A settled failed aggregate verifier requires a completed additional child
+    fix. Recovery preserves its failed completion, advances the checkpoint
+    generation and creates a fresh verifier after collecting the fix.
+    A suspended producer with a confirmed detached workspace is transferred to
+    its existing collector operation after checking holders, holds, gates and
+    unresolved writes. Collection reconciliation performs the same recovery.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_reopen_collection", args)
+
+
 @integration.command("rebind-reused-identity")
 @click.option("--task-id", required=True)
 @click.option("--apply", is_flag=True, help="Rebind the identity; default is a dry run.")
@@ -660,6 +802,39 @@ def integration_rebind_repair(
     if expected_head_sha is not None:
         args["expected_head_sha"] = expected_head_sha
     _execute(ctx, "integration_rebind_repair", args)
+
+
+@integration.command("recover-parent-head")
+@click.argument("operation_id")
+@click.option("--head", "head_sha", required=True, help="Exact published repair commit SHA.")
+@click.option("--dry-run/--apply", default=True)
+@click.option("--episode", "expected_episode_id", help="Episode from preview.")
+@click.option("--generation", "expected_generation", type=int, help="Generation from preview.")
+@click.option("--stage", "expected_stage", type=int, help="Repair stage from preview.")
+@click.option("--fence", "expected_fence_token", type=int, help="Current owner fence from preview.")
+@click.option("--reason", help="Operator reason; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_recover_parent_head(
+    ctx, operation_id, head_sha, dry_run, expected_episode_id, expected_generation,
+    expected_stage, expected_fence_token, reason,
+):
+    """Prove a completed parent repair extends the original child receipts.
+
+    Apply advances the aggregate checkpoint and requires fresh verification.
+    """
+    if not dry_run and (
+        not expected_episode_id or expected_generation is None or expected_stage is None
+        or expected_fence_token is None or not (reason or "").strip()
+    ):
+        raise click.UsageError("--apply requires --episode, --generation, --stage, --fence and --reason")
+    args = {"operation_id": operation_id, "head_sha": head_sha, "dry_run": dry_run}
+    for key, value in (("expected_episode_id", expected_episode_id),
+                       ("expected_generation", expected_generation), ("expected_stage", expected_stage),
+                       ("expected_fence_token", expected_fence_token), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_recover_parent_head", args)
 
 
 @integration.command("recover-preserved-repair")
@@ -863,9 +1038,14 @@ def integration_settle_parked(ctx, project_id, operation_id, dismiss, reason):
 @click.option("--source", default=None,
               help="With --task-id: attest the exact 40-hex final source of that COMPLETED "
                    "task's current completion, for a legacy close that recorded none.")
+@click.option("--no-artifact", is_flag=True,
+              help="With --task-id and --reason: attest that this completed work has no artifact.")
+@click.option("--reason", default=None,
+              help="Audit reason; required for a missing completion row or --no-artifact.")
 @click.pass_context
 @_handle_errors
-def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source):
+def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source,
+                                 no_artifact, reason):
     """Inventory legacy completion generations and exact repair bindings in Git.
 
     Each page is bounded in time: follow next_offset (and budget_exhausted);
@@ -873,10 +1053,14 @@ def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_i
     """
     if source and not task_id:
         raise click.UsageError("--source attests one task's completion; pass --task-id")
+    if no_artifact and (source or not task_id or not (reason or "").strip()):
+        raise click.UsageError("--no-artifact requires --task-id and --reason, without --source")
     _execute(ctx, "integration_migrate_provenance", {
         "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
         **({"task_id": task_id} if task_id else {}),
         **({"source": source} if source else {}),
+        **({"no_artifact": True} if no_artifact else {}),
+        **({"reason": reason} if reason else {}),
     })
 
 
