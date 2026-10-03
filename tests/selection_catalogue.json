@@ -220,6 +220,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_scenarios.py",
         "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
@@ -1384,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:a2ec51e6c711778f8eedbbe40cce2e8e1e3b1cd2de046e4f13e360bdfb031e00",
+  "digest": "sha256:e06d3806d36388f864a67c20b16fa4bb6ec8939e52900d04fe2f7ae53c112965",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4853,6 +4854,38 @@
         "parametrize"
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
+    },
+    "tests/test_development_scenarios.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.development_runtime",
+        "src.integration.engine",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.ownership",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.jobs.result",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 phase-3 Development acceptance over real Git and PostgreSQL."
     },
     "tests/test_development_subjects.py": {
       "areas": [
