@@ -1246,6 +1246,7 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_host_shell.py",
         "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
@@ -1384,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:a2ec51e6c711778f8eedbbe40cce2e8e1e3b1cd2de046e4f13e360bdfb031e00",
+  "digest": "sha256:70ee656c9f305ff8f3cab4cb7e1cf15a8d2a90edfe9095643752524844975032",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14737,6 +14738,24 @@
         "parametrize"
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
+    },
+    "tests/test_terminal_host_shell.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.terminal_stream",
+        "src.config",
+        "src.sessions",
+        "src.sessions.host_shell",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
     },
     "tests/test_terminal_input.py": {
       "areas": [

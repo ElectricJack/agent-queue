@@ -19623,6 +19623,79 @@
           }
         }
       }
+    },
+    "/api/host-shell": {
+      "get": {
+        "summary": "Host Shell List",
+        "operationId": "host_shell_list",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Host Shell Open",
+        "operationId": "host_shell_open",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellOpenResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/host-shell/{name}/close": {
+      "post": {
+        "summary": "Host Shell Close",
+        "operationId": "host_shell_close",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -36224,6 +36297,80 @@
         "type": "object",
         "title": "HostPerf",
         "description": "Slow-tier HostSampler snapshot, including its cost and staleness."
+      },
+      "HostShellCloseResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "closed"
+        ],
+        "title": "HostShellCloseResponse"
+      },
+      "HostShellInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "attached_clients": {
+            "type": "integer",
+            "title": "Attached Clients"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "created_at",
+          "attached_clients"
+        ],
+        "title": "HostShellInfo"
+      },
+      "HostShellListResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "shells": {
+            "items": {
+              "$ref": "#/components/schemas/HostShellInfo"
+            },
+            "type": "array",
+            "title": "Shells"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "shells"
+        ],
+        "title": "HostShellListResponse"
+      },
+      "HostShellOpenResponse": {
+        "properties": {
+          "shell": {
+            "$ref": "#/components/schemas/HostShellInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "shell"
+        ],
+        "title": "HostShellOpenResponse"
       },
       "IdempotencyDTO": {
         "properties": {
