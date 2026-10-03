@@ -1332,7 +1332,7 @@
       ]
     }
   },
-  "digest": "sha256:2d742c86dda15c2a5e50fbfd415ef1a2920aa28ec0913201017b82d09d59454f",
+  "digest": "sha256:1c661ec3a439b14d051a065f87bf9fbc9b0b1d0049b1b81dadef31d54d3616f3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3864,6 +3864,7 @@
         "src.api.execute",
         "src.cli.auto_commands",
         "src.commands.handler",
+        "src.integration.subjects",
         "src.mcp_registration",
         "src.tools.definitions"
       ],

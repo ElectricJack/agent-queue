@@ -14,6 +14,23 @@ from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
+#: Triggers that revisions *after* the squashed baseline add on top of the
+#: immutable pre-squash snapshot in :data:`migrations.integration_guards`.
+#: ``run_schema_setup`` upgrades to head, so the installed set is the snapshot
+#: plus these — each one named here rather than derived, so a revision that
+#: installs a new guard is a visible edit to this ratchet instead of a silent
+#: extra entry that only a real head upgrade would reveal.
+_POST_BASELINE_TRIGGERS: set[tuple[str, str]] = {
+    # a00000000049_repair_ejection
+    ("integration_result_current_member", "integration_candidate_member_results"),
+    ("integration_revision_manifest_immutable", "integration_candidate_revisions"),
+    # a00000000057_integration_subjects
+    ("integration_subject_identity_pinned", "integration_subjects"),
+    ("integration_subject_journal_append_only", "integration_subject_journal"),
+    # a00000000058_parent_subject_episode
+    ("integration_subject_parent_episode_pinned", "integration_subjects"),
+}
+
 
 @pytest.mark.parametrize("initial_revision", ["a00000000001", LEGACY_HEAD])
 async def test_existing_database_receives_guard_repair(initial_revision):
@@ -68,10 +85,9 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                     "WHERE NOT tgisinternal AND n.nspname='public'"
                 )
             }
-            assert installed == {(name, table) for name, table, _ in TRIGGERS} | {
-                ("integration_result_current_member", "integration_candidate_member_results"),
-                ("integration_revision_manifest_immutable", "integration_candidate_revisions"),
-            }
+            assert installed == {(name, table) for name, table, _ in TRIGGERS} | (
+                _POST_BASELINE_TRIGGERS
+            )
             for statement in (
                 "UPDATE integration_review_evidence SET verdict='rejected' WHERE id='keep'",
                 "DELETE FROM integration_review_evidence WHERE id='keep'",
