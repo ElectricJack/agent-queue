@@ -481,6 +481,53 @@ ever *narrow* — they never grant anything a local caller lacks. Hardening the 
 path for network exposure is [trust-and-ops](trust-and-ops.md) scope, with a `require_session_token` flag
 reserved here as the enforcement hook.
 
+### 7.3 Elevated scopes, and the commands that carry no `project_id`
+
+Two elevated scopes exist: `supervisor-global` (`project_id = None`, the global admin) and a
+per-project supervisor (`project_id = <its own>`). Both skip the agent-surface allowlist;
+they differ only in what `project_id` they enforce. For the per-project one the gate's first
+move is to *supply* the project: when the caller omits `project_id`, `check_command_scope`
+injects the token's own, and a caller-supplied value that differs is `out of scope: project_id
+mismatch`.
+
+That injection cannot be unconditional. Every `CommandArgs` model is `extra="forbid"`, so for
+a command whose contract declares no `project_id` — most of the integration recovery controls
+(`reserve-owner`, `release-owner`, `reopen-collection`, `settle-delivered-batch`, the
+operation-keyed aborts) are keyed by a task, operation, batch or reservation rather than by a
+project — the injected key is a validation error the caller cannot fix:
+
+```
+aq --json integration reserve-owner --task-id verify-04199964
+-> invalid reservation request: 1 validation error for IntegrationReserveOwnerArgs
+   project_id  Extra inputs are not permitted [type=extra_forbidden]
+```
+
+So the gate writes the key only where the contract declares it (`_forbids_project_id`, derived
+from the registry, never a hand list; an unregistered command forbids nothing and keeps the
+injection its handlers read), and **for a contract that forbids the key the project's
+isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
+call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
+and requires each to equal the token's. A task is read live-or-archived, an operation through
+the row its `target_kind` names, a branch owner row through its repository, check evidence
+through its operation.
+
+The policy fails closed, because "I could not work out who owns this" is not "allowed":
+
+| Case | Answer |
+|---|---|
+| every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
+| a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
+| the call names no target at all (`list_projects`, provider previews) | `out of scope: <cmd> names no project-owned target` |
+| a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
+| the scope layer has no database | refused rather than admitted unchecked |
+| a target row is gone | no project claim to violate; the handler answers `not_found` |
+
+One mechanism, no contract gained a field, `extra="forbid"` untouched. A non-elevated agent
+token is unchanged: it still gets the whole ID triple injected, and layer 1c of
+`tests/test_command_scope_matrix.py` keeps every agent-surface command that validates its own
+args declaring all three. `tests/test_target_scope.py` pins the surface this admits and the
+set of commands deliberately refused.
+
 ---
 
 ## 8. MCP — Two Scopes
