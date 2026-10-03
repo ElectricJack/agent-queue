@@ -8333,3 +8333,15 @@ for _definition in _ALL_TOOL_DEFINITIONS:
             "lifecycle": {"type": "string", "enum": ["active", "retired"]},
             "verification": {"type": "string", "enum": ["unverified", "verified", "disputed"]},
         })
+
+# K11 shares the closed record read schemas across CLI, HTTP and MCP.
+from src.commands.contracts.records import (  # noqa: E402
+    RecordSearchArgs as _RecordSearchArgs,
+    RecordShowArgs as _RecordShowArgs,
+)
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "record_search":
+        _definition["input_schema"] = _RecordSearchArgs.model_json_schema()
+    elif _definition["name"] == "record_show":
+        _definition["input_schema"] = _RecordShowArgs.model_json_schema()

@@ -17,6 +17,7 @@ import {
 } from "./testUtils/dashboardState";
 
 const actions = vi.hoisted(() => ({ pause: vi.fn(), resume: vi.fn(), remove: vi.fn() }));
+const capabilities = vi.hoisted(() => ({ knowledgeAvailable: false }));
 const projects = [{ id: "p1", name: "First project" }, { id: "p2", name: "Second project" }];
 const initialProjects = projects.map((project) => ({ ...project }));
 vi.mock("./panes/registry", () => ({ PANE_REGISTRY: {
@@ -57,7 +58,12 @@ vi.mock("./components/ConnectionBanner", async (importOriginal) => {
 });
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
 vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Command Center tasks" /> }));
-vi.mock("./pages/command-center/TaskWorkspace", () => ({ TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</> }));
+vi.mock("./pages/command-center/TaskWorkspace", () => ({
+  TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useTaskWorkspace: () => capabilities,
+}));
+vi.mock("./pages/knowledge/KnowledgeRoute", () => ({ default: () => <WorkspaceProbe title="Knowledge records" /> }));
+vi.mock("./pages/records/RecordsRoute", () => ({ default: () => <WorkspaceProbe title="All records" /> }));
 vi.mock("./pages/command-center/TaskToolbar", () => ({ default: () => <div role="toolbar" aria-label="Task controls" /> }));
 vi.mock("./pages/project/Overview", () => ({ default: () => <WorkspaceProbe title="Project overview" /> }));
 vi.mock("./pages/project/Workspaces", () => ({ default: () => <WorkspaceProbe title="Project workspaces" /> }));
@@ -124,6 +130,7 @@ function renderApp(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capabilities.knowledgeAvailable = false;
   server = createFakeDashboardStateServer();
   delete document.documentElement.dataset.theme;
   projects.splice(0, projects.length, ...initialProjects.map((project) => ({ ...project })));
@@ -136,6 +143,24 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("keeps Knowledge and All records hidden before operator activation", async () => {
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    const tabs = screen.getByRole("navigation", { name: "Command Center views" });
+    expect(tabs).not.toHaveTextContent("Knowledge");
+    expect(tabs).not.toHaveTextContent("All records");
+  });
+
+  it("opens the opt-in All records route and preserves its URL selection", async () => {
+    capabilities.knowledgeAvailable = true;
+    renderApp("/projects/p1/records?kind=all&recordKind=knowledge&record=finding&revision=exact&view=graph");
+    await screen.findByRole("heading", { name: "All records" });
+    expect(screen.getByRole("link", { name: "All records" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Knowledge" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("record=finding&revision=exact&view=graph");
+    expect(screen.queryByRole("toolbar", { name: "Task controls" })).toBeNull();
+  });
+
   it("mounts the separate supervisor conversation route and retains the thread URL", async () => {
     renderApp("/conversations?conversation=conv-one");
     await screen.findByRole("heading", { name: "Former Home chat" });

@@ -9,6 +9,8 @@ fields and only pin the stable envelope.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -20,11 +22,22 @@ class RecordEnvelope(BaseModel):
     replay: bool = False
 
 
+class RecordEdge(BaseModel):
+    edge_id: str
+    source_record_id: str
+    target_record_id: str
+    domain: Literal["informational", "execution"]
+    type: str
+    target_revision_id: str | None = None
+    availability: str = "available"
+
+
 class RecordShowResponse(RecordEnvelope):
     kind: str | None = None
     revision_id: str | None = None
     sequence: int = 0
     snapshot: dict = {}
+    edges: list[RecordEdge] = []
 
 
 class RecordSearchResponse(RecordEnvelope):

@@ -116,7 +116,7 @@ export function createLiveKnowledgeAdapter(projectId: string): KnowledgeAdapter 
     cacheKey: projectId,
     async list(filters, cursor) {
       try {
-        const { data } = await recordSearch({ body: { ...scope, query: filters.query, cursor,
+        const { data } = await recordSearch({ body: { ...scope, kind: "knowledge", query: filters.query, cursor,
           category: filters.category || null, lifecycle: filters.lifecycle || null,
           verification: filters.verification || null, include_retired: filters.lifecycle !== "active", include_disputed: true } });
         return { items: array(data?.items).map(row), nextCursor: data?.next_cursor ?? null };

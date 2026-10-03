@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeFixtureAdapter, type FixtureOptions, type KnowledgeFixtureAdapter } from "../../../pages/knowledge/fixtureAdapter";
 import type { KnowledgeAction, KnowledgeDetailView } from "../../../pages/knowledge/model";
 import KnowledgePane from "../KnowledgePane";
+import KnowledgeHistory from "../KnowledgeHistory";
+import KnowledgeProvenance from "../KnowledgeProvenance";
 
 const POSTGRES = "PostgreSQL is the only supported database";
 const OUTAGE = "Scheduler outage 2026-09-28: JSON columns without equality";
@@ -367,4 +369,30 @@ it("separates cached knowledge when switching project scope", async () => {
   rerender(view("q"));
   expect(await screen.findByText("Loading record…")).toBeInTheDocument();
   expect(screen.queryByText("Private p finding")).toBeNull();
+});
+
+
+describe("K11 exact history and provenance", () => {
+  it("shows exact revision and hash provenance without following unsafe source links", async () => {
+    const fixture = createKnowledgeFixtureAdapter();
+    const detail = await fixture.show(fixture.recordIds()[1]!, null);
+    render(<KnowledgeProvenance detail={{ ...detail,
+      viewed: { ...detail.viewed, contentSha256: "a".repeat(64) },
+      sources: [{ sourceId: "unsafe", type: "task", label: "External source", href: "//outside.example/private", evidence: "unretained" }],
+    }} />);
+    const identity = screen.getByRole("region", { name: "Revision identity" });
+    expect(identity).toHaveTextContent(detail.viewed.revisionId);
+    expect(identity).toHaveTextContent("a".repeat(64));
+    expect(identity).toHaveTextContent(detail.viewed.actorId);
+    expect(screen.getByText("External source").closest("a")).toBeNull();
+  });
+  it("distinguishes a page boundary from the first retained revision", async () => {
+    const fixture = createKnowledgeFixtureAdapter();
+    const history = await fixture.history(fixture.recordIds()[1]!, null);
+    const last = history.entries[history.entries.length - 1]!;
+    render(<KnowledgeHistory view={{ status: "ready", data: { ...history, nextCursor: "next-page" } }}
+      viewedRevisionId={null} onView={vi.fn()} onCompare={vi.fn()} onLoadMore={vi.fn()} />);
+    expect(screen.getByText(last.revisionId)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `Compare revision ${last.sequence} with previous` })).toHaveAttribute("title", "Load more history to compare");
+  });
 });

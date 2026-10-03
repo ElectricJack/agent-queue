@@ -1217,6 +1217,8 @@ from .record_capabilities_request import RecordCapabilitiesRequest
 from .record_capabilities_response import RecordCapabilitiesResponse
 from .record_capabilities_response_422 import RecordCapabilitiesResponse422
 from .record_capabilities_response_capabilities import RecordCapabilitiesResponseCapabilities
+from .record_edge import RecordEdge
+from .record_edge_domain import RecordEdgeDomain
 from .record_file_inspection_request import RecordFileInspectionRequest
 from .record_file_inspection_response import RecordFileInspectionResponse
 from .record_file_inspection_response_422 import RecordFileInspectionResponse422
@@ -2927,6 +2929,8 @@ __all__ = (
     "RecordCapabilitiesResponse",
     "RecordCapabilitiesResponse422",
     "RecordCapabilitiesResponseCapabilities",
+    "RecordEdge",
+    "RecordEdgeDomain",
     "RecordFileInspectionRequest",
     "RecordFileInspectionResponse",
     "RecordFileInspectionResponse422",
