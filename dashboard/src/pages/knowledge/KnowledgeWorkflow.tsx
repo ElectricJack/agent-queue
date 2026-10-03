@@ -50,6 +50,7 @@ export default function KnowledgeWorkflow({ projectId, children }: {
         setOperation(null);
       }
       await client.invalidateQueries({ queryKey: ["knowledge"] });
+      await client.invalidateQueries({ queryKey: ["records"] });
       await client.invalidateQueries({ queryKey: ["tasks"] });
     } catch { setError("The request could not be saved. Reload or compare the current revision before changing your request."); }
     finally { setPending(false); }

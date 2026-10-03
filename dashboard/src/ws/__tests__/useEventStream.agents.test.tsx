@@ -81,7 +81,7 @@ describe("one cache pass per frame", () => {
     renderHook(() => useEventStream({ onEvent }), { wrapper });
     __dispatchEventForTests({ event_type: "task.updated", task_id: "t1" } as NotifyEvent);
     const keys = invalidate.mock.calls.map(([filters]) => JSON.stringify((filters as { queryKey: unknown[] }).queryKey));
-    expect(keys).toEqual(['["tasks"]', '["task","t1"]', '["explain","t1"]']);
+    expect(keys).toEqual(['["tasks"]', '["records"]', '["task","t1"]', '["explain","t1"]']);
     // Callbacks are still per hook.
     expect(onEvent).toHaveBeenCalledTimes(2);
     client.clear();

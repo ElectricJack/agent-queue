@@ -393,6 +393,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   if (type.startsWith("task.")) {
     const tid = (event as { task_id?: string }).task_id;
     queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["records"] });
     if (tid) {
       queryClient.invalidateQueries({ queryKey: ["task", tid] });
       queryClient.invalidateQueries({ queryKey: ["explain", tid] });
@@ -426,6 +427,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.task_blocked":
     case "notify.task_stopped":
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       scheduleCoalescedInvalidation(queryClient, ["agents"], ROSTER_INVALIDATE_MS);
       break;
@@ -433,6 +435,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.agent_question":
     case "notify.plan_awaiting_approval":
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       break;
 
@@ -441,6 +444,7 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     case "notify.push_failed":
       queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
       break;
 
     case "notify.budget_warning":

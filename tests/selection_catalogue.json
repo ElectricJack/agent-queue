@@ -637,6 +637,7 @@
         "tests/test_record_contracts.py",
         "tests/test_record_doctor.py",
         "tests/test_record_exports.py",
+        "tests/test_record_graph.py",
         "tests/test_record_links.py",
         "tests/test_record_outbox.py",
         "tests/test_record_queries.py",
@@ -1372,7 +1373,7 @@
       ]
     }
   },
-  "digest": "sha256:645f20f158c0d4274a8786cd76c510f19dfcb4cc2244f1949664cd7c128fd204",
+  "digest": "sha256:04f344d439fe01b56ffb09fa201290479dfaaafdf5dd39199eeddb7bbc0a1ff9",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12161,6 +12162,24 @@
         "parametrize"
       ],
       "summary": "Confined files, exact recovery bytes, stale events and authorization."
+    },
+    "tests/test_record_graph.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.models",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Mixed records and informational graph reads cannot affect task execution."
     },
     "tests/test_record_links.py": {
       "areas": [

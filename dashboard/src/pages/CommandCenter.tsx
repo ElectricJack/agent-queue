@@ -24,7 +24,8 @@ function CommandCenterViews() {
   const { tab } = projectNavigation(location.pathname);
   const showTasks = isTaskTab(tab);
   const { knowledgeAvailable } = useTaskWorkspace();
-  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS.filter((item) => item.tab !== "knowledge" || knowledgeAvailable)] : TASK_TABS;
+  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS.filter((item) =>
+    (item.tab !== "knowledge" && item.tab !== "records") || knowledgeAvailable)] : TASK_TABS;
   const tabRef = useListNav<HTMLElement>({ axis: "horizontal" });
   return (
       <div className="flex h-full min-h-0 flex-col">
