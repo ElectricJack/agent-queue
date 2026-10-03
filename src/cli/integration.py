@@ -7,6 +7,7 @@ authority are enforced.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ import click
 from .app import _get_client, _handle_errors, _run, cli
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
+from .global_options import AQGroup as GlobalOptionsAQGroup
 
 
 def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
@@ -28,9 +30,177 @@ def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
     emit(ctx, _run(_request()), entity="integration")
 
 
-@cli.group("integration")
+#: The operator surface (integration-train simplification §5.1): four human
+#: decisions (``gate answer``, ``authorize``, ``policy activate``, ``hold``),
+#: two diagnostics (``status``, ``explain``) and ``flush``.  Every older control
+#: moved to ``aq integration legacy`` and is listed, with its replacement or
+#: removal gate, in :mod:`src.commands.integration_legacy`.
+APPROVED_INTEGRATION_COMMANDS = frozenset(
+    {"gate", "authorize", "policy", "hold", "status", "explain", "flush"}
+)
+#: The repair session's own protocol step; not an operator control.
+AGENT_PROTOCOL_INTEGRATION_COMMANDS = frozenset({"resolve-candidate-member"})
+
+
+class _IntegrationGroup(GlobalOptionsAQGroup):
+    """``aq integration``, where every pre-consolidation path still resolves.
+
+    Vault prompts, installed supervisor profiles and runtime messages name the
+    old flat paths (``aq integration enable``); they resolve to the same
+    command under ``legacy`` until that group is deleted.
+    """
+
+    group_class = GlobalOptionsAQGroup
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        legacy = self.commands.get("legacy")
+        if isinstance(legacy, click.Group):
+            return legacy.get_command(ctx, cmd_name)
+        return None
+
+
+@cli.group("integration", cls=_IntegrationGroup)
 def integration() -> None:
-    """Inspect and control hierarchical integration trains."""
+    """Inspect and control hierarchical integration trains.
+
+    Integration runs itself; these are the decisions it leaves to a person and
+    the two reads that say why a subject is where it is. Pre-consolidation
+    controls are under `aq integration legacy` (their old paths still work).
+    """
+
+
+@integration.group("legacy")
+def integration_legacy() -> None:
+    """Pre-consolidation controls, kept until their removal gates read zero.
+
+    Each command names its replacement in the operator surface or the doctor
+    count that must reach zero before it is deleted (see
+    docs/guides/hierarchical-integration-trains.md). The old flat path
+    (`aq integration enable`) resolves to the same command.
+    """
+
+
+@integration.group("gate")
+def integration_gate() -> None:
+    """Answer the human gates integration subjects wait on."""
+
+
+@integration_gate.command("answer")
+@click.argument("gate_id")
+@click.argument("choice")
+@click.pass_context
+@_handle_errors
+def integration_gate_answer(ctx: click.Context, gate_id: str, choice: str) -> None:
+    """Answer integration GATE_ID with CHOICE, one of the gate's own choices.
+
+    `aq integration status <project> --subject <id>` shows a subject's open
+    gate and its choices. Only the local operator's answer binds; a supervisor
+    is refused with `verified_human_required` and relays the question instead.
+    """
+    _execute(ctx, "integration_gate_answer", {"gate_id": gate_id, "choice": choice})
+
+
+@integration.group("policy")
+def integration_policy() -> None:
+    """Select a project's integration mode and policy."""
+
+
+@integration_policy.command("activate")
+@click.argument("project_id")
+@click.option(
+    "--mode",
+    type=click.Choice(["disabled", "observe", "hierarchy", "train", "development"]),
+    required=True,
+)
+@click.option("--expected-generation", type=click.IntRange(min=0),
+              help="The generation `aq integration status` reports; required except "
+                   "for development.")
+@click.option("--policy", "policy_file", type=click.File("r"),
+              help="JSON policy object (`-` reads stdin). For development, the "
+                   "development policy; otherwise the hierarchical integration "
+                   "policy, written only while the project is disabled and drained.")
+@click.option("--reason", required=True)
+@click.option("--waiver-id")
+@click.option("--interval-seconds", type=click.IntRange(min=1))
+@click.pass_context
+@_handle_errors
+def integration_policy_activate(
+    ctx: click.Context,
+    project_id: str,
+    mode: str,
+    expected_generation: int | None,
+    policy_file: Any,
+    reason: str,
+    waiver_id: str | None,
+    interval_seconds: int | None,
+) -> None:
+    """Move PROJECT_ID to MODE, optionally pinning a new policy first.
+
+    Replaces `enable`, `develop` and `project set integration-policy`: with
+    `--policy` the policy is written under the expected generation, then the
+    mode changes under the generation that write produced.
+    """
+    args: dict[str, Any] = {"project_id": project_id, "mode": mode, "reason": reason}
+    if policy_file is not None:
+        try:
+            policy = json.load(policy_file)
+        except ValueError as exc:
+            raise click.UsageError(f"--policy is not valid JSON: {exc}") from exc
+        if not isinstance(policy, dict):
+            raise click.UsageError("--policy must be a JSON object")
+        args["policy"] = policy
+    if mode == "development":
+        if policy_file is None:
+            raise click.UsageError("--mode development requires --policy")
+    elif expected_generation is None:
+        raise click.UsageError("--expected-generation is required (see integration status)")
+    if expected_generation is not None:
+        args["expected_generation"] = expected_generation
+    if waiver_id is not None:
+        args["waiver_id"] = waiver_id
+    if interval_seconds is not None:
+        if mode != "train":
+            raise click.UsageError("--interval-seconds is only valid with --mode train")
+        args["interval_seconds"] = interval_seconds
+    _execute(ctx, "integration_policy_activate", args)
+
+
+@integration.command("hold")
+@click.argument("target")
+@click.option("--reason", help="Why the subject is held; required unless --release.")
+@click.option("--release", is_flag=True, help="Release an existing hold.")
+@click.pass_context
+@_handle_errors
+def integration_hold(ctx: click.Context, target: str, reason: str | None, release: bool) -> None:
+    """Hold TARGET's integration (a subject id or task id) until released.
+
+    A hold is an explicit product decision: the reconciler reports it and no
+    integration step moves the held task until `--release`. A root batch has no
+    task of its own; hold one of its member tasks instead.
+    """
+    if not release and not (reason and reason.strip()):
+        raise click.UsageError("a hold requires --reason")
+    args: dict[str, Any] = {"target": target, "release": release}
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_hold", args)
+
+
+@integration.command("explain")
+@click.argument("target")
+@click.option("--limit", type=click.IntRange(1, 50), default=5, show_default=True,
+              help="Decisions to show per subject, newest first.")
+@click.pass_context
+@_handle_errors
+def integration_explain(ctx: click.Context, target: str, limit: int) -> None:
+    """Show TARGET's last recorded integration decisions and why.
+
+    TARGET is a subject id or a task id (every subject the task belongs to).
+    """
+    _execute(ctx, "integration_explain", {"target": target, "limit": limit})
 
 
 @integration.command("engine-transfer")
@@ -108,13 +278,22 @@ def integration_shadow_report(ctx, project_id, since, until, acknowledge_unknown
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
+@click.option("--subject", "subject_id", help="Show only this integration subject.")
 @click.pass_context
 @_handle_errors
-def integration_status(ctx: click.Context, project_id: str, control_only: bool) -> None:
-    """Show rollout, readiness, active work, and cleanup for PROJECT_ID."""
+def integration_status(
+    ctx: click.Context, project_id: str, control_only: bool, subject_id: str | None
+) -> None:
+    """Show rollout, readiness, active work, and cleanup for PROJECT_ID.
+
+    `subjects` lists each live integration subject with its blocker, wait
+    reason, due time and open gate; `--subject` narrows it to one.
+    """
     args: dict[str, Any] = {"project_id": project_id}
     if control_only:
         args["control_only"] = True
+    if subject_id is not None:
+        args["subject_id"] = subject_id
     _execute(ctx, "integration_status", args)
 
 
@@ -176,7 +355,7 @@ def integration_resolve_candidate_member(
 @click.pass_context
 @_handle_errors
 def integration_flush(ctx: click.Context, project_id: str) -> None:
-    """Request an immediate eligibility pass or train sweep for PROJECT_ID."""
+    """Make PROJECT_ID's integration due now: every live subject and the train sweep."""
     _execute(ctx, "integration_flush", {"project_id": project_id})
 
 
@@ -1948,3 +2127,19 @@ def _shlex_join(argv: list[str]) -> str:
     import shlex
 
     return shlex.join(argv)
+
+
+# ``authorize`` is the operator-surface name for the root admission decision.
+integration.add_command(integration_authorize_root, "authorize")
+
+
+def _relocate_legacy_commands() -> None:
+    """Move every pre-consolidation control under ``aq integration legacy``."""
+    current = (
+        APPROVED_INTEGRATION_COMMANDS | AGENT_PROTOCOL_INTEGRATION_COMMANDS | {"legacy"}
+    )
+    for name in sorted(set(integration.commands) - current):
+        integration_legacy.add_command(integration.commands.pop(name), name)
+
+
+_relocate_legacy_commands()
