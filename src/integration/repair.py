@@ -4269,6 +4269,8 @@ class RepairService:
 
     async def _delegate_description_on(self, conn, operation, repair_stage) -> str:
         conflict = None
+        batch = None
+        revision = None
         if operation["target_kind"] == "batch" and operation.get("batch_id"):
             batch = (
                 await conn.execute(
@@ -4315,10 +4317,39 @@ class RepairService:
                         ).where(integration_batch_members.c.batch_id == batch["id"])
                         .order_by(integration_batch_members.c.ordinal)
                     )).mappings()]
-        return self._delegate_description(operation, repair_stage, conflict=conflict)
+        candidate_ci = None
+        if (
+            conflict is None
+            and batch is not None
+            and revision is not None
+            and revision["state"] == "testing"
+        ):
+            evidence = (
+                await conn.execute(
+                    select(integration_check_evidence)
+                    .where(
+                        integration_check_evidence.c.batch_id == batch["id"],
+                        integration_check_evidence.c.candidate_revision
+                        == revision["revision"],
+                    )
+                    .order_by(integration_check_evidence.c.observed_at.desc())
+                    .limit(1)
+                )
+            ).mappings().first()
+            candidate_ci = {
+                "candidate_sha": revision["head_sha"],
+                "construction_base_sha": revision["construction_base_sha"],
+                "batch_id": batch["id"],
+                "revision": revision["revision"],
+                "run_id": evidence["run_id"] if evidence is not None else None,
+                "conclusion": evidence["conclusion"] if evidence is not None else None,
+            }
+        return self._delegate_description(
+            operation, repair_stage, conflict=conflict, candidate_ci=candidate_ci
+        )
 
     @staticmethod
-    def _delegate_description(operation, repair_stage, *, conflict=None) -> str:
+    def _delegate_description(operation, repair_stage, *, conflict=None, candidate_ci=None) -> str:
         description = (
             "Execute the frozen hierarchical-integration repair stage.\n\n"
             f"Operation: {operation['id']}\n"
@@ -4343,6 +4374,34 @@ class RepairService:
                 "still anchors the complete repair commit range and candidate submission. "
                 "Preservation is not candidate acceptance: exact candidate CI and publication "
                 "still use the frozen subject, manifest, and current delegate fence."
+            )
+        if candidate_ci is not None:
+            run_line = (
+                f"CI run: {candidate_ci['run_id']} ({candidate_ci['conclusion']})\n"
+                if candidate_ci["run_id"]
+                else "CI run: not yet visible"
+            )
+            description += (
+                "\n\n## Awaiting candidate CI — no failure evidence exists yet\n\n"
+                f"Batch: {candidate_ci['batch_id']}\n"
+                f"Candidate revision: {candidate_ci['revision']}\n"
+                f"Candidate SHA: {candidate_ci['candidate_sha']}\n"
+                f"Construction base: {candidate_ci['construction_base_sha']}\n"
+                f"{run_line}\n\n"
+                "The frozen dossier's failed checks, logs and attempted commands are empty "
+                "BECAUSE candidate CI has not reported yet. There is nothing on record to "
+                "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+                "Protocol:\n"
+                "1. Check the candidate CI status for the revision above before acting "
+                "(read the run above with your CI read; `aq git ci-baseline-status` covers "
+                "branch baselines, not this candidate).\n"
+                "2. While the run is pending or missing: close this stage pass-unchanged "
+                "when CI turns green; the daemon publishes under its fence.\n"
+                "3. If and only if a required check on the exact candidate SHA fails: "
+                "then repair, record the failed checks, and submit through "
+                "aq integration resolve-candidate-member as usual.\n"
+                "A fix after a green result cannot be bound to this candidate; it would "
+                "force a superseding revision instead."
             )
         if not conflict:
             return description

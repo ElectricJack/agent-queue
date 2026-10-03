@@ -2222,6 +2222,73 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", poli
     return operation["id"]
 
 
+async def test_pending_ci_delegate_description_carries_sha_and_protocol(db):
+    """A stage-0 delegate dispatched before CI reports sees no failures and a hold protocol."""
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    assert (await service.start(operation_id, STARTING_SHA, "batch", now=100.0))["outcome"] == "started"
+    stage = await _repair_stage(db, operation_id, 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_candidate_revisions).values(
+                head_sha="c" * 40, state="testing",
+            )
+        )
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        description = await service._delegate_description_on(conn, dict(operation), stage)
+
+    assert "## Awaiting candidate CI" in description
+    assert ("c" * 40) in description
+    assert "root-run" in description
+    assert "There is nothing on record to repair" in description
+    assert "Do not push" in description
+
+
+async def test_green_ci_delegate_description_omits_hold_protocol(db):
+    """Once candidate CI is conclusive, the pending-CI hold block is absent."""
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    stage = await _repair_stage(db, operation_id, 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_candidate_revisions).values(
+                head_sha="c" * 40, state="red", ci_evidence_id="root-green",
+            )
+        )
+        existing_evidence = (
+            await conn.execute(select(integration_check_evidence))
+        ).mappings().one()
+        evidence_dict = dict(existing_evidence)
+        evidence_dict["id"] = "failing-evidence"
+        evidence_dict["run_id"] = "failing-run"
+        evidence_dict["conclusion"] = "failure"
+        evidence_dict["classification"] = "conclusive"
+        evidence_dict["observed_at"] = 10.0
+        await conn.execute(insert(integration_check_evidence).values(**evidence_dict))
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        description = await service._delegate_description_on(conn, dict(operation), stage)
+
+    assert "## Awaiting candidate CI" not in description
+    assert "There is nothing on record to repair" not in description
+
+
 async def test_continuous_batch_timeout_stops_without_advancing_candidate_head(db):
     from src.integration.repair import RepairService
 
