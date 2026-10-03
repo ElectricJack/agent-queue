@@ -95,7 +95,7 @@ class DatabaseService(Protocol):
     async def delete_profile(self, profile_id: str) -> None: ...
     async def get_project_workspace_path(self, project_id: str) -> str | None: ...
 
-    def note_ownership(self, project_id: str, path: str): ...
+    def note_ownership(self, project_id: str, path: str, *, operation: str | None = None): ...
 
 
 @runtime_checkable
@@ -432,10 +432,10 @@ class GitServiceImpl:
 class DatabaseServiceImpl:
     """Wraps ``Database`` behind the :class:`DatabaseService` protocol."""
 
-    def note_ownership(self, project_id: str, path: str):
+    def note_ownership(self, project_id: str, path: str, *, operation: str | None = None):
         from src.knowledge.imports.compatibility import CompatibilityFence
 
-        return CompatibilityFence(self._db).note_path(project_id, path)
+        return CompatibilityFence(self._db).note_path(project_id, path, operation=operation)
 
     def __init__(self, db: Database) -> None:
         self._db = db

@@ -37,6 +37,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
+from src.records.schema import register_record_schema_events
+
 metadata = MetaData()
 
 projects = Table(
@@ -6348,7 +6350,31 @@ knowledge_citations = Table(
                      name="uq_knowledge_citations_owner_key"),
 )
 
-from src.records.schema import register_record_schema_events  # noqa: E402
+record_compatibility_usage = Table(
+    "record_compatibility_usage",
+    metadata,
+    # Aggregate attempts only: retain no source paths, titles, bodies or actor IDs.
+    Column("scope_key", Text, nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("calls", BigInteger, nullable=False),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("scope_key", "operation", "outcome", name="pk_record_compatibility_usage"),
+    CheckConstraint(
+        "scope_key = 'global' OR scope_key ~ '^project:.+$'",
+        name="ck_record_compatibility_usage_scope",
+    ),
+    CheckConstraint(
+        "operation IN ('read','list','write','append','delete','promote')",
+        name="ck_record_compatibility_usage_operation",
+    ),
+    CheckConstraint(
+        "outcome IN ('canonical_read','refused_write','guarded_write')",
+        name="ck_record_compatibility_usage_outcome",
+    ),
+    CheckConstraint("calls > 0", name="ck_record_compatibility_usage_calls"),
+)
 
 register_record_schema_events(metadata)
 

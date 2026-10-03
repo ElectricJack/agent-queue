@@ -346,6 +346,19 @@ async def _outbox(ctx):
     return _result("outbox", failed, data={"pending": pending, "exhausted": failed})
 
 
+async def _deprecation(ctx):
+    if result := _no_db(ctx, "deprecation"):
+        return result
+    from src.knowledge.deprecation import compatibility_report
+
+    return CheckResult(
+        id="records.deprecation",
+        severity=Severity.INFO,
+        detail="Compatibility attempts retained; G7 requires operator evidence and decision",
+        data=await compatibility_report(ctx.db),
+    )
+
+
 def record_checks():
     slots = asyncio.Semaphore(2)
 
@@ -367,5 +380,6 @@ def record_checks():
             ("index_lag", _index),
             ("redaction_cleanup", _redaction),
             ("outbox", _outbox),
+            ("deprecation", _deprecation),
         )
     ]
