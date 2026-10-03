@@ -853,12 +853,12 @@ No deletes on this table during normal operation. Deleted only as part of cascad
 Indexes: `idx_token_ledger_task_attempt` (`task_id`, `attempt_id`) and unique
 `uq_token_ledger_call` (`session_id`, `call_id`). Nullable identities preserve
 historical rows without inventing attribution. Added by Alembic `a00000000047`;
-`idx_token_ledger_call_id` (`call_id`, for adopting legacy rows) by `a00000000055`.
+`idx_token_ledger_call_id` (`call_id`, for adopting legacy rows) by `a00000000056`.
 
 ### Table: `transcript_usage_calls`
 
 Durable per-API-call usage maxima for transcript ingestion (`azure-vault-92.1`,
-Alembic `a00000000055`). Claude streams one API call as several transcript
+Alembic `a00000000056`). Claude streams one API call as several transcript
 content rows that repeat the same usage; the ledger used to charge each row.
 `record_transcript_usage` (`src/database/queries/token_queries.py`) locks the
 call's row, raises each category to the newly observed maximum and appends only

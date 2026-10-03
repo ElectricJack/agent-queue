@@ -85,7 +85,7 @@ async def test_usage_call_migration_is_idempotent_and_preserves_ledger(db):
     from sqlalchemy import inspect, select
     from src.database.tables import token_ledger, transcript_usage_calls
 
-    migration = import_module("migrations.versions.a00000000055_transcript_usage_calls")
+    migration = import_module("migrations.versions.a00000000056_transcript_usage_calls")
     await db.record_token_usage("p1", "a", "t", 7, session_id="s", call_id="legacy")
     async with db._engine.begin() as conn:
         original = (await conn.execute(select(token_ledger))).mappings().one()

@@ -33,7 +33,7 @@ each task's completion.
 
 | Task | Change | Reviewed head | On epic at | Recorded checks | Measured so far (offline) |
 |---|---|---|---|---|---|
-| 92.1 | Claude usage counted once per API call; append-only ledger deltas; migration `a00000000055`; read-only reconciliation | `254fac723` | `2590e79f9` | 240 area + focused; migration guards | Frozen window: ledger 1.915 B vs 1.009 B call maxima (906 M excess token events) |
+| 92.1 | Claude usage counted once per API call; append-only ledger deltas; migration `a00000000056`; read-only reconciliation | `254fac723` | `2590e79f9` | 240 area + focused; migration guards | Frozen window: ledger 1.915 B vs 1.009 B call maxima (906 M excess token events) |
 | 92.3 | Native worker compaction (default 160 k), checkpoint guidance, handoff state | `93da7393b` | `c3f5a057e` | 635 area | Synthetic wake 720,784 → 499 bytes |
 | 92.2 | Durable waits replace polling; claim-fenced result consumption | `5efde9196` | `e2aea1d98` | 665 area, 62 focused, 1 tmux | Scenario: 2 worker commands vs 22-call polling loop |
 | 92.5 | Compact startup guidance; opt-in `--save-output` | `29aaea269` | `91e8d9940` | 967 area | See startup bytes below |
@@ -59,7 +59,7 @@ overrides) is still DEFINED, gated on review `rev-nimble-torrent`.
   `transcript_usage_calls` table had no section in `docs/specs/database.md`; it
   would have failed the delivery's full run.
 - `scripts/regenerate-generated.sh --check`: generated files current.
-- One Alembic head; `a00000000055` is still the next free revision against `main`
+- One Alembic head; `a00000000056` follows delivered Knowledge revision `a00000000055`
   (`5de0a28c7`).
 
 ### Startup prompt bytes on the integrated tree
@@ -220,7 +220,7 @@ advisory evidence; it never changes configuration.
 
 | # | Stage | Activation | Pass check | Rollback |
 |---|---|---|---|---|
-| 0 | Deliver | Integration owner delivers the epic to `main`. Operator sets `sessions.worker_context_compact_tokens: 0` **before** restarting, runs `aq db upgrade` (`a00000000055`), then `aq restart --no-dashboard`. | Daemon healthy; `aq db current` = head; no new `tick failed` or transcript-watcher errors | Previous release; `alembic downgrade` drops only the call-progress table (ledger rows survive) |
+| 0 | Deliver | Integration owner delivers the epic to `main`. Operator sets `sessions.worker_context_compact_tokens: 0` **before** restarting, runs `aq db upgrade` (`a00000000056`), then `aq restart --no-dashboard`. | Daemon healthy; `aq db current` = head; no new `tick failed` or transcript-watcher errors | Previous release; `alembic downgrade` drops only the call-progress table (ledger rows survive) |
 | 1 | Accounting (92.1) | Live at stage 0 | Claude ledger/transcript ratio falls from ~1.75–1.95 to the Codex calibration (0.9–1.05) per category on attempts started after the restart | As stage 0 |
 | 2 | Startup, waits, handoff guidance (92.5, 92.2, 92.3 guidance) | Live for sessions launched after stage 0 | Polls/attempt falls and durable waits rise in matched cohorts; no halt. The prime reduction (~1.3 k tokens on each later call) is below the per-call context noise; its evidence is the byte measurement above | Revert the delivered commits through normal integration |
 | 3 | Worker compaction (92.3 default) | Only after 92.9 is delivered **and** `{"fast-jev-compaction@fast-jev-compaction": false}` is configured for workers: remove the `0` override (or set 160000) | Compactions appear only above 160 k; context p90 and cache read per attempt fall in Claude cohorts; pass rate, repair share and durations clear the halts; no task re-asks for state the checkpoint should have preserved | Set `worker_context_compact_tokens: 0` (next launches); remove the plugin override to restore fast-jev |

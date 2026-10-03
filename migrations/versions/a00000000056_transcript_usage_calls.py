@@ -1,14 +1,14 @@
 """Durable Claude API-call usage maxima, preserving the original ledger.
 
-Revision ID: a00000000055
-Revises: a00000000054
+Revision ID: a00000000056
+Revises: a00000000055
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000055"
-down_revision = "a00000000054"
+revision = "a00000000056"
+down_revision = "a00000000055"
 branch_labels = None
 depends_on = None
 

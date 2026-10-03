@@ -81,7 +81,7 @@ Consumed transcript UUIDs seed maxima from existing legacy ledger rows during
 adoption. Existing inflated rows remain intact; seeding only prevents new copies.
 Historical correction proposals and forward ingestion are separate operations.
 
-Revision `a00000000055` adds the usage-progress table and legacy-call lookup index.
+Revision `a00000000056` adds the usage-progress table and legacy-call lookup index.
 After normal integration delivers the change, the operator must apply the schema
 upgrade before the updated daemon ingests usage. Workers do not migrate the
 operator database. Downgrading removes progress state and reintroduces the old
