@@ -631,6 +631,7 @@ class WorkspaceMixin:
         origin = await self.db.get_task_branch_origin_for_promotion(subject_id, repository_id)
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
+        canonical_base_sha = origin["base_sha"]
         prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
         if prerequisite_head is not None:
             # This does not mutate the reserved origin.  A delivery receipt is
@@ -691,7 +692,7 @@ class WorkspaceMixin:
                 if (
                     progress["repository_id"] != repository_id
                     or progress["branch"] != branch
-                    or progress["base_sha"] != origin["base_sha"]
+                    or progress["base_sha"] != canonical_base_sha
                 ):
                     raise ValueError("operator handoff checkpoint no longer matches the canonical origin")
                 origin = dict(origin) | {"operator_handoff": progress}

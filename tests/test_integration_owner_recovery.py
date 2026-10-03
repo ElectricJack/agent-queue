@@ -744,6 +744,9 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
     assert resumed.get("status") == "READY", resumed
     task = await env.db.get_task("producer")
     project = await env.db.get_project("p")
+    # A delivered prerequisite advances preparation, not the immutable origin.
+    # The preserved producer already contains that prerequisite's head.
+    orch.db.hierarchy_prerequisite_delivery_head = AsyncMock(return_value=tip)
     origin, fence, _ = await orch._hierarchy_origin_and_fence(task, project)
     expected_tip = tip
     if scenario == "non-slot":
