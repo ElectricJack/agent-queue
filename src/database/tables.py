@@ -6234,3 +6234,7 @@ record_import_items = Table(
 from src.records.schema import register_record_schema_events
 
 register_record_schema_events(metadata)
+
+from src.knowledge.extraction_schema import register_extraction_schema  # noqa: E402
+
+register_extraction_schema(metadata)
