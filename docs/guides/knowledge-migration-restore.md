@@ -7,9 +7,11 @@ turning the domain on and off behind explicit human gates.
 
 > **Warning.** Nothing in this page has been executed. Every command block is a
 > template for an operator to run, and none of them was run against a real
-> install while this page was written. No restore rehearsal, performance
+> install while this page was written. No production restore rehearsal, performance
 > benchmark, import apply or live import has been performed, and this page
-> reports no measured result. Where a block would produce evidence, the
+> reports no measured result. K14's separate [synthetic rehearsal report](../reports/2026-10-03-knowledge-deprecation-rehearsal.md)
+> records disposable test evidence; it does not execute these operator templates.
+> Where a block would produce evidence, the
 > verification command that reads it back is named instead of pasted output.
 > Activation, schema upgrade, paid-provider enablement, live import and deletion
 > are operator decisions and are not authorised by this document.
@@ -37,8 +39,10 @@ Four operations need a written procedure, and this page gives one each:
 | [Roll out or roll back](#4-roll-out-one-gate-at-a-time) | Local operator, per gate | The gate's own evidence, recorded outside this page |
 
 The final deprecation decision (G7) additionally requires compatibility-call
-telemetry and an adapter-removal guard, neither of which is delivered yet. See
-[what is not in this runbook](#what-is-not-in-this-runbook).
+telemetry and explicit removal evidence. See [knowledge deprecation and
+restore](knowledge-deprecation.md) for the implemented diagnostic, evidence
+helper and synthetic proof. G7 remains closed pending operator evidence and a
+decision; the helper grants no uninstall or deletion permission.
 
 ## Where knowledge state lives
 
@@ -162,7 +166,7 @@ aq doctor --check records.revision_hashes --check records.redaction_cleanup \
 The `records.*` family comes from
 [src/doctor/record_checks.py](../../src/doctor/record_checks.py) and is
 `task_mappings`, `domains`, `revision_hashes`, `exports`, `links`, `index_lag`,
-`redaction_cleanup`, `outbox`. Two of them have limits worth knowing before you
+`redaction_cleanup`, `outbox`, `deprecation`. These checks have limits worth knowing before you
 quote them:
 
 - `records.revision_hashes` re-derives `content_sha256` for a **bounded sample
@@ -171,11 +175,15 @@ quote them:
   is downgraded to informational with the detail "bounded hash sample clean;
   full corpus not inspected". A clean sample is a reason to keep going, not a
   reason to stop.
-- `records.redaction_cleanup` counts three things at once — export checkpoints
+- `records.redaction_cleanup` counts export checkpoints
   whose revision payload is gone, lexical search rows whose revision payload is
-  gone, and ledger rows whose `completed_at` is still null. Record all three;
+  gone, ledger rows whose `completed_at` is still null, and unacknowledged
+  provider erasure receipts. Record every component;
   after a restore, the delta against your pre-backup numbers is the signal, and
   a nonzero `pending_redactions` is a redaction whose file purge never landed.
+- `records.deprecation` reports aggregate managed compatibility attempts.
+  External adapter coverage and unsafe writes remain unattested; zero counters
+  alone do not establish G7 readiness.
 
 Keep the receipts for both. They are the baseline the restore is compared
 against, so a rehearsal with no "before" file has nothing to prove.
@@ -718,7 +726,7 @@ cannot evidence stays closed. In summary:
 | **G2** core pilot | Core read/write/export for one project; memory stays `false` | Core acceptance evidence, scoped capability grants, a restore backup and an outbox crash drill |
 | **G3** selected import and UI | Explicitly selected manifest items under `knowledge.import_apply.enabled`, and the knowledge UI | An explicit manifest selection, the backup receipt from step 1, and the UI checks — see [resumable knowledge import](knowledge-import.md). **No legacy source deletion** |
 | **G4** shared context | The context master and injection, only after the legacy plugin is confirmed frozen | Cross-harness determinism, security and budget gates. The operator enables the memory master separately and deliberately |
-| **G5** retrieval pilot | One selected retrieval provider and scope | Lexical-versus-retrieval privacy, cost and operational results, approved. Quality no worse than lexical is the bar; a more expensive backend is not selected for being faster. Nothing is selectable yet — see [the K12 row](#what-is-not-in-this-runbook) |
+| **G5** retrieval pilot | One selected retrieval provider and scope | Lexical-versus-retrieval privacy, cost and operational results, approved. Quality no worse than lexical is the bar; a more expensive backend is not selected for being faster. See [the K12 row](#what-is-not-in-this-runbook) for the implementation boundary |
 | **G6** extraction pilot | One project, unverified proposals only | Replay, budget, source-permission and proposal protections, plus explicit outbound-provider and cost approval. This is the gate that can spend money |
 | **G7** deprecation | The decision to begin removing legacy writers | Complete reconciliation, zero unsafe compatibility writes, the announced minimum two-release and 30-day window, and a backup/restore exercise. **Uninstall and deletion need their own separate authorisation** |
 
@@ -791,18 +799,18 @@ the one rollback step that can lose the ownership fence.
 
 ## What is not in this runbook
 
-Named so nobody spends time looking for it. Each of these is a planned increment
-that has not shipped; none of its commands exist, and this page does not
-describe flags that are not in `aq --help`.
+This checkout contains the following implementations. Their presence and passing
+synthetic tests do not activate features or establish production delivery. This
+runbook leaves feature-specific setup and acceptance to the linked contracts.
 
 | Not here | Why | What exists today instead |
 |---|---|---|
-| **Context assembly, budgets, citations** (K08) | Not shipped. There is no `aq context` command group; `aq context prepare/show/refresh/delivered/cite` do not exist | `aq prime` builds its own document. Nothing in this domain is injected into a prompt |
-| **Harness delivery adapters** (K09) | Not shipped for the knowledge domain | The harness startup/claim paths are unchanged |
-| **Durable extraction and consolidation** (K13) | Not shipped. No extraction jobs, no budgets, no paid calls | Nothing. `knowledge.extraction.enabled` exists as a flag with no increment behind it |
-| **Semantic provider** (K12) | `src/knowledge/providers.py` ships a retrieval *contract*, not a feature. Nothing imports it, no CLI flag selects it, and its own `_semantic_enabled` needs `knowledge.enabled`, `knowledge.semantic.enabled` **and** `memory.enabled` together | `aq record search --kind task\|knowledge\|all`, which is lexical and local. Lexical remains the default and the fallback when a provider is absent |
-| **Deprecation reports and adapter removal** (K14) | This page is K14's *preparation*. The final increment keeps the telemetry and the removal guard, does the real reconciliation, and produces the actual restore proof | This runbook |
-| **Benchmark and quality numbers** | Out of scope for a documentation task, and the plan makes them release gates rather than claims | None. This page reports no measured result |
+| **Context assembly, budgets, citations** (K08) | Operator G4 acceptance remains required | [Knowledge context](../specs/knowledge-context.md) owns prepared bundles, observed delivery, citations and aggregate budgets; the command surface is under `aq knowledge` |
+| **Harness delivery adapters** (K09) | Cross-harness release evidence remains required at G4 | [Session runtime](../specs/design/session-runtime.md) owns guarded delivery and refresh; feature flags stay disabled |
+| **Durable extraction and consolidation** (K13) | G6 requires explicit provider and cost approval | [Extraction provider contract](../reference/knowledge-extraction-provider.md) describes durable jobs, separate budgets and unverified proposals. The absent-provider path remains local |
+| **Semantic provider** (K12) | G5 requires a selected provider and approved privacy, quality and cost evidence | [Retrieval provider contract](../reference/knowledge-retrieval-provider.md) describes optional registration and derived index receipts. `aq record search --kind task\|knowledge\|all` remains lexical by default |
+| **Deprecation reports and adapter removal** (K14) | G7 remains closed pending complete operator evidence and decision; uninstall/deletion need separate approval | [Deprecation and restore](knowledge-deprecation.md) documents compatibility counters, sealed reconciliation and the evidence-only guard |
+| **Benchmark and quality numbers** | Actual-model quality and production recovery are separate release evidence | The [synthetic rehearsal report](../reports/2026-10-03-knowledge-deprecation-rehearsal.md) covers functional restore checks; it claims no live quality or performance result |
 
 ## Evidence checklist
 
@@ -812,7 +820,7 @@ command output, not a claim.
 | # | Artifact | Produced by | What it proves |
 |---|---|---|---|
 | 1 | Pre-backup state | `aq db current`; `aq record capabilities --json`; `aq doctor --check records.*` | The schema head, the live flags and grants, and the integrity baseline the restore is compared against |
-| 2 | Database archive + checksum | `pg_dump` + `sha256sum -c` | Every record, revision, payload, link, proposal, grant, share, ledger row, import receipt and mapping |
+| 2 | Database archive + checksum | `pg_dump` + `sha256sum -c` | Every record, revision, payload, link, proposal, grant, share, ledger row, import receipt, mapping, context/citation row, extraction job/budget, index receipt and compatibility counter |
 | 3 | Vault archive + checksum | `tar` + `sha256sum -c`, plus `tar -tf` | Managed exports, retained `record-artifacts/`, and the retained sealed manifest |
 | 3b | Backup receipt | The text you will pass to `--backup-receipt` | That the apply step is pinned to *this* archive. The service stores the string; only you can make it checkable |
 | 4 | Restore rehearsal log | `scripts/e2e-env.sh --reset`, `pg_restore` into `$RESTORE_DB`, the reads in step 2 | That the archive actually restores, in an environment that cannot reach production |
@@ -867,6 +875,8 @@ Implementation read while writing this page:
   fence that survives a rollback. The operator contract for both is
   [knowledge-import.md](knowledge-import.md); this page links it rather than
   restating it.
+- [Knowledge deprecation and restore](knowledge-deprecation.md) — aggregate
+  telemetry, reconciliation and the explicit G7 evidence boundary.
 - [src/commands/knowledge_commands.py](../../src/commands/knowledge_commands.py),
   [src/doctor/record_checks.py](../../src/doctor/record_checks.py) and
   [src/config.py](../../src/config.py) — the operator-only refusals, the

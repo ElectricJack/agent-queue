@@ -121,6 +121,7 @@ machine-readable form of this table is
 | `api` | `docs/reference/api/**` | `docs/reference/modules/api.md` |
 | `dashboard` | `docs/guides/dashboard.md` | `docs/reference/modules/dashboard.md` |
 | `database` | `docs/reference/database/**` | `docs/reference/modules/database.md` |
+| `knowledge-records` | `docs/guides/knowledge-records.md`, `docs/guides/knowledge-deprecation.md`, `docs/guides/knowledge-migration-restore.md` | Core record history, compatibility telemetry and operator deprecation/restore evidence |
 | `vault` | `docs/concepts/configuration-and-vault.md`, `docs/reference/configuration.md` | `docs/reference/modules/vault.md` |
 | `providers` | `docs/concepts/providers.md`, `docs/guides/provider-outage.md` | `docs/reference/modules/providers.md` |
 | `plugins` | `docs/guides/plugins-and-mcp.md` | `docs/reference/modules/plugins.md` |
