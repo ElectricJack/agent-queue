@@ -1058,6 +1058,27 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", refusal)
         return await self._integration_control_service().abort(operation_id, reason=reason)
 
+    async def _cmd_integration_settle_delivered_batch(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationSettleDeliveredBatchArgs
+        from src.integration.batch_settlement import DeliveredBatchSettlement
+        from src.integration.promotion import PromotionError
+
+        try:
+            request = IntegrationSettleDeliveredBatchArgs.model_validate(args)
+        except ValueError as exc:
+            return _failure("blocked", str(exc))
+        principal, refusal = await self._integration_operator_for_batch(request.batch_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await DeliveredBatchSettlement(self._integration_promotion_service()).run(
+                request, principal=principal,
+            )
+        except (PromotionError, GitError, ValueError) as exc:
+            return _failure("blocked", str(exc))
+        return {"success": result["outcome"] in {"would_settle", "settled", "already_settled"},
+                **result}
+
     async def _cmd_integration_retry_cleanup(self, args: dict) -> dict:
         batch_id = str(args.get("batch_id") or "")
         if not batch_id:

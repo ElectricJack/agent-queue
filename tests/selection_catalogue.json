@@ -564,6 +564,7 @@
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
+        "tests/test_integration_batch_settlement.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
@@ -1369,7 +1370,7 @@
       ]
     }
   },
-  "digest": "sha256:41ffb697d08bfebe27f187b43e092c5d681abebe5dc352d7b339dcb42dafe3e4",
+  "digest": "sha256:45ab6c83ddf72c942d6f91e4d8933e241e0331c252622ab254f156b76345b8ce",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3163,6 +3164,7 @@
         "src.cli.app",
         "src.cli.daemon",
         "src.daemon_state",
+        "src.install.command",
         "src.sessions.env"
       ],
       "markers": [
@@ -7107,6 +7109,26 @@
       ],
       "summary": ""
     },
+    "tests/test_integration_batch_settlement.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batch_settlement",
+        "src.integration.promotion",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Externally delivered, completed repair trains can release their sweep safely."
+    },
     "tests/test_integration_cancelled_collection.py": {
       "areas": [
         "integration-promotion"
@@ -7776,14 +7798,17 @@
         "src.commands.principal",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.child_delivery",
         "src.integration.collection",
         "src.integration.engine",
         "src.integration.models",
         "src.integration.parent_adapters",
+        "src.integration.parent_ci",
         "src.integration.parent_engine",
         "src.integration.parent_runtime",
         "src.integration.parent_subjects",
+        "src.integration.promotion",
         "src.integration.repair",
         "src.integration.subjects",
         "src.integration.writers",

@@ -182,6 +182,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_reconcile_unmaterialized",
         "integration_resume",
         "integration_abort",
+        "integration_settle_delivered_batch",
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_recover_candidate_member",
