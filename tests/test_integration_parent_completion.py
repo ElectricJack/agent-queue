@@ -46,6 +46,10 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.hierarchy import HierarchyIntegration
+from src.integration.parent_completion import (
+    AWAITING_TRUSTED_VERIFICATION,
+    ParentCompletion,
+)
 from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.status import IntegrationStatusService
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -246,7 +250,15 @@ async def test_post_collection_repair_head_recovery_preserves_receipts_and_requi
     assert (await hierarchy.verify_parent("parent", 1, head, ["old-check"]))[
         "outcome"
     ] == "invalid_evidence"
-    assert (await hierarchy.complete_parent("parent", 1, head))["outcome"] == "stale_verification"
+    # The recovered head is the current subject and readiness still answers it
+    # ready, so the refusal is not a superseded one: nothing binds trusted
+    # evidence to this head yet, which is exactly what the fresh run below has
+    # to supply. The old certification is never reused either way.
+    before_refusal = (await db.get_task("parent")).status
+    unverified = await hierarchy.complete_parent("parent", 1, head)
+    assert unverified["outcome"] == AWAITING_TRUSTED_VERIFICATION
+    assert unverified["reason"] == "verification_not_recorded"
+    assert (await db.get_task("parent")).status is before_refusal
     async with db.immediate() as conn:
         assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
         stage = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
@@ -1608,6 +1620,217 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     status = await IntegrationStatusService(db).task_blockers("parent")
     assert status is not None
     assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
+
+
+async def _verified_parent_tree(db, *, children: int = 1):
+    """A collected parent whose aggregate verifier is the recorded owner."""
+    hierarchy, checkpointed, child_ids = await _parent_tree(db, children=children)
+    await _code_receipt(db, child_ids[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS"))
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            )
+            .values(owner_id="parent", owner_role="verifier", fence_token=2)
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(branch_owner_id="parent")
+        )
+    return hierarchy, checkpointed, child_ids
+
+
+async def _trusted_check(db, checkpointed, head_sha="d" * 40, generation=1, **overrides):
+    values = {
+        "id": "check-unit",
+        "operation_id": checkpointed["operation_id"],
+        "parent_task_id": "parent",
+        "parent_generation": generation,
+        "parent_head_sha": head_sha,
+        "producer_id": "forge-observer",
+        "workflow_id": "workflow",
+        "run_id": "run",
+        "attempt": 1,
+        "required_check_version": "parent-v1",
+        "checks": {"unit": "success"},
+        "conclusion": "success",
+        "classification": "conclusive",
+        "observed_at": 2.0,
+    }
+    values.update(overrides)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(**values))
+    return values["id"]
+
+
+async def test_completion_without_trusted_binding_names_the_missing_producer(db):
+    """No trusted evidence is a wait on the CI producer, not a stale subject.
+
+    The verifier's own aggregate validation already passed; only the trusted
+    integration check evidence is absent, and no worker-side re-run can record
+    it.  The refusal must say so, and must carry the exact owner action.
+    """
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+
+    diagnosis = await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
+    assert diagnosis is not None
+    assert diagnosis["reason"] == "verification_not_recorded"
+    assert diagnosis["required_producer_id"] == "forge-observer"
+    assert diagnosis["required_check_version"] == "parent-v1"
+    assert diagnosis["required_check_names"] == ["unit"]
+
+    refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert refused["outcome"] == AWAITING_TRUSTED_VERIFICATION
+    assert refused["reason"] == "verification_not_recorded"
+    assert refused["generation"] == 1
+    assert refused["head_sha"] == "d" * 40
+    assert refused["verification_id"] is None
+    assert refused["next_owner"] == "parent_ci_producer"
+    assert "aq integration status" in refused["next_action"]
+    assert "aq integration flush" in refused["next_action"]
+    assert "do not re-run the local suite" in refused["next_action"]
+    # A refusal completes nothing and transitions nothing.
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_parent_operation_completions))).all() == []
+        assert (
+            await conn.execute(
+                select(integration_parent_verifications).where(
+                    integration_parent_verifications.c.operation_id
+                    == checkpointed["operation_id"]
+                )
+            )
+        ).all() == []
+
+
+async def test_unchanged_missing_binding_repeats_one_diagnosis(db):
+    """Replaying the close on unchanged evidence cannot reach completion."""
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+
+    first = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    second = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    third = await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
+
+    assert first["reason"] == second["reason"] == "verification_not_recorded"
+    assert {first["reason"], second["reason"]} == {"verification_not_recorded"}
+    assert third["reason"] == first["reason"]
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_trusted_evidence_after_the_wait_completes_the_parent(db):
+    """The wait ends the same way: real evidence, then ordinary completion."""
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+    assert (
+        await hierarchy.complete_parent("parent", 1, "d" * 40)
+    )["outcome"] == AWAITING_TRUSTED_VERIFICATION
+
+    evidence_id = await _trusted_check(db, checkpointed)
+    verified = await hierarchy.verify_parent("parent", 1, "d" * 40, [evidence_id])
+    assert verified["outcome"] == "verified"
+    assert await completion.diagnose_trusted_binding("parent", 1, "d" * 40) is None
+
+    completed = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert completed["outcome"] == "completed"
+    assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
+    assert (await hierarchy.complete_parent("parent", 1, "d" * 40))["outcome"] == (
+        "already_completed"
+    )
+
+
+async def test_verification_of_another_head_is_a_missing_binding_not_a_stale_head(db):
+    """A verification recorded against another subject is a wait, not staleness."""
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_verifications).values(
+                id="other-head-verification",
+                operation_id=checkpointed["operation_id"],
+                parent_task_id="parent",
+                episode_id=checkpointed["episode_id"],
+                generation=1,
+                head_sha="c" * 40,
+                required_check_version="parent-v1",
+                created_at=1.5,
+            )
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(
+                current_verification_id="other-head-verification",
+                verified_generation=1,
+                verified_sha="c" * 40,
+            )
+        )
+
+    diagnosis = await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
+    assert diagnosis["reason"] == "verified_other_head"
+    assert diagnosis["verification_id"] == "other-head-verification"
+    refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert refused["outcome"] == AWAITING_TRUSTED_VERIFICATION
+    assert refused["reason"] == "verified_other_head"
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_superseded_aggregate_head_still_answers_stale_verification(db):
+    """The collected head moving on is the genuinely superseded subject."""
+    hierarchy, checkpointed, children = await _verified_parent_tree(db, children=2)
+    await _code_receipt(
+        db, children[1], "d" * 40, "e" * 40, id="receipt-second", domain_key="delivery-second"
+    )
+    evidence_id = await _trusted_check(db, checkpointed, head_sha="e" * 40)
+    assert (
+        await hierarchy.verify_parent("parent", 1, "e" * 40, [evidence_id])
+    )["outcome"] == "verified"
+
+    # This close quotes the aggregate head as it stood before the second
+    # child's receipt advanced it: a superseded subject, not missing evidence.
+    refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert refused["outcome"] == "stale_verification"
+    assert "reason" not in refused
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_recorded_green_evidence_names_the_playbook_as_the_owner(db):
+    """Green CI evidence with no verification belongs to the verify rule."""
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+    await _trusted_check(db, checkpointed)
+
+    refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert refused["outcome"] == AWAITING_TRUSTED_VERIFICATION
+    assert refused["reason"] == "verification_not_recorded"
+    assert refused["recorded_evidence_ids"] == ["check-unit"]
+    assert refused["recorded_conclusions"] == ["success"]
+    assert refused["next_owner"] == "parent_integration_playbook"
+    assert "integration_parent_verify" in refused["next_action"]
+    assert (
+        await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
+    )["next_owner"] == "parent_integration_playbook"
+
+
+async def test_recorded_failing_evidence_names_the_repair_ladder_as_the_owner(db):
+    """Recorded red evidence is a failed aggregate, not a pending CI run."""
+    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentCompletion(db)
+    await _trusted_check(db, checkpointed, conclusion="failure", checks={"unit": "failure"})
+
+    refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    assert refused["outcome"] == AWAITING_TRUSTED_VERIFICATION
+    assert refused["recorded_conclusions"] == ["failure"]
+    assert refused["next_owner"] == "parent_repair_ladder"
+    assert "repair ladder" in refused["next_action"]
+    assert (
+        await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
+    )["next_owner"] == "parent_repair_ladder"
 
 
 async def test_child_added_after_verification_makes_completion_stale(db):

@@ -87,10 +87,6 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
         # Supervisor-internal navigation meta-tool.  Excluded from MCP, the
         # CLI and the API; its schema is synthesised by ``ToolRegistry``.
         "load_tools",
-        # Internal parent-visit dispatch (src/commands/integration_commands.py).
-        # Excluded from MCP by DEFAULT_EXCLUDED_COMMANDS: only the process-bound
-        # engine exclusion grants it, so there is no caller who could pass args.
-        "integration_parent_action",
         # Plugin lifecycle.  Hand-crafted in the CLI (``aq plugin *``, which
         # reaches the database directly), so only the MCP registration is left
         # holding an empty schema.
@@ -409,6 +405,31 @@ class TestNoArgumentlessCommandsByAccident:
             f"_FALLBACK_INPUT_SCHEMAS has entries with no CommandHandler._cmd_* "
             f"method: {', '.join(orphans)}"
         )
+
+    def test_parent_action_fallback_names_every_primitive(self):
+        """The parent visit dispatch is excluded from MCP, so its fallback is
+        the only place the primitive set reaches a transport — a stale enum here
+        would refuse callers the reconciler itself accepts."""
+        from src.integration.subjects import Primitive
+        from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+        request = _FALLBACK_INPUT_SCHEMAS["integration_parent_action"]["properties"][
+            "request"
+        ]
+        assert set(request["properties"]["primitive"]["enum"]) == {
+            primitive.value for primitive in Primitive
+        }
+
+    def test_parent_action_stays_off_the_agent_surface(self):
+        """Its authority is the process-bound visit exclusion, not the payload,
+        so no MCP client can satisfy it; the CLI keeps the schema instead."""
+        from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _FALLBACK_INPUT_SCHEMAS
+
+        assert "integration_parent_action" in DEFAULT_EXCLUDED_COMMANDS
+        assert "integration_parent_action" not in {
+            definition["name"] for definition in _ALL_TOOL_DEFINITIONS
+        }
+        assert _FALLBACK_INPUT_SCHEMAS["integration_parent_action"]["properties"]
 
     def test_fallback_schemas_never_shadow_a_typed_definition(self):
         """One schema per command — a typed definition wins, so a fallback

@@ -48,6 +48,77 @@ from src.playbooks.artifact_ref import ArtifactRef
 _OID = re.compile(r"^[0-9a-f]{40}$")
 logger = logging.getLogger(__name__)
 
+#: Completion refusal for a checkpoint with no trusted verification binding
+#: for the requested generation and head.  Deliberately distinct from
+#: ``stale_verification`` (a genuinely superseded subject, which the caller
+#: answers by re-reading readiness): no worker-side test run can produce
+#: trusted CI evidence, so this one is a wait on the producer.
+AWAITING_TRUSTED_VERIFICATION = "awaiting_trusted_verification"
+
+
+def required_checks(operation: dict[str, Any]) -> dict[str, Any]:
+    policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
+    return policy.parent.required_checks.model_dump(mode="json")
+
+
+def binding_diagnosis(
+    checkpoint: dict[str, Any],
+    generation: int,
+    head_sha: str,
+    required: dict[str, Any],
+    *,
+    force_reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Describe why no trusted verification binds this subject, or ``None``.
+
+    ``verification_not_recorded`` is the plain wait (nothing has verified this
+    generation and head); ``verified_other_head`` and
+    ``verified_other_generation`` mean a verification exists for a different
+    subject, so this one still has to be run; ``verification_record_missing`` is
+    passed in by the caller for a checkpoint naming a verification that does not
+    resolve to this operation. Every reason is a wait on somebody else's step --
+    the aggregate's producer, its repair ladder, or the playbook rule -- and
+    never a superseded subject, which is answered separately as
+    ``stale_verification``.
+    """
+    verification_id = checkpoint["current_verification_id"]
+    verified_generation = checkpoint["verified_generation"]
+    verified_sha = checkpoint["verified_sha"]
+    if force_reason is not None:
+        reason = force_reason
+    elif verification_id is None and verified_generation is None and verified_sha is None:
+        reason = "verification_not_recorded"
+    elif verified_sha is not None and verified_sha != head_sha:
+        reason = "verified_other_head"
+    elif verified_generation is not None and verified_generation != generation:
+        reason = "verified_other_generation"
+    elif verification_id is None:
+        reason = "verification_not_recorded"
+    else:
+        return None
+    return {
+        "reason": reason,
+        "generation": generation,
+        "head_sha": head_sha,
+        "verified_generation": verified_generation,
+        "verified_sha": verified_sha,
+        "verification_id": verification_id,
+        "checkpoint_state": checkpoint["state"],
+        "required_producer_id": required["producer_id"],
+        "required_check_version": required["version"],
+        "required_check_names": list(required["names"]),
+        "next_owner": "parent_ci_producer",
+        "next_action": (
+            "Trusted integration check evidence is recorded by the daemon's "
+            "parent CI producer and the parent-integration playbook, never by a "
+            "worker's own test run. Read the parent blockers with "
+            "`aq integration status <project_id>`; re-drive the sweep "
+            "with `aq integration flush <project_id>`. When it records "
+            "`task.integration_verified` for this generation and head, close "
+            "again -- do not re-run the local suite."
+        ),
+    }
+
 
 class ParentCompletion:
     """Conn-owned primitives for one parent's durable collection episode."""
@@ -940,6 +1011,91 @@ class ParentCompletion:
             await self.mark_ready_on(conn, parent["id"])
             return receipt | {"revision": revision}
 
+    async def diagnose_trusted_binding(
+        self, task_id: str, generation: int, head_sha: str
+    ) -> dict[str, Any] | None:
+        """Why no trusted verification binds this subject, or ``None``.
+
+        The read side of :meth:`complete_parent`'s guard, for callers that must
+        decide *before* attempting completion (the aggregate verifier's close).
+        It never writes and never reads an unverified worker's output: the
+        answer is derived from the checkpoint's own verification columns plus
+        the evidence rows recorded for this exact subject, so calling it twice
+        on unchanged state returns the same diagnosis.
+        """
+        async with self.db.immediate() as conn:
+            _parent, _project, checkpoint, operation = await self._locked_context_on(
+                conn, task_id
+            )
+            if int(checkpoint["generation"]) != generation:
+                return None
+            diagnosis = binding_diagnosis(
+                checkpoint, generation, head_sha, required_checks(operation)
+            )
+            if diagnosis is None:
+                return None
+            return diagnosis | await self._awaiting_evidence_detail_on(
+                conn, operation["id"], task_id, generation, head_sha
+            )
+
+    async def _awaiting_evidence_detail_on(
+        self, conn, operation_id: str, task_id: str, generation: int, head_sha: str
+    ) -> dict[str, Any]:
+        """Name which owner the wait belongs to, from recorded CI evidence.
+
+        "No trusted evidence yet" is three different waits: CI has not run, CI
+        ran and reported a failure the repair ladder owns, or CI went green and
+        the parent-integration playbook has not accepted its evidence. Only the
+        recorded evidence for this exact subject can tell them apart, and the
+        next action differs in all three.
+        """
+        rows = (
+            await conn.execute(
+                select(
+                    integration_check_evidence.c.id,
+                    integration_check_evidence.c.conclusion,
+                    integration_check_evidence.c.classification,
+                    integration_check_evidence.c.producer_id,
+                )
+                .where(
+                    integration_check_evidence.c.operation_id == operation_id,
+                    integration_check_evidence.c.parent_task_id == task_id,
+                    integration_check_evidence.c.parent_generation == generation,
+                    integration_check_evidence.c.parent_head_sha == head_sha,
+                )
+                .order_by(
+                    integration_check_evidence.c.observed_at, integration_check_evidence.c.id
+                )
+            )
+        ).mappings().all()
+        detail: dict[str, Any] = {
+            "recorded_evidence_ids": [row["id"] for row in rows],
+            "recorded_conclusions": sorted({row["conclusion"] for row in rows}),
+            "recorded_producer_ids": sorted({row["producer_id"] for row in rows}),
+            "recorded_classifications": sorted({row["classification"] for row in rows}),
+        }
+        if not rows:
+            return detail
+        conclusions = set(detail["recorded_conclusions"])
+        if conclusions != {"success"}:
+            detail["next_owner"] = "parent_repair_ladder"
+            detail["next_action"] = (
+                "Trusted check evidence for this generation and head already records "
+                f"{', '.join(sorted(conclusions))}: the aggregate did not pass its required "
+                "checks, so the repair ladder owns the next step. Read its active stage "
+                "with `aq integration status <project_id>`; a new aggregate needs "
+                "a new CI run, not a re-run of the local suite."
+            )
+            return detail
+        detail["next_owner"] = "parent_integration_playbook"
+        detail["next_action"] = (
+            "Trusted check evidence for this generation and head is already green but no "
+            "verification binds it: the parent-integration playbook's verify rule has to "
+            "accept it with `integration_parent_verify`, whose own outcome says why it "
+            "did not. Re-running the local suite changes nothing."
+        )
+        return detail
+
     @parent_engine_guard(outcome="stale_generation")
     async def verify_parent(
         self, task_id: str, generation: int, head_sha: str, evidence_ids: list[str]
@@ -1262,13 +1418,28 @@ class ParentCompletion:
             )
             if readiness["outcome"] != "ready":
                 return readiness
-            if (
-                checkpoint["verified_generation"] != generation
-                or checkpoint["verified_sha"] != head_sha
-                or checkpoint["current_verification_id"] is None
-                or readiness["head_sha"] != head_sha
-            ):
+            if readiness["head_sha"] != head_sha:
+                # The collected aggregate advanced past the subject this close
+                # quoted: a genuinely superseded head, and no trusted evidence
+                # is missing.  ``stale_verification`` is the right answer and
+                # the caller must re-read readiness before acting at all.
                 return {"outcome": "stale_verification", "task_id": task_id}
+            required = required_checks(operation)
+            binding = binding_diagnosis(checkpoint, generation, head_sha, required)
+            if binding is not None:
+                # No trusted verification binds this exact generation and head.
+                # This is a wait for the CI producer, not a stale subject, and
+                # no worker-side re-run can change it -- answering it as
+                # ``stale_verification`` is what sent every retry back through
+                # the whole local suite (calm-grove-25 generation 5).
+                return {
+                    "outcome": AWAITING_TRUSTED_VERIFICATION,
+                    "task_id": task_id,
+                    **binding,
+                    **await self._awaiting_evidence_detail_on(
+                        conn, operation["id"], task_id, generation, head_sha
+                    ),
+                }
             verification = (
                 await conn.execute(
                     select(integration_parent_verifications).where(
@@ -1281,7 +1452,18 @@ class ParentCompletion:
                 )
             ).first()
             if verification is None:
-                return {"outcome": "stale_verification", "task_id": task_id}
+                # The checkpoint names a verification that does not resolve to
+                # this operation/generation/head.  The trusted binding is
+                # absent from the evidence tables, so this is the same wait as
+                # above, not a superseded subject.
+                return {
+                    "outcome": AWAITING_TRUSTED_VERIFICATION,
+                    "task_id": task_id,
+                    **binding_diagnosis(
+                        checkpoint, generation, head_sha, required,
+                        force_reason="verification_record_missing",
+                    ),
+                }
             expected_owner = operation["verifier_task_id"] or task_id
             owner = (
                 await conn.execute(
