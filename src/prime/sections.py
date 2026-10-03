@@ -649,15 +649,26 @@ def build_l2_context_section(config: Any) -> PrimeSection:
 # ---------------------------------------------------------------------------
 
 
-#: Harnesses with a ``tool_guidance_<harness>.md`` addendum: how that CLI's own
+#: CLIs with a ``tool_guidance_<cli>.md`` addendum: how that CLI's own
 #: interaction habits (dialogs, confirmations) meet an unattended AQ session.
 _HARNESS_GUIDANCE = frozenset({"opencode"})
 
 
-def build_tool_guidance_section(harness: str | None = None) -> PrimeSection:
+def build_tool_guidance_section(
+    harness: str | None = None, *, registry: Any = None
+) -> PrimeSection:
+    """The shared tool guidance, plus the addendum for the CLI *harness* runs.
+
+    The addendum is the CLI's, not one harness file's: with *registry*, a
+    harness such as ``opencode-zen`` running the ``opencode`` executable gets
+    OpenCode's (:func:`~src.sessions.harness_registry.runs_cli`).
+    """
+    from src.sessions.harness_registry import runs_cli
+
     body = _load_template("tool_guidance.md")
-    if harness in _HARNESS_GUIDANCE:
-        addendum = _load_template(f"tool_guidance_{harness}.md")
+    cli = next((c for c in sorted(_HARNESS_GUIDANCE) if runs_cli(c, harness, registry)), None)
+    if cli is not None:
+        addendum = _load_template(f"tool_guidance_{cli}.md")
         if addendum:
             body = f"{body}\n\n{addendum}" if body else addendum
     return PrimeSection(key="tool_guidance", title=SECTION_TITLES["tool_guidance"], body=body)

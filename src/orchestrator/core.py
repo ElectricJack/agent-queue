@@ -536,7 +536,8 @@ class Orchestrator(
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
         self.agent_questions = AgentQuestionService(
-            self.db, self.bus, self.session_providers, config
+            self.db, self.bus, self.session_providers, config,
+            harness_registry=self.harness_registry,
         )
         from src.escalations import SupervisorDeliveryWatchdog
 

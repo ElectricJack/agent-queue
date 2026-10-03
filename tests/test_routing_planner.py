@@ -61,14 +61,19 @@ lanes:
     classes: {fast-low: fast-off}
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
+  narrow-hosted:
+    harnesses: [opencode-zen]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode]
+  tie_order: [codex, claude, opencode, opencode-zen]
 """
 
 POLICY, DIGEST = parse_policy(SHIPPED_POLICY)
@@ -106,7 +111,7 @@ def _fleet() -> tuple[ProfileFacts, ...]:
 
 def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, backlog=None):
     providers = {}
-    for key in ("claude", "codex", "opencode"):
+    for key in ("claude", "codex", "opencode", "opencode-zen"):
         state = "exhausted" if key in out else "degraded" if key in degraded else "available"
         providers[key] = ProviderFacts(
             state=state, launchable=key not in out, usage_percent=(usage or {}).get(key),
@@ -170,7 +175,7 @@ def test_the_shipped_policy_parses_and_its_digest_is_canonical() -> None:
     assert parse_policy(reflowed)[1] == DIGEST
     changed = SHIPPED_POLICY.replace("usage_soft_percent: 80", "usage_soft_percent: 70")
     assert parse_policy(changed)[1] != DIGEST
-    assert POLICY.narrow_harnesses() == {"opencode"}
+    assert POLICY.narrow_harnesses() == {"opencode", "opencode-zen"}
 
 
 @pytest.mark.parametrize(
@@ -354,6 +359,74 @@ def test_a_repair_never_goes_to_opencode(origin) -> None:
     assert "opencode" not in {c["harness"] for c in plan["candidates"]}
 
 
+def _hosted_fleet() -> tuple[ProfileFacts, ...]:
+    """The fleet plus one hosted OpenCode rung: OpenCode Zen, a pool of one."""
+    return (*_fleet(), _rung("standard-high", "opencode-zen", slots=1))
+
+
+def test_hosted_opencode_takes_narrow_work_when_local_opencode_is_full() -> None:
+    task = _task(task_type="bugfix")
+    # Both OpenCode lanes are the preferred tier; the local one is declared first.
+    plan = _planned(task, _snapshot(_hosted_fleet()), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+    assert [c["profile_id"] for c in plan["candidates"][:2]] == [
+        "standard-high-opencode", "standard-high-opencode-zen",
+    ]
+    assert {c["tier"] for c in plan["candidates"][:2]} == {PREFERRED}
+
+    # Local OpenCode full (1/1): the hosted lane, at the task's own class.
+    busy = _snapshot(_hosted_fleet(), busy={"standard-high-opencode": 1})
+    plan = _planned(task, busy, NARROW_YES)
+    assert (plan["profile_id"], plan["intelligence_class"]) == (
+        "standard-high-opencode-zen", "standard-high",
+    )
+    assert plan["lane"] == "narrow-hosted"
+
+    # Both full: the general tier, never past a free Claude or Codex slot.
+    full = _snapshot(_hosted_fleet(), busy={
+        "standard-high-opencode": 1, "standard-high-opencode-zen": 1,
+    })
+    plan = _planned(task, full, NARROW_YES)
+    assert plan["profile_id"] in {"standard-high-codex", "standard-high-claude"}
+    assert "fell back" in plan["reason"]
+
+
+def test_hosted_and_local_opencode_are_separate_providers() -> None:
+    task = _task(task_type="bugfix")
+    # Local Ollama out says nothing about the hosted gateway, and vice versa.
+    plan = _planned(task, _snapshot(_hosted_fleet(), out={"opencode"}), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode-zen"
+    plan = _planned(task, _snapshot(_hosted_fleet(), out={"opencode-zen"}), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+
+
+@pytest.mark.parametrize(
+    ("task", "classification"),
+    [
+        # Not narrow: hosted OpenCode is not even a candidate.
+        (_task(task_type="bugfix"), NARROW_NO),
+        # A repair is never OpenCode work, whatever the classification says.
+        (_task(task_type="bugfix", created_by_kind="integration_repair"), NARROW_YES),
+        (_task(task_type="bugfix", created_by_kind="development_repair"), NARROW_YES),
+        # The lane maps standard-high only: cheap and deep work never reach it.
+        (_task(task_type="chore"), {**NARROW_YES, "task_type": "chore",
+                                     "intelligence_class": "fast-high"}),
+        (_task(task_type="bugfix", class_hint="deep-high"), NARROW_YES),
+        # Narrow but not test-verified.
+        (_task(task_type="bugfix"), {**NARROW_YES, "test_verified": False}),
+    ],
+    ids=["not-narrow", "integration-repair", "development-repair", "fast", "deep",
+         "unverified"],
+)
+def test_hosted_opencode_gets_only_narrow_test_verified_standard_high_work(
+    task, classification
+) -> None:
+    busy = {"standard-high-opencode": 1, "fast-low-opencode": 1}
+    plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
+    assert "opencode-zen" not in {c["harness"] for c in plan["candidates"]}
+    assert plan["profile_id"] != "standard-high-opencode-zen"
+
+
 def test_work_moves_away_from_a_provider_above_the_usage_soft_limit() -> None:
     task = _task(task_type="research")
     # Claude idle and Codex a little busy: Claude wins on load alone.
@@ -485,7 +558,7 @@ def test_the_plan_names_its_rule_policy_and_balance() -> None:
     plan = _planned(_task(task_type="research"), _snapshot())
     assert plan["rule"] == "kinds.research"
     assert plan["policy_sha256"] == DIGEST
-    assert plan["balance"]["tie_order"] == ["codex", "claude", "opencode"]
+    assert plan["balance"]["tie_order"] == ["codex", "claude", "opencode", "opencode-zen"]
     assert plan["reason"].startswith("kind research, class standard-high")
     assert {s["profile_id"] for s in plan["scores"]} == {
         "standard-high-codex", "standard-high-claude",

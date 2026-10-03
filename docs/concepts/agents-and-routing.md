@@ -207,9 +207,12 @@ and sync, `deep-high` for `design` (code design), `art` (art-heavy design) and
 design runs on Codex and holds for it (`provider_intent = pinned`). `deep-high`
 on Claude is reserved for code design and design review, so a hard bug fix
 hinted `deep-high` lands on `deep-high` Codex. Narrow, test-verified work goes
-to an OpenCode rung while one has a free slot. Among what remains, the
+to an OpenCode rung while one has a free slot: local OpenCode (the `narrow`
+lanes) first, then OpenCode on the hosted Zen gateway (the `narrow-hosted`
+lane, `standard-high` only), which is a separate provider with its own
+availability. Repairs never go to either. Among what remains, the
 least-pressed candidate wins, and a tie goes to Codex, then Claude, then
-OpenCode.
+OpenCode, then hosted OpenCode.
 
 When the classifier has to pick a class, its guidance is the playbook's
 "Classifying a task" section: **default to `standard-high`** for ordinary

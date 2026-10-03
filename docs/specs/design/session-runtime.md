@@ -163,6 +163,7 @@ exit classifier:
 
 | Evidence | Verdict |
 |---|---|
+| Pool session with persisted `desired_state=stopped` | Normal drain, even with an open task; never quarantine the pool for this requested exit |
 | Rate-limit text in the final pane capture | Task → PAUSED (`rate_limit`) with provider cooldown; session `sleep_reason=rate_limit` |
 | Rapid crash (death within `restart_window` of start) | Restart with backoff, `--resume <session_key>` when the harness supports it; after `max_restarts` inside `restart_window` → quarantine |
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
@@ -170,6 +171,12 @@ exit classifier:
 
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
+
+After observing a dead pool process and capturing its final output, the reconciler
+rereads the session before classifying it. An operator kill can persist stop intent
+while those probes await; an earlier live-session snapshot must not turn that requested
+stop into a rapid crash. A session already stopped or removed, or replaced by another
+instance during the probes, is not classified from that stale observation.
 
 ### 4.2 Named sessions
 

@@ -99,13 +99,16 @@ harness, never by rung id. Key by key:
   writes the provider intent `pinned`, so art design waits for its provider
   rather than going elsewhere. `narrow` sends narrow, test-verified work to
   OpenCode while it has a free slot; `narrow-unverified-model` does the same
-  only when an independent verifier checks the result.
+  only when an independent verifier checks the result. `narrow-hosted` sends
+  narrow, test-verified standard-high work to OpenCode on a hosted gateway, the
+  `opencode-zen` harness: a harness of its own so that its availability is not
+  local OpenCode's, and a lane of its own so that it can be tightened alone.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
   hard bug fix hinted deep-high lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
   over its slots times its harness weight, its provider's usage factor and its
   availability factor. The least-pressed candidate wins, and `tie_order`
-  breaks a tie, Codex first.
+  breaks a tie, Codex first and hosted OpenCode last.
 
 ```yaml
 version: 1
@@ -141,14 +144,19 @@ lanes:
     classes: {fast-low: fast-off}
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
+  narrow-hosted:
+    harnesses: [opencode-zen]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode]
+  tie_order: [codex, claude, opencode, opencode-zen]
 ```
 
 ## Classifying a task

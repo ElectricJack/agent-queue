@@ -27716,6 +27716,170 @@
         ],
         "title": "EnvVarReference"
       },
+      "EpicDeliveryRef": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "operation",
+              "batch",
+              "gate",
+              "session",
+              "system",
+              "operator",
+              "supervisor"
+            ],
+            "title": "Kind"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "EpicDeliveryRef",
+        "description": "A party or record an epic's delivery status points at.\n\n``task``/``operation``/``batch``/``gate`` name a record (``id`` set);\n``session`` is the live worker session; ``system``/``operator``/\n``supervisor`` name who must act and carry no ``id``."
+      },
+      "EpicDeliveryStatus": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "implementing",
+              "queued",
+              "integrating",
+              "verifying",
+              "blocked",
+              "awaiting_approval",
+              "paused",
+              "delivered",
+              "unknown",
+              "not_tracked"
+            ],
+            "title": "State"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "display_status": {
+            "type": "string",
+            "title": "Display Status"
+          },
+          "hold": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "operator",
+                  "integration",
+                  "backoff"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hold"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remedy"
+          },
+          "responsible": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EpicDeliveryRef"
+            },
+            "type": "array",
+            "title": "Links",
+            "default": []
+          },
+          "evidence": {
+            "type": "string",
+            "enum": [
+              "current",
+              "stale",
+              "unavailable",
+              "untracked"
+            ],
+            "title": "Evidence",
+            "default": "current"
+          },
+          "implementation_completed": {
+            "type": "integer",
+            "title": "Implementation Completed",
+            "default": 0
+          },
+          "implementation_total": {
+            "type": "integer",
+            "title": "Implementation Total",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "label",
+          "display_status"
+        ],
+        "title": "EpicDeliveryStatus",
+        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with a receipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
+      },
       "EscalationAction": {
         "properties": {
           "id": {
@@ -32227,6 +32391,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -35987,6 +36161,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
               },
               {
                 "type": "null"
@@ -60089,6 +60273,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -61483,6 +61677,16 @@
             ],
             "title": "Route"
           },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -61870,6 +62074,16 @@
               }
             ],
             "title": "Route"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpicDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "items": {

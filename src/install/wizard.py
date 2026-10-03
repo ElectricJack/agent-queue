@@ -279,8 +279,9 @@ def default_project_folder(cwd: Path, home: Path, *, reserved: Iterable[Path] = 
 def validate_project_folder(raw: str, home: Path, *, reserved: Iterable[Path] = ()) -> Path:
     """Check a projects folder a person typed; raise ``ValueError`` saying why not.
 
-    AQ may create and change projects anywhere below this folder, so the home
-    directory itself, the filesystem root and AQ's own directories are refused.
+    The home directory itself, the filesystem root and folders at or inside
+    AQ's own directories are refused. A parent containing AQ is allowed so
+    the checkout can live alongside the person's other code projects.
     """
     text = raw.strip()
     if not text:
@@ -298,7 +299,7 @@ def validate_project_folder(raw: str, home: Path, *, reserved: Iterable[Path] = 
         )
     for own in reserved:
         own = own.expanduser().resolve()
-        if folder == own or _within(folder, own) or _within(own, folder):
+        if _within(folder, own):
             raise ValueError(f"{folder} overlaps {own}, which AQ manages itself")
     if folder.exists() and not folder.is_dir():
         raise ValueError(f"{folder} exists and is not a folder")

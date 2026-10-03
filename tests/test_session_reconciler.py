@@ -1034,6 +1034,64 @@ class TestAbandonedPoolClaimLoop:
 
 
 class TestPoolLifecycle:
+    @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
+    async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, during
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 30)
+        original = provider.process_alive if during == "process_probe" else provider.peek
+
+        async def kill_during_probe(*args, **kwargs):
+            # session_kill records intent before signalling. The tick already
+            # holds a snapshot from before that command began.
+            await db.update_session(row.id, desired_state="stopped")
+            provider.script_death(row.name)
+            return await original(*args, **kwargs)
+
+        method = "process_alive" if during == "process_probe" else "peek"
+        monkeypatch.setattr(provider, method, kill_during_probe)
+        if during == "final_capture":
+            provider.script_death(row.name)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+        assert not pool_reconciler.test_orch._pool_quarantine
+        bus_verdict = pool_reconciler.bus.payload("session.exited")
+        assert bus_verdict is not None
+        assert bus_verdict["verdict"] == str(Verdict.DRAINED)
+
+    @pytest.mark.parametrize("changed", ["stopped", "replacement"])
+    async def test_pool_exit_probe_does_not_classify_an_ended_or_replaced_instance(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, changed
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 30)
+        original_peek = provider.peek
+        provider.script_death(row.name)
+
+        async def change_during_capture(*args, **kwargs):
+            if changed == "stopped":
+                await db.update_session(row.id, state="stopped", desired_state="stopped")
+            else:
+                await db.update_session(row.id, instance_token="replacement-instance")
+            return await original_peek(*args, **kwargs)
+
+        monkeypatch.setattr(provider, "peek", change_during_capture)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        assert not pool_reconciler.test_orch.terminations
+        assert not pool_reconciler.test_orch._pool_quarantine
+        assert "session.exited" not in pool_reconciler.bus.types()
+        current = await db.get_session(row.id)
+        if changed == "stopped":
+            assert current.state == "stopped"
+        else:
+            assert current.instance_token == "replacement-instance"
+            assert current.state == "running"
+
     async def test_killed_pool_worker_requeues_task_without_quarantining_pool(
         self, db, provider, pool_reconciler, tmp_path
     ):
