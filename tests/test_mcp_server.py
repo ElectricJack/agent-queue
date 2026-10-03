@@ -709,6 +709,13 @@ class TestDriftDetection:
             # calls it over the CLI/HTTP surface and the session comes from the
             # bearer scope, so there is no LLM-facing definition to write.
             "subagent_event",
+            # Internal parent-reconciler visit dispatch
+            # (src/commands/integration_commands.py).  Excluded from MCP
+            # (DEFAULT_EXCLUDED_COMMANDS): the handler admits a call only inside
+            # the visit's process-bound engine scope, which no MCP client can
+            # establish, so it carries a codegen-only fallback schema rather
+            # than an LLM-facing definition.
+            "integration_parent_action",
         }
         from src.mcp_registration import effective_tool_definitions
 
