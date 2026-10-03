@@ -1,8 +1,8 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9
-source_sha256: sha256:861a07a3730037b82905e7b8ae4a6f783dae0a636bd656c518a9aecdce02cbfb
-contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
+artifact_sha256: sha256:8522e27ac2199f3d77efe0c8305d390f4abe668b03b5ded50e429ccafdc5d7ed
+source_sha256: sha256:f0719f9ea0f5ddd367f9130503816e428905f123ea440b101b58b9890cf8fd93
+contract_fingerprint: sha256:3e4cad60a27bfb8064b6897a85b865fe667f93fd9710ca9242c444b3b47322fb
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -23,6 +23,12 @@ capabilities_granted:
   plugin_tools: []
 profiles_referenced: []
 ---
+
+Integration CI repair refreshes the reconciliation contract and explicitly maps
+`continued` and `superseded` to completion, and `waiting` and `target_moved` to
+failure, matching the server's current outcome classifications. This preserves
+the exact remote reconciliation requirement and grants no additional capability.
+The new digest still requires operator review before activation.
 
 # Review decision
 

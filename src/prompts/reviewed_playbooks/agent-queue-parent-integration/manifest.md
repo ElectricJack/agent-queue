@@ -1,8 +1,8 @@
 ---
 playbook_id: agent-queue-parent-integration
-artifact_sha256: sha256:35ac00bcd2141638c2e08cb25eba2f0a18757da46d22be4f4adbbce0fd779f50
-source_sha256: sha256:03becdc66d6f31f19642ff1450451699551c892afc08ee469d390327eab40a91
-contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
+artifact_sha256: sha256:1d9c44b083f599b1c2eb9c51c23e8ffaa368b3594a70cf3230356ba165010a8d
+source_sha256: sha256:a0538be7bb8c1e0d1eb426a71b2e586fd4dce8787783d686587ff9ad0491ec3d
+contract_fingerprint: sha256:3e4cad60a27bfb8064b6897a85b865fe667f93fd9710ca9242c444b3b47322fb
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -45,3 +45,9 @@ Failed children, conflicts, old repair dossiers and expired writer budgets use
 explicit no-default gates. Import remains write-if-absent and no activation or
 engine transfer is authorized by this bundle. Operator rollout review binds the
 new digest before cutover.
+
+Integration CI repair refreshes the reconciliation contract and explicitly maps
+`continued` and `superseded` to completion, and `waiting` and `target_moved` to
+failure, matching the server's current outcome classifications. This preserves
+the exact remote reconciliation requirement and grants no additional capability.
+The new digest still requires operator review before activation.

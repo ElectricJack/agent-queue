@@ -210,6 +210,19 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_consumer_receipts",
         "record_export_state",
         "record_backfill_state",
+        # K05 protection state shipped in PostgreSQL revision 59. Legacy
+        # SQLite has no proposals, authority grants, shares or erasure ledger;
+        # these tables depend on the excluded record/revision domain above.
+        "knowledge_proposals",
+        "knowledge_authority_grants",
+        "knowledge_global_shares",
+        "knowledge_redactions",
+        "knowledge_redaction_targets",
+        # K06 sealed knowledge-import inventory shipped in revision 60, not
+        # in the legacy SQLite format. Its runs depend on record_scopes.
+        "record_import_runs",
+        "record_legacy_mappings",
+        "record_import_items",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
     }

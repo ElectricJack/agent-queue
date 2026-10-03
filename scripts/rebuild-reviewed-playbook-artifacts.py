@@ -321,10 +321,22 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
         return _root_integration_train_body(source)
-    if playbook_id == "parent-integration":
-        return _rebased_recorded_body("agent-queue-parent-integration", source)
-    if playbook_id == "agent-queue-parent-integration":
-        return _recorded_semantic_body(playbook_id)
+    if playbook_id in ("parent-integration", "agent-queue-parent-integration"):
+        body = (
+            _rebased_recorded_body("agent-queue-parent-integration", source)
+            if playbook_id == "parent-integration"
+            else _recorded_semantic_body(playbook_id)
+        )
+        transitions = body["steps"]["reconcile-resolution-push--reconcile"]["transitions"]
+        # Exact remote reconciliation may settle through a successor or wait
+        # for its writer. Preserve the contract's success/refusal distinction.
+        transitions.update({
+            "continued": "reconcile-resolution-push--done",
+            "superseded": "reconcile-resolution-push--done",
+            "waiting": "reconcile-resolution-push--failed",
+            "target_moved": "reconcile-resolution-push--failed",
+        })
+        return body
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
