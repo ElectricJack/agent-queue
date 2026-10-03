@@ -1387,7 +1387,7 @@
       ]
     }
   },
-  "digest": "sha256:e7b421e09bcf0e9a191a996f598dfb1443a771040cdec99cd3e7f5147550d63b",
+  "digest": "sha256:4c68b0f53be5444360d1caf19e430d8ff37b49894dccce47fc30932e9248b1fd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5210,6 +5210,7 @@
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
         "src.doctor.integration_checks",
+        "src.doctor.integration_subject_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
         "src.doctor.perf_checks",
