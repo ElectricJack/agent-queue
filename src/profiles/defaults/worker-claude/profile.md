@@ -65,6 +65,7 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "knowledge_export",
     "create_task",
     "formula_list",
     "formula_show",

@@ -102,6 +102,19 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="memory",
         description=("Semantic memory — search, project profiles, compaction, reindexing"),
     ),
+    "knowledge": CategoryMeta(
+        name="knowledge",
+        description=(
+            "Knowledge records — create, list, show, update, history, diff, retire, restore, export"
+        ),
+    ),
+    "record": CategoryMeta(
+        name="record",
+        description=(
+            "Record reads, search, capabilities, and typed links "
+            "(show, search, capabilities, link create/list/remove)"
+        ),
+    ),
     "notes": CategoryMeta(
         name="notes",
         description=("Project notes — list, read, write, append, delete, promote notes to specs"),

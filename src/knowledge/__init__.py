@@ -1,1 +1,1 @@
-"""Core knowledge facilities; importing this package initializes no services."""
+"""Core durable knowledge; importing this package initializes no services or providers."""

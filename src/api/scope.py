@@ -64,6 +64,22 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_status",
         "memory_save",
         "memory_search",
+        # Knowledge records (K03). Project-pinned reads that the profile must
+        # also grant a capability for; the record service is the independent
+        # authorization gate. Retire/restore stay supervisor-only.
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_export",
+        "record_show",
+        "record_search",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
         "task_claim",
         "test_select",
         "test_selection_recheck",
