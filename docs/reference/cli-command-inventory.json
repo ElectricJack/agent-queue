@@ -4106,6 +4106,7 @@
           "--apply",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
@@ -13016,6 +13017,7 @@
           "--dry-run",
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [
@@ -13128,6 +13130,7 @@
         "optional": [
           "--json",
           "--brief",
+          "--save-output",
           "--api-url"
         ],
         "structured": [],
