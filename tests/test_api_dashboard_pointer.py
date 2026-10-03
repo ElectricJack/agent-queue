@@ -217,16 +217,30 @@ async def test_the_first_dashboard_request_builds_no_route_contexts(live_app, mo
     them all on the daemon's event loop: ~0.5 s on a quiet host, past the 2 s
     the pre-change updater's probe allows on a loaded CI runner.
     """
-    from fastapi.routing import _IncludedRouter
+    from fastapi import routing
+
+    included_router = getattr(routing, "_IncludedRouter", None)
+    if included_router is None:
+        # Supported older FastAPI versions copy included routes eagerly.
+        assert any(
+            isinstance(route, routing.APIRoute) and route.path == "/api/health"
+            for route in live_app.routes
+        )
+        builder_type = routing.APIRouter
+        builder_name = "add_api_route"
+    else:
+        assert any(isinstance(route, included_router) for route in live_app.routes)
+        builder_type = included_router
+        builder_name = "_build_effective_context"
 
     built: list[object] = []
-    build = _IncludedRouter._build_effective_context
+    build = getattr(builder_type, builder_name)
 
-    def counting(self: Any, route: Any) -> Any:
-        built.append(route)
-        return build(self, route)
+    def counting(self: Any, *args: Any, **kwargs: Any) -> Any:
+        built.append(args)
+        return build(self, *args, **kwargs)
 
-    monkeypatch.setattr(_IncludedRouter, "_build_effective_context", counting)
+    monkeypatch.setattr(builder_type, builder_name, counting)
     with TestClient(live_app, follow_redirects=False) as client:
         assert client.get("/dashboard/").status_code == 307
         assert client.get("/no-such-route").status_code == 404
