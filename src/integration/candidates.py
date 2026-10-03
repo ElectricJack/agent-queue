@@ -44,6 +44,8 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.integration.engine import root_engine_guard
+
 from src.integration.development import GENERATED_MERGE_CONFIG
 from src.integration.models import BranchKey, Fence, RepairPolicy
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -274,6 +276,7 @@ class CandidateService:
         self.confirm_published_repair = confirm_published_repair
         self.clock = clock
 
+    @root_engine_guard("batch", result_model=CandidateBuildResult)
     async def build(self, batch_id: str) -> CandidateBuildResult:
         return await self._continued(await self._build(batch_id))
 
@@ -639,6 +642,7 @@ class CandidateService:
                 return False
         return True
 
+    @root_engine_guard("batch", result_model=CandidateBuildResult)
     async def rebuild(
         self, batch_id: str, expected_revision: int, new_base_sha: str
     ) -> CandidateBuildResult:
@@ -2278,6 +2282,21 @@ class CandidateService:
                     "head_sha": base_sha,
                     "state": "constructing",
                 }
+            elif row["state"] == "constructing" and state["batch"]["lifecycle"] == "sealed":
+                # An ejection reserves the next revision and reseals the batch.
+                # Starting its construction is the same transition as a fresh
+                # reservation; a later conflict CAS requires building.
+                changed = await conn.execute(
+                    update(integration_batches)
+                    .where(
+                        integration_batches.c.id == state["batch"]["id"],
+                        integration_batches.c.current_revision == revision,
+                        integration_batches.c.lifecycle == "sealed",
+                    )
+                    .values(lifecycle="building", updated_at=now)
+                )
+                if changed.rowcount != 1:
+                    raise CandidateStaleAuthority("batch changed while starting its revision")
             return dict(row)
 
     async def _construct(self, state, revision, store: Path, *, operation_id: str):
