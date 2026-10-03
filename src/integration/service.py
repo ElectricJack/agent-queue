@@ -147,6 +147,7 @@ class IntegrationService:
         green_promotion_handler: DrainHandler | None = None,
         subject_runtime: Any = None,
         parent_subject_runtime: Any = None,
+        development_subject_runtime: Any = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         source_timeout_seconds: float = DEFAULT_SOURCE_TIMEOUT_SECONDS,
@@ -187,6 +188,7 @@ class IntegrationService:
         self._green_promotion_handler = green_promotion_handler
         self._subject_runtime = subject_runtime
         self._parent_subject_runtime = parent_subject_runtime
+        self._development_subject_runtime = development_subject_runtime
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._source_timeout_seconds = float(source_timeout_seconds)
@@ -245,6 +247,10 @@ class IntegrationService:
                 await self._source("root subjects", self._subject_runtime.tick, self._clock())
             if self._parent_subject_runtime is not None:
                 await self._source("parent subjects", self._parent_subject_runtime.tick, self._clock())
+            if self._development_subject_runtime is not None:
+                await self._source(
+                    "development subjects", self._development_subject_runtime.tick, self._clock()
+                )
             accepted = getattr(self._repair, "reconcile_accepted_delegates", None)
             if callable(accepted):
                 await self._source("accepted repair delegates", accepted, self._clock())
@@ -591,6 +597,8 @@ class IntegrationService:
             await self._subject_runtime.stop()
         if self._parent_subject_runtime is not None:
             await self._parent_subject_runtime.stop()
+        if self._development_subject_runtime is not None:
+            await self._development_subject_runtime.stop()
         if self._reconciliation_task is not None:
             self._reconciliation_task.cancel()
             await asyncio.gather(self._reconciliation_task, return_exceptions=True)
