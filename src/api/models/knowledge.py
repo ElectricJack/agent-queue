@@ -114,6 +114,36 @@ class KnowledgeImportResponse(KnowledgeEnvelope):
     identities: list[dict]
 
 
+class KnowledgeGenerationTickResponse(BaseModel):
+    """One bounded tick: how much was retained and the terminal state per job.
+
+    ``states`` carries one terminal state string per job the tick ran
+    (``succeeded`` / ``retry`` / ``quarantined`` / ``cancelled``); it is empty
+    when no due job was claimed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    success: bool = True
+    captured: int | None = None
+    states: list[str] = []
+
+
+class KnowledgeGenerationStatusResponse(BaseModel):
+    """Content-free cost and ambiguity diagnostics; never inspects a provider.
+
+    ``jobs`` groups by scope / state / error code, ``budgets`` is the daily
+    per-feature allowance projection, and ``unknown_calls`` counts reservations
+    whose paid provider operation has no known outcome.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    success: bool = True
+    jobs: list[dict] = []
+    budgets: list[dict] = []
+    unknown_calls: int | None = None
+    page_limit: int | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_cite": KnowledgeCitationResponse,
     "knowledge_context_deliver": KnowledgeContextDeliveryResponse,
@@ -128,6 +158,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_restore": KnowledgeLifecycleResponse,
     "knowledge_export": KnowledgeExportResponse,
     "knowledge_import": KnowledgeImportResponse,
+    "knowledge_generation_status": KnowledgeGenerationStatusResponse,
+    "knowledge_generation_tick": KnowledgeGenerationTickResponse,
 }
 
 

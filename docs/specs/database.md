@@ -4218,3 +4218,219 @@ be downgraded in dependency order. A populated inventory refuses destructive rol
 | `record_id` | UUID | nullable | Resulting record identity |
 | `revision_id` | UUID | nullable, requires record_id | Resulting revision identity |
 | `error_code` | TEXT | nullable | Item failure code |
+
+## Prepared knowledge context, delivery and citations (K08)
+
+Migration `a00000000062` adds the prepared evidence bundle, its observed transport
+delivery and the exact-revision citation ledger. Preparation, delivery and usage
+evidence are three separate facts: a bundle is what the service selected and sealed,
+a delivery is what a transport acknowledged, and a citation is that a specific
+revision was actually used by a specific attempt or supervisor session. The feature
+is gated on `knowledge.context.enabled` (default false, and also `knowledge.enabled`
+and `memory.enabled`), so these tables stay empty until an operator opts in. Redaction
+erases cached selection bodies in the same transaction while preserving the
+identity-only citations and receipts.
+
+### Table: `knowledge_context_bundles`
+
+One prepared, ordered evidence selection for worker prime, named-supervisor
+bootstrap and retained prompt assembly. The owner is either a task attempt (with its
+claim epoch) or a supervisor session (no claim epoch). `request_fingerprint` folds in
+the principal fingerprint, the access epoch, the query, pins, the applied budget and
+the omissions, so a repeated preparation reuses its latest unexpired, non-redacted
+bundle instead of selecting again (`refresh=True` selects afresh). `content_sha256`
+seals the rendered selection; `expires_at` is bounded by
+`knowledge.context.bundle_ttl_seconds`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `bundle_id` | UUID | PRIMARY KEY | Bundle identity |
+| `owner_kind` | TEXT | NOT NULL | task_attempt or supervisor_session (`ck_knowledge_context_bundles_owner_kind`) |
+| `owner_id` | TEXT | NOT NULL | Attempt id or supervisor session id |
+| `session_instance` | TEXT | NOT NULL | Live session instance that requested the bundle |
+| `claim_epoch` | BIGINT | nullable | Required for a task attempt, null for a supervisor session (`ck_knowledge_context_bundles_claim`) |
+| `principal_fingerprint` | TEXT | NOT NULL | Fingerprint of the authorizing principal |
+| `request_fingerprint` | TEXT | NOT NULL | Fingerprint of the request; reuse key for a repeat preparation |
+| `scope_keys` | JSONB | NOT NULL, array | Resolved scopes behind the selection (`ck_knowledge_context_bundles_json`) |
+| `budget` | JSONB | NOT NULL, object | Applied context budget for this preparation |
+| `selection` | JSONB | NOT NULL, object | Rendered ordered evidence selection |
+| `content_sha256` | TEXT | NOT NULL, 64 lowercase hexadecimal digits | Seal of the rendered selection (`ck_knowledge_context_bundles_hash`) |
+| `prepared_at` | TIMESTAMPTZ | NOT NULL | Preparation time |
+| `expires_at` | TIMESTAMPTZ | NOT NULL, >= prepared_at | TTL end (`ck_knowledge_context_bundles_expiry`) |
+| `redacted_at` | TIMESTAMPTZ | nullable | When the cached selection body was erased |
+
+Indexed by `idx_knowledge_context_bundles_request` on
+`(request_fingerprint, expires_at)` for the reuse and expiry scans.
+
+### Table: `knowledge_context_deliveries`
+
+The observed transport receipt for a bundle, one row per idempotency key: the insert
+is `ON CONFLICT DO NOTHING` on `transport_key`, and a replay must match the recorded
+bundle, transport and hash or it is refused. Injected citations are written only for
+`delivered`; `prepared`, `failed` and `unknown` record the attempt without attributing
+usage, and `rendered_sha256` is verified against the bundle's seal.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `delivery_id` | UUID | PRIMARY KEY | Delivery identity |
+| `bundle_id` | UUID | NOT NULL, FK knowledge_context_bundles.bundle_id, RESTRICT | Delivered bundle |
+| `transport` | TEXT | NOT NULL | Transport that received the bundle |
+| `transport_key` | TEXT | NOT NULL, UNIQUE | Caller idempotency key for the delivery |
+| `state` | TEXT | NOT NULL | prepared, delivered, failed or unknown (`ck_knowledge_context_deliveries_state`) |
+| `observed_at` | TIMESTAMPTZ | NOT NULL | When the outcome was observed |
+| `rendered_sha256` | TEXT | NOT NULL, 64 lowercase hexadecimal digits | Hash of the bytes actually rendered (`ck_knowledge_context_deliveries_hash`) |
+
+### Table: `knowledge_citations`
+
+Identity-only usage evidence: one row per exact `(record_id, revision_id)` use, with
+no content. The execution owner is a task attempt plus its claim epoch, or a
+supervisor session, exclusively (`ck_knowledge_citations_execution_owner`), so a
+citation can always be attributed to one attempt. `bundle_id` is the optional soft
+link to the bundle that carried the selection, and redaction leaves the row intact.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `citation_id` | UUID | PRIMARY KEY | Citation identity |
+| `record_id` | UUID | NOT NULL | Cited record |
+| `revision_id` | UUID | NOT NULL | Exact cited revision |
+| `owner_kind` | TEXT | NOT NULL | task_attempt or supervisor_session |
+| `owner_id` | TEXT | NOT NULL | Attempt id or supervisor session id |
+| `session_instance` | TEXT | NOT NULL | Live session instance that used the revision |
+| `task_id` | TEXT | nullable | Soft ref to the task, for an attempt owner |
+| `attempt_id` | TEXT | nullable | Soft ref to the attempt, for an attempt owner |
+| `supervisor_session_id` | TEXT | nullable | Soft ref to the session, for a supervisor owner |
+| `claim_epoch` | BIGINT | nullable | Claim epoch of the citing attempt |
+| `kind` | TEXT | NOT NULL | injected, attached or explicit_read (`ck_knowledge_citations_kind`) |
+| `bundle_id` | UUID | nullable, FK knowledge_context_bundles.bundle_id, RESTRICT | Bundle that carried the selection |
+| `actor_id` | TEXT | NOT NULL | Actor recorded for the use |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Citation time |
+| `idempotency_key` | TEXT | NOT NULL, 1-128 characters | Per-owner key (`ck_knowledge_citations_key`) |
+
+`(record_id, revision_id)` references
+`knowledge_revisions (record_id, revision_id)` with RESTRICT
+(`fk_knowledge_citations_revision`), and
+`(owner_kind, owner_id, session_instance, kind, idempotency_key)` is unique
+(`uq_knowledge_citations_owner_key`) so a replayed citation is one row.
+
+## Durable extraction jobs, receipts and budgets (K13)
+
+Migration `a00000000063` adds the durable generation work ledger, its exact input
+receipts, the capture cursor, the per-feature daily allowance and the pre-charge
+reservation; `a00000000064` adds `knowledge_feature_budgets.consecutive_failures` for
+the persistent failure circuit. Generation is separately gated on
+`knowledge.extraction.enabled` and `knowledge.consolidation.enabled` (both default
+false, and also `knowledge.enabled`, `knowledge.writes_enabled`, `memory.enabled` and
+`knowledge.legacy_memory_mode: disabled`), so the store is inert until an operator
+enables a feature and names its provider. Money is reserved before any external
+request and settled from the provider's reported usage; an expired paid operation
+with no saved output is `unknown`, is quarantined, keeps its reservation and is never
+retried automatically. Populated tables refuse destructive rollback.
+
+### Table: `knowledge_extraction_jobs`
+
+The durable work ledger, one row per exact source. Dedupe is
+`(scope_key, source_identity, source_sha256, extractor_version, policy_version)`, so a
+retention-version change re-runs the source rather than reusing a stale job. The
+lease is a 30-second claim token whose expiry fits the request timeout; a crash
+releases it by expiry, never by guessing the caller's outcome.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `job_id` | UUID | PRIMARY KEY | Job identity (`pk_knowledge_extraction_jobs`) |
+| `scope_key` | TEXT | NOT NULL, FK record_scopes.scope_key, RESTRICT | Owning scope |
+| `source_identity` | TEXT | NOT NULL, non-blank | Stable identity of the captured source (`ck_knowledge_extraction_jobs_identity`) |
+| `source_sha256` | TEXT | NOT NULL, 64 lowercase hexadecimal digits | Source content hash (`ck_knowledge_extraction_jobs_hash`) |
+| `extractor_version` | TEXT | NOT NULL, non-blank | Capture version, e.g. `extraction:1` |
+| `policy_version` | TEXT | NOT NULL, non-blank | Generation policy version |
+| `state` | TEXT | NOT NULL, DEFAULT 'pending' | pending, leased, succeeded, retry, quarantined or cancelled (`ck_knowledge_extraction_jobs_state`) |
+| `attempts` | INTEGER | NOT NULL, DEFAULT 0 | Run count (`ck_knowledge_extraction_jobs_attempts`) |
+| `lease_token` | UUID | nullable | Claim token, present only while leased (`ck_knowledge_extraction_jobs_lease`) |
+| `lease_until` | TIMESTAMPTZ | nullable | Lease expiry |
+| `available_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Earliest due time for the scan |
+| `result_artifact_id` | TEXT | nullable | Retained proposal artifact on success |
+| `error_code` | TEXT | nullable | Classified failure reason |
+| `budget_reservation_id` | UUID | nullable, with `job_id` FK knowledge_budget_reservations, RESTRICT | This job's own reservation (`fk_knowledge_extraction_jobs_reservation`) |
+
+`uq_knowledge_extraction_jobs_source` covers the dedupe tuple and
+`uq_knowledge_extraction_jobs_scope` the `(job_id, scope_key)` reference target.
+`idx_knowledge_extraction_jobs_due` covers
+`(scope_key, available_at, job_id)` where the state is pending, retry or leased.
+
+### Table: `knowledge_extraction_inputs`
+
+The exact retained input receipts a job was built from, at most eight per job
+(`input_ordinal` 0-7), each carrying its own artifact, source scope and actor so a
+batch cannot inherit the first item's role. `event_id` and `attempt_id` are soft
+references: ordinary event retention cannot erase the evidence of what was sent.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `job_id` | UUID | PK with input_ordinal, FK knowledge_extraction_jobs (job_id, scope_key), RESTRICT | Owning job |
+| `input_ordinal` | INTEGER | NOT NULL, 0-7 | Position within the batch (`ck_knowledge_extraction_inputs_position`) |
+| `event_id` | BIGINT | NOT NULL, >= 0 | Soft ref to the captured event |
+| `attempt_id` | TEXT | nullable | Soft ref to the capturing attempt |
+| `artifact_id` | TEXT | NOT NULL, non-blank | Retained artifact read for this input |
+| `source_scope` | TEXT | NOT NULL | Scope the artifact was read from |
+| `actor_id` | TEXT | NOT NULL, non-blank | Actor that produced the input (`ck_knowledge_extraction_inputs_receipt`) |
+
+### Table: `knowledge_capture_checkpoints`
+
+The monotonic per-consumer event cursor. It advances only in the transaction that
+retains the exact input receipts, so ordinary event retention or a lost delivery can
+be repaired by a rescan without resetting a cursor or skipping evidence.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `consumer_id` | TEXT | PK with scope_key, non-blank | Capturing consumer (`ck_knowledge_capture_checkpoints_consumer`) |
+| `scope_key` | TEXT | PK, FK record_scopes.scope_key, RESTRICT | Captured scope |
+| `last_event_id` | BIGINT | NOT NULL, >= 0 | Highest retained event (`ck_knowledge_capture_checkpoints_cursor`) |
+| `last_reconcile_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last reconciliation time |
+
+### Table: `knowledge_feature_budgets`
+
+One daily allowance row per scope, feature and UTC day
+(`ck_knowledge_feature_budgets_utc_day`). Extraction and consolidation counters are
+separate rows, so one feature's spend never starves the other. `circuit_open` is the
+persistent failure circuit: five consecutive provider failures open it, and neither a
+restart nor a UTC-day change clears it.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `scope_key` | TEXT | PK, FK record_scopes.scope_key, RESTRICT | Owning scope |
+| `feature` | TEXT | PK, non-blank | extraction or consolidation (`ck_knowledge_feature_budgets_feature`) |
+| `period_start` | TIMESTAMPTZ | PK, truncated to a UTC day | Allowance period |
+| `limit_microusd` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Daily microUSD allowance |
+| `reserved_microusd` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Reserved but unsettled |
+| `spent_microusd` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Settled spend |
+| `token_limit` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Daily token allowance |
+| `reserved_tokens` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Reserved but unsettled tokens |
+| `spent_tokens` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Settled tokens |
+| `circuit_open` | BOOLEAN | NOT NULL, DEFAULT false | Persistent provider failure circuit |
+| `consecutive_failures` | INTEGER | NOT NULL, DEFAULT 0, >= 0 | Provider failures since the last success (`ck_knowledge_feature_budgets_failures`) |
+
+The six counters are bounded by `ck_knowledge_feature_budgets_counters`.
+
+### Table: `knowledge_budget_reservations`
+
+The pre-charge reservation for one job — at most one per job
+(`uq_knowledge_budget_reservations_job`). Admission reserves money and tokens and
+commits the stable provider operation id before the external request, so a crash
+afterwards is `unknown` rather than a free retry. A settled reservation carries both
+actuals and the operation id; every other state carries no actuals
+(`ck_knowledge_budget_reservations_actuals`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `reservation_id` | UUID | PRIMARY KEY | Reservation identity (`pk_knowledge_budget_reservations`) |
+| `job_id` | UUID | NOT NULL, UNIQUE, FK knowledge_extraction_jobs (job_id, scope_key), RESTRICT | Admitting job |
+| `scope_key` | TEXT | NOT NULL, FK knowledge_feature_budgets, RESTRICT | Charged scope |
+| `feature` | TEXT | NOT NULL, FK knowledge_feature_budgets, RESTRICT | Charged feature |
+| `period_start` | TIMESTAMPTZ | NOT NULL, FK knowledge_feature_budgets, RESTRICT | Charged UTC day |
+| `estimated_microusd` | BIGINT | NOT NULL, >= 0 | Pre-charge estimate |
+| `estimated_tokens` | BIGINT | NOT NULL, 0-8000 | Pre-charge estimate, capped by one call (`ck_knowledge_budget_reservations_amounts`) |
+| `actual_microusd` | BIGINT | nullable, >= 0 | Provider-reported usage |
+| `actual_tokens` | BIGINT | nullable, >= 0 | Provider-reported usage |
+| `state` | TEXT | NOT NULL, DEFAULT 'reserved' | reserved, settled, unknown or released (`ck_knowledge_budget_reservations_state`) |
+| `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
