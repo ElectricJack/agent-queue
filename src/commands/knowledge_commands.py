@@ -269,13 +269,26 @@ class KnowledgeCommandsMixin:
                 principal=current_principal(),
                 project_id=_knowledge_scope(args),
                 revision_id=args.get("revision_id"),
+                include_edges=args.get("include_edges", False),
             )
         except RecordError as exc:
             return exc.result()
 
     async def _cmd_record_search(self, args):
         try:
-            return await self._search(args, query=args.get("query") or "")
+            return await self._record_service().search(
+                principal=current_principal(),
+                project_id=_knowledge_scope(args),
+                kind=args.get("kind", "knowledge"),
+                query=args.get("query") or "",
+                category=args.get("category"),
+                lifecycle=args.get("lifecycle"),
+                verification=args.get("verification"),
+                include_retired=args.get("include_retired", False),
+                include_disputed=args.get("include_disputed", False),
+                limit=args.get("limit", 25),
+                cursor=args.get("cursor"),
+            )
         except RecordError as exc:
             return exc.result()
 

@@ -13,6 +13,7 @@ import {
 export interface KnowledgeFiltersProps {
   filters: KnowledgeListFilters;
   onChange: (filters: KnowledgeListFilters) => void;
+  searchLabel?: string;
 }
 
 const SELECT = "rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-200";
@@ -22,14 +23,14 @@ const SELECT = "rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm tex
  * the owner decides where the state lives (this slice's `Knowledge` keeps it
  * in memory, K10 writes it to the URL with `knowledgeUrlState.ts`).
  */
-export default function KnowledgeFilters({ filters, onChange }: KnowledgeFiltersProps) {
+export default function KnowledgeFilters({ filters, onChange, searchLabel = "Search knowledge" }: KnowledgeFiltersProps) {
   const id = useId();
   const set = <K extends keyof KnowledgeListFilters>(key: K, value: KnowledgeListFilters[K]) =>
     onChange({ ...filters, [key]: value });
   return (
     <form role="search" aria-label="Filter knowledge" onSubmit={(event) => event.preventDefault()} className="space-y-2">
       <div>
-        <label htmlFor={`${id}-q`} className="sr-only">Search knowledge</label>
+        <label htmlFor={`${id}-q`} className="sr-only">{searchLabel}</label>
         <input
           id={`${id}-q`}
           type="search"

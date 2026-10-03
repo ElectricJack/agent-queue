@@ -31,27 +31,15 @@ async def lexical_search_on(
     limit=25,
     cursor=None,
 ):
-    if (
-        type(limit) is not int
-        or not 1 <= limit <= 100
-        or not isinstance(query, str)
-        or len(query.encode()) > 4096
-        or type(include_retired) is not bool
-        or type(include_disputed) is not bool
-        or (
-            category is not None
-            and category
-            not in {"fact", "decision", "policy", "procedure", "incident", "reference", "note"}
-        )
-    ):
-        raise RecordError("record.invalid_input", "Invalid search bounds or filters")
-    if lifecycle not in (None, "active", "retired") or verification not in (
-        None,
-        "unverified",
-        "verified",
-        "disputed",
-    ):
-        raise RecordError("record.invalid_input", "Invalid lifecycle or verification")
+    validate_search_bounds(
+        query=query,
+        category=category,
+        lifecycle=lifecycle,
+        verification=verification,
+        include_retired=include_retired,
+        include_disputed=include_disputed,
+        limit=limit,
+    )
     from src.knowledge.sharing import visible_scope
 
     scope = access.scope_key
@@ -210,3 +198,29 @@ async def lexical_search_on(
         )
         items.append(item)
     return dict(success=True, outcome="read", items=items, next_cursor=next_cursor)
+
+
+def validate_search_bounds(
+    *, query, category, lifecycle, verification, include_retired, include_disputed, limit
+):
+    if (
+        type(limit) is not int
+        or not 1 <= limit <= 100
+        or not isinstance(query, str)
+        or len(query.encode()) > 4096
+        or type(include_retired) is not bool
+        or type(include_disputed) is not bool
+        or (
+            category is not None
+            and category
+            not in {"fact", "decision", "policy", "procedure", "incident", "reference", "note"}
+        )
+    ):
+        raise RecordError("record.invalid_input", "Invalid search bounds or filters")
+    if lifecycle not in (None, "active", "retired") or verification not in (
+        None,
+        "unverified",
+        "verified",
+        "disputed",
+    ):
+        raise RecordError("record.invalid_input", "Invalid lifecycle or verification")

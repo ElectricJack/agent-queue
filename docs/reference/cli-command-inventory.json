@@ -10329,22 +10329,29 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--global-scope",
+          "--kind",
           "--query",
           "--category",
+          "--lifecycle",
+          "--verification",
           "--include-retired",
           "--include-disputed",
           "--limit",
           "--cursor",
-          "--global-scope",
-          "--lifecycle",
-          "--verification",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--project-id",
+          "--category",
+          "--lifecycle",
+          "--verification",
+          "--cursor"
+        ]
       }
     },
     {
@@ -10373,15 +10380,19 @@
         ],
         "optional": [
           "--project-id",
-          "--revision-id",
           "--global-scope",
+          "--revision-id",
+          "--include-edges",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--project-id",
+          "--revision-id"
+        ]
       }
     },
     {
