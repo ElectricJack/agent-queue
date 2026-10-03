@@ -14,6 +14,7 @@ import json
 import re
 import tempfile
 from collections import Counter
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from sqlalchemy import cast, select, union
@@ -26,6 +27,7 @@ from src.database.tables import (
     task_completion_records,
     task_metadata,
     tasks,
+    sessions,
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.provenance import (
@@ -35,6 +37,7 @@ from src.integration.provenance import (
     GitProvenance,
     legacy_repair_source,
 )
+from src.integration.delivery_truth import legacy_completion_id, load_delivery_requests
 from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
 
 # The retained journal is read in keyset chunks; only the rows naming a page's
@@ -55,7 +58,9 @@ class ProvenanceMigration:
         self.db, self.git = db, git
 
     async def run(self, project_id: str, *, apply: bool = False, limit: int = 500, offset: int = 0,
-                  task_id: str | None = None, source: str | None = None):
+                  task_id: str | None = None, source: str | None = None,
+                  no_artifact: bool = False, reason: str | None = None,
+                  operator_id: str = "local"):
         """Inventory one page of completion generations, or only a held task's sources.
 
         *task_id* scopes the run to the generations that task's close needs: the
@@ -74,6 +79,11 @@ class ProvenanceMigration:
         Git can verify (no reported commit, no ``completion_sources``). It binds
         only that generation of a COMPLETED task without a repair contract,
         and never overrides a source the generation's own evidence names.
+        A missing descriptive completion row requires *reason* and uses the
+        shared evaluator's current/legacy generation identity. *no_artifact*
+        instead declares artifact-free work on a reason. Neither creates a
+        worker completion row; applies fence the generation and audit the
+        operator's decision before releasing its task lock.
         """
         if type(apply) is not bool:
             raise ValueError("apply must be an explicit boolean")
@@ -83,6 +93,10 @@ class ProvenanceMigration:
             raise ValueError("task_id must name one task")
         if source is not None and (task_id is None or not is_valid_git_oid(source)):
             raise ValueError("an attested source needs --task-id and a full lowercase Git OID")
+        if type(no_artifact) is not bool or no_artifact and (
+            source is not None or task_id is None or not (reason or "").strip()
+        ):
+            raise ValueError("--no-artifact requires --task-id and a reason, without --source")
         project = await self.db.get_project(project_id)
         if project is None or project.hierarchical_integration_mode != "development":
             raise ValueError("migration requires a development project")
@@ -125,7 +139,9 @@ class ProvenanceMigration:
             else:
                 more = False
                 rows, held, unheld = await self._held_task_rows(
-                    conn, project_id, task_id, attested=source is not None)
+                    conn, project_id, task_id, attested=source is not None or no_artifact,
+                    repository_id=repo.id, target_ref="refs/heads/" + repo.default_branch,
+                    reason=reason)
             page = {row["task_id"] for row in rows}
             history = await self._history(conn, project_id, repo.id, page)
             operations = await self._operations(conn, project_id, history)
@@ -144,12 +160,24 @@ class ProvenanceMigration:
             while done < len(rows) and (not done or loop.time() < deadline):
                 batch = rows[done:done + BIND_BATCH]
                 done += len(batch)
-                for entry, binding, reason in await self._bind(
-                    store, batch, identities, history, held, project_id, repo.id, apply, source
-                ):
-                    if reason is not None:
-                        ambiguous.append({**entry, "reason": reason})
-                        fallback.append({**entry, "reason": reason})
+                async with self._attestation_guard(batch, repo, apply=apply) as guard:
+                    results = await self._bind(
+                        store, batch, identities, history, held, project_id, repo.id, apply,
+                        source, no_artifact=no_artifact, anchor=target,
+                    )
+                    if guard is not None:
+                        await self.db.log_event(
+                            "development.provenance_attested", project_id=project_id,
+                            task_id=task_id, conn=guard,
+                            payload=json.dumps({"operator_id": operator_id, "reason": reason,
+                                                "source_oid": source, "artifact": not no_artifact,
+                                                "results": [entry | {"error": error}
+                                                            for entry, _, error in results]}),
+                        )
+                for entry, binding, error in results:
+                    if error is not None:
+                        ambiguous.append({**entry, "reason": error})
+                        fallback.append({**entry, "reason": error})
                         continue
                     bindings[entry["generation"]] = binding
                     inventory.append(entry)
@@ -203,13 +231,13 @@ class ProvenanceMigration:
                                     if more and task_id is None else None)}
 
     async def _bind(self, store, rows, identities, history, held, project_id, repository_id,
-                    apply, attested=None):
+                    apply, attested=None, *, no_artifact=False, anchor=None):
         """Bind one batch of generations; an apply publishes its new refs in one transfer.
 
         Returns ``(entry, binding, reason)`` per row, in order; *reason* is set
         when the generation stays unbound, including when its write failed.
         """
-        results, writes = [], []
+        results, writes, aliases = [], [], {}
         for row in rows:
             source_task = row["task_id"]
             entry = {"task_id": source_task, "generation": row["id"]}
@@ -221,18 +249,50 @@ class ProvenanceMigration:
                 identity = CompletionIdentity(project_id, repository_id, source_task, row["id"])
                 existing = await store.read_completion(identity)
                 try:
-                    source = await self._source(
-                        store, row, history, project_id, held.get(source_task), attested)
+                    if no_artifact:
+                        if json.loads(row["commits"] or "[]") or any(
+                            member.get("task_id") == source_task and member.get("source_sha")
+                            for delivery in history for member in (
+                                (delivery["manifest"] or []) + [proof for proof in
+                                    (delivery["evidence"] or {}).get("completion_sources", [])
+                                    if proof.get("completion_id") == row["id"]]
+                            )
+                        ):
+                            raise ValueError("no-artifact attestation conflicts with recorded source")
+                        source = existing["source_oid"] if existing else await store.exact(anchor)
+                    else:
+                        source = await self._source(
+                            store, row, history, project_id, held.get(source_task), attested)
                 except (ValueError, KeyError, TypeError, GitError):
                     # A refused attestation is reported, never replaced.
-                    if existing is None or attested:
+                    if existing is None or attested or no_artifact:
                         raise
                     # Retained already (a held-task run or a close); Git
                     # is the authority once the legacy locator is spent.
                     source = existing["source_oid"]
                 if existing and existing["source_oid"] != source:
                     raise ValueError("git provenance conflicts with the legacy binding")
+                if existing and (attested or no_artifact) and (
+                    existing["artifact"] != (not no_artifact)
+                ):
+                    raise ValueError("attestation conflicts with the retained artifact declaration")
                 binding = CompletedSource(identity, source)
+                alias = None
+                if row.get("missing_completion_row"):
+                    # Archiving drops current-generation metadata, but retains
+                    # the task version. Keep exactly the same attestation under
+                    # that immutable locator, without inventing a close row.
+                    alias_id = CompletionIdentity(project_id, repository_id, source_task,
+                                                  legacy_completion_id(row["attestation_request"]))
+                    if alias_id != identity:
+                        alias_record = await store.read_completion(alias_id)
+                        if alias_record and (
+                            alias_record["source_oid"] != source
+                            or alias_record["artifact"] != (not no_artifact)
+                        ):
+                            raise ValueError("attestation conflicts with retained legacy generation")
+                        if alias_record is None:
+                            alias = CompletedSource(alias_id, source)
             except (ValueError, KeyError, TypeError, GitError) as exc:
                 results.append((entry, None, str(exc)))
                 continue
@@ -240,13 +300,24 @@ class ProvenanceMigration:
             # source evidence cannot be interpreted as code-free.
             if apply and existing is None:
                 writes.append(binding)
+            if alias is not None:
+                aliases[identity] = alias.identity
+                if apply:
+                    writes.append(alias)
             results.append(({**entry, "source_oid": source, "archived": task.archived,
-                             "action": "present" if existing else "would_write",
-                             **({"authority": "operator"} if attested else {})}, binding, None))
-        written = await store.write_completions(writes) if writes else {}
+                             "action": "present" if existing and alias is None else "would_write",
+                             **({"legacy_generation": alias.identity.generation}
+                                if alias is not None else {}),
+                             **({"authority": "operator", "artifact": not no_artifact}
+                                if attested or no_artifact else {})}, binding, None))
+        written = await store.write_completions(writes, artifact=not no_artifact) if writes else {}
         settled = []
         for entry, binding, reason in results:
             outcome = written.get(binding.identity) if binding is not None else None
+            if binding is not None and binding.identity in aliases:
+                alias_outcome = written.get(aliases[binding.identity])
+                if not isinstance(outcome, Exception) and alias_outcome is not None:
+                    outcome = alias_outcome
             if isinstance(outcome, Exception):
                 entry = {"task_id": entry["task_id"], "generation": entry["generation"]}
                 binding, reason = None, str(outcome) or type(outcome).__name__
@@ -276,7 +347,8 @@ class ProvenanceMigration:
                  "operation_id": operation, "action": "retained"}
                 for operation in sorted(retained)]
 
-    async def _held_task_rows(self, conn, project_id, task_id, *, attested=False):
+    async def _held_task_rows(self, conn, project_id, task_id, *, attested=False,
+                              repository_id=None, target_ref=None, reason=None):
         """Current source generations a held task's close needs, keyed by contract.
 
         Mirrors the close: each repair-contract source uses its latest
@@ -299,10 +371,24 @@ class ProvenanceMigration:
                 task_completion_records.c.task_id == task_id,
             ).order_by(task_completion_records.c.completed_at.desc(),
                        task_completion_records.c.id.desc()).limit(1))).mappings().first()
-            if latest is None or latest["outcome"] != "pass":
+            request = (await load_delivery_requests(
+                self.db, [task_id], repository_id=repository_id, target_ref=target_ref, conn=conn,
+            ))[task_id]
+            if request.requires_parent_completion:
+                raise ValueError("current verified parent completion is required; "
+                                 "parent verification cannot be replaced by a leaf attestation")
+            if latest is not None and latest["id"] == request.completion_id and (
+                latest["outcome"] != "pass"
+            ):
                 return [], {}, [{"task_id": task_id, "generation": latest and latest["id"],
                                  "reason": "current completion is missing or did not pass"}]
-            return [latest], {}, []
+            if latest is None or latest["id"] != request.completion_id:
+                if not (reason or "").strip():
+                    raise ValueError("attesting a missing completion row requires a reason")
+                latest = {"id": request.completion_id, "task_id": task_id,
+                          "commits": "[]", "completed_at": request.task_version,
+                          "missing_completion_row": True}
+            return [{**latest, "attestation_request": request}], {}, []
         if not contract:
             rows = (await conn.execute(select(task_completion_records).where(
                 task_completion_records.c.task_id == task_id,
@@ -334,6 +420,41 @@ class ProvenanceMigration:
             rows.append(latest)
             held[member["task_id"]] = (task_id, member)
         return rows, held, unheld
+
+    @asynccontextmanager
+    async def _attestation_guard(self, rows, repo, *, apply):
+        """Fence operator writes to a stopped, unchanged completed generation."""
+        observed = {row["task_id"]: row["attestation_request"] for row in rows
+                    if "attestation_request" in row}
+        if not apply or not observed:
+            yield None
+            return
+        async with self.db.immediate() as conn:
+            for table in (tasks, archived_tasks):
+                locked = (await conn.execute(select(table).where(
+                    table.c.id.in_(observed),
+                ).with_for_update())).mappings().all()
+                if table is tasks and any(row["assigned_agent_id"] for row in locked):
+                    raise ValueError("attested task still has a worker assignment")
+            if await conn.scalar(select(sessions.c.id).where(
+                sessions.c.state != "stopped",
+                sessions.c.task_id.in_(observed),
+            ).limit(1)):
+                raise ValueError("attested task still has a live session")
+            if await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id.in_(observed),
+                task_metadata.c.key == "development_repair_sources",
+                cast(task_metadata.c.value, JSONB) != cast("null", JSONB),
+                cast(task_metadata.c.value, JSONB) != cast("[]", JSONB),
+            ).limit(1)):
+                raise ValueError("attested task acquired a repair contract; observe it again")
+            current = await load_delivery_requests(
+                self.db, observed, repository_id=repo.id,
+                target_ref="refs/heads/" + repo.default_branch, conn=conn,
+            )
+            if current != observed:
+                raise ValueError("attested completion changed; observe it again")
+            yield conn
 
     async def _history(self, conn, project_id, repository_id, task_ids):
         """Keyset-page the retained legacy journal, keeping rows naming *task_ids*.

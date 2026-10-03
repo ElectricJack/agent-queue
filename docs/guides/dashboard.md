@@ -196,12 +196,50 @@ flowchart LR
 | **Focus view** — `/focus` | A phone-first page: live sessions (watch only until **Type**), provider quota and the task list; task, session and report pages under `/focus/`. See [from a phone](#from-a-phone). | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx), [FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx) |
 | **Task files** — `/tasks/:taskId/files` | Preview a task's worktree files and changes. | [TaskFiles.tsx](../../dashboard/src/pages/TaskFiles.tsx), [TaskFilesPanel.tsx](../../dashboard/src/components/TaskFilesPanel.tsx) |
 | **Playbooks** — `/settings/playbooks` | Inspect and curate the active V2 playbook definitions; open a playbook detail or graph view when linked from the list. | [Playbooks.tsx](../../dashboard/src/pages/system/Playbooks.tsx), [PlaybookDetail.tsx](../../dashboard/src/pages/PlaybookDetail.tsx) |
+| **Host shell** — `/host-shell` | An interactive login shell on the AQ machine for remote management, not an agent. Off unless enabled; see [host shell](#host-shell). | [HostShell.tsx](../../dashboard/src/pages/host-shell/HostShell.tsx) |
 | **Metrics** — `/metrics` | Read fleet rate, capacity, and provider-usage charts. Each provider's card starts with its availability: a state pill, the reason, since when, the expected recovery, any operator override, the held and re-routed counts, and *Disable for…* / *Recheck* / *Clear override*. | [Metrics.tsx](../../dashboard/src/pages/metrics/Metrics.tsx), [ProviderAvailabilityHeader.tsx](../../dashboard/src/pages/metrics/ProviderAvailabilityHeader.tsx) |
 | **Provider banner** — every page | Shown while any provider is unavailable (out of usage, logged out, failing or disabled), with what the outage moved and held and a link to that provider's card. | [ProviderAvailabilityBanner.tsx](../../dashboard/src/shell/ProviderAvailabilityBanner.tsx) |
 | **Settings** — `/settings/*` | Configure profiles, intelligence classes, project roots, messaging, and system config. | [SettingsLayout.tsx](../../dashboard/src/pages/settings/SettingsLayout.tsx), [SettingsSidebar.tsx](../../dashboard/src/components/nav/SettingsSidebar.tsx) |
 | **Activity drawer** and contextual panes | See recent dashboard events/gates or task-, session-, file-, and playbook-specific tools without leaving the current route. | [ActivityDrawer.tsx](../../dashboard/src/shell/ActivityDrawer.tsx), [panes/registry.ts](../../dashboard/src/panes/registry.ts) |
 
 In Settings → Intelligence Classes, **Delete** confirms the class by name. The daemon refuses deletion while an active agent, an agent-type profile, or a non-terminal task references it and reports each blocker with repointing guidance. Successful deletion renames the vault file to `.md.retired` and updates the live registry. Global administrators can use `aq system delete-intelligence-class --class-id <id>` for the same operation; `--expected-revision` rejects a stale selection.
+
+## Host shell
+
+**Host shell** in the left rail opens a plain login shell (`$SHELL -l` in `$HOME`) on
+the machine running AQ. It is not an agent: no task, no `sessions` row. Each shell is a
+tmux session `aq-host-shell-<n>` on the daemon's tmux socket, so it survives page reloads
+and is reattached from the page's tabs; **Close shell** kills it. The terminal is the
+same `/ws/terminal/` stream agent terminals use.
+
+It is remote code execution by design, so it is **off by default**:
+
+```yaml
+dashboard:
+  host_shell:
+    enabled: true
+    max_shells: 4   # 1-32
+```
+
+The flag is read per request; no restart is needed.
+
+- **Who may use it.** Only the local operator: a loopback peer with no bearer token, on a
+  loopback Host or through the dashboard server's operator verdict. Any bearer token is
+  refused, so workers and the supervisor can never open, attach to or type into a host
+  shell, and neither can a non-operator dashboard viewer or a DNS-rebound Host. A
+  daemon with `api_auth.require_session_token: true` refuses host shells too.
+- **Audit.** Every open and close is logged (`aq.audit.host_shell`) and recorded as a
+  `host_shell.opened` / `host_shell.closed` event with the caller's identity.
+- **Environment.** The shell starts from `env -i` with only `HOME`, `USER`, `LOGNAME`,
+  `PATH`, locale and `TZ`, so no `AQ_*` agent or session token, DSN or daemon secret
+  reaches it; tmux global variables are also removed for the session's later windows.
+- **Not counted anywhere.** The `aq-host-shell-` prefix is outside the `s-`/`n-`/`p-`
+  prefixes session adoption, the reaper, the stall sweep, pool counts and the agent and
+  session lists read, so a host shell never shows up in them.
+
+API: `GET /api/host-shell` (list), `POST /api/host-shell` (open),
+`POST /api/host-shell/{name}/close` ([src/api/host_shell.py](../../src/api/host_shell.py),
+[src/sessions/host_shell.py](../../src/sessions/host_shell.py)).
 
 ## State ownership and live updates
 

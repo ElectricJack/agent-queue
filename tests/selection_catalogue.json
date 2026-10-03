@@ -57,6 +57,7 @@
         "tests/test_reviewer_api_scope.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_target_scope.py",
         "tests/test_triage_api_scope.py",
         "tests/test_worker_git_scope.py"
       ]
@@ -220,6 +221,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_scenarios.py",
         "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
@@ -542,6 +544,7 @@
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
+        "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
@@ -1255,6 +1258,7 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_host_shell.py",
         "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
@@ -1393,7 +1397,7 @@
       ]
     }
   },
-  "digest": "sha256:9717b030390d120dc0631e817671688e5370ce1f8afafe7c453d917b5028c28f",
+  "digest": "sha256:44d255ae6cc34af990f75ba42ee51067d8dd72f8ff110a470d9e8163f65a00ab",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4863,6 +4867,38 @@
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
     },
+    "tests/test_development_scenarios.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.development_runtime",
+        "src.integration.engine",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.ownership",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.jobs.result",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 phase-3 Development acceptance over real Git and PostgreSQL."
+    },
     "tests/test_development_subjects.py": {
       "areas": [
         "development-delivery"
@@ -5546,6 +5582,9 @@
         "src.api.models.task",
         "src.commands.handler",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.integration.epic_delivery",
         "src.models"
       ],
@@ -6166,11 +6205,13 @@
         "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -7400,6 +7441,29 @@
         "parametrize"
       ],
       "summary": "Releasing the delegates of an integration operation that has ended."
+    },
+    "tests/test_integration_delivered_parent_adoption.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.integration.delivered_parent_adoption",
+        "src.integration.delivery_truth",
+        "src.integration.epic_delivery",
+        "src.integration.parent_subjects",
+        "src.integration.provenance",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git recovery for parents whose children reached main by other routes."
     },
     "tests/test_integration_eject.py": {
       "areas": [
@@ -10066,6 +10130,7 @@
         "src.database",
         "src.database.engine",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
@@ -14378,6 +14443,27 @@
       "markers": [],
       "summary": "Tests for path= validation in _cmd_read_prompt / _cmd_render_prompt."
     },
+    "tests/test_target_scope.py": {
+      "areas": [
+        "api-scope"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Per-project elevated tokens may run target-keyed commands (azure-journey-72)."
+    },
     "tests/test_task_activity.py": {
       "areas": [
         "task-activity"
@@ -14925,6 +15011,24 @@
         "parametrize"
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
+    },
+    "tests/test_terminal_host_shell.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.terminal_stream",
+        "src.config",
+        "src.sessions",
+        "src.sessions.host_shell",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
     },
     "tests/test_terminal_input.py": {
       "areas": [

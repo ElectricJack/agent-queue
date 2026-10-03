@@ -19811,6 +19811,79 @@
           }
         }
       }
+    },
+    "/api/host-shell": {
+      "get": {
+        "summary": "Host Shell List",
+        "operationId": "host_shell_list",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Host Shell Open",
+        "operationId": "host_shell_open",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellOpenResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/host-shell/{name}/close": {
+      "post": {
+        "summary": "Host Shell Close",
+        "operationId": "host_shell_close",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -29288,7 +29361,7 @@
           "display_status"
         ],
         "title": "EpicDeliveryStatus",
-        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with a receipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
+        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with evidence for the epic's *current* completion:\ngit's own request-scoped answer that it is on the project's target, or a\nreceipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
       },
       "EscalationAction": {
         "properties": {
@@ -36412,6 +36485,80 @@
         "type": "object",
         "title": "HostPerf",
         "description": "Slow-tier HostSampler snapshot, including its cost and staleness."
+      },
+      "HostShellCloseResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "closed"
+        ],
+        "title": "HostShellCloseResponse"
+      },
+      "HostShellInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "attached_clients": {
+            "type": "integer",
+            "title": "Attached Clients"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "created_at",
+          "attached_clients"
+        ],
+        "title": "HostShellInfo"
+      },
+      "HostShellListResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "shells": {
+            "items": {
+              "$ref": "#/components/schemas/HostShellInfo"
+            },
+            "type": "array",
+            "title": "Shells"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "shells"
+        ],
+        "title": "HostShellListResponse"
+      },
+      "HostShellOpenResponse": {
+        "properties": {
+          "shell": {
+            "$ref": "#/components/schemas/HostShellInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "shell"
+        ],
+        "title": "HostShellOpenResponse"
       },
       "IdempotencyDTO": {
         "properties": {

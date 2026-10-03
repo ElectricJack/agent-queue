@@ -1932,9 +1932,13 @@ class Orchestrator(
         )
         from src.integration.root_runtime import root_runtime_for
         from src.integration.parent_runtime import parent_runtime_for
+        from src.integration.development_runtime import development_runtime_for
 
         self.parent_owner_recovery = owner_recovery
         self.parent_subject_runtime = parent_runtime_for(self, parent_ci)
+        # Default off: None until a reconciler flag is on and a development
+        # project is adopted, so the old engine stays authoritative.
+        self.development_subject_runtime = development_runtime_for(self)
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -1968,6 +1972,7 @@ class Orchestrator(
             ).tick,
             subject_runtime=root_runtime_for(self),
             parent_subject_runtime=self.parent_subject_runtime,
+            development_subject_runtime=self.development_subject_runtime,
             source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
             item_timeout_seconds=self.config.integration.service_item_timeout_seconds,
             source_timeouts=self.config.integration.service_source_timeouts,

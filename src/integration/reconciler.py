@@ -8,6 +8,10 @@ A decision is committed before calling an adapter. Its result and due schedule
 commit together. An interrupted visit is never blindly repeated: the next pass
 records the ambiguity, advances the version and observes again. Remote-write
 recovery belongs to the observer and the existing fenced, idempotent adapters.
+
+The injected-call budget and the local commit budget are separate. A call that
+times out still has to land its retry schedule, so the commit that carries it is
+never cancelled by the remote budget that produced the timeout.
 """
 
 from __future__ import annotations
@@ -141,6 +145,11 @@ class IntegrationReconciler:
     Use ``tick(background=True)`` at a control-loop boundary: it returns while
     the single remote pass runs. ``tick()`` awaits that same pass for tests and
     manual reconciliation. Construction and ``start`` perform no engine transfer.
+
+    Two budgets, because they buy different things: ``call_timeout_seconds``
+    bounds the injected remote calls, whose cancellation the next due pass
+    repairs, while ``bookkeeping_timeout_seconds`` bounds the local commit that
+    makes a visit's outcome and schedule durable.
     """
 
     def __init__(
@@ -155,6 +164,7 @@ class IntegrationReconciler:
         page_size: int = 100,
         interval_seconds: float = 5.0,
         call_timeout_seconds: float = 30.0,
+        bookkeeping_timeout_seconds: float = 60.0,
         backoff_seconds: float = 5.0,
         backoff_ceiling_seconds: float = 300.0,
         shadow_interval_seconds: float = 60.0,
@@ -165,6 +175,7 @@ class IntegrationReconciler:
         timings = (
             interval_seconds,
             call_timeout_seconds,
+            bookkeeping_timeout_seconds,
             backoff_seconds,
             backoff_ceiling_seconds,
             shadow_interval_seconds,
@@ -180,6 +191,7 @@ class IntegrationReconciler:
         self._page_size = page_size
         self._interval = interval_seconds
         self._timeout = call_timeout_seconds
+        self._bookkeeping = bookkeeping_timeout_seconds
         self._backoff = backoff_seconds
         self._backoff_ceiling = backoff_ceiling_seconds
         self._shadow_interval = shadow_interval_seconds
@@ -236,6 +248,16 @@ class IntegrationReconciler:
 
     async def _bounded(self, operation: Awaitable[Any]) -> Any:
         return await asyncio.wait_for(operation, timeout=self._timeout)
+
+    async def _committed(self, operation: Awaitable[Any]) -> Any:
+        """Bound the local durable commit by its own budget, never the call one.
+
+        ``call_timeout_seconds`` governs injected work whose cancellation the
+        next pass repairs. The commit carries the outcome and the due schedule
+        that a timed-out call just produced; cancelling it on the remote budget
+        loses the retry and strands the subject in its pre-visit state.
+        """
+        return await asyncio.wait_for(operation, timeout=self._bookkeeping)
 
     def _eligible(self, subject: Subject, now: float) -> bool:
         due = subject.schedule.next_due_at
@@ -312,7 +334,7 @@ class IntegrationReconciler:
                     decision.primitive if decision else Primitive.OBSERVE_SUBJECT, reason
                 )
             transition = self._retry(subject, reason)
-        await self._bounded(self._finish(subject, decision, outcome, transition, started))
+        await self._committed(self._finish(subject, decision, outcome, transition, started))
 
     @staticmethod
     def _validate_decision(subject: Subject, facts: SubjectFacts, decision: Decision) -> None:
