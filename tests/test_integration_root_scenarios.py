@@ -1371,6 +1371,23 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     assert all(
         json.loads(row["payload"])["reason"] == "writer-unclaimed-after-budget" for row in events
     )
+    for event in events:
+        audit = json.loads(event["payload"])
+        decision = next(
+            row for row in journal
+            if row["entry_kind"] == "decision" and row["primitive"] == "eject"
+            and row["payload"]["decision"]["request"]["member_task_id"] == event["task_id"]
+        )
+        assert audit["operator_id"] == "service:root-reconciler"
+        assert audit["policy_decision"] == {
+            "subject_id": subject.id,
+            "subject_version": decision["subject_version"],
+            "rule": decision["rule"],
+            "policy_artifact_sha256": subject.policy.artifact_sha256,
+            "playbook_id": subject.policy.playbook_id,
+            "decision_seq": decision["seq"],
+            "facts_digest": decision["facts_digest"],
+        }
     await assert_main_held_only_exact_green(train)
     await assert_reconciler_only(train)
     # Ejection is not rejection: both members keep their branch, PR and review.
