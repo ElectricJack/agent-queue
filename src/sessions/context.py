@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 
 from src.sessions.transcripts.base import parse_iso_ts
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_TAIL_BYTES = 256 * 1024
 CONTEXT_MAX_AGE_SECONDS = 300
@@ -154,6 +157,57 @@ def unmeasured_harness_head(harness: str, cadence: int) -> tuple[str, str]:
             "compaction, not after. "
         ),
     )
+
+
+async def harness_progress(
+    session, *, base_dir: Path | None = None
+) -> tuple[str, float | None]:
+    """``(source, at)`` for this harness's own record of the conversation.
+
+    Independent of the terminal by construction, which is the whole point:
+    a person typing into a composer writes nothing here, while an agent
+    mid-turn writes on every message.  That is what lets a caller tell "no
+    draft is being typed" from "no draft is being typed *and nothing is
+    working*".
+
+    ``at`` is ``None`` whenever the harness keeps no such record AQ can
+    read, and that means **unknown, not stalled**:
+
+    * no reader for the harness -- ``opencode`` records its sessions in its
+      own store and AQ has no reader or session identity for it (neither
+      opencode harness declares ``session_id_flag``, so ``session_key`` is
+      null and there is nothing to scope a lookup to);
+    * a session key with no file behind it;
+    * a failed ``stat``.
+
+    A caller that may take a destructive action on the answer must treat
+    ``None`` as "cannot corroborate", never as "corroborated".
+
+    The reader is asked rather than
+    :func:`measures_context` short-circuiting the answer, so a harness that
+    gains a reader reports progress here without a second edit; the two
+    predicates describe the same set today
+    (:data:`MEASURED_HARNESSES` is exactly what ``resolve_reader`` covers).
+    """
+    from src.sessions.transcripts import resolve_reader
+
+    source = f"{session.harness}:none"
+
+    def read() -> tuple[str, float | None]:
+        reader = resolve_reader(session.harness, base_dir=base_dir)
+        if reader is None or not getattr(session, "session_key", None):
+            return source, None
+        path = reader.resolve_session(session)
+        if path is None:
+            return source, None
+        return f"{session.harness}:transcript", path.stat().st_mtime
+
+    try:
+        return await asyncio.to_thread(read)
+    except (OSError, ValueError, TypeError):
+        logger.debug("harness progress unavailable for %s", getattr(session, "id", session),
+                     exc_info=True)
+        return source, None
 
 
 def context_guidance(config, session=None, observation: dict | None = None) -> str:

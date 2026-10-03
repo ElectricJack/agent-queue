@@ -11,12 +11,16 @@ See docs/specs/implementation/session-runtime.md §3.6, §8, §9.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 
 import pytest
 
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
+from src.database.tables import task_branch_origins
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchOwnership
 from src.models import (
     Agent,
     AgentState,
@@ -28,9 +32,6 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from src.database.tables import task_branch_origins
-from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchOwnership
 from src.providers.availability import DEGRADED, EXHAUSTED
 from src.providers.availability_service import ProviderAvailabilityService
 from src.sessions import SessionProviderRegistry
@@ -38,8 +39,9 @@ from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
-from src.sessions.provider import SessionHandle, SessionSpec
+from src.sessions.provider import NudgeDeferred, NudgeReason, SessionHandle, SessionSpec
 from src.sessions.reconciler import (
+    _STALL_REPORT_INTERVAL_SECONDS,
     DRAIN_ACK_KEY,
     META_STALL_LAST_ACTION,
     META_STALL_NUDGES,
@@ -47,7 +49,6 @@ from src.sessions.reconciler import (
     stall_reminder,
 )
 from tests.db_fixtures import lease_dsn
-from src.config import DatabaseConfig
 
 NOW = 1_000_000.0
 
@@ -1386,6 +1387,367 @@ class TestStallLadder:
         )
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
+
+
+# ---------------------------------------------------------------------------
+# Stall ladder: an unreadable composer is not a human
+# ---------------------------------------------------------------------------
+
+
+def _fail_peek(provider) -> None:
+    """Take the provider's pane reading away, the way a lost pane does."""
+
+    async def peek(handle, lines=60, *, ansi=False):
+        raise RuntimeError("no live pane")
+
+    provider.peek = peek
+
+
+class TestUnreadableComposerLadder:
+    """R1: the ladder must climb on a composer AQ cannot read.
+
+    ``vivid-quest-44.3`` (2026-10-03) held its task for hours behind 116
+    identical ``NudgeDeferred`` refusals on a wedged OpenCode pane: the
+    ``delivered is None`` branch spent no rung, no backoff and emitted no
+    ``task.stalled``, so nothing ever escalated.
+
+    The answer to a refusal is three-valued (:class:`StalledDeferral`),
+    because "the composer is busy" is not one fact: a person's draft holds
+    the ladder, a *proven* stall spends a rung, and an unmeasurable one is
+    announced and never acted on.  The middle case is the one the review
+    that blocked the first cut refused to let us fudge: OpenCode has no
+    record AQ can read, so "unknown" must never be read as "dead".
+    """
+
+    async def _stalled(self, db, provider, idle=1000.0):
+        await _task(db)
+        row = await _session(
+            db, provider, started_at=NOW - 5000, last_activity=NOW - idle
+        )
+        provider.sessions[row.name].activity = NOW - idle
+        return row
+
+    @staticmethod
+    def _progress(source, at):
+        """A stand-in for ``harness_progress`` returning a fixed reading."""
+
+        async def read(row, *, base_dir=None):
+            return source, at
+
+        return read
+
+    @staticmethod
+    def _refuse(provider, row, kind, text=""):
+        provider.script_composer_refusal(
+            row.name, f"terminal {row.name!r} has a draft or its input is unknown",
+            text, kind=kind,
+        )
+
+    async def test_repeated_unreadable_refusals_spend_the_rung_and_announce_it(
+        self, db, provider, reconciler, bus, caplog, tmp_path, monkeypatch
+    ):
+        import logging
+
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, NudgeReason.UNREADABLE)
+        # Evidence from outside the terminal: a transcript that stopped
+        # before the lease expired. One tick of proof, three rungs.
+        monkeypatch.setattr(
+            "src.sessions.reconciler.harness_progress",
+            self._progress("claude:transcript", NOW - 5000),
+        )
+
+        for attempt, tick in enumerate((NOW, NOW + 400, NOW + 800), start=1):
+            await reconciler.tick(now=tick)
+            # A rung per pass, once the backoff has elapsed, and nothing typed.
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) == str(attempt)
+            assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) == str(tick)
+
+        assert provider.sent_nudges == []
+        assert "task.nudged" not in bus.types()
+        assert bus.types().count("task.stalled") == 1
+        payload = bus.payload("task.stalled")
+        assert payload["deferred_reason"] == "unreadable"
+        assert payload["session_id"] == "s1"
+        # Silence is what made this invisible for four hours.
+        assert any(
+            rec.levelno == logging.WARNING and "unreadable" in rec.getMessage()
+            and row.name in rec.getMessage()
+            for rec in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+        # Still a session on its task: a rung is spent, nothing is killed.
+        assert (await db.get_session("s1")).state == "running"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_an_unmeasurable_stall_is_reported_but_never_spends_a_rung(
+        self, db, provider, reconciler, bus
+    ):
+        """OpenCode keeps no record AQ can read, so unknown is not stalled.
+
+        This is the case the blocking review (supervisor, 2026-10-03) would
+        not accept: releasing a claim on "cannot inspect input" alone is a
+        destructive action resting on an absence nobody measured.  The stall
+        is announced instead -- that was the part that was actually missing,
+        zero ``task.stalled`` events for four hours -- and nothing else moves.
+        """
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, NudgeReason.UNREADABLE)
+        # Not even a pane reading: the peek fails, so the announcement cannot
+        # quote a screen observation either. This must stay non-destructive
+        # for as long as it lasts.
+        _fail_peek(provider)
+
+        ticks = (NOW, NOW + 400, NOW + 800, NOW + 800 + _STALL_REPORT_INTERVAL_SECONDS)
+        for attempt, tick in enumerate(ticks, start=1):
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) is None
+            assert (await db.get_session("s1")).state == "running"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+            payload = bus.payload("task.stalled")
+            assert payload["deferred_reason"] == "unreadable"
+            assert payload["evidence"] == "unverified"
+            # Announced on the first pass, then rate-limited -- not repeated
+            # per tick, and not dropped for good either.
+            assert bus.types().count("task.stalled") == (2 if attempt == 4 else 1)
+        assert "task.nudged" not in bus.types()
+
+    async def test_a_long_tool_with_an_unchanged_composer_is_never_frozen(
+        self, db, provider, reconciler, bus
+    ):
+        """A running agent leaves the composer alone for minutes at a time.
+
+        This is the review's counter-example (supervisor, 2026-10-03): the
+        refusal describes the composer, which does not move while one long
+        tool runs, so anything reading only the composer calls that a frozen
+        screen.  Only the pane tail moves, so only the pane tail may be
+        quoted -- and even then it is quoted, never spent.
+        """
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, NudgeReason.STALE_FRAME)
+        session = provider.sessions[row.name]
+
+        # The composer refuses identically every time; the message area above
+        # it advances, which is what a working agent looks like.
+        async def refuse(handle_, text):
+            raise NudgeDeferred(
+                "terminal has a draft or its input is unknown",
+                session_name=handle_.name,
+                reason=NudgeReason.STALE_FRAME,
+            )
+
+        provider.nudge = refuse
+        ticks = (NOW, NOW + 800, NOW + 800 + _STALL_REPORT_INTERVAL_SECONDS)
+        for tick in ticks:
+            session.output.append(f"tool step for {tick}")
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert (await db.get_session("s1")).state == "running"
+        payload = bus.payload("task.stalled")
+        assert payload["evidence"] == "unverified"
+        assert payload.get("screen_unchanged_seconds") is None
+
+    async def test_an_unchanged_composer_over_a_frozen_pane_is_still_only_reported(
+        self, db, provider, reconciler, bus
+    ):
+        """The screen observation is quoted for a human and never spent.
+
+        This is the wedge from the report, and the honest ceiling without
+        scoped activity evidence: AQ says "the same thing has been on this
+        screen for N minutes" and asks a person, rather than releasing a
+        claim on a reading of a terminal.
+        """
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, NudgeReason.STALE_FRAME)
+        # A pane with something on it that then stops changing, which is the
+        # wedge: the refusal and the screen both hold still.
+        provider.sessions[row.name].output.append("Build · Qwen3.8 27B (local)")
+        ticks = (NOW, NOW + 800, NOW + 800 + _STALL_REPORT_INTERVAL_SECONDS)
+        for tick in ticks:
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert (await db.get_session("s1")).state == "running"
+
+        assert bus.types().count("task.stalled") == 2  # rate-limited, not silent
+        first, second = [payload for name, payload in bus.events if name == "task.stalled"]
+        assert first["evidence"] == "unverified" and "screen_unchanged_seconds" not in first
+        assert second["deferred_reason"] == "stale_frame"
+        # The second announcement quotes how long the screen has held still.
+        assert second["screen_unchanged_seconds"] >= _STALL_REPORT_INTERVAL_SECONDS
+        assert "task.nudged" not in bus.types()
+
+    async def test_a_corrobated_stall_still_ends_in_bounded_recovery(
+        self, db, provider, pool_reconciler, tmp_path, bus, monkeypatch
+    ):
+        """Where proof exists, the ordinary budget governs the recovery.
+
+        A pool holder behind an unreadable composer, with a transcript that
+        stopped before the lease: three rungs, then the pool termination that
+        returns the claim.  This is the escalation the ladder has always been
+        able to do, reached without typing a key.
+        """
+        rec = pool_reconciler
+        row = await _claimed_pool_session(
+            db, provider, tmp_path, last_activity=NOW - 1000
+        )
+        provider.sessions[row.name].activity = NOW - 1000
+        self._refuse(provider, row, NudgeReason.STALE_FRAME)
+        monkeypatch.setattr(
+            "src.sessions.reconciler.harness_progress",
+            self._progress("claude:transcript", NOW - 5000),
+        )
+
+        async def step(tick):
+            await rec._step_stall_ladder([await db.get_session(row.id)], tick)
+
+        for attempt, tick in ((1, NOW), (2, NOW + 400), (3, NOW + 800)):
+            await step(tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) == str(attempt)
+            assert (await db.get_session(row.id)).state == "running"
+
+        await step(NOW + 1200)
+        assert rec.test_orch.terminations == [(row.id, "stalled")]
+        current = await db.get_session(row.id)
+        assert current.state == "stopped"
+        # The claim goes back through the normal pool termination path, and
+        # the task is claimable again rather than held forever.
+        assert (await db.get_task("t1")).status is TaskStatus.READY
+        assert bus.types().count("task.nudged") == 0
+        assert bus.payload("task.stalled")["deferred_reason"] == "stale_frame"
+
+    async def test_a_stat_failure_is_unknown_and_not_stalled(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """A transcript AQ cannot stat is missing evidence, not a dead agent.
+
+        Same answer as a harness with no reader at all, and deliberately a
+        separate test: one is "there is nothing to read" and the other is
+        "reading failed", and neither is a measurement of the holder.
+        """
+
+        # resolve_path found nothing, or the stat failed: no reading either
+        # way. ``harness_progress`` says which, the ladder cannot tell, and
+        # neither is a measurement of the holder.
+        monkeypatch.setattr(
+            "src.sessions.reconciler.harness_progress",
+            self._progress("claude:transcript", None),
+        )
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, NudgeReason.UNREADABLE)
+        _fail_peek(provider)
+
+        for tick in (NOW, NOW + 400, NOW + 800):
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert (await db.get_session("s1")).state == "running"
+        assert bus.payload("task.stalled")["evidence"] == "unverified"
+
+    @pytest.mark.parametrize(
+        ("kind", "text"),
+        [
+            (NudgeReason.DRAFT, "my own half-typed draft"),
+            (NudgeReason.TERMINAL_BUSY, ""),
+            (NudgeReason.RECENT_INPUT, ""),
+        ],
+        ids=["draft", "attached-terminal", "recent-input"],
+    )
+    async def test_a_person_at_the_composer_never_advances_the_ladder(
+        self, db, provider, reconciler, bus, kind, text
+    ):
+        row = await self._stalled(db, provider)
+        self._refuse(provider, row, kind, text)
+        for tick in range(5):
+            await reconciler.tick(now=NOW + 400 * tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) is None
+        assert bus.types().count("task.stalled") == 0
+        assert (await db.get_session("s1")).state == "running"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_a_reasonless_refusal_stays_protective(self, db, provider, reconciler, bus):
+        """A provider that raises without a reason keeps today's behavior."""
+        await self._stalled(db, provider)
+
+        async def defer(handle_, text):
+            from src.sessions.provider import NudgeDeferred
+
+            raise NudgeDeferred("existing user draft")
+
+        provider.nudge = defer
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert "task.stalled" not in bus.types()
+
+    async def test_a_live_transcript_holds_the_ladder_even_when_unreadable(
+        self, db, provider, registry, config, bus, tmp_path
+    ):
+        """The corroboration is independent of the composer on purpose."""
+        rec = SessionReconciler(
+            db, config, registry, bus=bus, epoch="epoch-new",
+            transcript_base_dir=tmp_path,
+        )
+        row = await self._stalled(db, provider, idle=1000.0)
+        await db.update_session(row.id, session_key="sess-abc", work_dir="/wd")
+        transcript = tmp_path / ".claude" / "projects" / "-wd" / "sess-abc.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text('{"type": "assistant", "timestamp": "2026-10-03T00:00:00Z"}\n')
+        self._refuse(provider, row, NudgeReason.UNREADABLE)
+
+        # Written now: the agent is turning, whatever the pane looks like.
+        os.utime(transcript, (NOW - 5, NOW - 5))
+        await rec.tick(now=NOW)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert "task.stalled" not in bus.types()
+
+        # Written before the lease: the same refusal is now proof, not a draft.
+        os.utime(transcript, (NOW - 5000, NOW - 5000))
+        await rec.tick(now=NOW + 400)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+        assert bus.payload("task.stalled")["deferred_reason"] == "unreadable"
+
+    async def test_a_named_supervisor_is_never_on_this_ladder(
+        self, db, provider, reconciler, bus
+    ):
+        row = await _session(
+            db, provider, sid="n1", task_id=None, name="n-supervisor",
+            lifecycle="named", started_at=NOW - 5000, last_activity=NOW - 5000,
+        )
+        provider.sessions[row.name].activity = NOW - 5000
+        self._refuse(provider, row, NudgeReason.UNREADABLE)
+
+        await reconciler.tick(now=NOW)
+        assert provider.sent_nudges == []
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert bus.types() == []
+
+    async def test_a_waiting_holder_keeps_its_lease_behind_an_unreadable_composer(
+        self, db, provider, pool_reconciler, config, tmp_path, bus, monkeypatch
+    ):
+        monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: NOW)
+        row, _ = await _waiting_session(
+            db, provider, pool_reconciler, config, tmp_path, lifecycle="pool"
+        )
+        self._refuse(provider, row, NudgeReason.STALE_FRAME)
+
+        for tick in (NOW, NOW + 1800, NOW + 3600):
+            await pool_reconciler.tick(now=tick)
+            current = await db.get_session(row.id)
+            assert current.state == "running" and current.task_id == "t1"
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert pool_reconciler.test_orch.terminations == []
+        assert bus.types().count("task.stalled") == 0
+
+    async def test_a_ready_composer_still_gets_the_ordinary_nudge(
+        self, db, provider, reconciler, bus
+    ):
+        """The normal ladder rung is untouched by any of the above."""
+        await self._stalled(db, provider)
+        await reconciler.tick(now=NOW)
+        assert [text for _, text in provider.sent_nudges] == [stall_reminder("t1", 16)]
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+        assert bus.types().count("task.stalled") == 1
+        assert "deferred_reason" not in bus.payload("task.stalled")
+        assert bus.types().count("task.nudged") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2748,6 +3110,7 @@ async def _waiting_session(
     """Real wait commands, claim and workspace, with only the terminal faked."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from src.commands import CommandHandler
 
     await _task(db)
@@ -2817,6 +3180,7 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
     clock = NOW + 5
     if delivery == "idle_redraw":
         import json
+
         from src.sessions.transcripts.codex import CodexTranscriptReader
 
         transcript = tmp_path / "idle.jsonl"
@@ -2889,6 +3253,7 @@ async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(
     monkeypatch, caplog,
 ):
     from sqlalchemy import delete, insert
+
     from src.agent_waits import AgentWaitReconciler
     from src.database.tables import agent_waits, tasks
 
@@ -2960,6 +3325,7 @@ async def test_unrelated_wait_and_stale_epoch_cannot_exempt_a_stall(
     db, provider, reconciler, config, tmp_path, monkeypatch
 ):
     from sqlalchemy import update
+
     from src.database.tables import tasks
 
     row, wait = await _waiting_session(db, provider, reconciler, config, tmp_path)
@@ -3029,6 +3395,7 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
     import time
     import uuid
     from pathlib import Path
+
     from src.sessions.tmux import TmuxProvider
     from src.sessions.transcripts.codex import CodexTranscriptReader
     from tests.test_tmux_integration import STUB, _spec
@@ -3135,12 +3502,13 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path, monkeypatch):
     import shutil
     import time
     import uuid
-    from types import SimpleNamespace
     from pathlib import Path
+    from types import SimpleNamespace
+
+    from src.messages.delivery import MessageDeliveryEngine
     from src.sessions.harness_parser import parse_harness_markdown
     from src.sessions.tmux import TmuxProvider
     from src.sessions.transcripts import resolve_reader
-    from src.messages.delivery import MessageDeliveryEngine
 
     harness_id = os.environ.get("AQ_WAIT_REAL_HARNESS")
     if not harness_id:
