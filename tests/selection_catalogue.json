@@ -1365,7 +1365,7 @@
       ]
     }
   },
-  "digest": "sha256:251d3d590b810a045921c32628b2dae57f00860ce0ebf6b734bd6b941fa1edbb",
+  "digest": "sha256:dc7032c9402bb315c6a42d55bc1a3c988ad0dec2a10aaf769925ce735bbe6b21",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7740,10 +7740,15 @@
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.drain_owners",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
+        "src.integration.parent_repair_heads",
+        "src.integration.promotion",
+        "src.integration.repair",
         "src.integration.status",
         "src.models",
         "src.prime.sections",
@@ -9348,7 +9353,8 @@
       "imports": [
         "src.database.adapters.postgresql",
         "src.database.legacy_sqlite_import",
-        "src.database.tables"
+        "src.database.tables",
+        "src.records.schema"
       ],
       "markers": [
         "migration",

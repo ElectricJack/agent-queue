@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 495,
+    "leaf_commands": 496,
     "registration": {
       "generated": 321,
-      "handwritten": 174
+      "handwritten": 175
     },
     "ownership": {
-      "core": 456,
+      "core": 457,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 494
+      "supported": 495
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 321,
-      "registration": 160
+      "registration": 161
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 435
+      "untested": 436
     }
   },
   "commands": [
@@ -4455,6 +4455,44 @@
           "reservation_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration recover-parent-head",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_recover_parent_head",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "operation_id",
+          "--head"
+        ],
+        "optional": [
+          "--dry-run",
+          "--episode",
+          "--generation",
+          "--stage",
+          "--fence",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",
