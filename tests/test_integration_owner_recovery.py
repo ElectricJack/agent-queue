@@ -577,6 +577,7 @@ async def test_an_in_flight_task_whose_writer_stopped_goes_back_to_ready(env):
     "scenario",
     [
         "continue-preserved-tip",
+        "operator-drained",
         "held-incident",
         "ref-moved",
         "non-slot",
@@ -683,7 +684,7 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
         state="stopped",
         desired_state="stopped",
         ended_at=time.time(),
-        end_reason="productive_death",
+        end_reason="drained" if scenario == "operator-drained" else "productive_death",
     )
     await env.db.transition_task(
         "producer", TaskStatus.BLOCKED, force=True, context="session_not_live"

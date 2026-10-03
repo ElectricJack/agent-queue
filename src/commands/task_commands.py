@@ -4213,7 +4213,7 @@ class TaskCommandsMixin:
             and current.status == TaskStatus.BLOCKED
             and current.route_source == "override"
             and incident.get("reason") == "session_not_live"
-            and incident.get("end_reason") == "productive_death"
+            and incident.get("end_reason") in {"productive_death", "drained"}
             and not await self.db.get_task_meta(task_id, "slot_reset_failure")
         ):
             from src.commands.supervisor_authority import operator_or_supervisor
@@ -4314,7 +4314,7 @@ class TaskCommandsMixin:
                 and current is not None
                 and current.route_source == "override"
                 and incident.get("reason") == "session_not_live"
-                and incident.get("end_reason") == "productive_death"
+                and incident.get("end_reason") in {"productive_death", "drained"}
             )
             if operator_handoff:
                 from src.commands.supervisor_authority import operator_or_supervisor
