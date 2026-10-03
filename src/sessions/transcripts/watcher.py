@@ -5,7 +5,7 @@ For each live session with a resolvable transcript:
 * new entries → ``notify.task_message`` events (``stream_id`` is scoped to
   the session *and transcript entry*), so each completed agent turn gets its
   own Discord message,
-* assistant entries carrying ``usage`` → one ``record_token_usage`` row,
+* assistant usage observations → idempotent API-call counter increases,
 * in-turn tail → ``touch_session_activity`` + agent ``last_heartbeat`` so
   the stall ladder does not climb on a busy session.
 
@@ -16,8 +16,8 @@ existing ``session_logs`` command is the peek surface).
 State is kept in-process:
 
 * byte offsets per session (so the next tick reads only the new bytes),
-* seen assistant uuids (usage is idempotent per assistant entry, not per
-  line — a re-tick that re-reads a line must not double-charge tokens),
+* seen assistant UUIDs for harnesses that emit usage deltas per event;
+  Claude instead uses durable API-call counter maxima,
 * whether ``transcript_missing`` has already fired.
 
 That state is bounded by the number of live sessions and is discarded when
@@ -45,7 +45,7 @@ from pathlib import Path
 
 from src.providers.snapshot import ProviderUsageSnapshot
 from src.sessions.transcripts import resolve_reader
-from src.sessions.transcripts.base import TranscriptEntry
+from src.sessions.transcripts.base import TranscriptEntry, transcript_usage_key
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,8 @@ class SessionTrackingState:
     #: offset so a reader resuming exactly on a record boundary — a
     #: relaunched session adopting this same file — cannot charge it twice.
     last_charged_uuid: str | None = None
+    #: Legacy UUIDs seed pre-upgrade usage without altering historical rows.
+    legacy_usage_uuids: dict[str, set[str]] = field(default_factory=dict)
 
 
 class TranscriptWatcher:
@@ -174,12 +176,20 @@ class TranscriptWatcher:
             # file's, and the stored mark carries the only one that still
             # matters, the entry the offset now sits immediately after.
             uncheckpointed_adoption = await self._adopt_transcript(state, path)
+            if row.harness == "claude" and state.offset:
+                baselines = await reader.read_usage_baselines(path, state.offset)
+                state.legacy_usage_uuids = {key: set(ids) for key, ids in baselines.items()}
         state.last_path = path
         await self._learn_session_key(row, reader, path)
 
         previous_offset = state.offset
         entries, new_offset = await reader.read_new(path, previous_offset)
-        state.offset = new_offset
+        if row.harness == "claude":
+            for entry in entries:
+                if entry.type == "assistant" and entry.usage:
+                    state.legacy_usage_uuids.setdefault(
+                        entry.usage_call_id or entry.uuid, set()
+                    ).add(entry.uuid)
         if uncheckpointed_adoption:
             entries = self._skip_historical_adoption_entries(row, path, entries)
         if self.questions is not None:
@@ -195,23 +205,28 @@ class TranscriptWatcher:
                 # output/accounting/activity still consume this batch once.
                 logger.warning("question observation failed for %s", row.id, exc_info=True)
         if not entries:
+            state.offset = new_offset
             if new_offset != previous_offset:
                 await self._save_checkpoint(row, path, state)
             return
 
-        # Resolve the agent once per tick: usage rows FK to ``agents.id``,
-        # so an unknown agent silently drops the ledger row rather than
-        # aborting the whole ingest.
+        # Resolve attribution once per tick, falling back to the session ID
+        # when the task's assigned agent is no longer available.
         agent_id = await self._resolve_agent_id(row)
 
         for entry in entries:
             await self._emit_entry(row, entry)
             if entry.type != "assistant" or not (entry.usage or entry.rate_limits):
                 continue
-            if entry.uuid in state.charged_uuids:
+            if row.harness != "claude" and entry.uuid in state.charged_uuids:
                 continue
             if entry.usage and agent_id:
-                await self._record_usage(row, entry, agent_id=agent_id)
+                call_id = entry.usage_call_id or entry.uuid
+                await self._record_usage(
+                    row, entry, agent_id=agent_id, path=path,
+                    legacy_call_ids=sorted(state.legacy_usage_uuids.get(call_id, set())),
+                )
+                state.legacy_usage_uuids.pop(call_id, None)
             if entry.rate_limits:
                 # Deliberately not gated on ``agent_id``: a provider quota is
                 # an account-wide fact, not this agent's spend, and dropping
@@ -223,6 +238,7 @@ class TranscriptWatcher:
 
         # Before the activity write: the mark is what stops a relaunch from
         # replaying this batch, and it is worth more than a heartbeat.
+        state.offset = new_offset
         await self._save_checkpoint(row, path, state)
 
         # Activity: use the entry timestamps, not wall clock, so a busy
@@ -257,6 +273,7 @@ class TranscriptWatcher:
         state.question_offset = 0
         state.charged_uuids.clear()
         state.last_charged_uuid = None
+        state.legacy_usage_uuids.clear()
 
         getter = getattr(self.db, "get_transcript_checkpoint", None)
         if getter is None:
@@ -449,7 +466,8 @@ class TranscriptWatcher:
         return getattr(row, "id", None)
 
     async def _record_usage(
-        self, row, entry: TranscriptEntry, *, agent_id: str
+        self, row, entry: TranscriptEntry, *, agent_id: str,
+        path: Path, legacy_call_ids: list[str],
     ) -> None:
         usage = entry.usage or {}
         # Record the true, unmodified ``input_tokens`` from usage — do NOT
@@ -473,27 +491,42 @@ class TranscriptWatcher:
             attempt_id = None
             if row.task_id and hasattr(self.db, "get_open_task_session_attempt_id"):
                 attempt_id = await self.db.get_open_task_session_attempt_id(row.id, row.task_id)
-            await self.db.record_token_usage(
-                row.project_id,
-                agent_id,
-                row.task_id or "",
-                total,
-                model=entry.model,
-                model_source=entry.model_source,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-                session_id=row.id,
-                attempt_id=attempt_id,
-                call_id=entry.uuid or None,
-            )
+            if row.harness == "claude":
+                await self.db.record_transcript_usage(
+                    usage_key=transcript_usage_key(
+                        "claude", str(path),
+                        entry.usage_call_id or entry.uuid,
+                    ),
+                    project_id=row.project_id, agent_id=agent_id, task_id=row.task_id or "",
+                    session_id=row.id, attempt_id=attempt_id,
+                    model=entry.model, model_source=entry.model_source,
+                    counters={
+                        "input_tokens": input_tokens, "output_tokens": output_tokens,
+                        "cache_read_tokens": cache_read, "cache_write_tokens": cache_write,
+                    },
+                    legacy_call_ids=legacy_call_ids,
+                )
+            else:
+                await self.db.record_token_usage(
+                    row.project_id,
+                    agent_id,
+                    row.task_id or "",
+                    total,
+                    model=entry.model,
+                    model_source=entry.model_source,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
+                    session_id=row.id,
+                    attempt_id=attempt_id,
+                    call_id=entry.uuid or None,
+                )
         except Exception:
-            logger.debug(
-                "transcript watcher: record_token_usage failed for %s",
-                row.id,
-                exc_info=True,
-            )
+            if row.harness == "claude":
+                # Do not checkpoint bytes whose atomic accounting failed.
+                raise
+            logger.debug("transcript usage write failed for %s", row.id, exc_info=True)
 
     async def _record_provider_usage(self, entry: TranscriptEntry) -> None:
         """Store the quota reading a ``token_count`` line carried.
@@ -508,8 +541,7 @@ class TranscriptWatcher:
         :meth:`record_provider_usage` decide.  The snapshot type is the
         storage-facing :class:`src.providers.snapshot.ProviderUsageSnapshot`, which is
         what that method's own normaliser is written against.  Failures are logged and
-        swallowed for the same reason usage failures are: a transcript
-        ingest must not die over a metrics row.
+        swallowed so a quota observation cannot block billed token ingest.
         """
         try:
             block = entry.rate_limits or {}

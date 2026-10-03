@@ -191,6 +191,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Per-API-call transcript usage maxima shipped in revision 56.
+        "transcript_usage_calls",
     }
 )
 

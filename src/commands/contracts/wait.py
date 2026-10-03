@@ -40,8 +40,13 @@ class WaitRegisterArgs(WaitScopeArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
-class WaitGetArgs(WaitScopeArgs):
+class WaitPointerArgs(WaitScopeArgs):
     wait_id: str = Field(min_length=1)
+
+
+class WaitGetArgs(WaitPointerArgs):
+    consume: bool = False
+    claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
 class WaitListArgs(WaitScopeArgs):
@@ -49,7 +54,7 @@ class WaitListArgs(WaitScopeArgs):
     offset: int = Field(default=0, ge=0)
 
 
-class WaitCancelArgs(WaitGetArgs):
+class WaitCancelArgs(WaitPointerArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
@@ -66,7 +71,7 @@ class WaitListValue(CommandValue):
 def register_wait_contracts(registry):
     for name, args_model, result_model, effect in (
         ("wait_register", WaitRegisterArgs, WaitValue, SideEffectClass.CREATE),
-        ("wait_get", WaitGetArgs, WaitValue, SideEffectClass.READ),
+        ("wait_get", WaitGetArgs, WaitValue, SideEffectClass.COMPOSITE),
         ("wait_list", WaitListArgs, WaitListValue, SideEffectClass.READ),
         ("wait_cancel", WaitCancelArgs, WaitValue, SideEffectClass.RESOLVE),
     ):
@@ -115,7 +120,9 @@ def register_wait_contracts(registry):
                         title=name.replace("_", " ").title(),
                         summary={
                             "wait_register": "Register one bounded typed wait and end the turn.",
-                            "wait_get": "Read a durable wait and its bounded result pointer.",
+                            "wait_get": (
+                                "Read a durable wait, optionally consuming its notification."
+                            ),
                             "wait_list": "List wait history for the current task or supervisor project.",
                             "wait_cancel": "Cancel a current-claim wait and queue its result.",
                         }[name],

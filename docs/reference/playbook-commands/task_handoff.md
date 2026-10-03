@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/handoff.py`](../../../src/commands/contracts/handoff.py) |
-| Contract fingerprint | `sha256:438852b5c3be37d111c1fb3670808e6edd4b5541f7bf55888790ad8f9856b32c` |
+| Contract fingerprint | `sha256:6955dcbad2959c56b9ee212ba6c881edef5d4742688c628a36c69d794e871b31` |
 
 ## Parameters
 
@@ -35,9 +35,11 @@
 | `decisions` | `string[]` | no | — | — |
 | `do_not_repeat` | `string[]` | no | — | — |
 | `uncertainties` | `string[]` | no | — | — |
+| `constraints` | `string[]` | no | — | — |
+| `evidence` | `string[]` | no | — | — |
 | `idempotency_key` | `string \| null` | no | `null` | — |
 
-Redacted in receipts and explanations: `completed`, `decisions`, `detail`, `do_not_repeat`, `files`, `goal`, `next_step`, `subject`, `uncertainties`, `waiting_for`.
+Redacted in receipts and explanations: `completed`, `constraints`, `decisions`, `detail`, `do_not_repeat`, `evidence`, `files`, `goal`, `next_step`, `subject`, `uncertainties`, `waiting_for`.
 
 ## Result
 

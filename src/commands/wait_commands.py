@@ -6,7 +6,7 @@ import time
 
 from pydantic import ValidationError
 
-from src.agent_waits import WaitError, deadline_for, typed_match
+from src.agent_waits import WaitError, deadline_for, typed_match, wait_next_step
 from src.commands.principal import PrincipalKind, current_principal
 
 
@@ -101,22 +101,7 @@ class WaitCommandsMixin:
                 idempotency_key=values.idempotency_key,
                 now=now,
             )
-            if row["owner_kind"] == "supervisor" and row["state"] == "active":
-                return {
-                    "success": True,
-                    "wait": row,
-                    "next_step": "Subscription registered. Continue working; its result will be queued.",
-                }
-            return {
-                "success": True,
-                "wait": row,
-                "next_step": (
-                    "End this turn. Resume from the result pointer with "
-                    f"aq wait show {row['id']} --json. The claim, workspace and seat remain held."
-                )
-                if row["state"] == "active"
-                else f"Read aq wait show {row['id']} --json.",
-            }
+            return {"success": True, "wait": row, "next_step": wait_next_step(row)}
         except WaitError as exc:
             return _error(exc.code, exc)
         except (ValidationError, TypeError, ValueError) as exc:
@@ -124,15 +109,39 @@ class WaitCommandsMixin:
 
     async def _cmd_wait_get(self, args):
         try:
+            from src.commands.contracts.wait import WaitGetArgs
+
+            values = WaitGetArgs.model_validate(args)
             filters = await self._wait_read_filter(args)
-            row = await self.db.get_agent_wait(str(args.get("wait_id") or ""))
+            row = await self.db.get_agent_wait(values.wait_id)
             if row is None:
                 return _error("not_found", "wait not found")
             if any(value is not None and row[key] != value for key, value in filters.items()):
                 return _error("out_of_scope", "wait history belongs to another owner or project")
-            return {"success": True, "wait": row}
+            if values.consume:
+                # Global named supervisors derive the project from the scoped
+                # result, just as cancellation does. Reads never mutate history.
+                identity = await self._wait_identity(
+                    {**args, "project_id": row["project_id"]}, mutation=True
+                )
+                row = await self.db.consume_agent_wait(
+                    row["id"], identity=identity, now=time.time()
+                )
+            next_step = wait_next_step(row, consumed=values.consume)
+            if row["state"] == "active" and row["owner_kind"] == "task":
+                if not await self.db.blocking_wait_for(
+                    row["session_id"], row["claim_epoch"], time.time()
+                ):
+                    next_step = (
+                        "This active record has no current inactivity exemption. "
+                        "Check your claim and producer; daemon reconciliation may be pending. "
+                        "Do not treat historical registration as permission to keep waiting."
+                    )
+            return {"success": True, "wait": row, "next_step": next_step}
         except WaitError as exc:
             return _error(exc.code, exc)
+        except (ValidationError, TypeError, ValueError) as exc:
+            return _error("wait.invalid", exc)
 
     async def _cmd_wait_list(self, args):
         try:

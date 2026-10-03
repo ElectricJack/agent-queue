@@ -10,6 +10,8 @@ advisory lock and the re-selection a burst of applies makes on fresh load.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -21,7 +23,17 @@ from src.commands.routing_commands import NOT_ROUTER
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Project, Task, TaskStatus, TaskType
+from src.models import (
+    Agent,
+    AgentProfile,
+    Project,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+    TaskType,
+    Workspace,
+)
 from src.orchestrator import Orchestrator
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import granted_aq_commands
@@ -30,7 +42,7 @@ from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
-from tests.test_routing_planner import SHIPPED_POLICY
+from tests.test_routing_planner import SHIPPED_POLICY, routine_policy
 
 ROUTER_ID = "default-assignment-routing"
 CLASSES = {
@@ -146,6 +158,205 @@ async def test_plan_reads_the_live_catalog_and_writes_nothing(handler, orch):
     assert plan["policy_sha256"].startswith("sha256:")
     task = await orch.db.get_task("t")
     assert (task.profile_id, task.route_source) == (None, UNROUTED)
+
+
+def _context_profile(context, profile_id="standard-high-codex"):
+    return next(p for p in context["profiles"] if p["profile_id"] == profile_id)
+
+
+async def _session(db, session_id, **kw):
+    kw.setdefault("state", "running")
+    kw.setdefault("started_at", time.time())
+    await db.create_session(SessionRecord(
+        id=session_id, project_id="p", profile_id="standard-high-codex",
+        harness="codex", provider="fake", name=session_id, lifecycle="pool",
+        work_dir="/private/work", epoch="test", instance_token="secret-session-token", **kw,
+    ))
+
+
+async def _workspace(orch):
+    await orch.db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path="/private/repo",
+        source_type=RepoSourceType.CLONE, kind_id="project-repo",
+    ))
+
+
+@pytest.mark.parametrize("state,extra,bucket", [
+    ("running", {}, "idle"),
+    ("running", {"claim_phase": "preparing"}, "busy"),
+    ("starting", {}, "starting"),
+    ("draining", {}, "draining"),
+    ("running", {"desired_state": "stopped"}, "draining"),
+    ("running", {"started_at": 1}, "unresponsive"),
+])
+async def test_context_counts_supply_without_advertising_starting_or_draining_as_idle(
+    handler, orch, state, extra, bucket,
+):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await _workspace(orch)
+    await _session(orch.db, "s", state=state, **extra)
+    result = await _plan(handler, "t")
+    context = result["live_context"]
+    profile = _context_profile(context)
+    assert profile[bucket] == 1
+    assert sum(profile[k] for k in ("idle", "busy", "starting", "draining", "unresponsive")) == 1
+    assert profile["idle_claim_capacity"] == (1 if bucket == "idle" else 0)
+    assert profile["launch_headroom"] <= 1
+    assert context["observational"] is True
+    assert context["as_of"] >= context["collected_from"]
+    assert context["source"] == "routing_snapshot"
+    assert "secret-session-token" not in json.dumps(context)
+    assert "/private/" not in json.dumps(context)
+    assert "no reservations" in result["live_summary"]
+
+
+@pytest.mark.parametrize("constraint", ["profile", "project", "global", "workspace", "quarantine"])
+async def test_context_headroom_obeys_admission_constraints_and_routes_queued_work(
+    handler, orch, constraint,
+):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    if constraint != "workspace":
+        await _workspace(orch)
+    if constraint == "profile":
+        await _session(orch.db, "s1", claim_phase="active")
+        await _session(orch.db, "s2", claim_phase="preparing")
+    elif constraint == "project":
+        await orch.db.update_project("p", max_concurrent_agents=1)
+        await _session(orch.db, "s1", claim_phase="active")
+    elif constraint == "global":
+        orch.config.swarm.global_max_active = 1
+        await _session(orch.db, "s1", claim_phase="active")
+    elif constraint == "quarantine":
+        orch._quarantine_pool("p", "standard-high-codex", "secret captured stderr")
+    result = await _plan(handler, "t")
+    assert result["outcome"] == "planned"
+    profile = _context_profile(result["live_context"])
+    assert profile["launch_headroom"] == profile["effective_headroom"] == 0
+    assert "secret captured stderr" not in json.dumps(result["live_context"])
+
+
+async def test_local_idle_can_claim_at_project_cap_without_a_free_workspace(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await orch.db.update_project("p", max_concurrent_agents=1)
+    await _session(orch.db, "idle")
+    context = (await _plan(handler, "t"))["live_context"]
+    profile = _context_profile(context)
+    assert profile["launch_headroom"] == 0
+    assert profile["idle_claim_capacity"] == profile["effective_headroom"] == 1
+    # Another routed task consumes that same observation; it is not free twice.
+    await _create(orch.db, "queued", profile_id="standard-high-codex")
+    profile = _context_profile((await _plan(handler, "t"))["live_context"])
+    assert profile["routed_backlog"] == 1 and profile["effective_headroom"] == 0
+
+
+async def test_context_counts_pending_launch_once_and_subtracts_workspace_need(handler, orch):
+    from src.orchestrator.pools import PoolLaunch
+
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await _workspace(orch)
+    launch = PoolLaunch(project_id="p", profile_id="standard-high-codex", session_id="launch")
+    orch._pool_launches = {"launch": launch}
+    context = (await _plan(handler, "t"))["live_context"]
+    assert _context_profile(context)["starting"] == 1
+    assert context["project"]["workspace_capacity"] == orch._project_slot_cap(
+        await orch.db.get_project("p")
+    ) - 1
+    await _session(orch.db, "launch", state="starting")
+    context = (await _plan(handler, "t"))["live_context"]
+    assert _context_profile(context)["starting"] == 1
+    assert context["fleet"]["live_pool_workers"] == 1
+
+
+async def test_context_counts_task_worker_reservation_before_its_session_exists(handler, orch):
+    await orch.db.create_profile(AgentProfile(
+        id="push-worker", name="push", harness="codex", lifecycle="task",
+        default_class="standard-high",
+    ))
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await _create(orch.db, "reserved", profile_id="push-worker", status=TaskStatus.ASSIGNED)
+    await orch.db.create_agent(Agent(
+        id="reserved-agent", name="worker", profile_id="push-worker", current_task_id="reserved",
+    ))
+    context = (await _plan(handler, "t"))["live_context"]
+    profile = _context_profile(context, "push-worker")
+    assert profile["busy"] == 1 and profile["effective_headroom"] == 0
+    assert context["project"]["live_workers"] == 1
+    # Once durable, count it through the session, not again through the reservation.
+    await orch.db.create_session(SessionRecord(
+        id="push-session", project_id="p", profile_id="push-worker", harness="codex",
+        provider="fake", name="push", lifecycle="task", work_dir="/tmp/push", epoch="test",
+        instance_token="test", started_at=time.time(), state="starting",
+        agent_id="reserved-agent", task_id="reserved",
+    ))
+    context = (await _plan(handler, "t"))["live_context"]
+    profile = _context_profile(context, "push-worker")
+    assert profile["starting"] == 1 and profile["busy"] == 0
+    assert context["project"]["live_workers"] == 1
+
+
+async def test_pool_vault_requirement_does_not_advertise_a_missing_repo_seat(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await orch.db.add_task_workspace_requirements("t", [("vault", None)])
+    await orch.db.create_workspace(Workspace(
+        id="vault", project_id="p", workspace_path="/tmp/vault", kind_id="vault",
+        source_type=RepoSourceType.LINK,
+    ))
+    context = (await _plan(handler, "t"))["live_context"]
+    assert context["project"]["workspace_capacity"] == 0
+    assert _context_profile(context)["launch_headroom"] == 0
+
+
+async def test_context_preserves_quota_windows_and_unknown_stale_or_reset_readings(handler, orch):
+    from src.providers import ProviderUsageSnapshot
+
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    now = time.time()
+    for window, used, age, reset in [
+        ("5h", 20, 10, now + 100), ("weekly", 90, 20, now + 1000),
+        ("stale", 100, 20000, now + 1000), ("reset", 100, 20, now - 1),
+    ]:
+        await orch.db.record_provider_usage([ProviderUsageSnapshot(
+            provider="codex", window=window, used_percent=used, observed_at=now-age,
+            resets_at=reset, source="transcript", account_label="private-account",
+        )])
+    result = await _plan(handler, "t")
+    providers = {p["provider"]: p for p in result["live_context"]["providers"]}
+    windows = {q["window"]: q for q in providers["codex"]["quota"]}
+    assert windows["5h"]["used_percent"] == 20
+    assert windows["weekly"]["used_percent"] == 90
+    assert windows["stale"]["freshness"] == "stale"
+    assert windows["reset"]["freshness"] == "reset"
+    assert windows["5h"]["collector"] == "transcript"
+    assert windows["weekly"]["age_seconds"] >= 20
+    assert providers["claude"]["quota_status"] == "unknown"
+    assert providers["claude"]["quota"] == []
+    codex_score = next(s for s in result["scores"] if s["profile_id"] == "standard-high-codex")
+    assert codex_score["usage_percent"] == 90  # only fresh, unreset observations score
+    assert "private-account" not in json.dumps(result["live_context"])
+
+
+async def test_context_reports_degraded_and_disabled_provider_reason(handler, orch):
+    from src.providers.availability import ProviderAvailability
+
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await _workspace(orch)
+    availability = orch.provider_availability
+    availability._rows["codex"] = ProviderAvailability(
+        provider="codex", state="degraded", reason_code="usage_high", updated_at=time.time(),
+    )
+    context = (await _plan(handler, "t"))["live_context"]
+    provider = next(p for p in context["providers"] if p["provider"] == "codex")
+    assert (provider["state"], provider["reason"]) == ("degraded", "usage_high")
+    assert provider["age_seconds"] is not None
+    availability._rows["codex"] = ProviderAvailability(
+        provider="codex", override_state="disabled", override_reason="secret operator note",
+        updated_at=time.time(),
+    )
+    context = (await _plan(handler, "t"))["live_context"]
+    assert _context_profile(context)["effective_headroom"] == 0
+    provider = next(p for p in context["providers"] if p["provider"] == "codex")
+    assert (provider["state"], provider["reason"]) == ("disabled", "operator_disabled")
+    assert "secret operator note" not in json.dumps(context)
 
 
 async def test_plan_rejects_an_invalid_policy_and_an_unknown_task(handler, orch):
@@ -445,6 +656,73 @@ async def test_a_burst_planned_against_one_snapshot_spreads_by_pressure(
         "standard-high-codex": {"eligible": 3, "blocked": 0},
         "standard-high-claude": {"eligible": 3, "blocked": 0},
     }
+    apply_loads = []
+    for task_id in ids:
+        context = (await orch.db.get_task(task_id)).route["live_context"]
+        apply_loads.append(sum(p["routed_backlog"] for p in context["profiles"]))
+        assert context["observational"] is True
+    assert sorted(apply_loads) == list(range(6))
+
+
+async def test_apply_refreshes_eligibility_after_waiting_for_route_lock(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    plan = await _plan(handler, "t")
+    assert plan["profile_id"] == "standard-high-codex"
+    with _as_playbook():
+        async with orch.db.routing_apply_lock():
+            applying = asyncio.create_task(handler.execute(
+                "task_route_apply", {"task_id": "t", "plan": plan},
+            ))
+            # Keep the apply waiting while its previously eligible profile is disabled.
+            await asyncio.sleep(0.05)
+            await orch.db.update_profile("standard-high-codex", enabled=False)
+        result = await applying
+    assert result["outcome"] == "routed" and result["profile_id"] == "standard-high-claude"
+    context = (await orch.db.get_task("t")).route["live_context"]
+    assert _context_profile(context)["enabled"] is False
+
+
+@pytest.mark.parametrize("change", ["provider", "constraints", "preference", "binding"])
+async def test_apply_revalidates_live_provider_task_constraints_and_router_binding(
+    handler, orch, change,
+):
+    from src.providers.availability import ProviderAvailability
+
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    plan = await _plan(handler, "t")
+    if change == "provider":
+        orch.provider_availability._rows["codex"] = ProviderAvailability(
+            provider="codex", override_state="disabled", updated_at=time.time(),
+        )
+    elif change == "constraints":
+        await orch.db.update_task("t", route={"constraints": {"exclude_providers": ["codex"]}})
+    elif change == "preference":
+        await orch.db.update_project("p", preferred_provider="claude")
+    with _as_playbook():
+        if change == "binding":
+            async with orch.db.routing_apply_lock():
+                applying = asyncio.create_task(handler.execute(
+                    "task_route_apply", {"task_id": "t", "plan": plan},
+                ))
+                await asyncio.sleep(0.05)
+                await orch.db.update_project("p", assignment_playbook_id="new-router")
+            result = await applying
+            assert result["code"] == NOT_ROUTER
+            assert (await orch.db.get_task("t")).route_source == UNROUTED
+        else:
+            result = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+            assert result["outcome"] == "routed"
+            assert result["profile_id"] == "standard-high-claude"
+
+
+async def test_context_summarizes_active_task_kinds_without_task_text(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await _create(orch.db, "active", profile_id="standard-high-codex",
+                  status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX)
+    await _session(orch.db, "busy", task_id="active")
+    result = await _plan(handler, "t")
+    assert result["live_context"]["active_work"] == {"bugfix": 1}
+    assert "active" not in json.dumps(result["live_context"]["profiles"])
 
 
 # -- the routing lock and the load queries -------------------------------------------------
@@ -533,6 +811,73 @@ async def test_blocked_verifier_does_not_gate_a_narrow_route(orch):
     backlog = await orch.db.count_routed_backlog_by_profile()
     assert backlog["standard-high-claude"] == {"eligible": 0, "blocked": 1}, backlog
     assert await orch.db.count_busy_sessions_by_profile() == {}
+
+
+@pytest.mark.parametrize("constraint", ["backlog", "quarantine", "unavailable"])
+async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_context(
+    handler, orch, constraint,
+):
+    await _workspace(orch)
+    await _create(orch.db, "routine", task_type=TaskType.FEATURE, class_hint="standard-high")
+    policy, _digest = routine_policy()
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "routine", "policy": policy.canonical_json(),
+    })
+    assert plan["profile_id"] == "standard-high-codex"
+    assert plan["decision"]["mode"] == "hosted_preference"
+    if constraint == "backlog":
+        for i in range(2):
+            await _create(orch.db, f"queued-{i}", profile_id="standard-high-codex")
+    elif constraint == "quarantine":
+        orch._quarantine_pool("p", "standard-high-codex", "launch backoff")
+    else:
+        from src.routing.planner import ProviderFacts
+        original = handler._routing_static_facts
+
+        async def unavailable(*args, **kwargs):
+            profiles, providers = await original(*args, **kwargs)
+            providers["codex"] = ProviderFacts(state="exhausted", launchable=False)
+            return profiles, providers
+
+        handler._routing_static_facts = unavailable
+    plan["live_context"] = {"profiles": [{"profile_id": "standard-high-codex",
+                                          "effective_headroom": 999}]}
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "routine", "plan": plan})
+    assert result["outcome"] == "routed"
+    route = (await orch.db.get_task("routine")).route
+    assert (route["profile_id"], route["provider"], route["intelligence_class"]) == (
+        "standard-high-claude", "claude", "standard-high",
+    )
+    assert route["adjusted_at_apply"]
+    assert route["decision"]["mode"] == "pressure_fallback"
+    assert "bypassed" in route["reason"]
+    assert "snapshot age" in route["reason"]
+    assert route["decision"]["snapshot_as_of"] == route["live_context"]["as_of"]
+
+
+async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(handler, orch):
+    await _workspace(orch)
+    policy, _digest = routine_policy()
+    for i in range(3):
+        await _create(orch.db, f"routine-{i}", task_type=TaskType.FEATURE,
+                      class_hint="standard-high")
+    plans = [await handler.execute("task_route_plan", {
+        "task_id": f"routine-{i}", "policy": policy.canonical_json(),
+    }) for i in range(3)]
+    assert {p["profile_id"] for p in plans} == {"standard-high-codex"}
+    with _as_playbook():
+        results = await asyncio.gather(*(handler.execute("task_route_apply", {
+            "task_id": f"routine-{i}", "plan": plan,
+        }) for i, plan in enumerate(plans)))
+    assert all(r["outcome"] == "routed" for r in results)
+    routes = [(await orch.db.get_task(f"routine-{i}")).route for i in range(3)]
+    # The fixture has two Codex profile slots and lazy workspace capacity.
+    # Each committed route consumes backlog; the third apply sees saturation.
+    assert sum(r["decision"]["mode"] == "hosted_preference" for r in routes) == 2
+    assert [r["provider"] for r in routes].count("codex") == 2
+    assert [r["provider"] for r in routes].count("claude") == 1
+
 
 # -- task.route_needed carries the router and the class hint ------------------------------
 

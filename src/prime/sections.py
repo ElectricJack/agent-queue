@@ -598,6 +598,45 @@ async def build_messages_section(
         except Exception:
             logger.debug("prime: could not read job results for %s", task_id, exc_info=True)
 
+    # Delivery stamps are transport evidence, not a session's memory. Keep
+    # bounded pointers after a nudge, compaction or change of task holder.
+    if callable(getattr(db, "list_agent_waits", None)):
+        from src.agent_waits import wait_next_step
+        from src.jobs.result import bounded
+
+        try:
+            task = task or await db.get_task(task_id)
+            session = session or await db.get_session_for_task(task_id)
+            history = await db.list_agent_waits(
+                project_id=task.project_id, owner_kind="task", owner_id=task_id, limit=5
+            )
+            summaries = []
+            for wait in history:
+                current = bool(
+                    session and session.state in ("starting", "running")
+                    and wait["claim_epoch"] == task.claim_epoch
+                    and wait["session_id"] == session.id
+                    and wait["session_instance_token"] == session.instance_token
+                )
+                claim = "current claim" if current else "previous claim; no inactivity exemption"
+                guidance = (
+                    "Check the current claim before acting on this historical wait."
+                    if not current and wait["state"] == "active"
+                    else wait_next_step(wait)
+                )
+                summaries.append(
+                    f"aq wait show {wait['id']} --consume --json\n"
+                    + json.dumps({
+                        "kind": wait["kind"], "state": wait["state"], "claim": claim,
+                        "deadline_at": wait["deadline_at"], "result_ref": wait["result_ref"],
+                        "digest": wait["digest"], "next_step": guidance,
+                    }, ensure_ascii=False)
+                )
+            if summaries:
+                parts.append("Durable waits:\n" + bounded("\n\n".join(summaries), 6000))
+        except Exception:
+            logger.debug("prime: could not read waits for %s", task_id, exc_info=True)
+
     rows = await db.get_task_contexts(task_id)
     from src.handoffs import collect_facts, latest_note, render_facts, render_note
 
@@ -655,7 +694,8 @@ _HARNESS_GUIDANCE = frozenset({"opencode"})
 
 
 def build_tool_guidance_section(
-    harness: str | None = None, *, registry: Any = None
+    harness: str | None = None, *, registry: Any = None,
+    config=None, session=None, observation=None
 ) -> PrimeSection:
     """The shared tool guidance, plus the addendum for the CLI *harness* runs.
 
@@ -671,6 +711,9 @@ def build_tool_guidance_section(
         addendum = _load_template(f"tool_guidance_{cli}.md")
         if addendum:
             body = f"{body}\n\n{addendum}" if body else addendum
+    from src.sessions.context import context_guidance
+
+    body += "\n\n" + context_guidance(config, session, observation)
     return PrimeSection(key="tool_guidance", title=SECTION_TITLES["tool_guidance"], body=body)
 
 
@@ -758,15 +801,23 @@ def build_completion_protocol_section(
             "Do not push main yourself.\n\n") + generated + body[end:]
         stacked = body.find("## Stacked branches")
         if stacked >= 0:
-            body = body[:stacked] + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n"
+            end = body.index("## Stay visible", stacked)
+            body = (
+                body[:stacked]
+                + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n\n"
+                + body[end:]
+            )
     # Pool sessions (swarm-work-model §10) never get pushed a next task —
     # they pull in a loop via `--claim-next`. That's a materially different
-    # completion contract, so it renders as an addendum only for a session
-    # whose lifecycle is "pool", never for a task/named session.
+    # completion contract, so it replaces the task-session close instruction
+    # only for lifecycle "pool", preserving all shared verification rules.
     if lifecycle == "pool":
         pool_body = _load_template("completion_protocol_pool.md").replace("{task_id}", task_id)
         if pool_body:
-            body = f"{body}\n\n{pool_body}" if body else pool_body
+            # The pool loop owns close/next-claim; don't also prescribe a
+            # task-session close followed by drain-ack.
+            shared = body[body.index("## Deliverable self-check"):]
+            body = f"{pool_body}\n\n{shared}"
     # A profile whose policy denies ``create_task`` must not be told to file
     # emergent work — the instruction would land as a capability denial.
     emergent_work = _load_template("emergent_work.md") if allow_emergent_work else ""

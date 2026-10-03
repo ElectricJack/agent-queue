@@ -2651,7 +2651,11 @@
         "state_cache_ttl_seconds": 2,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
-        "transcript_startup_replay_limit": 100
+        "transcript_startup_replay_limit": 100,
+        "worker_claude_plugin_overrides": {},
+        "worker_context_checkpoint_tokens": 120000,
+        "worker_context_compact_tokens": 160000,
+        "worker_context_unknown_checkpoint_turns": 40
       },
       "properties": {
         "adopt_on_start": {
@@ -2732,6 +2736,25 @@
         },
         "transcript_startup_replay_limit": {
           "default": 100,
+          "type": "integer"
+        },
+        "worker_claude_plugin_overrides": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "worker_context_checkpoint_tokens": {
+          "default": 120000,
+          "type": "integer"
+        },
+        "worker_context_compact_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
+        "worker_context_unknown_checkpoint_turns": {
+          "default": 40,
           "type": "integer"
         }
       },

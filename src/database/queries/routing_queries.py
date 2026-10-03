@@ -19,9 +19,9 @@ from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import and_, exists, func, literal, or_, select, update
+from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, update
 
-from src.database.tables import playbook_v2_runs, sessions, tasks
+from src.database.tables import agent_profiles, agents, playbook_v2_runs, sessions, tasks
 from src.models import Task, TaskStatus
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
 
@@ -104,6 +104,76 @@ def _routed_backlog_statement(ready_project_ids: Collection[str]):
 
 
 class RoutingQueryMixin:
+    async def routing_supply(self, *, now: float, stall_seconds: float, conn=None) -> dict:
+        """Grouped worker observations, without task titles, terminals or session tokens.
+
+        Starting, draining, preparing and unresponsive workers are never idle supply.
+        Project/fleet totals include them conservatively: a draining process still
+        occupies resources until it stops. Pending launches are folded in by the caller.
+        """
+        bucket = case(
+            (or_(sessions.c.state == "draining", sessions.c.desired_state == "stopped"),
+             "draining"),
+            (sessions.c.state == "starting", "starting"),
+            (or_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)), "busy"),
+            (and_(sessions.c.lifecycle == "pool", func.coalesce(
+                func.nullif(sessions.c.last_activity, 0), sessions.c.started_at
+            ) <= now - stall_seconds), "unresponsive"),
+            (or_(agents.c.enabled.is_(False), agents.c.deleted_at.is_not(None)), "unresponsive"),
+            else_="idle",
+        ).label("bucket")
+        supply = (
+            select(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle,
+                   bucket, func.count().label("count"),
+                   func.array_agg(sessions.c.id).label("session_ids"))
+            .select_from(sessions.outerjoin(agents, sessions.c.agent_id == agents.c.id))
+            .where(sessions.c.state.in_(_LIVE_SESSION_STATES),
+                   sessions.c.lifecycle.in_(("pool", "task")))
+            .group_by(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle, bucket)
+        )
+        kinds = (
+            select(tasks.c.task_type, func.count().label("count"))
+            .where(_active_session())
+            .group_by(tasks.c.task_type)
+        )
+        live_agent = select(sessions.c.id).where(
+            sessions.c.state.in_(_LIVE_SESSION_STATES),
+            or_(sessions.c.agent_id == agents.c.id, sessions.c.task_id == agents.c.current_task_id),
+        ).exists()
+        reservations = (
+            select(tasks.c.project_id, agents.c.profile_id,
+                   literal("task").label("lifecycle"), literal("busy").label("bucket"),
+                   func.count().label("count"),
+                   func.array_agg(cast(literal(None), Text)).label("session_ids"))
+            .select_from(agents.join(tasks, agents.c.current_task_id == tasks.c.id)
+                         .join(agent_profiles, agents.c.profile_id == agent_profiles.c.id))
+            .where(agents.c.enabled.is_(True), agents.c.deleted_at.is_(None),
+                   agents.c.role == "worker", agent_profiles.c.lifecycle == "task",
+                   tasks.c.status.in_((TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)),
+                   ~live_agent)
+            .group_by(tasks.c.project_id, agents.c.profile_id)
+        )
+        async def read(connection):
+            # Reservations and sessions share one SQL snapshot, so a reservation
+            # becoming a session between reads cannot disappear from both counts.
+            rows = [dict(r) for r in (
+                await connection.execute(supply.union_all(reservations))
+            ).mappings()]
+            # Deduplicate pending launches against the SAME supply read. A second
+            # query could see a just-inserted id that the first query never counted.
+            ids = {sid for row in rows for sid in row.pop("session_ids") if sid is not None}
+            return {
+                "supply": rows,
+                "active_kinds": {r[0] or "unknown": int(r[1])
+                                 for r in (await connection.execute(kinds)).fetchall()},
+                "session_ids": ids,
+            }
+
+        if conn is not None:
+            return await read(conn)
+        async with self._engine.connect() as connection:
+            return await read(connection)
+
     async def count_routed_backlog_by_profile(
         self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
     ) -> dict[str, dict[str, int]]:

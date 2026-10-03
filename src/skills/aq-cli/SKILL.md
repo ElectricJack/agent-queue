@@ -59,14 +59,14 @@ run something new.
 
 ## Discovery workflow
 
-Two commands cover every need:
+Start with a narrow reference; load broad inventory only when needed:
 
-1. **`aq --help-all`** — prints the full command reference for the entire
+1. **`aq <group> <cmd> --help`** — prints detail on one specific command.
+   Use this before invoking anything you haven't run before.
+2. **`aq --help-all`** — prints the full command reference for the entire
    CLI (every group, every subcommand, every flag). Emit this to a temp
    file (`aq --help-all > /tmp/aq-help.txt`) and read/grep it when you
    need a broad view.
-2. **`aq <group> <cmd> --help`** — prints detail on one specific command.
-   Use this before invoking anything you haven't run before.
 
 Example:
 
@@ -82,7 +82,7 @@ actually validates against — task statuses, `outcome` (`pass` / `fail`),
 
 ## Output formats
 
-`aq` prints human-friendly tables by default. Two flags change that:
+`aq` prints human-friendly tables by default. These flags change that:
 
 - `--json` — the versioned envelope on stdout:
   `{"schema_version": …, "data": …, "pagination"?: …}` on success and
@@ -91,8 +91,13 @@ actually validates against — task statuses, `outcome` (`pass` / `fail`),
   pre-envelope raw payload for one release; don't rely on it.)
 - `--brief` — trims each entity to a compact projection (still readable).
   Composes with `--json`.
+- `--save-output PATH` — for emit-based CLI results, writes the complete
+  unprojected envelope to a new private JSON file and prints its path, byte count,
+  SHA-256 and shape. Page relevant keys/lines from it instead of repeating large
+  success output. Failures, warnings, gates, claim outcomes and instructions remain
+  visible. Existing files are refused; no evidence is overwritten.
 
-Both are **global**: they mean the same thing wherever you put them, so
+These are **global**: they mean the same thing wherever you put them, so
 `aq task list --json`, `aq task --json list` and `aq --json task list` are
 the same command. Two exceptions: after a passthrough command the flag
 belongs to the child program (`aq test tests/x.py --json` hands `--json` to
