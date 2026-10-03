@@ -285,6 +285,7 @@ class IntegrationSubjectQueriesMixin:
         writer_task_ids: Iterable[str] = (),
         batch_ids: Iterable[str] = (),
         gate_ids: Iterable[str] = (),
+        project_ids: Iterable[str] = (),
     ) -> int:
         """Make every matching live subject due ``now``; returns how many.
 
@@ -298,6 +299,7 @@ class IntegrationSubjectQueriesMixin:
             (integration_subjects.c.writer_task_id, writer_task_ids),
             (integration_subjects.c.batch_id, batch_ids),
             (integration_subjects.c.gate_id, gate_ids),
+            (integration_subjects.c.project_id, project_ids),
         ):
             wanted = sorted({value for value in ids if value})
             if wanted:

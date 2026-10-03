@@ -92,6 +92,11 @@ class IntegrationSurfaceCommandsMixin:
             return _failure("not_found", f"subject {subject_id} is not in project {project_id}")
         return {**result, "subjects": views}
 
+    async def _wake_project_integration_subjects(self, project_id: str) -> int:
+        return await self.db.wake_integration_subjects(
+            now=time.time(), project_ids=[project_id]
+        )
+
     async def _integration_scope_refusal(
         self, project_id: str, args: dict
     ) -> tuple[str | None, dict | None]:

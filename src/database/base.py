@@ -233,6 +233,7 @@ class DatabaseBackend(Protocol):
         writer_task_ids: Iterable[str] = (),
         batch_ids: Iterable[str] = (),
         gate_ids: Iterable[str] = (),
+        project_ids: Iterable[str] = (),
     ) -> int: ...
 
     async def append_integration_subject_journal(self, values: dict) -> tuple[dict, bool]: ...

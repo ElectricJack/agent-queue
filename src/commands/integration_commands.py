@@ -1002,6 +1002,8 @@ class IntegrationCommandsMixin:
             authorized = refusal is None
         if not authorized:
             return _failure("unauthorized", "integration flush is outside the caller authority")
+        # §5.1: flush is "every live reconciler subject of the project is due now".
+        await self._wake_project_integration_subjects(project_id)
         project = await self.db.get_project(project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
             return await self._development_integration().sweep(project_id)
