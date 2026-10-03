@@ -53,6 +53,7 @@ def schema_inputs() -> list[Path]:
     migrations = PROJECT_ROOT / "migrations"
     return [
         database / "tables.py",
+        PROJECT_ROOT / "src" / "records" / "schema.py",
         database / "hierarchy_migration.py",
         migrations / "env.py",
         migrations / "integration_guards.py",

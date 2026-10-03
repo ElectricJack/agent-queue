@@ -50,6 +50,8 @@ from src.database.queries.integration_schedule_queries import IntegrationSchedul
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.job_queries import JobQueriesMixin
+from src.database.queries.knowledge_queries import KnowledgeQueryMixin
+from src.database.queries.record_queries import RecordQueryMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.lifecycle_queries import LifecycleQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
@@ -90,6 +92,8 @@ logger = logging.getLogger(__name__)
 
 
 class PostgreSQLDatabaseAdapter(
+    RecordQueryMixin,
+    KnowledgeQueryMixin,
     JobQueriesMixin,
     IntegrationControlQueriesMixin,
     IntegrationTrainQueriesMixin,

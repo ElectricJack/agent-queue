@@ -91,6 +91,7 @@ its outbox; transport failures never need a new author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "knowledge_export",
     "add_dependency",
     "agent_message",
     "collaboration_accept",

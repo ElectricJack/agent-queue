@@ -102,6 +102,7 @@
         "tests/test_cli_formatters.py",
         "tests/test_cli_global_options.py",
         "tests/test_cli_inventory.py",
+        "tests/test_cli_knowledge.py",
         "tests/test_cli_logs.py",
         "tests/test_cli_menus.py",
         "tests/test_cli_module_entry.py",
@@ -601,6 +602,25 @@
       "description": "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests.",
       "modules": [
         "tests/test_knowledge_inventory.py"
+      ]
+    },
+    "knowledge-records": {
+      "description": "Durable record identities, knowledge schema and immutable revision integrity.",
+      "modules": [
+        "tests/test_api_knowledge.py",
+        "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_commands.py",
+        "tests/test_knowledge_inventory.py",
+        "tests/test_knowledge_migrations.py",
+        "tests/test_knowledge_service.py",
+        "tests/test_record_backfill.py",
+        "tests/test_record_contracts.py",
+        "tests/test_record_doctor.py",
+        "tests/test_record_exports.py",
+        "tests/test_record_links.py",
+        "tests/test_record_outbox.py",
+        "tests/test_record_queries.py",
+        "tests/test_record_schema.py"
       ]
     },
     "level-editor": {
@@ -1328,7 +1348,7 @@
       ]
     }
   },
-  "digest": "sha256:41c0804cbb690d734825c9d510131d1606a871b53e6b7fa5f3f87644fda17a6a",
+  "digest": "sha256:920d917dc8642eab9aa7141127e5fa827a06f328a0f417b4f295d5804a0d6d40",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2359,6 +2379,22 @@
       ],
       "summary": "Layout endpoints (spatial-layout design §5)."
     },
+    "tests/test_api_knowledge.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.codegen",
+        "src.api.dependencies"
+      ],
+      "markers": [
+        "parametrize",
+        "usefixtures"
+      ],
+      "summary": "Typed HTTP surface for the K03 knowledge/record commands."
+    },
     "tests/test_api_messages.py": {
       "areas": [
         "messages"
@@ -3207,6 +3243,17 @@
         "parametrize"
       ],
       "summary": "Maintained inventory and plugin-extension startup guards for ``aq``."
+    },
+    "tests/test_cli_knowledge.py": {
+      "areas": [
+        "cli-framework"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "CLI surface tests for the 14 K03 knowledge_* and record_* auto-generated commands."
     },
     "tests/test_cli_logs.py": {
       "areas": [
@@ -5053,6 +5100,7 @@
         "src.doctor.profile_checks",
         "src.doctor.project_checks",
         "src.doctor.provider_checks",
+        "src.doctor.record_checks",
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.routing_checks",
@@ -8283,9 +8331,43 @@
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
     },
+    "tests/test_knowledge_authorization.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.plugins.registry",
+        "src.profiles.capabilities",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Core access remains fail closed with legacy capability enforcement disabled."
+    },
+    "tests/test_knowledge_commands.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config"
+      ],
+      "markers": [
+        "usefixtures"
+      ],
+      "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
     "tests/test_knowledge_inventory.py": {
       "areas": [
-        "knowledge-inventory"
+        "knowledge-inventory",
+        "knowledge-records"
       ],
       "default_arm": true,
       "imports": [
@@ -8297,6 +8379,37 @@
         "parametrize"
       ],
       "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
+    },
+    "tests/test_knowledge_migrations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Real disposable PostgreSQL upgrades, helper reinstall and safe rollback."
+    },
+    "tests/test_knowledge_service.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL races, canonical bytes, atomic receipts and lexical retrieval."
     },
     "tests/test_known_tools.py": {
       "areas": [
@@ -9054,7 +9167,8 @@
       "imports": [
         "src.database.engine",
         "src.database.schema_key",
-        "src.database.tables"
+        "src.database.tables",
+        "src.records.schema"
       ],
       "markers": [
         "integration",
@@ -11408,6 +11522,144 @@
         "asyncio"
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
+    },
+    "tests/test_record_backfill.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.records.backfill",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Operator-only mapping repair has independent durable source cursors."
+    },
+    "tests/test_record_contracts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.contracts.models",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pure contract-shape tests for the K03 knowledge/record command set."
+    },
+    "tests/test_record_doctor.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.doctor.runner",
+        "src.knowledge.service",
+        "src.models",
+        "src.records.export",
+        "src.records.outbox",
+        "src.records.service"
+      ],
+      "markers": [],
+      "summary": "Read-only diagnostics remain useful without optional memory plugins."
+    },
+    "tests/test_record_exports.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records",
+        "src.records.export",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Confined files, exact recovery bytes, stale events and authorization."
+    },
+    "tests/test_record_links.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Informational links have their own ownership, history and concurrency fences."
+    },
+    "tests/test_record_outbox.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [],
+      "summary": "Record commits and isolated at-least-once delivery survive lost workers."
+    },
+    "tests/test_record_queries.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.queries.record_queries",
+        "src.database.tables",
+        "src.models",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Deterministic aliases and exact revision reads survive execution lifecycle."
+    },
+    "tests/test_record_schema.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Prove the storage contract with direct writes and commit-time checks."
     },
     "tests/test_reference_stub_enricher.py": {
       "areas": [
