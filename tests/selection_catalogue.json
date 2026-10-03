@@ -577,6 +577,7 @@
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
+        "tests/test_integration_shadow_report.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_state.py",
@@ -1328,7 +1329,7 @@
       ]
     }
   },
-  "digest": "sha256:96afedc3039a8ec8d859ead3abbd9b2065c9183feb2973d9c3a24a2dddaa4ad6",
+  "digest": "sha256:90853c44f3b495ee561ed856e95bf6821fbf3acd70eab7d2bcae031f81cd74ba",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7952,6 +7953,27 @@
       ],
       "markers": [],
       "summary": "Approvals share a bounded project integration settling window."
+    },
+    "tests/test_integration_shadow_report.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli",
+        "src.cli.app",
+        "src.cli.integration",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.integration.shadow_report",
+        "src.integration.subjects"
+      ],
+      "markers": [],
+      "summary": "Shadow-versus-legacy decision comparison: completeness, gates and read-only reads."
     },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
