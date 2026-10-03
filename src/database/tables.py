@@ -4779,6 +4779,315 @@ integration_legacy_deliveries = Table(
 )
 
 
+# Integration subjects (rev-agile-ridge revision 2, §3.2): the one durable row
+# the level-triggered reconciler visits for a root batch, a parent episode or a
+# source.  Typed ports over these rows live in src/integration/subjects.py; the
+# vocabularies below must match its enums (tests/test_integration_subjects.py).
+INTEGRATION_SUBJECT_KINDS = ("root_batch", "parent_episode", "source")
+INTEGRATION_SUBJECT_PHASES = (
+    "admitting",
+    "building",
+    "testing",
+    "repairing",
+    "promotable",
+    "publishing",
+    "published",
+    "cleaning",
+    "done",
+)
+INTEGRATION_SUBJECT_ENGINES = ("legacy", "reconciler")
+INTEGRATION_WRITER_STATUSES = ("none", "filed", "claimed", "working", "stopped", "unknown")
+INTEGRATION_JOURNAL_KINDS = ("decision", "action", "attempt", "receipt")
+INTEGRATION_JOURNAL_MODES = ("shadow", "active")
+INTEGRATION_PRIMITIVES = (
+    "integration_observe_subject",
+    "integration_seal",
+    "git_materialize_ref",
+    "git_merge_members",
+    "git_preserve",
+    "git_publish",
+    "git_ancestry",
+    "ci_request",
+    "ci_observe",
+    "ci_attest",
+    "writer_file",
+    "writer_lease",
+    "writer_stop_proof",
+    "record_receipt",
+    "record_attempt",
+    "record_decision",
+    "wait",
+    "gate",
+    "eject",
+    "cleanup",
+)
+
+
+def _sql_in(values: tuple[str, ...]) -> str:
+    return "(" + ", ".join(f"'{value}'" for value in values) + ")"
+
+
+# One subject, one owner (``engine``), one due time.  The never-blocked check
+# is the schema half of §3.6: a live subject is either held by an explicit gate
+# or due again within its pinned ``max_wait_seconds`` of when the due time was
+# set; only a ``done`` subject has neither.  ``version`` is the optimistic
+# concurrency token of every visit; an event only pulls the due time forward
+# and stamps ``wake_requested_at`` (it never bumps the version), so a visit in
+# flight finishes and is revisited at once instead of being refused.
+integration_subjects = Table(
+    "integration_subjects",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    # Natural identity supplied by the adapter that creates the subject; with
+    # (project_id, kind) it makes creation idempotent.
+    Column("subject_key", Text, nullable=False),
+    Column("engine", Text, nullable=False, server_default="legacy"),
+    Column("phase", Text, nullable=False),
+    # The policy this subject runs under, pinned for its whole life: activating
+    # a new policy version never changes a running subject (§3.5, C7).
+    Column("policy_playbook_id", Text, nullable=False),
+    Column(
+        "policy_artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    # Source or parent task; null for a root batch.
+    Column("task_id", Text, nullable=True),
+    # The legacy ``integration_batches`` row a root subject maps onto, once sealed.
+    Column("batch_id", Text, nullable=True),
+    # Additive parent bridge: nullable for pre-cutover rows, pinned once bound.
+    Column("parent_episode_id", Text, nullable=True),
+    ForeignKeyConstraint(
+        ["task_id", "parent_episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_subjects_parent_episode",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "parent_episode_id IS NULL OR kind = 'parent_episode'",
+        name="ck_integration_subjects_parent_episode",
+    ),
+    Index(
+        "uq_integration_subjects_parent_episode",
+        "parent_episode_id",
+        unique=True,
+        postgresql_where=text("parent_episode_id IS NOT NULL"),
+    ),
+    # Exact head/generation identity of what the current phase refers to.
+    Column("target_ref", Text, nullable=True),
+    Column("head_sha", Text, nullable=True),
+    Column("base_sha", Text, nullable=True),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    # Due time (§3.3 schedule): waiting, held or progressing, never unbounded.
+    Column("next_due_at", Float, nullable=True),
+    Column("due_set_at", Float, nullable=False),
+    Column("max_wait_seconds", Integer, nullable=False),
+    Column("wait_reason", Text, nullable=True),
+    Column("gate_id", Text, nullable=True),
+    Column("refusal_streak", Integer, nullable=False, server_default="0"),
+    Column("wake_requested_at", Float, nullable=True),
+    Column("last_visit_at", Float, nullable=True),
+    Column("last_journal_seq", BigInteger, nullable=True),
+    Column("closed_reason", Text, nullable=True),
+    # Writer lease (§3.2): who may push the subject's target and how far it got.
+    Column("writer_status", Text, nullable=False, server_default="none"),
+    Column("writer_task_id", Text, nullable=True),
+    Column("writer_fence_token", Integer, nullable=True),
+    Column("writer_session_id", Text, nullable=True),
+    Column("writer_claimed_at", Float, nullable=True),
+    Column("writer_last_push_at", Float, nullable=True),
+    Column("writer_stop_proof", JSONB(none_as_null=True), nullable=True),
+    # Writer budget for the current ordinal: clock and counted attempts.
+    Column("budget_ordinal", Integer, nullable=True),
+    Column("budget_class", Text, nullable=True),
+    Column("budget_started_at", Float, nullable=True),
+    Column("budget_deadline_at", Float, nullable=True),
+    Column("budget_attempts", Integer, nullable=False, server_default="0"),
+    Column("budget_attempt_limit", Integer, nullable=True),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN " + _sql_in(INTEGRATION_SUBJECT_KINDS), name="ck_integration_subjects_kind"
+    ),
+    CheckConstraint(
+        "phase IN " + _sql_in(INTEGRATION_SUBJECT_PHASES), name="ck_integration_subjects_phase"
+    ),
+    CheckConstraint(
+        "engine IN " + _sql_in(INTEGRATION_SUBJECT_ENGINES),
+        name="ck_integration_subjects_engine",
+    ),
+    CheckConstraint(
+        "writer_status IN " + _sql_in(INTEGRATION_WRITER_STATUSES),
+        name="ck_integration_subjects_writer_status",
+    ),
+    CheckConstraint(
+        "(kind = 'root_batch' AND task_id IS NULL) OR "
+        "(kind <> 'root_batch' AND task_id IS NOT NULL AND batch_id IS NULL)",
+        name="ck_integration_subjects_identity",
+    ),
+    CheckConstraint(
+        "(head_sha IS NULL OR (target_ref IS NOT NULL AND head_sha ~ '^[0-9a-f]{40}$')) "
+        "AND (base_sha IS NULL OR base_sha ~ '^[0-9a-f]{40}$')",
+        name="ck_integration_subjects_head",
+    ),
+    CheckConstraint("generation >= 0", name="ck_integration_subjects_generation"),
+    CheckConstraint("version >= 0", name="ck_integration_subjects_version"),
+    CheckConstraint("max_wait_seconds > 0", name="ck_integration_subjects_max_wait"),
+    CheckConstraint("refusal_streak >= 0", name="ck_integration_subjects_refusal_streak"),
+    CheckConstraint(
+        "(phase = 'done' AND closed_reason IS NOT NULL AND next_due_at IS NULL "
+        "AND gate_id IS NULL AND wait_reason IS NULL) OR "
+        "(phase <> 'done' AND closed_reason IS NULL AND (gate_id IS NOT NULL OR "
+        "(next_due_at IS NOT NULL AND next_due_at <= due_set_at + max_wait_seconds)))",
+        name="ck_integration_subjects_never_blocked",
+    ),
+    CheckConstraint(
+        "wait_reason IS NULL OR next_due_at IS NOT NULL",
+        name="ck_integration_subjects_wait_until",
+    ),
+    CheckConstraint(
+        "(writer_status = 'none' AND writer_task_id IS NULL AND writer_fence_token IS NULL "
+        "AND writer_session_id IS NULL) OR "
+        "(writer_status <> 'none' AND writer_task_id IS NOT NULL)",
+        name="ck_integration_subjects_writer",
+    ),
+    CheckConstraint(
+        "writer_fence_token IS NULL OR writer_fence_token >= 0",
+        name="ck_integration_subjects_writer_fence",
+    ),
+    CheckConstraint(
+        "(budget_ordinal IS NULL AND budget_class IS NULL AND budget_started_at IS NULL "
+        "AND budget_deadline_at IS NULL AND budget_attempt_limit IS NULL "
+        "AND budget_attempts = 0) OR "
+        "(budget_ordinal IS NOT NULL AND budget_ordinal >= 0 AND budget_class IS NOT NULL "
+        "AND budget_started_at IS NOT NULL AND budget_deadline_at IS NOT NULL "
+        "AND budget_deadline_at >= budget_started_at)",
+        name="ck_integration_subjects_budget",
+    ),
+    CheckConstraint(
+        "budget_attempts >= 0 AND (budget_attempt_limit IS NULL OR budget_attempt_limit > 0)",
+        name="ck_integration_subjects_budget_attempts",
+    ),
+    UniqueConstraint("project_id", "kind", "subject_key", name="uq_integration_subjects_key"),
+    Index(
+        "idx_integration_subjects_due",
+        "next_due_at",
+        "id",
+        postgresql_where=text("phase <> 'done' AND next_due_at IS NOT NULL"),
+    ),
+    # Two admitting root subjects would seal the same frontier twice.
+    Index(
+        "uq_integration_subjects_admitting_root",
+        "project_id",
+        "repository_id",
+        unique=True,
+        postgresql_where=text("kind = 'root_batch' AND phase = 'admitting'"),
+    ),
+    Index(
+        "uq_integration_subjects_batch",
+        "batch_id",
+        unique=True,
+        postgresql_where=text("batch_id IS NOT NULL"),
+    ),
+    Index("idx_integration_subjects_project_phase", "project_id", "phase"),
+    Index(
+        "idx_integration_subjects_task",
+        "task_id",
+        postgresql_where=text("task_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_integration_subjects_writer_task",
+        "writer_task_id",
+        postgresql_where=text("writer_task_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_integration_subjects_gate",
+        "gate_id",
+        postgresql_where=text("gate_id IS NOT NULL"),
+    ),
+    Index("idx_integration_subjects_artifact", "policy_artifact_sha256"),
+)
+
+# Append-only journal of what the reconciler observed, decided and did for a
+# subject (primitives 14-16): decisions in shadow and active mode, primitive
+# outcomes, counted attempts and receipts, each with the exact identity and the
+# pinned artifact it ran under.  ``idempotency_key`` makes every append
+# replay-safe; a trigger refuses UPDATE and DELETE.
+integration_subject_journal = Table(
+    "integration_subject_journal",
+    metadata,
+    Column("seq", BigInteger, Identity(), primary_key=True),
+    Column(
+        "subject_id",
+        Text,
+        ForeignKey("integration_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("entry_kind", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("visit_id", Text, nullable=True),
+    Column("mode", Text, nullable=False),
+    Column(
+        "policy_artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("subject_version", Integer, nullable=False),
+    Column("phase", Text, nullable=False),
+    Column("head_sha", Text, nullable=True),
+    Column("generation", Integer, nullable=False),
+    Column("rule", Text, nullable=True),
+    Column("primitive", Text, nullable=True),
+    Column("outcome", Text, nullable=True),
+    Column("facts_digest", Text, nullable=True),
+    Column("payload", JSONB, nullable=False, server_default="{}"),
+    Column("recorded_at", Float, nullable=False),
+    CheckConstraint(
+        "entry_kind IN " + _sql_in(INTEGRATION_JOURNAL_KINDS),
+        name="ck_integration_subject_journal_kind",
+    ),
+    CheckConstraint(
+        "mode IN " + _sql_in(INTEGRATION_JOURNAL_MODES),
+        name="ck_integration_subject_journal_mode",
+    ),
+    CheckConstraint(
+        "phase IN " + _sql_in(INTEGRATION_SUBJECT_PHASES),
+        name="ck_integration_subject_journal_phase",
+    ),
+    CheckConstraint(
+        "primitive IS NULL OR primitive IN " + _sql_in(INTEGRATION_PRIMITIVES),
+        name="ck_integration_subject_journal_primitive",
+    ),
+    CheckConstraint(
+        "subject_version >= 0 AND generation >= 0",
+        name="ck_integration_subject_journal_identity",
+    ),
+    CheckConstraint(
+        "head_sha IS NULL OR head_sha ~ '^[0-9a-f]{40}$'",
+        name="ck_integration_subject_journal_head",
+    ),
+    CheckConstraint(
+        "(entry_kind = 'decision' AND rule IS NOT NULL AND primitive IS NOT NULL "
+        "AND facts_digest IS NOT NULL AND outcome IS NULL) OR "
+        "(entry_kind = 'action' AND primitive IS NOT NULL AND outcome IS NOT NULL) OR "
+        "(entry_kind IN ('attempt', 'receipt') AND head_sha IS NOT NULL "
+        "AND outcome IS NOT NULL)",
+        name="ck_integration_subject_journal_entry",
+    ),
+    UniqueConstraint(
+        "subject_id", "idempotency_key", name="uq_integration_subject_journal_idempotency"
+    ),
+    Index("idx_integration_subject_journal_subject", "subject_id", "seq"),
+    Index("idx_integration_subject_journal_artifact", "policy_artifact_sha256"),
+)
+
+
 # Immutable recommendations; execution/CI evidence is appended separately.
 test_selections = Table(
     "test_selections",

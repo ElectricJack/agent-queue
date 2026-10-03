@@ -3300,7 +3300,9 @@ async def _exhaust_conflict_stage(db, case, exhausted_stage: int) -> dict:
                 deadline_event_id="repair-deadline-resolution-op-1",
                 started_at=4.0,
                 deadline_at=now - 1.0,
-                attempts=0,
+                # A conclusive attempt: the clock ends a stage that tried, while
+                # its writer may still be live.
+                attempts=1,
                 dossier={
                     "starting_sha": case["target"],
                     "branch_sha": case["target"],
@@ -3839,3 +3841,234 @@ async def test_preserved_repair_consumes_supported_release_of_stopped_pool_write
     assert result["outcome"] == "recovered", result
     assert (await db.get_task("repair-task")).status == TaskStatus.BLOCKED
     assert (await _detached_rebind_snapshot(db))["owner"]["fence_token"] == 6
+
+
+# --- Parent delivery intents re-driven by the integration service (B7) ------
+
+
+def _intent_commands(db, service):
+    from types import SimpleNamespace
+
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    handler = Handler()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(promotion_service=service)
+    return handler
+
+
+async def _bump_collector_fence(db) -> Fence:
+    """The collector lost and regained the branch: same owner, newer fence."""
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == "aq/parent")
+            .values(fence_token=integration_branch_owners.c.fence_token + 1)
+        )
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    return Fence(
+        target=BranchKey(repository_id="repo", branch="aq/parent"),
+        owner_id=owner["owner_id"],
+        token=int(owner["fence_token"]),
+    )
+
+
+async def _prepared_intent_refused_by_a_moved_fence(db, case):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.integration.promotion import PromotionService
+
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    handler = _intent_commands(db, service)
+    prepared = await service.prepare(case["request"])
+    await _bump_collector_fence(db)
+    # The original ``delivery.ready`` run, replayed by hand, still names the old fence.
+    with principal_context(ExecutionPrincipal.service("parent-playbook")):
+        refused = await handler._cmd_delivery_promote(
+            case["request"].model_dump(mode="json")
+        )
+    assert refused["outcome"] == "target_moved"
+    intent = await db.get_integration_promotion_intent(prepared.intent_id)
+    assert intent["state"] == "prepared"
+    return service, handler, prepared, intent
+
+
+async def test_parent_intent_pass_replays_a_refused_push_under_the_current_collector_fence(
+    db, promotion_case
+):
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+
+    case = promotion_case
+    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+        db, case
+    )
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+
+    early = await reconciler.reconcile(intent, now=intent["updated_at"] + 1.0)
+    assert early["outcome"] == "pending"
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "promoted"
+    committed = await db.get_integration_promotion_intent(prepared.intent_id)
+    assert committed["state"] == "committed"
+    assert committed["prepared_sha"] == prepared.prepared_sha
+    assert (
+        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == prepared.prepared_sha
+    )
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+
+
+async def test_parent_intent_pass_finalizes_a_push_whose_outcome_was_lost(db, promotion_case):
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+
+    case = promotion_case
+    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+        db, case
+    )
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    _git(["push", str(case["origin"]), f"{prepared.prepared_sha}:refs/heads/aq/parent"], retained)
+
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "applied"
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "committed"
+
+
+async def test_parent_intent_pass_waits_for_a_held_branch_and_backs_off(db, promotion_case):
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+
+    case = promotion_case
+    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+        db, case
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == "aq/parent")
+            .values(owner_id="repair-writer", owner_role="repair")
+        )
+    calls = []
+    original = handler._cmd_delivery_promote
+
+    async def counted(args):
+        calls.append(args)
+        return await original(args)
+
+    handler._cmd_delivery_promote = counted
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    at = intent["updated_at"] + GRACE_SECONDS
+    busy = await reconciler.reconcile(intent, now=at)
+    paced = await reconciler.reconcile(intent, now=at + 1.0)
+
+    assert busy["outcome"] == "busy" and "repair-writer" in busy["reason"]
+    assert paced["outcome"] == "backoff"
+    assert calls == []
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
+    assert (
+        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["base"]
+    )
+
+
+@pytest.mark.parametrize("hold", ["operation_cancelled", "operator_paused"])
+async def test_parent_intent_pass_respects_ended_operations_and_operator_holds(
+    db, promotion_case, hold
+):
+    from src.database.tables import task_metadata
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+
+    case = promotion_case
+    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+        db, case
+    )
+    async with db.immediate() as conn:
+        if hold == "operation_cancelled":
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "collector-op")
+                .values(state="cancelled")
+            )
+        else:
+            await conn.execute(
+                insert(task_metadata).values(task_id="parent", key="manual_pause", value="{}")
+            )
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "held"
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
+    assert (
+        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+        == case["base"]
+    )
+
+
+async def test_parent_intent_pass_never_pushes_over_a_diverged_target(db, promotion_case):
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+
+    case = promotion_case
+    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+        db, case
+    )
+    work = case["work"]
+    _git(["switch", "-c", "competing", case["base"]], work)
+    (work / "competing.txt").write_text("other\n")
+    _git(["add", "competing.txt"], work)
+    _git(["commit", "-m", "competing"], work)
+    competing = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
+
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "invariant_error" and "diverged" in result["reason"]
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
+    assert (
+        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], work).split()[0]
+        == competing
+    )
+
+
+async def test_parent_intent_pass_declines_root_intents():
+    from src.integration.parent_intents import ParentIntentReconciler
+
+    reconciler = ParentIntentReconciler(None, commands=lambda: None)
+    result = await reconciler.reconcile({"id": "root", "intent_kind": "root"}, now=1.0)
+    assert result["outcome"] == "declined"
+
+
+async def test_parent_intent_pass_reports_but_never_rebuilds_an_unprepared_intent(
+    db, promotion_case
+):
+    """Rebuilding a reserved intent can conflict; that repair is the playbook's call."""
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent["state"] == "reserved" and intent["prepared_sha"] is None
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    handler = _intent_commands(db, service)
+    calls = []
+    handler._cmd_delivery_promote = lambda args: calls.append(args)
+
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "invariant_error" and "no prepared commit" in result["reason"]
+    assert calls == []
+    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "reserved"

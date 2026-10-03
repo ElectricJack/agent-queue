@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any, Literal
@@ -31,6 +32,8 @@ from src.database.tables import (
     repos,
 )
 from src.git.manager import GitError, _validate_ref
+from src.integration.engine import root_engine_guard
+
 from src.integration.epic_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
@@ -45,6 +48,64 @@ from src.playbooks.artifact_ref import ArtifactRef
 
 ScheduleTrigger = Literal["periodic", "manual"]
 logger = logging.getLogger(__name__)
+
+#: An empty frontier keeps no ``integration_batches`` row.  Its seal answers
+#: with this id instead, naming the request it consumed, so a caller that
+#: hands the seal's ``batch_id`` on -- the root-train playbook releases every
+#: empty seal -- is answered from the schedule rather than from a row.
+EMPTY_SEAL_PREFIX = "integration-empty:"
+_SWEEP_REQUEST = re.compile(r"integration-sweep:(?P<project>.+):(?P<sequence>[1-9][0-9]*)")
+
+
+def empty_seal_id(request_id: str) -> str:
+    """The ``batch_id`` an empty seal of *request_id* answers with."""
+    return EMPTY_SEAL_PREFIX + request_id
+
+
+def empty_seal_request(batch_id: str) -> tuple[str, str] | None:
+    """``(project_id, request_id)`` an empty seal's id names, else ``None``."""
+    if not batch_id.startswith(EMPTY_SEAL_PREFIX):
+        return None
+    request_id = batch_id[len(EMPTY_SEAL_PREFIX):]
+    match = _SWEEP_REQUEST.fullmatch(request_id)
+    return (match["project"], request_id) if match else None
+
+
+async def request_ended_without_batch_on(conn, project_id: str, request_id: str) -> bool:
+    """Whether *project_id*'s sweep request *request_id* ended with no batch row.
+
+    An empty seal consumes its request without a row, and ``stale_schedule``
+    may release a request no seal ever answered.  Either way the request was
+    minted (its sequence is the schedule's or older), is no longer
+    outstanding, and never will be again: ``mark_due`` only mints higher
+    sequences.  Nothing can be sealed under it any more.
+    """
+    match = _SWEEP_REQUEST.fullmatch(request_id)
+    if match is None or match["project"] != project_id:
+        return False
+    schedule = (
+        await conn.execute(
+            select(
+                project_integration_schedules.c.outstanding_request_id,
+                project_integration_schedules.c.request_sequence,
+            ).where(project_integration_schedules.c.project_id == project_id)
+        )
+    ).mappings().one_or_none()
+    if (
+        schedule is None
+        or schedule["outstanding_request_id"] == request_id
+        or int(match["sequence"]) > int(schedule["request_sequence"])
+    ):
+        return False
+    batch_id = (
+        await conn.execute(
+            select(integration_batches.c.id).where(
+                integration_batches.c.project_id == project_id,
+                integration_batches.c.request_id == request_id,
+            )
+        )
+    ).scalar_one_or_none()
+    return batch_id is None
 
 
 class IntegrationScheduler:
@@ -414,6 +475,7 @@ class TrainService:
         self.page_size = page_size
         self.migration_inspector = migration_inspector
 
+    @root_engine_guard("project", outcome="busy")
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         # Keep the public sealed/empty/busy contract. A frontier that moved
         # while Git was being read gets fresh inspection, never unchecked seal.
@@ -446,6 +508,10 @@ class TrainService:
                 prior = await self._batch_for_request(read_conn, project_id, request_id)
                 if prior is not None and prior["lifecycle"] != "sealing":
                     return await self._replay_result(read_conn, prior)
+                if prior is None and await request_ended_without_batch_on(
+                    read_conn, project_id, request_id
+                ):
+                    return self._empty_result(project_id, request_id)
                 project = await self.db.get_project(project_id)
                 preview = (
                     await self._eligible_members(
@@ -472,6 +538,12 @@ class TrainService:
             request_batch = await self._batch_for_request(conn, project_id, request_id)
             if request_batch is not None and request_batch["lifecycle"] != "sealing":
                 return await self._replay_result(conn, request_batch)
+            # Before the lease: a later train holding it must not turn the
+            # replay of an empty seal into busy.
+            if request_batch is None and await request_ended_without_batch_on(
+                conn, project_id, request_id
+            ):
+                return self._empty_result(project_id, request_id)
 
             lease = (
                 (
@@ -641,39 +713,22 @@ class TrainService:
                 )
             if len({member["source_ref"] for member in members}) != len(members):
                 raise ValueError("integration source refs must be unique within a batch")
+
+            if not members:
+                if request_batch is not None:
+                    raise ValueError("expired non-empty sealing batch lost its frontier")
+                # An empty frontier is not a train: consume the request and
+                # keep no batch row.  A replay answers from the schedule.
+                await self._consume_request(conn, project_id, request_id, now)
+                await clear_settling_window(conn, project_id=project_id)
+                return self._empty_result(project_id, request_id)
+
             manifest_digest = self._manifest_digest(members)
             batch_id = (
                 request_batch["id"]
                 if request_batch is not None
                 else self._batch_id(project_id, request_id)
             )
-
-            if not members:
-                if request_batch is not None:
-                    raise ValueError("expired non-empty sealing batch lost its frontier")
-                await conn.execute(
-                    insert(integration_batches).values(
-                        id=batch_id,
-                        project_id=project_id,
-                        repository_id=repository_id,
-                        request_id=request_id,
-                        trigger=schedule["outstanding_trigger"],
-                        source_manifest_digest=manifest_digest,
-                        base_sha=None,
-                        lifecycle="empty",
-                        current_revision=0,
-                        integration_branch=None,
-                        policy_snapshot=policy_snapshot,
-                        artifact_snapshot=artifact_snapshot,
-                        cleanup_state="complete",
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                await self._consume_request(conn, project_id, request_id, now)
-                await clear_settling_window(conn, project_id=project_id)
-                return self._result("empty", project_id, request_id, batch_id, None)
-
             integration_branch = self._integration_branch(project_id, request_id)
             if request_batch is None:
                 await conn.execute(
@@ -883,6 +938,23 @@ class TrainService:
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        from src.integration.engine import current_admission
+
+        admission = current_admission()
+        if admission is not None:
+            if not admission.include_authorized:
+                members = [m for m in members if
+                           m["review"]["evidence"].get("decision_path") != "authorized_task"]
+            if admission.task_kinds and members:
+                from src.database.tables import tasks
+
+                allowed = set((await conn.execute(select(tasks.c.id).where(
+                    tasks.c.id.in_([m["task_id"] for m in members]),
+                    tasks.c.task_type.in_(admission.task_kinds),
+                ))).scalars())
+                members = [m for m in members if m["task_id"] in allowed]
+            if admission.max_members is not None:
+                members = members[:admission.max_members]
         project = (await conn.execute(select(projects).where(projects.c.id == project_id))).mappings().one()
         policy_data = project["hierarchical_integration_policy"]
         policy = HierarchicalIntegrationPolicy.model_validate(policy_data) if policy_data else None
@@ -975,7 +1047,13 @@ class TrainService:
         ).mappings().one_or_none()
         return dict(row) if row is not None else None
 
+    def _empty_result(self, project_id: str, request_id: str) -> dict[str, Any]:
+        return self._result(
+            "empty", project_id, request_id, empty_seal_id(request_id), None
+        )
+
     async def _replay_result(self, conn, batch: dict[str, Any]) -> dict[str, Any]:
+        # A row-backed empty seal predates rowless empty seals; it replays as is.
         if batch["lifecycle"] == "empty":
             return self._result(
                 "empty", batch["project_id"], batch["request_id"], batch["id"], None

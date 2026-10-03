@@ -15,6 +15,7 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.models import BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 
@@ -77,6 +78,7 @@ class CollectionService:
             except Exception:
                 logger.warning("Child collection failed for %s", task_id, exc_info=True)
 
+    @parent_engine_guard()
     async def collect_parent(self, task_id, now):
         """Queue *task_id*'s next approved child now instead of on the next tick."""
         hierarchy = self.hierarchy_service_factory()
@@ -84,6 +86,7 @@ class CollectionService:
             return None
         return await self.queue_next(hierarchy, task_id, now)
 
+    @parent_engine_guard()
     async def queue_next(self, hierarchy, task_id, now):
         parent = await self.db.get_task(task_id)
         checkpoint = await self.db.get_integration_checkpoint(task_id)

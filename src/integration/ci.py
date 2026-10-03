@@ -51,6 +51,20 @@ class AttestationError(ValueError):
     pass
 
 
+class CIObservationDeferred(AttestationError):
+    """Trusted observation is unfinished or could not validate the head.
+
+    Legacy callers still see AttestationError; shared producers can retain
+    the distinction without parsing diagnostic text.
+    """
+
+    def __init__(
+        self, message: str, *, classification: Literal["none", "pending", "infra", "superseded"]
+    ) -> None:
+        super().__init__(message)
+        self.classification = classification
+
+
 SubjectTrustCause = Literal["missing", "too_large", "malformed", "identity_mismatch"]
 
 
@@ -971,6 +985,16 @@ class AuthenticatedGitHubObserver:
             suite = newest.get("check_suite")
             suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
             conclusion = newest.get("conclusion")
+            if newest.get("head_sha") == head_sha:
+                if newest.get("status") != "completed":
+                    raise CIObservationDeferred(
+                        f"required check is not conclusive: {name}", classification="pending"
+                    )
+                if conclusion in {"timed_out", "action_required", "startup_failure", "stale"}:
+                    raise CIObservationDeferred(
+                        f"required check could not validate: {name} ({conclusion})",
+                        classification="infra",
+                    )
             if (
                 newest.get("status") != "completed"
                 or conclusion not in {"success", "failure", "cancelled", "skipped", "neutral"}
@@ -1002,7 +1026,10 @@ class AuthenticatedGitHubObserver:
             # that the snapshot's required name was never produced.
             push_runs = [record for record in workflow_records if record.get("event") == "push"]
             if not push_runs or any(record.get("status") != "completed" for record in push_runs):
-                raise AttestationError(f"required check is pending: {', '.join(missing)}")
+                raise CIObservationDeferred(
+                    f"required check is pending: {', '.join(missing)}",
+                    classification="pending" if workflow_records or selected else "none",
+                )
             for record in push_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))
                 if (
@@ -1061,6 +1088,17 @@ class AuthenticatedGitHubObserver:
             workflow_run_id = _strict_int(record.get("id"))
             workflow_id = _strict_int(record.get("workflow_id"))
             run_attempt = _strict_int(record.get("run_attempt"))
+            if record.get("head_sha") == head_sha:
+                if record.get("status") is not None and record["status"] != "completed":
+                    raise CIObservationDeferred(
+                        "workflow attempt is not conclusive", classification="pending"
+                    )
+                if record.get("conclusion") in {
+                    "timed_out", "action_required", "startup_failure", "stale"
+                }:
+                    raise CIObservationDeferred(
+                        "workflow attempt could not validate", classification="infra"
+                    )
             if (
                 workflow_run_id is None
                 or workflow_run_id <= 0
@@ -1327,8 +1365,9 @@ def _require_latest_attempt_jobs(
             or job.get("conclusion") != check["conclusion"]
             or job.get("check_run_url") != expected_url
         ):
-            raise AttestationError(
-                f"required check is not from the latest workflow attempt: {check['name']}"
+            raise CIObservationDeferred(
+                f"required check is not from the latest workflow attempt: {check['name']}",
+                classification="superseded",
             )
 
 

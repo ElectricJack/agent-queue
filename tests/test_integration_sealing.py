@@ -985,7 +985,7 @@ async def test_seal_accepts_delivered_dependency_after_source_task_is_archived(d
 async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
     from src.integration.scheduler import TrainService
 
-    policy = await _enable_train(db)
+    await _enable_train(db)
     request = await _request(db)
     service = TrainService(db, page_size=3)
 
@@ -993,19 +993,14 @@ async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
     replay = await service.seal("p", request["request_id"], 30.0)
 
     assert first == replay
-    assert first["outcome"] == "empty"
-    assert first["batch_id"]
-    assert first["operation_id"] is None
+    assert first == {
+        "outcome": "empty",
+        "project_id": "p",
+        "request_id": request["request_id"],
+        "batch_id": f"integration-empty:{request['request_id']}",
+        "operation_id": None,
+    }
     async with db._engine.connect() as conn:
-        batch = (
-            (
-                await conn.execute(
-                    select(integration_batches).where(integration_batches.c.id == first["batch_id"])
-                )
-            )
-            .mappings()
-            .one()
-        )
         schedule = (
             (
                 await conn.execute(
@@ -1017,37 +1012,125 @@ async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
             .mappings()
             .one()
         )
-        assert (
-            await conn.execute(
-                select(project_integration_leases).where(
-                    project_integration_leases.c.project_id == "p"
-                )
-            )
-        ).all() == []
-        assert (
-            await conn.execute(
-                select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == first["batch_id"]
-                )
-            )
-        ).all() == []
-        assert (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.batch_id == first["batch_id"]
-                )
-            )
-        ).all() == []
+        # An empty frontier is not a train: no batch row, lease or operation.
+        assert (await conn.execute(select(integration_batches))).all() == []
+        assert (await conn.execute(select(project_integration_leases))).all() == []
+        assert (await conn.execute(select(integration_repair_operations))).all() == []
         events = (await conn.execute(select(integration_outbox))).mappings().all()
 
-    assert batch["lifecycle"] == "empty"
-    assert batch["base_sha"] is None
-    assert batch["integration_branch"] is None
-    assert batch["policy_snapshot"] == policy
-    assert batch["artifact_snapshot"] == policy["root"]["route"]["artifact"]
     assert schedule["outstanding_request_id"] is None
     assert schedule["last_completed_sweep_at"] == 20.0
     assert [event["event_type"] for event in events] == ["integration.sweep_due"]
+
+
+async def test_empty_seal_replay_is_not_busy_while_a_later_train_holds_the_lease(db):
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    first_request = await _request(db)
+    empty = await TrainService(db).seal("p", first_request["request_id"], 20.0)
+    await _seed_leaf(db, "root", "b" * 40)
+    second_request = await IntegrationScheduler(db).mark_due("p", 30.0, "manual")
+    sealed = await TrainService(db).seal("p", second_request["request_id"], 40.0)
+    inspector = AsyncMock(side_effect=AssertionError("an ended request reads no Git"))
+
+    replays = [
+        await TrainService(db).seal("p", first_request["request_id"], 50.0),
+        await TrainService(db, migration_inspector=inspector).seal(
+            "p", first_request["request_id"], 60.0
+        ),
+    ]
+
+    assert empty["outcome"] == "empty"
+    assert sealed["outcome"] == "sealed"
+    assert replays == [empty, empty]
+    async with db._engine.connect() as conn:
+        batches = (await conn.execute(select(integration_batches))).mappings().all()
+        lease = (await conn.execute(select(project_integration_leases))).mappings().one()
+    assert [(batch["id"], batch["request_id"], batch["lifecycle"]) for batch in batches] == [
+        (sealed["batch_id"], second_request["request_id"], "sealed")
+    ]
+    assert lease["batch_id"] == sealed["batch_id"]
+
+
+async def test_concurrent_seals_of_one_empty_request_insert_no_batch(concurrent_db):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(concurrent_db)
+    request = await _request(concurrent_db)
+
+    results = await asyncio.gather(
+        TrainService(concurrent_db).seal("p", request["request_id"], 20.0),
+        TrainService(concurrent_db).seal("p", request["request_id"], 20.0),
+    )
+
+    assert results[0] == results[1]
+    assert results[0]["outcome"] == "empty"
+    async with concurrent_db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches))).all() == []
+        schedule = (
+            (await conn.execute(select(project_integration_schedules))).mappings().one()
+        )
+    assert schedule["outstanding_request_id"] is None
+
+
+@pytest.mark.parametrize(
+    "request_id", ["integration-sweep:p:2", "integration-sweep:other:1", "request-1"]
+)
+async def test_seal_still_refuses_a_request_that_was_never_minted(db, request_id):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    request = await _request(db)
+    assert request["request_id"] == "integration-sweep:p:1"
+
+    with pytest.raises(ValueError, match="not outstanding"):
+        await TrainService(db).seal("p", request_id, 20.0)
+
+
+async def test_release_confirms_a_rowless_empty_seal_and_refuses_forged_ones(db):
+    from src.integration.release import IntegrationReleaseService
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    first = await _request(db)
+    empty = await TrainService(db).seal("p", first["request_id"], 20.0)
+    await _seed_leaf(db, "root", "b" * 40)
+    second = await IntegrationScheduler(db).mark_due("p", 30.0, "manual")
+
+    async def schedule_row():
+        async with db._engine.connect() as conn:
+            return dict(
+                (await conn.execute(select(project_integration_schedules))).mappings().one()
+            )
+
+    before = await schedule_row()
+    service = IntegrationReleaseService(db)
+    confirmed = await service.release(empty["batch_id"], 35.0)
+    # The second request is still outstanding, so it was never an empty seal.
+    outstanding = await service.release(f"integration-empty:{second['request_id']}", 35.0)
+    assert await schedule_row() == before
+
+    sealed = await TrainService(db).seal("p", second["request_id"], 40.0)
+    forged = [
+        # Its request has a batch row: the seal was not empty.
+        f"integration-empty:{second['request_id']}",
+        "integration-empty:integration-sweep:p:9",
+        "integration-empty:integration-sweep:other:1",
+        "integration-empty:request-1",
+    ]
+    refused = [await service.release(batch_id, 45.0) for batch_id in forged]
+
+    assert sealed["outcome"] == "sealed"
+    assert (confirmed.outcome, confirmed.project_id, confirmed.request_id) == (
+        "empty",
+        "p",
+        first["request_id"],
+    )
+    assert confirmed.batch_id == empty["batch_id"]
+    assert (confirmed.operation_id, confirmed.catchup_request_id) == (None, None)
+    assert outstanding.outcome == "stale"
+    assert [result.outcome for result in refused] == ["stale"] * len(forged)
 
 
 async def test_seal_disarms_previous_batch_window_before_a_new_approval(db):

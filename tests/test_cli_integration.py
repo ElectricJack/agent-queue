@@ -40,6 +40,14 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["engine-transfer", "repo", "--engine", "legacy"], "integration_engine_transfer",
+         {"repository_id": "repo", "engine": "legacy", "expected_versions": {},
+          "reason": "", "evidence": [], "dry_run": True}),
+        (["engine-transfer", "repo", "--engine", "reconciler", "--apply",
+          "--expected-subject", "root:7", "--reason", "reviewed cutover", "--evidence", "shadow-week"],
+         "integration_engine_transfer",
+         {"repository_id": "repo", "engine": "reconciler", "expected_versions": {"root": 7},
+          "reason": "reviewed cutover", "evidence": ["shadow-week"], "dry_run": False}),
         (["recover-preserved-repair", "op", "--intent", "intent", "--candidate", "a" * 40],
          "integration_recover_preserved_repair",
          {"operation_id": "op", "intent_id": "intent", "candidate_sha": "a" * 40, "dry_run": True}),
