@@ -511,6 +511,8 @@ and requires each to equal the token's. A task is read live-or-archived, an oper
 the row its `target_kind` names, a branch owner row through its repository, check evidence
 through its operation. The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.
+Only `provider_allocation_preview` recognizes that nested target path; other commands
+receive no project ownership from it.
 The allocation handler still restricts a project supervisor to preference-only changes
 and refuses global lifecycle/bounds changes and busy interruption.
 

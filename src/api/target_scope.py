@@ -220,15 +220,19 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
 }
 
 
-def target_references(args: dict) -> dict[str, list[str]]:
+def target_references(args: dict, *, command: str | None = None) -> dict[str, list[str]]:
     """The target references *args* carries: argument name -> values.
 
     A list-valued reference (``depends_on``) contributes every member. The
-    provider preference's nested project reference is an explicit supported
-    path; arbitrary nested values do not become scope targets.
+    provider preference's nested project reference is supported only for
+    ``provider_allocation_preview``; arbitrary nested values do not become
+    scope targets.
     """
     found: dict[str, list[str]] = {}
     for name, value in args.items():
+        # This resolver key labels a nested path, never a top-level argument.
+        if name == "receive_new_work.project_id":
+            continue
         if name in VALUE_ARGUMENTS or not (
             name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES
         ):
@@ -237,7 +241,7 @@ def target_references(args: dict) -> dict[str, list[str]]:
         ids = [item for item in values if isinstance(item, str) and item]
         if ids:
             found[name] = ids
-    receive = args.get("receive_new_work")
+    receive = args.get("receive_new_work") if command == "provider_allocation_preview" else None
     if isinstance(receive, dict):
         project_id = receive.get("project_id")
         if isinstance(project_id, str) and project_id:
@@ -245,10 +249,10 @@ def target_references(args: dict) -> dict[str, list[str]]:
     return found
 
 
-def unresolvable_targets(args: dict) -> list[str]:
+def unresolvable_targets(args: dict, *, command: str | None = None) -> list[str]:
     """Target references this module has no ownership resolver for."""
     return sorted(
-        name for name in target_references(args) if name not in TARGET_RESOLVERS
+        name for name in target_references(args, command=command) if name not in TARGET_RESOLVERS
     )
 
 
@@ -269,13 +273,13 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
             f"out of scope: {command} names a project-owned target that cannot be "
             "verified without a database"
         )
-    references = target_references(args)
+    references = target_references(args, command=command)
     if not references:
         return (
             f"out of scope: {command} names no project-owned target, so a token "
             f"scoped to project {project_id} may not run it"
         )
-    unknown = unresolvable_targets(args)
+    unknown = unresolvable_targets(args, command=command)
     if unknown:
         return (
             f"out of scope: {command} names a target whose owning project cannot be "
