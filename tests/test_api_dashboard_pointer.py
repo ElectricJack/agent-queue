@@ -208,3 +208,26 @@ async def test_a_disabled_dashboard_server_gets_a_404_with_a_null_url(tmp_path):
                 assert response.status_code == 404, path
                 assert "location" not in response.headers, path
                 assert response.json() == {**POINTER_BODY, "dashboard_url": None}, path
+
+
+async def test_the_first_dashboard_request_builds_no_route_contexts(live_app, monkeypatch):
+    """``create_app`` resolves every included router before the first request.
+
+    Otherwise the first ``/dashboard/`` -- matched past every include -- rebuilt
+    them all on the daemon's event loop: ~0.5 s on a quiet host, past the 2 s
+    the pre-change updater's probe allows on a loaded CI runner.
+    """
+    from fastapi.routing import _IncludedRouter
+
+    built: list[object] = []
+    build = _IncludedRouter._build_effective_context
+
+    def counting(self: Any, route: Any) -> Any:
+        built.append(route)
+        return build(self, route)
+
+    monkeypatch.setattr(_IncludedRouter, "_build_effective_context", counting)
+    with TestClient(live_app, follow_redirects=False) as client:
+        assert client.get("/dashboard/").status_code == 307
+        assert client.get("/no-such-route").status_code == 404
+    assert built == []
