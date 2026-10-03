@@ -21,6 +21,14 @@ that are set (never their values), and the *existence* of the provider's
 credential file (never its contents).  That is why a probe can report
 ``authenticated`` for a store AQ is not allowed to open.
 
+**Presence is not authentication.**  A credential file that exists is the
+*shape* of a login, not a statement that the login still works: an expired
+OAuth token leaves exactly that file behind.  So the store is the weakest
+evidence and it is the last resort — a status command that *answered*
+"not signed in" outranks it and is final.  The probe never reads the store to
+find out for itself, because doing so would mean handling material it is
+forbidden to touch; it asks the CLI that already read it.
+
 **Nothing durable learns a secret.**  Results carry ``auth_method``,
 ``credential_source`` and ``credential_store`` — names and states, never
 material — which is exactly the vocabulary :mod:`src.install.redaction`
@@ -41,6 +49,7 @@ import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -249,6 +258,11 @@ class AuthProbe:
     checked: tuple[str, ...] = ()
     #: Variables a selected method still needs before it can work.
     missing_environment: tuple[str, ...] = ()
+    #: The provider's credential store is present and the provider's own status
+    #: command says it is *not* signed in — an expired login, not a fresh one.
+    #: The file is named because it is what the operator will see; nothing in
+    #: it was opened.
+    stale_store: str | None = None
 
     def detail(self) -> dict[str, Any]:
         return {
@@ -259,10 +273,25 @@ class AuthProbe:
             "credential_store": self.store,
             "checked": list(self.checked),
             "missing_environment": list(self.missing_environment),
+            "stale_credential_store": self.stale_store,
         }
 
 
-def _status_command_says_signed_in(command: Sequence[str], runner: CommandRunner) -> bool:
+class _StatusAnswer(StrEnum):
+    """What a provider's own status command said.
+
+    ``CANNOT_TELL`` is not an answer at all, and the probe has to keep that
+    distinct from ``SIGNED_OUT``: a command that could not run leaves the
+    weaker evidence standing, while a command that ran and said no ends the
+    search for the provider's own login.
+    """
+
+    SIGNED_IN = "signed_in"
+    SIGNED_OUT = "signed_out"
+    CANNOT_TELL = "cannot_tell"
+
+
+def _ask_status_command(command: Sequence[str], runner: CommandRunner) -> _StatusAnswer:
     """Run a provider status command and read only its exit status.
 
     The output is deliberately dropped: it can name an account, a plan or an
@@ -279,8 +308,8 @@ def _status_command_says_signed_in(command: Sequence[str], runner: CommandRunner
             # A missing subcommand, a hung CLI or an old build is "cannot
             # tell", and the caller falls through to the environment and store.
             continue
-        return completed.returncode == 0
-    return False
+        return _StatusAnswer.SIGNED_IN if completed.returncode == 0 else _StatusAnswer.SIGNED_OUT
+    return _StatusAnswer.CANNOT_TELL
 
 
 def probe_login(
@@ -315,6 +344,7 @@ def probe_login(
     checked: list[str] = []
     missing: list[str] = []
 
+    status = _StatusAnswer.CANNOT_TELL
     if login.status_command:
         rendered = " ".join(login.status_command)
         checked.append(rendered)
@@ -324,7 +354,8 @@ def probe_login(
         # prefix): the command then "could not answer", and a signed-in harness
         # was reported as unauthenticated.
         command = (executable, *login.status_command[1:])
-        if _status_command_says_signed_in(command, runner):
+        status = _ask_status_command(command, runner)
+        if status is _StatusAnswer.SIGNED_IN:
             return AuthProbe(
                 login.provider_id,
                 installed=True,
@@ -354,18 +385,28 @@ def probe_login(
             checked=tuple(checked),
         )
 
+    stale: str | None = None
     for store in login.stores:
         checked.append(store.label)
-        if store.present(env):
-            return AuthProbe(
-                login.provider_id,
-                installed=True,
-                authenticated=True,
-                method="provider-login",
-                source=store.label,
-                store=store.label,
-                checked=tuple(checked),
-            )
+        if not store.present(env):
+            continue
+        if status is _StatusAnswer.SIGNED_OUT:
+            # The provider was asked about this very store and said it is not
+            # signed in.  An expired login leaves its file exactly where it was,
+            # so presence here is the symptom, not the proof -- and reading the
+            # file to find out is forbidden.  Report not-authenticated and let
+            # the human run the provider's own login command.
+            stale = store.label
+            continue
+        return AuthProbe(
+            login.provider_id,
+            installed=True,
+            authenticated=True,
+            method="provider-login",
+            source=store.label,
+            store=store.label,
+            checked=tuple(checked),
+        )
 
     return AuthProbe(
         login.provider_id,
@@ -373,6 +414,7 @@ def probe_login(
         authenticated=False,
         checked=tuple(checked),
         missing_environment=tuple(missing),
+        stale_store=stale,
     )
 
 

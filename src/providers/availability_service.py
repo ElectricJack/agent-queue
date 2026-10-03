@@ -865,6 +865,12 @@ class ProviderAvailabilityService:
         detail = {"method": probe.method, "source": probe.source}
         if not probe.installed:
             return PROBE_CANNOT_TELL, {"error": "cli not installed"}
+        if probe.stale_store:
+            # The credential file is still on disk and the provider says it is
+            # not signed in.  Naming both is the difference between "log in
+            # again" and "your key is wrong", so the evidence carries the store
+            # the operator will go looking for.
+            detail["stale_credential_store"] = probe.stale_store
         signal = PROBE_AUTHENTICATED if probe.authenticated else PROBE_NOT_AUTHENTICATED
         return signal, {k: v for k, v in detail.items() if v}
 
