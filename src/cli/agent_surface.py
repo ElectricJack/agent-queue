@@ -24,10 +24,16 @@ import time
 import click
 
 from .app import _get_client, _handle_errors, _run, cli, console
-from .claim_epoch import claim_epoch_option, read_claim_epoch, resolve_claim_epoch  # noqa: F401
+from .claim_epoch import claim_epoch_option, read_claim_epoch, resolve_claim_epoch
 from .envelope import emit
 from .exceptions import DaemonNotRunningError
 from .tasks import task
+
+#: Knowledge delivery transports the prime CLI can carry (design §9). Imported
+#: at module scope because they are constants, not knowledge code: ``aq prime``
+#: must still import on a host with the whole knowledge feature absent.
+HOOK_ENVELOPE = "hook_envelope"
+STARTUP_PROMPT = "startup_prompt"
 
 
 @cli.command("schema")
@@ -88,6 +94,11 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
     ``--hook-format`` wrap it in a harness's hook envelope — wrapping is a
     pure presentation step (``src/prime/hook_envelopes.py``), so it runs
     even for a suppressed hook call without needing the daemon.
+
+    When the daemon prepared a knowledge bundle for this claim, the output has
+    already been written by the time ``knowledge_context_deliver`` records the
+    transport receipt: preparation is not delivery, and an acknowledgment that
+    does not complete is recorded ``unknown`` rather than "the model read it".
     """
     from src.prime.hook_envelopes import suppressed, wrap
 
@@ -129,9 +140,82 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
     if hook_mode:
         body = result.get("body", "") if "error" not in result else result.get("error", "")
         click.echo(wrap(body, harness))
+        _acknowledge_knowledge_delivery(
+            result,
+            transport=HOOK_ENVELOPE,
+            harness=harness,
+            source=source,
+            session_id=session_id or os.environ.get("AQ_SESSION_ID") or "",
+            api_url=api_url,
+        )
         return
 
     emit(ctx, result, render=lambda data: click.echo(data.get("body", "")))
+    _acknowledge_knowledge_delivery(
+        result,
+        transport=STARTUP_PROMPT,
+        harness="",
+        source=source,
+        session_id=session_id or os.environ.get("AQ_SESSION_ID") or "",
+        api_url=api_url,
+    )
+
+
+def _acknowledge_knowledge_delivery(result, *, transport, harness, source, session_id, api_url):
+    """Record the transport receipt for a bundle this output just carried.
+
+    Awaits nothing about comprehension: ``delivered`` means these bytes left
+    through this transport and the daemon accepted the receipt. Anything else is
+    best effort and never disturbs the agent's payload — the session's
+    ``knowledge_context_deliver`` grant, its claim epoch, or a disabled context
+    feature all leave prime exactly as it was.
+    """
+    bundle = result.get("context_bundle") if isinstance(result, dict) else None
+    digest = bundle.get("content_sha256") if isinstance(bundle, dict) else None
+    if not isinstance(bundle, dict) or not bundle.get("bundle_id") or not digest:
+        return
+
+    from src.knowledge.delivery import transport_for, transport_key
+
+    # The receipt needs the transport and its idempotency key, not the bytes:
+    # prime already wrote those, and the daemon re-derives the payload from the
+    # bundle it prepared.
+    claim_epoch = read_claim_epoch()
+    carrier = transport_for(
+        harness, supports_hooks=transport == HOOK_ENVELOPE, prompt_mode="arg",
+    )
+    args = {
+        "bundle_id": str(bundle["bundle_id"]),
+        "transport": carrier,
+        "idempotency_key": transport_key(
+            transport=carrier, bundle_id=str(bundle["bundle_id"]),
+            session_id=session_id, claim_epoch=claim_epoch, source=source,
+        ),
+        "rendered_sha256": str(digest),
+        "state": "delivered",
+    }
+    if claim_epoch is not None:
+        args["claim_epoch"] = claim_epoch
+
+    async def _deliver(state):
+        payload = {**args, "state": state}
+        async with _get_client(api_url) as client:
+            return await client.execute("knowledge_context_deliver", payload)
+
+    try:
+        _run(_deliver("delivered"))
+    except Exception as exc:  # noqa: BLE001 - any refusal is an unrecorded receipt
+        # Bytes left the process but the receipt did not land: ``unknown``, and
+        # never "the model read it". If the daemon is unreachable there is
+        # nowhere to record even that, and the bundle stays prepared.
+        try:
+            _run(_deliver("unknown"))
+        except Exception:  # noqa: BLE001 - the daemon itself may be unreachable
+            click.echo(
+                f"aq prime: knowledge delivery receipt unrecorded ({exc}); "
+                "the bundle is prepared, not delivered.",
+                err=True,
+            )
 
 
 # ---------------------------------------------------------------------------

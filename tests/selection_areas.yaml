@@ -729,8 +729,10 @@ areas:
       - tests/test_override_handler.py
       - tests/test_reference_stub_*.py
   - id: knowledge-evaluation
-    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks."
-    match: [tests/test_knowledge_evaluation.py]
+    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks, plus the thin harness delivery/resume adapters and the integrated runner replayed against the real context service."
+    match:
+      - tests/test_knowledge_evaluation.py
+      - tests/test_knowledge_harness_delivery.py
   - id: memory-facts
     description: "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection."
     match:
