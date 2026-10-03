@@ -358,8 +358,18 @@ class DeliveredBatchSettlement:
             raise ValueError("current stage has no repair delegate")
         task_ids = delegates | {m["task_id"] for m in members}
         task_rows = await rows(t.tasks, t.tasks.c.id.in_(task_ids), order=t.tasks.c.id)
+        # Historical delegates may have been archived by supported cleanup.
+        # Source members and the current delegate still require active rows.
+        missing = task_ids - {task["id"] for task in task_rows}
+        historical = delegates - {stage["repair_task_id"]}
+        if missing - historical:
+            raise ValueError("source or current repair task is missing")
+        archived_delegates = await rows(
+            t.archived_tasks, t.archived_tasks.c.id.in_(missing), order=t.archived_tasks.c.id
+        ) if missing else []
+        task_rows = sorted(task_rows + archived_delegates, key=lambda task: task["id"])
         if len(task_rows) != len(task_ids):
-            raise ValueError("source or repair task is missing")
+            raise ValueError("historical repair task is missing from active and archived records")
         if any(
             task["project_id"] != hint or task["repo_id"] != batch["repository_id"]
             for task in task_rows

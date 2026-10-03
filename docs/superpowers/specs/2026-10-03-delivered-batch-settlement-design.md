@@ -74,3 +74,7 @@ supported recovery of its specific evidence; do not manufacture a digest, CI
 receipt or database update. Inspect integration status afterwards to verify the
 old request is released and any coalesced follow-up remains scheduled. Repeating
 the same applied fences must return `already_settled`.
+
+## Archived historical delegates
+
+Obsolete repair delegates may reside in `archived_tasks` after supported cleanup. Settlement reads and locks those rows only when a historical delegate is absent from `tasks`; frozen source members and the current delegate still require active rows. Archived provenance, repository, branch, terminal state and writer checks remain binding, and the complete archived row participates in the preview digest. Missing historical records still refuse settlement.
