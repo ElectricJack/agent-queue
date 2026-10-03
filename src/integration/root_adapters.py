@@ -14,7 +14,10 @@ import time
 from sqlalchemy import select
 
 from src.database import tables as t
-from src.integration.engine import EngineRefused, RootEngineOwnership, root_admission
+from src.commands.principal import ExecutionPrincipal, principal_context
+from src.integration.engine import (
+    EngineRefused, RootEngineOwnership, root_admission, root_policy_ejection,
+)
 from src.integration.ownership import BranchOwnership
 from src.integration.subjects import (
     CIState,
@@ -108,6 +111,12 @@ class RootPrimitiveAdapters:
                         != args.model_dump(mode="json")
                     ):
                         return PrimitiveOutcome.unknown(args.primitive, "decision_prewrite_missing")
+                    if args.primitive is Primitive.EJECT:
+                        with (
+                            root_policy_ejection(subject, args, decision),
+                            principal_context(ExecutionPrincipal.service("root-reconciler")),
+                        ):
+                            return await method(subject, args)
                     return await method(subject, args)
             except EngineRefused as exc:
                 return PrimitiveOutcome.unknown(args.primitive, str(exc))

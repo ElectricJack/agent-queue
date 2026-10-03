@@ -46,7 +46,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.integration.engine import root_engine_guard
+from src.integration.engine import RootPolicyEjection, root_engine_guard
 
 from src.integration.models import HierarchicalIntegrationPolicy, deprecated_route_fields
 from src.integration.drain_owners import terminal_reservation_clause
@@ -1140,6 +1140,7 @@ class IntegrationControlService:
         reason: str,
         operator_id: str,
         resolution_observer: Callable[[dict[str, Any]], Awaitable[str | None]] | None = None,
+        policy_ejection: RootPolicyEjection | None = None,
     ) -> dict[str, Any]:
         """Eject before construction or rebuild a safely detached repair candidate."""
         if not reason.strip():
@@ -1201,6 +1202,12 @@ class IntegrationControlService:
                 .mappings()
                 .one()
             )
+            policy_decision = None
+            if policy_ejection is not None:
+                policy_decision = await policy_ejection.validate_on(
+                    self.db, conn, batch, task_id=task_id, reason=reason
+                )
+                operator_id = "service:root-reconciler"
             members = (
                 (
                     await conn.execute(
@@ -1449,7 +1456,11 @@ class IntegrationControlService:
                 project_id=project_id,
                 task_id=task_id,
                 payload=json.dumps(
-                    {"batch_id": batch_id, "reason": reason, "operator_id": operator_id, "at": now}
+                    {
+                        "batch_id": batch_id, "reason": reason, "operator_id": operator_id,
+                        "at": now,
+                        **({"policy_decision": policy_decision} if policy_decision else {}),
+                    }
                 ),
                 conn=conn,
             )

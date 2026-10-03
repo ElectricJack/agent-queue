@@ -14,6 +14,7 @@ import inspect
 import time
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from functools import wraps
 from typing import Any
 
@@ -28,7 +29,14 @@ from src.database.tables import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import AdmissionPredicate, Subject, SubjectEngine, SubjectKind
+from src.integration.subjects import (
+    AdmissionPredicate,
+    Decision,
+    EjectArgs,
+    Subject,
+    SubjectEngine,
+    SubjectKind,
+)
 
 
 class EngineRefused(RuntimeError):
@@ -39,6 +47,125 @@ _scope: ContextVar[tuple[Any, str, SubjectEngine, asyncio.Task | None, Any] | No
     "root_engine_scope", default=None
 )
 _admission: ContextVar[AdmissionPredicate | None] = ContextVar("root_admission", default=None)
+_ejection: ContextVar[RootPolicyEjection | None] = ContextVar("root_policy_ejection", default=None)
+
+
+@dataclass(frozen=True)
+class RootPolicyEjection:
+    """Exact committed decision, usable only inside its owning root operation."""
+
+    subject: Subject
+    decision: Decision
+    journal_seq: int
+
+    async def validate_on(self, db, conn, batch, *, task_id: str, reason: str) -> dict:
+        request = self.decision.request
+        if current_policy_ejection(db, batch["id"], task_id, reason) is not self:
+            raise EngineRefused("policy ejection escaped its root operation")
+        current = await db.lock_integration_subject_on(conn, self.subject.id)
+        current_subject = Subject.from_row(current) if current is not None else None
+        identity_fields = (
+            "id", "version", "project_id", "repository_id", "kind", "engine", "phase",
+            "policy", "batch_id", "target_ref", "head_sha", "base_sha", "generation",
+        )
+        if current is None or (
+            current["engine"] != SubjectEngine.RECONCILER.value
+            or any(
+                getattr(current_subject, field) != getattr(self.subject, field)
+                for field in identity_fields
+            )
+            or (batch["project_id"], batch["repository_id"], batch["current_revision"])
+            != (self.subject.project_id, self.subject.repository_id, self.subject.generation)
+        ):
+            raise EngineRefused("policy ejection subject/batch identity changed")
+        from src.database.tables import integration_subject_journal
+
+        journal = (
+            (
+                await conn.execute(
+                    select(integration_subject_journal).where(
+                        integration_subject_journal.c.seq == self.journal_seq,
+                        integration_subject_journal.c.subject_id == self.subject.id,
+                    )
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if journal is None or _ejection_decision(self.subject, request, journal) != self.decision:
+            raise EngineRefused("policy ejection decision changed")
+        return {
+            "subject_id": self.subject.id,
+            "subject_version": self.subject.version,
+            "rule": self.decision.rule,
+            "policy_artifact_sha256": self.subject.policy.artifact_sha256,
+            "playbook_id": self.subject.policy.playbook_id,
+            "decision_seq": self.journal_seq,
+            "facts_digest": self.decision.facts_digest,
+        }
+
+
+def _ejection_decision(subject, request, journal) -> Decision:
+    from pydantic import ValidationError
+
+    try:
+        decision = Decision.model_validate(journal["payload"].get("decision", {}))
+    except ValidationError as exc:
+        raise EngineRefused("invalid policy ejection decision") from exc
+    if (
+        not isinstance(request, EjectArgs)
+        or decision.request != request
+        or (decision.subject_id, decision.subject_version, decision.policy)
+        != (subject.id, subject.version, subject.policy)
+        or (
+            journal["subject_id"], journal["subject_version"], journal["mode"],
+            journal["entry_kind"], journal["primitive"], journal["rule"],
+            journal["facts_digest"], journal["policy_artifact_sha256"],
+            journal["head_sha"], journal["generation"], journal["phase"],
+        ) != (
+            subject.id, subject.version, "active", "decision", "eject", decision.rule,
+            decision.facts_digest, subject.policy.artifact_sha256,
+            subject.head_sha, subject.generation, subject.phase.value,
+        )
+    ):
+        raise EngineRefused("policy ejection decision identity mismatch")
+    return decision
+
+
+@contextmanager
+def root_policy_ejection(subject, request, journal):
+    """Bind server-derived authority; request arguments cannot create this scope."""
+    authority = RootPolicyEjection(
+        subject, _ejection_decision(subject, request, journal), journal["seq"]
+    )
+    token = _ejection.set(authority)
+    try:
+        yield authority
+    finally:
+        _ejection.reset(token)
+
+
+def current_policy_ejection(db, batch_id, task_id, reason) -> RootPolicyEjection | None:
+    from src.commands.principal import PrincipalKind, current_principal
+
+    authority, scope, principal = _ejection.get(), _scope.get(), current_principal()
+    if (
+        authority is None
+        or scope is None
+        or scope[0] is not db
+        or scope[1] != authority.subject.repository_id
+        or scope[2] is not SubjectEngine.RECONCILER
+        or scope[3] is not asyncio.current_task()
+        or principal is None
+        or principal.kind is not PrincipalKind.SERVICE
+        or principal.service_name != "root-reconciler"
+        or authority.subject.batch_id != batch_id
+        or not isinstance(authority.decision.request, EjectArgs)
+        or authority.decision.request.member_task_id != task_id
+        or authority.decision.request.reason != reason
+    ):
+        return None
+    return authority
 
 
 @contextmanager

@@ -53,6 +53,9 @@ evidence from the frozen producer and check set, each pushed from its recorded
 expected-old base; the red head never reached `main`; delivery receipts bind
 the exact reviewed heads. Held (`hold:` label), rejected and ejected sources keep
 their branch, open PR, review and labels, and gain no delivery receipt.
+Policy ejections audit `service:root-reconciler` and the exact committed subject
+version, rule and artifact (`sharp-forge-57`); the never-claimed writer scenario
+checks these identities against the decision journal.
 
 ## Fixes the scenarios required
 
@@ -93,8 +96,6 @@ Each fix below is load-bearing: reverting any one makes a scenario stall
 - The shared `CIAdapters._matches` compares the candidate head with
   `Subject.head` (the publication ref). It is not in this base and was already
   reported by `vivid-willow.5`; the scenarios use the root CI fallback.
-- Ejection runs under the reconciler's default principal, so its audit event
-  names `human:local-operator`, not the policy decision (`sharp-forge-57`).
 - A claimed writer whose candidate ref already moved beyond its stage start
   (the builder's partial publication) reads `working` before it pushes. Only
   attempt counting could be affected, and CI is never observed in that phase

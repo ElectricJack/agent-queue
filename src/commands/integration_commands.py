@@ -852,14 +852,20 @@ class IntegrationCommandsMixin:
         return await self._integration_control_service().flush(project_id)
 
     async def _cmd_integration_eject(self, args: dict) -> dict:
+        from src.integration.engine import current_policy_ejection
+
         batch_id = str(args.get("batch_id") or "")
         task_id = str(args.get("task_id") or "")
         reason = str(args.get("reason") or "")
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
-        operator_id, refusal = await self._integration_operator_for_batch(batch_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
+        policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
+        if policy_ejection is not None:
+            operator_id = "service:root-reconciler"
+        else:
+            operator_id, refusal = await self._integration_operator_for_batch(batch_id)
+            if refusal is not None:
+                return _failure("unauthorized", refusal)
 
         async def observe_resolution(resolution):
             batch = await self.db.get_integration_batch(resolution["batch_id"])
@@ -876,6 +882,7 @@ class IntegrationCommandsMixin:
             reason=reason,
             operator_id=operator_id,
             resolution_observer=observe_resolution,
+            **({"policy_ejection": policy_ejection} if policy_ejection is not None else {}),
         )
 
     async def _reconcile_integration_completion(self, project_id: str) -> None:

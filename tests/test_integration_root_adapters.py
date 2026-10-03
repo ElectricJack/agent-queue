@@ -11,6 +11,8 @@ from sqlalchemy import insert, select, update
 
 from src.commands.contracts.integration import register_integration_contracts
 from src.commands.contracts.registry import ContractRegistry
+from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.principal import ExecutionPrincipal, current_principal, principal_context
 from src.database import tables as t
 from src.integration.engine import EngineRefused, RootEngineOwnership
 from src.integration.models import BranchKey, Fence
@@ -23,6 +25,7 @@ from src.integration.subjects import (
     CIRequestArgs,
     CleanupArgs,
     Decision,
+    EjectArgs,
     HeadIdentity,
     JournalMode,
     PolicyArtifactPin,
@@ -46,6 +49,7 @@ from src.integration.subjects import (
     WriterStatus,
 )
 from src.playbooks.integration_policy import IntegrationPolicyFacts
+from tests.pg_trigger_helpers import suspended_trigger
 from tests.test_integration_main_promotion import (
     BASE,
     BRANCH,
@@ -163,6 +167,123 @@ async def prewrite(db, subject, request):
             "recorded_at": 10,
         }
     )
+
+
+async def test_policy_ejection_admits_only_the_exact_task_local_command(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    args = EjectArgs(member_task_id="root-0", reason="budget exhausted")
+    await prewrite(db, subject, args)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    validated = []
+
+    async def eject(batch_id, **kwargs):
+        assert kwargs["operator_id"] == "service:root-reconciler"
+        async with db.immediate() as conn:
+            batch = await db.get_integration_batch(batch_id)
+            validated.append(await kwargs["policy_ejection"].validate_on(
+                db, conn, batch, task_id=kwargs["task_id"], reason=kwargs["reason"],
+            ))
+        return {"outcome": "ejected"}
+
+    control = SimpleNamespace(eject=AsyncMock(side_effect=eject))
+    handler._integration_control_service = lambda: control
+
+    async def execute(name, payload):
+        assert name == "integration_eject"
+        assert current_principal().describe() == "service:root-reconciler"
+        for changed in (
+            {"batch_id": "other"}, {"task_id": "root-1"}, {"reason": "other"},
+        ):
+            assert (await handler._cmd_integration_eject(payload | changed))["outcome"] == (
+                "unauthorized"
+            )
+        # No operator controls, even with the active policy scope.
+        assert (await handler._integration_operator_for_batch("batch"))[1] is not None
+        inherited = await asyncio.create_task(handler._cmd_integration_eject(payload))
+        assert inherited["outcome"] == "unauthorized"
+        return await handler._cmd_integration_eject(payload)
+
+    observer = SimpleNamespace(observe=AsyncMock(return_value=facts(subject)))
+    ports = RootPrimitiveAdapters(db, SimpleNamespace(execute=execute), observer).bind(
+        PrimitivePorts()
+    )
+    with principal_context(ExecutionPrincipal.service("outer-service")):
+        result = await ports.invoke(subject, args)
+        assert current_principal().describe() == "service:outer-service"
+    assert result.outcome == "ejected"
+    assert validated == [{
+        "subject_id": subject.id, "subject_version": subject.version, "rule": "test-policy",
+        "policy_artifact_sha256": PIN.artifact_sha256, "playbook_id": PIN.playbook_id,
+        "decision_seq": (await db.list_integration_subject_journal(subject.id))[-1]["seq"],
+        "facts_digest": facts(subject).digest(),
+    }]
+    control.eject.assert_awaited_once()
+    for service in ("root-reconciler", "other-service"):
+        with principal_context(ExecutionPrincipal.service(service)):
+            result = await handler._cmd_integration_eject({
+                "batch_id": "batch", "task_id": args.member_task_id, "reason": args.reason,
+                "policy_decision": validated[0],
+            })
+            assert result["outcome"] == "unauthorized"
+    assert control.eject.await_count == 1
+
+
+@pytest.mark.parametrize("changed", ["version", "engine", "generation", "rule", "artifact"])
+async def test_policy_ejection_rechecks_durable_authority_in_its_transaction(root, changed):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    args = EjectArgs(member_task_id="root-0", reason="budget exhausted")
+    await prewrite(db, subject, args)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+
+    async def eject(batch_id, **kwargs):
+        async with db.immediate() as conn:
+            if changed in {"version", "engine"}:
+                await conn.execute(update(t.integration_subjects).values(**{
+                    changed: subject.version + 1 if changed == "version" else "legacy",
+                }))
+            elif changed == "generation":
+                await conn.execute(update(t.integration_batches).values(current_revision=1))
+            else:
+                journal = (await conn.execute(select(t.integration_subject_journal).where(
+                    t.integration_subject_journal.c.primitive == "eject",
+                ))).mappings().one()
+                payload = journal["payload"]
+                if changed == "artifact":
+                    payload["decision"]["policy"]["artifact_sha256"] = "sha256:" + "2" * 64
+                async with suspended_trigger(
+                    conn, table="integration_subject_journal",
+                    name="integration_subject_journal_append_only",
+                ):
+                    await conn.execute(update(t.integration_subject_journal).where(
+                        t.integration_subject_journal.c.seq == journal["seq"],
+                    ).values(**({"rule": "other"} if changed == "rule" else {"payload": payload})))
+            # Read on the same connection to see the uncommitted generation change.
+            batch = (await conn.execute(select(t.integration_batches))).mappings().one()
+            await kwargs["policy_ejection"].validate_on(
+                db, conn, batch, task_id=kwargs["task_id"], reason=kwargs["reason"],
+            )
+        pytest.fail("changed policy authority must refuse before mutation/audit")
+
+    handler._integration_control_service = lambda: SimpleNamespace(eject=eject)
+
+    async def execute(name, payload):
+        return await handler._cmd_integration_eject(payload)
+
+    ports = RootPrimitiveAdapters(
+        db, SimpleNamespace(execute=execute),
+        SimpleNamespace(observe=AsyncMock(return_value=facts(subject))),
+    ).bind(PrimitivePorts())
+    result = await ports.invoke(subject, args)
+    assert result.outcome == "unknown"
+    assert "changed" in result.reason or "mismatch" in result.reason
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(t.events).where(
+            t.events.c.event_type == "integration.batch_ejected",
+        ))).first() is None
 
 
 def publish_args(subject):

@@ -54,6 +54,15 @@ Root publication additionally checks exact trusted green and the real publisher
 fence. `RootPromotionService` remains the App-attestation, expected-old push,
 ambiguous-write read-back and authoritative member-receipt implementation.
 
+Policy ejection binds `service:root-reconciler` and the exact active decision to
+the current asyncio task inside the repository exclusion. Only the matching
+`integration_eject` batch, member and reason may use this authority. The ejection
+transaction locks and revalidates the subject version, engine, batch generation,
+policy pin and committed decision before mutation. Its audit records the subject
+id/version, rule, artifact, journal sequence and facts digest as `policy_decision`.
+Other operator controls retain their operator checks; an unbound service or an
+inherited child task cannot use this ejection authority.
+
 Receipt records bind the member's reviewed source head and the exact published
 target, including its base. Attempts count a conclusive trusted observation of
 one working writer head once per ordinal; reruns and new evidence IDs do not
