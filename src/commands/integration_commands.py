@@ -3309,7 +3309,9 @@ class IntegrationCommandsMixin:
             return await self._development_integration().adopt(
                 project_id=args["project_id"], task_ids=args["task_ids"],
                 target_ref=args["target_ref"], head_sha=args["head_sha"], reason=args["reason"],
-                operator_id=operator_id, accept_equivalent=args.get("accept_equivalent", False))
+                operator_id=operator_id, accept_equivalent=args.get("accept_equivalent", False),
+                settle_delivered_children=args.get("settle_delivered_children", False),
+                dry_run=args.get("dry_run", False))
         except (ValueError, RuntimeError, KeyError) as exc:
             return _failure("blocked", str(exc))
 

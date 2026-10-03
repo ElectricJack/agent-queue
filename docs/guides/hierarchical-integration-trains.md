@@ -673,6 +673,23 @@ Changed sources, unproved completion generations, other targets and failed Git
 observations supply no delivery proof. Holds, open gates and exact review rules
 still control admission of any remaining candidate.
 
+### Settle a parent whose children arrived through other routes
+
+When every child is already delivered to the default branch, an obsolete
+aggregate verifier can keep its managed parent PAUSED. A local operator or live
+project supervisor can use `aq integration adopt <project> --task <parent>
+--head-sha <current-main-sha> --settle-delivered-children --dry-run --reason '<why>'`
+to observe the exact child completion sources. Omit `--dry-run` to cancel the
+obsolete collection, retire detached delegates and record an audited operator
+completion. Equivalent replacements also require `--accept-equivalent`.
+The recovery refuses pending or unknown child sources, retained
+writers, manual holds, open gates and reconciler engine ownership. It records
+`not_ci_attested` without adding CI or parent-verification evidence.
+
+`aq doctor --check integration.delivered_children_unsettled_parent` reports this
+state and its recovery command. See [the recovery steps and
+blockers](integration-troubleshooting.md#all-children-reached-main-but-the-aggregate-verifier-is-stranded).
+
 ### Epic delivery in the dashboard
 
 Epic cards and the task detail views show implementation progress
