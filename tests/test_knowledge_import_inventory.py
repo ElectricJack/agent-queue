@@ -40,32 +40,68 @@ IMPORT_TABLES = ("record_import_runs", "record_legacy_mappings", "record_import_
 
 
 @pytest.mark.migration
-async def test_import_inventory_migration_downgrade_roundtrip():
-    """Downgrading off a060 drops exactly the three import tables; re-upgrade restores them.
+async def test_import_inventory_migration_deploys_rolls_back_and_replays():
+    """The revision owns both install kinds, on a disposable database.
 
-    The squashed baseline builds the whole table set from ``metadata``
-    (``create_all``), so a fresh scratch database already materializes these
-    tables before the first upgrade. What the migration owns is therefore the
-    *downgrade* direction: stepping back to a059 must drop the three tables
-    (and only via the migration), and stepping forward again must restore
-    them from the same ``metadata``.
+    A fresh install's squashed baseline is built from live metadata
+    (``create_all``), so the tables already exist there and the revision must
+    stay a no-op. For a deployed install at the previous revision the tables
+    never existed: construct that state explicitly by dropping only the three
+    empty new tables in reverse dependency order, then verify upgrade,
+    metadata equality, downgrade, re-upgrade, and a re-run over the current
+    schema.
     """
+    from importlib import import_module
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
     engine = create_postgres_engine(await create_scratch_database("import-inventory60"))
     try:
-        await _alembic(engine, "upgrade", REVISION)
-        names = await _table_names(engine)
-        assert set(IMPORT_TABLES) <= names, f"missing after upgrade: {IMPORT_TABLES - names}"
+        await _alembic(engine, "upgrade", previous_revision(REVISION))
 
+        # Fresh baseline: already materialized from live metadata before the
+        # revision runs -- the revision's upgrade is idempotent here.
+        names = await _table_names(engine)
+        assert set(IMPORT_TABLES) <= names
+
+        # Deployed install at a059: never had the three tables. Drop them in
+        # reverse dependency order (items references runs; runs references the
+        # pre-existing record_scopes).
+        async with engine.begin() as conn:
+            await conn.execute(sa.text('DROP TABLE "record_import_items"'))
+            await conn.execute(sa.text('DROP TABLE "record_import_runs"'))
+            await conn.execute(sa.text('DROP TABLE "record_legacy_mappings"'))
+        names = await _table_names(engine)
+        assert not (set(IMPORT_TABLES) & names), (
+            f"pre-upgrade state wrong: {set(IMPORT_TABLES) & names}"
+        )
+
+        # The revision's own upgrade creates them from the shared metadata.
+        await _alembic(engine, "upgrade", REVISION)
+        await _assert_matches_metadata(engine)
+
+        # Down removes exactly what up added; up again restores it.
         await _alembic(engine, "downgrade", previous_revision(REVISION))
         names = await _table_names(engine)
         assert not (set(IMPORT_TABLES) & names), (
             f"import tables survived downgrade: {set(IMPORT_TABLES) & names}"
         )
-
-        # Re-upgrade restores them from the same metadata source of truth.
         await _alembic(engine, "upgrade", REVISION)
-        names = await _table_names(engine)
-        assert set(IMPORT_TABLES) <= names, f"missing after re-upgrade: {IMPORT_TABLES - names}"
+        await _assert_matches_metadata(engine)
+
+        # Replay: the body itself is idempotent over the current schema.
+        revision = import_module("migrations.versions.a00000000060_knowledge_import_inventory")
+
+        def rerun(sync):
+            with Operations.context(MigrationContext.configure(sync)):
+                revision.upgrade()
+                revision.upgrade()
+
+        async with engine.begin() as conn:
+            await conn.run_sync(rerun)
+        await _assert_matches_metadata(engine)
     finally:
         await engine.dispose()
 
@@ -114,6 +150,46 @@ async def test_import_inventory_tables_match_metadata():
         assert {"manifest_sha256", "state", "cursor", "report"} <= live["record_import_runs"]
     finally:
         await engine.dispose()
+
+
+async def _assert_matches_metadata(engine) -> None:
+    """Live columns and named constraints of the three tables equal ``metadata``."""
+    from src.database.tables import metadata
+
+    def shape(sync):
+        inspector = inspect(sync)
+        return {
+            name: {
+                "columns": {c["name"] for c in inspector.get_columns(name)},
+                "primary_key": list(inspector.get_pk_constraint(name)["constrained_columns"]),
+                "checks": {c["name"] for c in inspector.get_check_constraints(name)},
+                "uniques": {
+                    tuple(sorted(u["column_names"]))
+                    for u in inspector.get_unique_constraints(name)
+                },
+            }
+            for name in IMPORT_TABLES
+        }
+
+    async with engine.begin() as conn:
+        live = await conn.run_sync(shape)
+
+    for name in IMPORT_TABLES:
+        table = metadata.tables[name]
+        expected = {
+            "columns": {c.name for c in table.columns},
+            "primary_key": [c.name for c in table.primary_key.columns],
+            "checks": {
+                c.name for c in table.constraints
+                if c.__class__.__name__ == "CheckConstraint"
+            },
+            "uniques": {
+                tuple(sorted(c.name for c in u.columns)) for u in table.constraints
+                if u.__class__.__name__ == "UniqueConstraint"
+            },
+        }
+        for key, want in expected.items():
+            assert want == live[name][key], f"{name}.{key}: {want ^ live[name][key]}"
 
 
 # ---------------------------------------------------------------------------
