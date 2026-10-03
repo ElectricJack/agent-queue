@@ -12,6 +12,8 @@ worth reading for the reasoning, not for the current numbers.
 
 | Date | Page | File |
 |---|---|---|
+| 2026-10-02 | Token-efficiency epic: integration check, baseline and staged rollout | [`2026-10-02-token-efficiency-rollout.md`](2026-10-02-token-efficiency-rollout.md) |
+| 2026-10-01 | Claude streaming usage and production-ledger reconciliation | [`2026-10-01-claude-usage-reconciliation.md`](2026-10-01-claude-usage-reconciliation.md) |
 | 2026-09-02 | Pools final acceptance | [`2026-09-02-pools-final-acceptance.md`](2026-09-02-pools-final-acceptance.md) |
 | 2026-09-01 | Resource gating — manual verification, before and after | [`2026-09-01-resource-gating-verification.md`](2026-09-01-resource-gating-verification.md) |
 | 2026-08-28 | What makes beads work for agent swarms — and can Agent Queue match it? | [`2026-08-28-beads-properties-and-parity.md`](2026-08-28-beads-properties-and-parity.md) |

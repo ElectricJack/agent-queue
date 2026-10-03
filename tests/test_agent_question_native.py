@@ -23,6 +23,8 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions import SessionProviderRegistry
 from src.sessions import questions as questions_module
 from src.sessions.fake import FakeProvider
+from src.sessions.harness_parser import Harness
+from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.native_questions import (
     OpenCodeQuestionStore,
     parse_native_turn_id,
@@ -381,6 +383,30 @@ def test_unreadable_store_is_unknown_not_empty(tmp_path):
     assert OpenCodeQuestionStore(broken).snapshot(str(tmp_path), 0) is None
     assert resolve_native_question_source("claude") is None
     assert isinstance(resolve_native_question_source("opencode"), OpenCodeQuestionStore)
+
+
+def test_a_second_harness_on_the_opencode_cli_shares_its_store():
+    # ``opencode-zen`` runs the same executable against OpenCode Zen, so its
+    # question dialogs land in the same store and must be read (noble-delta-40).
+    registry = HarnessRegistry()
+    registry.upsert(Harness(
+        id="opencode-zen", command="/home/u/.agent-queue/harness-bin/opencode",
+        provider="opencode",
+    ))
+    registry.upsert(Harness(id="claude-alt", command="claude"))
+
+    def store(harness):
+        return resolve_native_question_source(harness, registry=registry)
+
+    assert isinstance(store("opencode-zen"), OpenCodeQuestionStore)
+    assert isinstance(store("opencode"), OpenCodeQuestionStore)
+    assert store("claude-alt") is None
+    assert resolve_native_question_source("opencode-zen") is None  # no registry: id only
+    # The service's default resolver is the registry-aware one.
+    db = type("NoDb", (), {})()  # the lock table holds it weakly
+    service = AgentQuestionService(db, None, None, None, harness_registry=registry)
+    assert isinstance(service._native_source("opencode-zen"), OpenCodeQuestionStore)
+    assert service._native_source("claude-alt") is None
 
 
 @pytest.mark.parametrize(

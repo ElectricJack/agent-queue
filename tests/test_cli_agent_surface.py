@@ -266,7 +266,7 @@ class TestTaskCreateCLI:
 
         mock = _mock_client({"prime": {"success": True, "body": "primed body"}})
         with patch("src.cli.agent_surface._get_client", return_value=mock):
-            result = runner.invoke(cli, ["prime", "--task-id", "task-1", "--hook-format", "codex"])
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1", "--hook-format", "other"])
         assert result.output.strip() == "primed body"
 
     def test_suppressed_when_startup_prompt_already_delivered(self, runner, monkeypatch):
@@ -626,3 +626,36 @@ class TestStructuredHandoffCLI:
                 },
             )
         ]
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_compaction_hook_reprime_bypasses_startup_suppression(runner, monkeypatch, harness, source):
+    from src.cli.app import cli
+
+    monkeypatch.setenv("AQ_STARTUP_PROMPT_DELIVERED", "1")
+    mock = _mock_client({"prime": {"success": True, "body": "Saved continuation and human gate"}})
+    with patch("src.cli.agent_surface._get_client", return_value=mock):
+        result = runner.invoke(
+            cli, ["prime", "--task-id", "task-1", "--hook-format", harness],
+            input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
+        )
+    assert result.exit_code == 0, result.output
+    assert len(mock.calls) == 1
+    assert json.loads(result.output)["hookSpecificOutput"]["additionalContext"] == (
+        "Saved continuation and human gate")
+
+
+def test_handoff_cli_preserves_constraints_and_exact_evidence(runner):
+    from src.cli.app import cli
+
+    mock = _mock_client({"task_handoff": {"success": True}})
+    with patch("src.cli.agent_surface._get_client", return_value=mock):
+        result = runner.invoke(cli, [
+            "handoff", "--auto", "--task-id", "task-1", "--constraint", "Await human gate",
+            "--evidence", "aq test tests/test_x.py: failed; raw /tmp/failure.log",
+        ])
+    assert result.exit_code == 0, result.output
+    assert mock.calls[0][1]["constraints"] == ["Await human gate"]
+    assert mock.calls[0][1]["evidence"] == [
+        "aq test tests/test_x.py: failed; raw /tmp/failure.log"]

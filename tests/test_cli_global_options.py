@@ -380,3 +380,24 @@ class TestInstaller:
         assert len(json_params) == 1
         assert json_params[0].expose_value is True
         assert {"--brief", "--api-url"} <= {opt for p in cmd.params for opt in p.opts}
+
+
+@pytest.mark.parametrize("position", ["prefix", "group", "trailing"])
+def test_saved_output_receipt_is_position_independent(runner, tmp_path, position):
+    from src.cli.app import cli
+
+    destination = tmp_path / "evidence.json"
+    option = ["--save-output", str(destination)]
+    argv = ["--json", "task", "list"]
+    index = {"prefix": 1, "group": 2, "trailing": 3}[position]
+    argv[index:index] = option
+    client = _mock_client({"list_tasks": {
+        "tasks": [{"id": "task-1", "log": "exact large evidence"}], "total": 1,
+    }})
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(result.output)["data"]["saved_output"]
+    saved = json.loads(destination.read_text())
+    assert saved["data"][0]["log"] == "exact large evidence"
+    assert receipt["path"] == str(destination)

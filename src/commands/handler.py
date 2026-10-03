@@ -44,6 +44,7 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
@@ -390,6 +391,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
     CollaborationLifecycleMixin,
     EscalationCommandsMixin,

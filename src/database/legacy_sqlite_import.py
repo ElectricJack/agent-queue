@@ -188,6 +188,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "integration_source_ci",
         # Exact per-root operator authorizations shipped in revision 54.
         "integration_root_authorizations",
+        # Per-API-call transcript usage maxima shipped in revision 55.
+        "transcript_usage_calls",
     }
 )
 

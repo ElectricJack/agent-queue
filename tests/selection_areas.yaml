@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: knowledge-records
+    description: "Durable record identities, knowledge schema and immutable revision integrity."
+    match: [tests/test_record*.py, tests/test_knowledge*.py, tests/test_api_knowledge.py]
   # ---------------------------------------------------------------- tasks
   - id: task-lifecycle
     description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
@@ -354,6 +357,7 @@ areas:
     match:
       - tests/test_integration_state.py
       - tests/test_integration_service.py
+      - tests/test_integration_stall_recovery.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_settling.py
@@ -568,6 +572,7 @@ areas:
       - tests/test_cli_formatters.py
       - tests/test_cli_global_options.py
       - tests/test_cli_menus.py
+      - tests/test_cli_knowledge.py
       - tests/test_cli_module_entry.py
       - tests/test_cli_module_map.py
       - tests/test_cli_startup_offline.py
@@ -688,6 +693,9 @@ areas:
     match: [tests/test_editor_*.py]
 
   # ------------------------------------------------------------ vault, memory, prompts
+  - id: knowledge-inventory
+    description: "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests."
+    match: [tests/test_knowledge_inventory.py]
   - id: vault
     description: "The vault: directory initialization, central path resolution, the consolidated migration, the watcher and its service facade, index generation and summaries, glossary, wiki links and aq:// URIs, and vault CLI commands."
     match:

@@ -211,7 +211,9 @@ async def _seeded_source(tmp_path) -> str:
     ledger = source_metadata.tables["token_ledger"]
     ledger.indexes = {
         index for index in ledger.indexes
-        if index.name not in {"idx_token_ledger_task_attempt", "uq_token_ledger_call"}
+        if index.name not in {
+            "idx_token_ledger_task_attempt", "uq_token_ledger_call", "idx_token_ledger_call_id",
+        }
     }
     for name in ("session_id", "attempt_id", "call_id", "model_source"):
         ledger._columns.remove(ledger.c[name])

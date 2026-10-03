@@ -34,6 +34,7 @@ from src.integration.cancelled_collection_recovery import (
     _ProofFailed,
 )
 from src.integration.models import BranchKey, Fence
+from src.integration.verifier_subject import verifier_subject_on
 
 RECOVERY_EVENT = "integration.failed_verification_collection_reopened"
 FAILED_AGGREGATE_META_KEY = "integration_failed_aggregate"
@@ -144,22 +145,28 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
         failure = (
             (
                 await conn.execute(
-                    select(task_completion_records)
-                    .where(task_completion_records.c.task_id == verifier_id)
-                    .order_by(
-                        task_completion_records.c.completed_at.desc(), task_completion_records.c.id
+                    guarded(
+                        select(task_completion_records)
+                        .where(task_completion_records.c.task_id == verifier_id)
+                        .order_by(
+                            task_completion_records.c.completed_at.desc(),
+                            task_completion_records.c.id,
+                        )
+                        .limit(1)
                     )
-                    .limit(1)
                 )
             )
             .mappings()
             .one_or_none()
         )
+        commits_valid = True
         try:
             commits = json.loads(failure["commits"]) if failure else []
         except (TypeError, ValueError):
+            commits_valid = False
             commits = []
         if not isinstance(commits, list):
+            commits_valid = False
             commits = []
         if (
             verifier is None
@@ -172,14 +179,31 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             or failure["outcome"] != "fail"
             or failure["completed_at"] < episode["created_at"]
             or failure["branch"] != branch
-            or checkpoint["checkpoint_sha"] not in commits
+            or not commits_valid
         ):
             return refuse("the verifier has no settled failed completion for this exact head")
+        failure_subject = None
+        if checkpoint["checkpoint_sha"] not in commits:
+            if commits:
+                return refuse("the failed completion names a different head")
+            try:
+                failure_subject = await verifier_subject_on(
+                    conn, verifier_id=verifier_id, project_id=parent["project_id"],
+                    operation=operation, checkpoint=checkpoint, lock=lock,
+                )
+            except ValueError as exc:
+                return refuse(str(exc), "ambiguous")
+            if (
+                failure_subject is None
+                or failure_subject["created_at"] > failure["completed_at"]
+            ):
+                return refuse("the empty failed completion has no immutable subject for this head")
         report["delegates"] = [
             {
                 "task_id": verifier_id,
                 "status": verifier["status"],
                 "failure_completion_id": failure["id"],
+                "failure_subject": failure_subject,
             }
         ]
         subject_holds = {}
@@ -233,6 +257,7 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                 )
             ).mappings()
         ]
+        settled_repair_ids = set()
         for stage in stages:
             if stage["state"] not in {"passed", "failed", "expired", "cancelled"}:
                 return refuse(f"repair stage {stage['ordinal']} is still {stage['state']}")
@@ -248,6 +273,8 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                     or await self._live_holder_on(conn, delegate_id)
                 ):
                     return refuse(f"repair delegate {delegate_id} is not settled")
+                if delegate is not None:
+                    settled_repair_ids.add(delegate_id)
         owner = await row(
             integration_branch_owners,
             integration_branch_owners.c.repository_id == repo["id"],
@@ -260,12 +287,15 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             or owner["handoff_state"] not in {"released", "reserved"}
             or (owner["owner_role"], owner["owner_id"])
             not in {("verifier", verifier_id), ("collector", operation["id"])}
+            | {("repair", delegate_id) for delegate_id in settled_repair_ids}
         ):
             return refuse("the collection or failed verifier does not hold a detached fence")
         report["owner"] = dict(owner)
         from src.integration.recovery_controls import IntegrationRecoveryControls
 
-        ambiguous = await IntegrationRecoveryControls._ambiguous_writes_on(conn, operation)
+        ambiguous = await IntegrationRecoveryControls._ambiguous_writes_on(
+            conn, operation, allowed_writer_id=owner["id"]
+        )
         unsettled = await conn.scalar(
             select(integration_promotion_intents.c.id)
             .where(
@@ -350,6 +380,7 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             "owner": dict(owner),
             "stages": stages,
             "failure": dict(failure),
+            "failure_subject": failure_subject,
             "verifier": dict(verifier),
             "holds": subject_holds,
             "receipts": receipts,
@@ -453,6 +484,7 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                         "episode_id": facts["episode"]["id"],
                         "previous_verifier_task_id": operation["verifier_task_id"],
                         "failure_completion_id": facts["failure"]["id"],
+                        "failure_subject": facts["failure_subject"],
                         "previous_generation": checkpoint["generation"],
                         "generation": checkpoint["generation"] + 1,
                         "previous_owner": owner,

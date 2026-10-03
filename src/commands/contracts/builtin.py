@@ -419,6 +419,9 @@ class TaskRoutePlanValue(CommandValue):
     """One value for every ``task_route_plan`` outcome (§6.2); unused fields stay empty."""
 
     task_id: str | None = None
+    #: Bounded live observations. Shared headroom is not a reservation.
+    live_context: dict[str, Any] | None = None
+    live_summary: str | None = None
     intelligence_class: str | None = None
     profile_id: str | None = None
     provider: str | None = None
@@ -1988,3 +1991,8 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.handoff import register_handoff_contract
 
     register_handoff_contract(registry)
+    from src.commands.contracts.knowledge import register_knowledge_contracts
+    from src.commands.contracts.records import register_record_contracts
+
+    register_knowledge_contracts(registry)
+    register_record_contracts(registry)

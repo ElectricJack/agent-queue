@@ -390,7 +390,7 @@ class IntegrationCommandsMixin:
             _label, refusal = await integration_operator(self.db, repository.project_id)
             if refusal is not None:
                 return _failure("human_required", refusal)
-        if principal.kind is PrincipalKind.PLAYBOOK:
+        elif principal.kind is PrincipalKind.PLAYBOOK:
             explicitly_capable = not principal.unresolved and principal.policy.allows(
                 "aq_commands", "integration_transfer_owner"
             )
@@ -1270,12 +1270,13 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
-        """Reopen a cancelled collection or one stopped by a settled failed verifier."""
+        """Recover a suspended producer, cancelled collection or failed verifier."""
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReopenCollectionArgs
         from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
         from src.integration.failed_verification_recovery import FailedVerificationRecovery
+        from src.integration.suspended_parent_recovery import SuspendedParentRecovery
 
         try:
             request = IntegrationReopenCollectionArgs.model_validate(args)
@@ -1293,6 +1294,24 @@ class IntegrationCommandsMixin:
             return await repair.dispatch(operation_id, stage)
 
         checkpoint = await self.db.get_integration_checkpoint(request.task_id)
+        if checkpoint is not None and checkpoint["state"] == "awaiting_children":
+            owner = await BranchOwnership(self.db).get_owner(
+                BranchKey(repository_id=checkpoint["repository_id"], branch=checkpoint["branch"])
+            )
+            operation = await self.db.get_active_parent_integration_operation(request.task_id)
+            if (operation is not None and operation["state"] in {"active", "escalated"}
+                    and owner is not None and owner["owner_role"] == "worker"):
+                result = await SuspendedParentRecovery(
+                    self.db, self._hierarchy_integration_service()
+                ).run(
+                    request.task_id, dry_run=request.dry_run,
+                    expected_head_sha=request.expected_head_sha, reason=request.reason,
+                    operator_id=principal,
+                )
+                return {
+                    "success": result["outcome"] in {"would_reopen", "reopened", "nothing_to_reopen"},
+                    "dry_run": request.dry_run, **result,
+                }
         recovery_type = (
             FailedVerificationRecovery
             if checkpoint is not None and checkpoint["state"] in {"verifying", "integration_ready"}

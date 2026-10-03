@@ -87,6 +87,7 @@ class TestRegistry:
         from src.doctor.profile_checks import profile_checks
         from src.doctor.project_checks import project_checks
         from src.doctor.provider_checks import provider_checks
+        from src.doctor.record_checks import record_checks
         from src.doctor.resource_checks import resource_checks
         from src.doctor.review_checks import review_checks
         from src.doctor.routing_checks import routing_checks
@@ -124,6 +125,7 @@ class TestRegistry:
             | {c.id for c in review_checks()}
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
+            | {c.id for c in record_checks()}
         )
         assert set(reg.ids()) == expected
 

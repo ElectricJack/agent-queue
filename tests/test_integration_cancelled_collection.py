@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,11 +37,11 @@ from src.database.tables import (
     integration_repair_stages,
     playbook_artifacts,
     projects,
-    task_completion_records,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
-    task_integration_checkpoints,
     task_gates,
+    task_integration_checkpoints,
     tasks,
 )
 from src.git.manager import GitManager
@@ -64,8 +65,8 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.ownership import BranchOwnership, StaleFence
+from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
@@ -389,6 +390,48 @@ async def test_failed_verification_reopens_then_receipts_fix_and_wakes_fresh_ver
     assert completed["outcome"] == "completed", completed
 
 
+@pytest.mark.parametrize("owner_state", ["reserved", "released"])
+async def test_failed_verification_recovers_settled_repair_fence(case, owner_state):
+    red_head, _ = await _failed_aggregate(case)
+    repair_id = "settled-repair"
+    await case.db.create_task(Task(
+        id=repair_id, project_id="p", repo_id="repo", branch_name="aq/epic",
+        title="settled repair", description="no remaining writer", status=TaskStatus.COMPLETED,
+    ))
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=case.operation_id, ordinal=0, intelligence_class="high",
+            policy={}, trigger_id="red", starting_sha=red_head, current_subject={}, attempts=1,
+            deadline_at=20.0, deadline_event_id="deadline", state="expired",
+            repair_task_id=repair_id, writer_kind="existing_verifier",
+        ))
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.ref == "aq/epic")
+                           .values(owner_id=repair_id, owner_role="repair", handoff_state=owner_state))
+    old_stages = await _rows(case.db, integration_repair_stages)
+    old_owner = await _owner(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    assert (await recovery.run("epic"))["outcome"] == "would_reopen"
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                                reason="collect fix after settled repair", operator_id="operator")
+    assert result["outcome"] == "reopened", result
+    owner = await _owner(case)
+    assert owner["owner_role"] == "collector"
+    assert owner["fence_token"] > old_owner["fence_token"]
+    assert await _rows(case.db, integration_repair_stages) == old_stages
+
+
+async def test_failed_verification_refuses_unrelated_repair_fence(case):
+    await _failed_aggregate(case)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.ref == "aq/epic")
+                           .values(owner_id="unrelated-repair", owner_role="repair"))
+    result = await FailedVerificationRecovery(case.db, case.promotion).run("epic")
+    assert result["outcome"] == "blocked"
+    assert "detached fence" in result["reason"]
+
+
 @pytest.mark.parametrize("blocker", [
     "attached_owner", "wrong_owner", "remote_moved", "failure_missing", "failure_head",
     "manual_hold", "no_fix", "mutation", "repair_writer",
@@ -433,8 +476,12 @@ async def test_failed_verification_recovery_refuses_ambiguous_state(case, blocke
     assert await case.db.get_integration_checkpoint("epic") == checkpoint
 
 
-async def test_failed_verification_recovery_preserves_stage_budgets_and_human_gates(case):
-    red_head, _ = await _failed_aggregate(case)
+@pytest.mark.parametrize("missing_head", [False, True])
+async def test_failed_verification_recovery_preserves_stage_budgets_and_human_gates(case, missing_head):
+    if missing_head:
+        red_head, _, _ = await _empty_failure_subject(case)
+    else:
+        red_head, _ = await _failed_aggregate(case)
     async with case.db.immediate() as conn:
         await conn.execute(insert(integration_repair_stages).values(
             operation_id=case.operation_id, ordinal=1, policy={"attempt_limit": 3},
@@ -515,6 +562,149 @@ async def test_failed_verification_rechecks_remote_after_diagnosis(case, monkeyp
         return result
 
     monkeypatch.setattr(recovery, "_diagnose", move_after_proof)
+    owner = await _owner(case)
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head, reason="recover")
+    assert result["outcome"] == "changed", result
+    assert await _owner(case) == owner
+
+
+async def _empty_failure_subject(case):
+    """Legacy g3 failure while the mutable checkpoint has already reached g4."""
+    red_head, verifier_id = await _failed_aggregate(case)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    owner = await _owner(case)
+    payload = {
+        "project_id": "p", "operation_id": case.operation_id, "task_id": "epic",
+        "episode_id": checkpoint["episode_id"], "generation": 3, "head_sha": red_head,
+        "verifier_task_id": verifier_id, "target": {"repository_id": "repo", "branch": "aq/epic"},
+        "expected_token": owner["fence_token"], "next_owner_id": verifier_id,
+        "next_role": "verifier",
+    }
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_completion_records).values(
+            commits="[]", summary="prose is not trusted head evidence"))
+        await conn.execute(update(task_integration_checkpoints)
+                           .where(task_integration_checkpoints.c.task_id == "epic")
+                           .values(generation=4))
+        await conn.execute(insert(integration_outbox).values(
+            id="immutable-g3", dedup_key="immutable-g3", project_id="p",
+            event_type="task.integration_ready", payload=payload, available_at=20.0,
+            created_at=time.time(),
+        ))
+    return red_head, verifier_id, payload
+
+
+async def test_empty_failure_binds_immutable_subject_preserving_history_and_fresh_verifier(case):
+    red_head, verifier_id, subject = await _empty_failure_subject(case)
+    await case.db.update_task(verifier_id, retry_count=3)
+    await case.db.transition_task(verifier_id, TaskStatus.BLOCKED,
+                                  context="session_close_hard_failure", force=True)
+    completion = await _rows(case.db, task_completion_records)
+    verifier = await case.db.get_task(verifier_id)
+    stages = await _rows(case.db, integration_repair_stages)
+    outbox = await _rows(case.db, integration_outbox)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    diagnosis = await recovery.run("epic")
+    assert diagnosis["outcome"] == "would_reopen", diagnosis
+    binding = diagnosis["delegates"][0]["failure_subject"]
+    assert binding["outbox_id"] == "immutable-g3"
+    assert binding["subject"] == subject
+    assert await _rows(case.db, integration_outbox) == outbox
+    assert await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT) == []
+    applied = await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                                 reason="immutable g3 proof for empty failure", operator_id="operator")
+    assert applied["outcome"] == "reopened", applied
+    assert await _rows(case.db, task_completion_records) == completion
+    assert await case.db.get_task(verifier_id) == verifier
+    assert await _rows(case.db, integration_repair_stages) == stages
+    [audit] = await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT)
+    audit = json.loads(audit["payload"])
+    assert audit["failure_completion_id"] == completion[0]["id"]
+    assert audit["failure_subject"] == binding
+    assert (audit["previous_generation"], audit["generation"]) == (4, 5)
+    assert await _promote_next(case, 30.0) is not None
+    async with case.db.immediate() as conn:
+        ready = await case.hierarchy.parent_completion.mark_ready_on(conn, "epic")
+    assert ready["outcome"] == "ready", ready
+    assert ready["head_sha"] != red_head
+    assert (await _operation(case))["verifier_task_id"] != verifier_id
+
+
+@pytest.mark.parametrize("mismatch", [
+    "project_id", "operation_id", "task_id", "episode_id", "repository", "branch", "head_sha",
+    "next_owner_id", "next_role", "future_generation", "boolean_generation", "before_episode",
+    "early_event", "late_event", "missing_event", "duplicate_event", "malformed_commits", "nonempty_commits",
+    "attached_owner", "manual_hold", "remote_moved",
+])
+async def test_empty_failure_subject_refuses_mismatch_and_unsettled_writer(case, mismatch):
+    from src.database.tables import task_metadata
+
+    red_head, verifier_id, subject = await _empty_failure_subject(case)
+    subject = dict(subject)
+    async with case.db.immediate() as conn:
+        if mismatch in {"project_id", "operation_id", "task_id", "episode_id", "next_owner_id", "next_role"}:
+            subject[mismatch] = "unrelated"
+        elif mismatch in {"repository", "branch"}:
+            subject["target"] = {**subject["target"],
+                                 "repository_id" if mismatch == "repository" else "branch": "other"}
+        elif mismatch == "head_sha":
+            subject["head_sha"] = case.base
+        elif mismatch in {"future_generation", "boolean_generation"}:
+            subject["generation"] = 5 if mismatch == "future_generation" else True
+        elif mismatch == "before_episode":
+            subject["generation"] = -1
+        elif mismatch in {"early_event", "late_event"}:
+            await conn.execute(update(integration_outbox)
+                               .where(integration_outbox.c.id == "immutable-g3")
+                               .values(created_at=3e10 if mismatch == "late_event" else 1.0))
+        elif mismatch == "missing_event":
+            await conn.execute(delete(integration_outbox)
+                               .where(integration_outbox.c.id == "immutable-g3"))
+        elif mismatch == "duplicate_event":
+            await conn.execute(insert(integration_outbox).values(
+                id="another-subject", dedup_key="another-subject", project_id="p",
+                event_type="task.integration_ready", payload=subject, available_at=21.0,
+                created_at=time.time(),
+            ))
+        elif mismatch in {"malformed_commits", "nonempty_commits"}:
+            await conn.execute(update(task_completion_records).values(
+                commits="invalid" if mismatch == "malformed_commits" else json.dumps([case.base])))
+        elif mismatch == "attached_owner":
+            await conn.execute(update(integration_branch_owners).values(
+                handoff_state="attached", session_id="still-running"))
+        elif mismatch == "manual_hold":
+            await conn.execute(insert(task_metadata).values(
+                task_id=verifier_id, key="manual_pause", value="true"))
+        await conn.execute(update(integration_outbox)
+                           .where(integration_outbox.c.id == "immutable-g3").values(payload=subject))
+    if mismatch == "remote_moved":
+        _git(["push", "origin", f"{case.base}:refs/heads/aq/epic", "--force"], case.work)
+    owner = await _owner(case)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    completion = await _rows(case.db, task_completion_records)
+    result = await FailedVerificationRecovery(case.db, case.promotion).run(
+        "epic", dry_run=False, expected_head_sha=red_head, reason="must not accept ambiguous evidence")
+    assert result["outcome"] in {"blocked", "ambiguous"}, result
+    assert await _owner(case) == owner
+    assert await case.db.get_integration_checkpoint("epic") == checkpoint
+    assert await _rows(case.db, task_completion_records) == completion
+    assert await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT) == []
+
+
+async def test_empty_failure_rechecks_frozen_subject_after_diagnosis(case, monkeypatch):
+    red_head, _, subject = await _empty_failure_subject(case)
+    recovery = FailedVerificationRecovery(case.db, case.promotion)
+    original = recovery._diagnose
+
+    async def change_after_proof(task_id):
+        result = await original(task_id)
+        async with case.db.immediate() as conn:
+            await conn.execute(update(integration_outbox)
+                               .where(integration_outbox.c.id == "immutable-g3")
+                               .values(payload={**subject, "head_sha": case.base}))
+        return result
+
+    monkeypatch.setattr(recovery, "_diagnose", change_after_proof)
     owner = await _owner(case)
     result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head, reason="recover")
     assert result["outcome"] == "changed", result

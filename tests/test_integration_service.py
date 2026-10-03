@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,7 +21,12 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
 )
-from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration import outbox as outbox_module
+from src.integration.models import (
+    DEFAULT_INTEGRATION_MAX_WAIT_SECONDS,
+    HierarchicalIntegrationPolicy,
+    integration_max_wait_seconds,
+)
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.service import IntegrationService as _IntegrationService
 from src.integration.settling import note_approval
@@ -204,6 +210,88 @@ def test_policy_uses_compatible_rebuild_and_cleanup_defaults():
             }
         )
 
+
+
+def _minimal_policy_values() -> dict:
+    artifact = {
+        "playbook_id": "root-integration",
+        "artifact_sha256": "sha256:" + "a" * 64,
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "source_digest": "sha256:" + "c" * 64,
+        "compiler_build": "test",
+        "compiled_at": "2026-09-05T00:00:00Z",
+        "version": 1,
+    }
+    boundary = {
+        "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        "repair": {"debug_intelligence_class": "debug-high"},
+        "route": {
+            "playbook_id": "root-integration",
+            "scope": "project",
+            "scope_identifier": "p",
+            "artifact": artifact,
+        },
+    }
+    return {
+        "parent": boundary,
+        "root": boundary,
+        "branchless_parent": "verifier",
+        "on_failed_child": "block",
+    }
+
+
+def test_policy_max_wait_defaults_to_one_hour_without_changing_frozen_snapshots():
+    values = _minimal_policy_values()
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+    dumped = policy.model_dump(mode="json")
+
+    assert DEFAULT_INTEGRATION_MAX_WAIT_SECONDS == 3600.0
+    assert outbox_module.DEFAULT_MAX_WAIT_SECONDS == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
+    assert policy.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
+    # Batches, operations and stages compare stored snapshots by dict
+    # equality, so a default policy must dump exactly as it did before.
+    assert "max_wait_seconds" not in dumped
+    assert "max_wait_seconds" not in policy.model_dump()
+    assert "max_wait_seconds" not in json.loads(policy.model_dump_json())
+    assert HierarchicalIntegrationPolicy.model_validate(dumped).model_dump(mode="json") == dumped
+    explicit = HierarchicalIntegrationPolicy.model_validate({**values, "max_wait_seconds": 3600})
+    assert explicit == policy
+    assert explicit.model_dump(mode="json") == dumped
+
+
+def test_policy_max_wait_round_trips_a_configured_bound():
+    policy = HierarchicalIntegrationPolicy.model_validate(
+        {**_minimal_policy_values(), "max_wait_seconds": 120}
+    )
+
+    assert policy.max_wait_seconds == 120.0
+    dumped = policy.model_dump(mode="json")
+    assert dumped["max_wait_seconds"] == 120.0
+    assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
+
+
+@pytest.mark.parametrize(
+    "max_wait", [0, -1, float("inf"), float("-inf"), float("nan"), None, "soon"]
+)
+def test_policy_max_wait_must_be_finite_and_positive(max_wait):
+    with pytest.raises(ValueError, match="max_wait_seconds"):
+        HierarchicalIntegrationPolicy.model_validate(
+            {**_minimal_policy_values(), "max_wait_seconds": max_wait}
+        )
+
+
+def test_project_max_wait_falls_back_to_the_default_without_a_hierarchical_policy():
+    configured = {**_minimal_policy_values(), "max_wait_seconds": 90}
+
+    assert integration_max_wait_seconds(configured) == 90.0
+    assert integration_max_wait_seconds(_minimal_policy_values()) == 3600.0
+    # Unconfigured and development-mode projects cannot name a bound; a
+    # stored policy that no longer validates must not become unbounded.
+    assert integration_max_wait_seconds(None) == 3600.0
+    assert integration_max_wait_seconds({"validation": "none", "commands": []}) == 3600.0
+    assert integration_max_wait_seconds({**configured, "max_wait_seconds": 0}) == 3600.0
+    assert integration_max_wait_seconds("not a policy") == 3600.0
 
 @pytest.mark.parametrize(
     ("scope", "scope_identifier"),

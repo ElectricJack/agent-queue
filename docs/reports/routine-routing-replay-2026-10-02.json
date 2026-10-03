@@ -1,0 +1,40 @@
+{
+  "after": {
+    "codex": 1
+  },
+  "before": {
+    "codex": 1
+  },
+  "changed": 0,
+  "input_sha256": "sha256:8045fd2ca3073ad7c857be7bed0984d2a35a0b0cdf3fa73b456fe77945987a34",
+  "limitations": [
+    "Recorded candidate cells only; no hypothetical capacity or newly installed profiles.",
+    "Independent historical observations, not a simulated queue or measured quota savings.",
+    "Unknown headroom falls back to recorded load/slots; do not treat it as observed spare capacity."
+  ],
+  "missing_observations": {
+    "headroom_and_snapshot_age_unknown": 1,
+    "quota_window_identity_or_age_unknown": 1
+  },
+  "policy_sha256": "sha256:1054012d5b8c9ece77d158ac5121b45398cc1d527da67b090f1b0f0d25530694",
+  "records": 1,
+  "replayed": 1,
+  "results": [
+    {
+      "after": "codex",
+      "before": "codex",
+      "changed": false,
+      "missing_observations": [
+        "headroom_and_snapshot_age_unknown",
+        "quota_window_identity_or_age_unknown"
+      ],
+      "outcome": "planned",
+      "profile_id": "standard-high-codex",
+      "reason": "kind feature, class standard-high; lowest pressure standard-high-codex 0.31 vs standard-high-claude 0.38; pressure_fallback: standard-high-codex/codex class standard-high, degraded, load 1/20, headroom unknown; own usage 88% (window/age unknown); snapshot age unknown; bypassed standard-high-codex: provider_degraded",
+      "task_id": "azure-vault-92.6"
+    }
+  ],
+  "skipped": 0,
+  "source_sha256": "sha256:24690e04dbf276eecac4563c4360b75620ab17baa067186d68676b4675b80c66",
+  "version": 1
+}

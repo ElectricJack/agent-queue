@@ -230,6 +230,18 @@ transfer without treating expiry as liveness evidence. A pool writer whose slot 
 unpushed fails its proof exactly like a task session whose stop is unconfirmed: ownership stays
 fenced and the branch keeps its writer.
 
+After producer suspension, collection reconciliation consumes that detached worker reservation
+into the current episode's collector. This also recovers a restart between suspension, writer
+detachment and collector transfer. It requires the recorded confirmed workspace handoff, an
+unassigned PAUSED parent awaiting children, matching current task/origin/checkpoint/repository,
+episode and active operation, and no task holder, locked workspace, operator hold, open gate,
+verifier, repair writer or unresolved external write. Under the project and row locks it rechecks
+the complete identity and transfers through the existing ownership CAS to a fresh collector
+fence. Replays retain that fence and all receipts; they never create another episode or wake a
+producer. `aq integration reopen-collection PARENT` diagnoses this suspended-worker case and
+`--apply --head <reported-head> --reason <audit-reason>` performs the same recovery. A head,
+episode, claim, checkpoint or fence change during observation refuses the transfer.
+
 For each child, the collector:
 
 1. Pins the reviewed source head and current target head.
@@ -848,6 +860,7 @@ Playbook inputs own:
 - infrastructure retry policy;
 - `on_main_moved` (`rebuild` or `wait`), with shipped default `rebuild`;
 - `on_failed_child` (`block` or `ask`), with shipped default `block`;
+- `max_wait_seconds`, the outbox retry bound, with shipped default one hour;
 - successful and failed branch retention; and
 - integration branch naming and cleanup retry policy.
 
@@ -1056,8 +1069,11 @@ start the next controlled branch mutation while a previous intent remains unreso
 
 Root promotion uses the same protocol, with the full-CI attestation and candidate revision pinned
 in its intent. Finalize member receipts idempotently before lease release. Outbox events for
-delivery, schedules, deadlines, and stage transitions are retried until acknowledged; consumers
-deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
+delivery, schedules, deadlines, and stage transitions are retried until acknowledged or until the
+project's `max_wait_seconds` expires. Expiry quarantines the event as an explicit failed delivery
+that keeps its frozen destinations and can be replayed. The reviewed event types that no shipped
+playbook consumes are instead marked delivered with an audit reason, and only once the playbook
+runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
 
 ## 12. Events, gates, and operator controls
