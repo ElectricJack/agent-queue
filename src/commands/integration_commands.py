@@ -2363,18 +2363,9 @@ class IntegrationCommandsMixin:
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:
-        if operation["target_kind"] == "parent":
-            from src.database.queries.task_identity import resolve_task_identity_on
+        from src.integration.operation_ownership import operation_project_id
 
-            async with self.db._engine.connect() as conn:
-                identity = await resolve_task_identity_on(
-                    conn, operation.get("parent_task_id") or ""
-                )
-            return identity.project_id if identity is not None else None
-        if operation["target_kind"] == "batch":
-            batch = await self.db.get_integration_batch(operation.get("batch_id") or "")
-            return str(batch["project_id"]) if batch is not None else None
-        return None
+        return await operation_project_id(self.db, operation)
 
     async def _repair_command_authorized(
         self, operation_id: str, capability: str

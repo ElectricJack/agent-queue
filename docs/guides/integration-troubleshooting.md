@@ -543,6 +543,11 @@ You can also target a specific owner row directly instead of a task:
 aq integration release-owner --owner-row-id o-a3f7…
 ```
 
+`release-owner` takes no `--project-id`: the task (or the owner row's repository) names the
+project, and the caller's token has to name the same one. A project's supervisor session may
+therefore run this recovery for its own work and is refused for another project's — see
+[aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
 **Refusal reasons and how to resolve them.**
 
 Every refusal is recorded in `integration_owner_recoveries` with the row's
