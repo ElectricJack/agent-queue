@@ -624,6 +624,7 @@
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_commands.py",
+        "tests/test_knowledge_import_inventory.py",
         "tests/test_knowledge_inventory.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_proposals.py",
@@ -1368,7 +1369,7 @@
       ]
     }
   },
-  "digest": "sha256:18579fc7e8ef4f03c1dbb75f28886e8c60d798701e23e3535f0231fe1df80d53",
+  "digest": "sha256:7b519aa03cb5126be6b52470079abf5a8170b186fdc54ad10ea79e43f7fbddd2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8724,6 +8725,26 @@
         "usefixtures"
       ],
       "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
+    "tests/test_knowledge_import_inventory.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.inventory",
+        "src.commands.contracts.registry",
+        "src.commands.knowledge_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "K06 legacy read-only import inventory: schema, authorization and dry-run CLI."
     },
     "tests/test_knowledge_inventory.py": {
       "areas": [

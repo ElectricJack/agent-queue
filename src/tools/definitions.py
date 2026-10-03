@@ -323,6 +323,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "link_create": "record",
     "link_list": "record",
     "link_remove": "record",
+    # K06 operator-only, read-only legacy import inventory dry-run.
+    "knowledge_import": "knowledge",
     # session — operator surface (session-runtime spec §3, §5)
     "session_list": "system",
     "session_show": "system",

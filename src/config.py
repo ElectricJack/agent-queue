@@ -662,6 +662,7 @@ class KnowledgeConfig:
     extraction: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     consolidation: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     export: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    import_inventory: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
 
     def validate(self) -> list[ConfigError]:
         errors = []
@@ -675,7 +676,14 @@ class KnowledgeConfig:
             errors.append(ConfigError("knowledge", "enabled_projects", "must be explicit project IDs"))
         if self.legacy_memory_mode not in {"disabled", "read_only", "compatibility"}:
             errors.append(ConfigError("knowledge", "legacy_memory_mode", "unsupported legacy mode"))
-        for name in ("context", "semantic", "extraction", "consolidation", "export"):
+        for name in (
+            "context",
+            "semantic",
+            "extraction",
+            "consolidation",
+            "export",
+            "import_inventory",
+        ):
             feature = getattr(self, name)
             if not isinstance(feature, KnowledgeFeatureConfig) or type(feature.enabled) is not bool:
                 errors.append(ConfigError("knowledge", f"{name}.enabled", "must be a boolean"))
