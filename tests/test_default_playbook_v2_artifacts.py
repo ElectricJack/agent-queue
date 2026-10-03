@@ -418,6 +418,62 @@ def test_pipeline_refusals_never_reach_a_completed_terminal() -> None:
     assert definition.steps[commit.transitions["not_approved"]].outcome == "failed"
 
 
+PARENT_BUNDLE_IDS = ("parent-integration", "agent-queue-parent-integration")
+
+
+def _record_repair_outcomes() -> dict[str, str]:
+    from src.commands.contracts.builtin import register_builtin_contracts
+    from src.commands.contracts.registry import ContractRegistry
+
+    registry = ContractRegistry()
+    register_builtin_contracts(registry)
+    execution = registry.get("integration_record_repair").contract.execution
+    return {outcome.name: outcome.classification for outcome in execution.outcomes}
+
+
+@pytest.mark.parametrize("playbook_id", PARENT_BUNDLE_IDS)
+def test_record_repair_result_maps_every_declared_outcome(playbook_id: str) -> None:
+    """A red this rule cannot route must fail the run, never complete it.
+
+    A parent's first trusted red arrives before any repair stage exists, and
+    while `integration_record_repair` answered that with `continue`/`stale` the
+    rule reached its success terminal: the failure was filed as handled and the
+    held aggregate verifier waited on a head that could never verify. Mapping
+    every declared outcome keeps a newly added one from inheriting `done`.
+    """
+    from src.playbooks.definition import TerminalStep
+
+    declared = _record_repair_outcomes()
+    assert declared.get("started") == "success", (
+        "opening the stage is the handled path and must be its own outcome, "
+        "because transitions key on the outcome and never on the result action"
+    )
+
+    definition = _artifact(playbook_id)
+    step = definition.steps["record-repair-result--record"]
+    assert step.command == "integration_record_repair"
+    assert set(step.transitions) == set(declared) | {"runtime_error"}
+    for outcome, target in step.transitions.items():
+        terminal = definition.steps[target]
+        assert isinstance(terminal, TerminalStep), (outcome, target)
+        expected = "completed" if declared.get(outcome) == "success" else "failed"
+        assert terminal.outcome == expected, (playbook_id, outcome, terminal.outcome)
+
+
+@pytest.mark.parametrize("playbook_id", PARENT_BUNDLE_IDS)
+def test_record_repair_result_refuses_an_unmapped_outcome(playbook_id: str) -> None:
+    """Dropping an outcome is a refusal at validation, not a silent success."""
+    raw = json.loads(_fixture(playbook_id).joinpath("artifact.json").read_text("utf-8"))
+    del raw["steps"]["record-repair-result--record"]["transitions"]["started"]
+
+    diagnostics = validate_definition(
+        PlaybookDefinition.model_validate(raw), contracts=RegistryContractLookup()
+    )
+
+    unmapped = [d for d in diagnostics if d.code == "unmapped_business_outcome"]
+    assert any("started" in d.message for d in unmapped), [d.message for d in diagnostics]
+
+
 def test_spec_ingest_is_ensured_with_an_explicit_route() -> None:
     """`ensure_task` suppresses `task.created`; a profile alone is not a route."""
     definition = _artifact("default-pipeline")

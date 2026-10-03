@@ -473,6 +473,9 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     }
     assert {row.name for row in record.outcomes} == {
         "continue",
+        # A parent's first red arrives with no stage; opening one is its own
+        # outcome because playbook transitions key on the outcome alone.
+        "started",
         "escalate",
         "human_required",
         "budget_exhausted",

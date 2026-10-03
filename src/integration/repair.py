@@ -1141,10 +1141,25 @@ class RepairService:
                 return self._result_value(
                     "budget_exhausted", "supervisor_recovery", int(stage["attempts"])
                 )
-            if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
-                return self._result_value(
-                    "continue", "stale", int(stage["attempts"]) if stage else 0
+            if stage is None:
+                # A parent's first aggregate verification has no stage yet:
+                # batches open stage 0 when the candidate is built, parents
+                # only on a merge conflict. A trusted red on the current
+                # generation and head therefore used to land here and finish
+                # green, leaving the held verifier waiting on a subject that
+                # could never verify. Open the stage instead; the dispatch
+                # drain source finds a writerless active stage on its own.
+                opened = await self._open_red_parent_stage_on(
+                    conn,
+                    operation=dict(operation),
+                    evidence_id=evidence_id,
+                    now=recorded_at,
                 )
+                if opened is not None:
+                    return opened
+                return self._result_value("continue", "stale", 0)
+            if stage["state"] not in {"active", "awaiting_completion"}:
+                return self._result_value("continue", "stale", int(stage["attempts"]))
             evidence = (
                 await conn.execute(
                     select(integration_check_evidence).where(
@@ -1272,6 +1287,205 @@ class RepairService:
             await self.db._notify_settled(post_transition.settled)
             await self.db._notify_ready(post_transition.ready)
         return result
+
+    async def _open_red_parent_stage_on(
+        self, conn, *, operation: dict[str, Any], evidence_id: str, now: float
+    ) -> dict[str, Any] | None:
+        """Stage a trusted red on a parent's current generation and head.
+
+        ``None`` means the evidence is about a generation or head the parent
+        has already moved past: that, and only that, is what ``stale`` reports.
+        A red on the live subject that cannot be staged blocks for a human
+        rather than reporting a no-op the playbook would complete green.
+        """
+        if (
+            operation["target_kind"] != "parent"
+            or operation["state"] != "active"
+            or int(operation["active_stage"]) != 0
+        ):
+            return None
+        evidence = (
+            await conn.execute(
+                select(integration_check_evidence).where(
+                    integration_check_evidence.c.id == evidence_id
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            evidence is None
+            or evidence["operation_id"] != operation["id"]
+            or evidence["parent_task_id"] != operation["parent_task_id"]
+            or evidence["conclusion"] != "failure"
+            or evidence["classification"] != "conclusive"
+            or evidence["required_check_version"] != operation["required_check_version"]
+        ):
+            return None
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == operation["parent_task_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        head = evidence["parent_head_sha"]
+        if (
+            checkpoint is None
+            or checkpoint["episode_id"] != operation["episode_id"]
+            or not head
+            or head != checkpoint["checkpoint_sha"]
+            or evidence["parent_generation"] is None
+            or int(evidence["parent_generation"]) != int(checkpoint["generation"])
+        ):
+            return None
+        try:
+            context = await self._start_context_on(
+                conn, operation, starting_sha=head, trigger_id=evidence_id
+            )
+        except _RepairInvariant:
+            context = None
+        if context is None:
+            await self._escalate_unstaged_parent_red_on(
+                conn, operation=operation, evidence=dict(evidence), now=now
+            )
+            return self._result_value("human_required", "no_stage_blocked", 0)
+        _policy, boundary, subject = context
+        deadline_at = now + boundary.repair.primary_seconds
+        row = {
+            "operation_id": operation["id"],
+            "ordinal": 0,
+            "policy": boundary.repair.model_dump(mode="json"),
+            "intelligence_class": boundary.primary_intelligence_class,
+            # Deprecated column: routes come from the router, never the policy.
+            "profile_id": None,
+            "repair_task_id": None,
+            "writer_kind": None,
+            "starting_sha": head,
+            "trigger_id": evidence_id,
+            "current_subject": subject,
+            "deadline_event_id": f"repair-deadline-{operation['id']}-0",
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempts": 0,
+            "dossier": await self._initial_dossier_on(
+                conn,
+                operation=operation,
+                subject=subject,
+                starting_sha=head,
+                trigger_id=evidence_id,
+                boundary=boundary,
+                started_at=now,
+                deadline_at=deadline_at,
+            ),
+            "state": "active",
+        }
+        await conn.execute(insert(integration_repair_stages).values(**row))
+        # The triggering red opens the stage exactly as a merge conflict does,
+        # so it spends no attempt. Recording it keeps a redelivery idempotent
+        # through ``record_result``'s duplicate branch.
+        await conn.execute(
+            insert(integration_repair_stage_evidence).values(
+                operation_id=operation["id"],
+                ordinal=0,
+                evidence_id=evidence_id,
+                counted_attempt=False,
+                result_outcome="started",
+                result_action="stage_opened",
+                recorded_at=now,
+            )
+        )
+        await self._notify_verifier_of_red_on(
+            conn, operation=operation, evidence=dict(evidence), now=now
+        )
+        return self._result_value("started", "stage_opened", 0) | {"stage": 0}
+
+    @staticmethod
+    async def _notify_verifier_of_red_on(
+        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+    ) -> None:
+        """Tell the held aggregate verifier its subject was recorded red.
+
+        The verifier waits on a handoff for a head that will never verify, so
+        without this it holds its claim until an operator notices. The stable
+        primary key keeps a redelivery from sending the message twice.
+        """
+        verifier_task_id = operation.get("verifier_task_id")
+        if not verifier_task_id:
+            return
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"])
+            )
+        ).mappings().one_or_none()
+        if parent is None:
+            return
+        head = evidence["parent_head_sha"]
+        await conn.execute(
+            pg_insert(messages)
+            .values(
+                id=f"msg-parent-red-{operation['id']}-{evidence['id']}",
+                project_id=parent["project_id"],
+                from_kind="system",
+                from_id="integration-repair",
+                to_kind="task",
+                to_id=verifier_task_id,
+                subject=f"Aggregate {head[:12]} failed its required checks",
+                body=(
+                    f"The collected aggregate you hold for {operation['parent_task_id']} "
+                    f"(generation {evidence['parent_generation']}, head {head}) was "
+                    f"recorded red by run {evidence['run_id']}. A repair stage is open "
+                    f"on this operation; stop waiting for this head to verify."
+                ),
+                created_at=now,
+                priority=50,
+                archive_after_inject=1,
+                body_kind="integration_parent_red",
+            )
+            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        )
+
+    @staticmethod
+    async def _escalate_unstaged_parent_red_on(
+        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+    ) -> None:
+        """Surface a live red the mechanism refused to stage.
+
+        Reaching here means the evidence is about the parent's current
+        generation and head and still could not open a stage, which is an
+        identity or policy problem no retry resolves.
+        """
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"])
+            )
+        ).mappings().one_or_none()
+        if parent is None:
+            return
+        await conn.execute(
+            pg_insert(messages)
+            .values(
+                id=f"msg-unstaged-parent-red-{operation['id']}-{evidence['id']}",
+                project_id=parent["project_id"],
+                from_kind="system",
+                from_id="integration-repair",
+                to_kind="session",
+                to_id=f"supervisor-{parent['project_id']}",
+                subject=(
+                    f"Parent {operation['parent_task_id']} is red with no repair stage"
+                ),
+                body=(
+                    f"Run {evidence['run_id']} failed the required checks for "
+                    f"{operation['parent_task_id']} at generation "
+                    f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
+                    f"and operation {operation['id']} could not open a repair stage for it. "
+                    f"No writer is scheduled; this needs an operator."
+                ),
+                created_at=now,
+                priority=80,
+                archive_after_inject=1,
+                body_kind="integration_unstaged_parent_red",
+            )
+            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        )
 
     @staticmethod
     async def _escalate_stuck_batch_on(
