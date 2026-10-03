@@ -1,14 +1,14 @@
 """Knowledge proposals, authority, sharing and permanent redaction ledger.
 
 Revision ID: a00000000059
-Revises: a00000000055
+Revises: a00000000058
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "a00000000059"
-down_revision = "a00000000055"
+down_revision = "a00000000058"
 branch_labels = None
 depends_on = None
 

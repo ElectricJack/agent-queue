@@ -36,8 +36,13 @@ class TestWrap:
         payload = json.loads(result)
         assert payload["hookSpecificOutput"]["additionalContext"] == "body"
 
+    def test_codex_harness_wraps_session_start_envelope(self):
+        assert json.loads(wrap("plain body", "codex"))["hookSpecificOutput"] == {
+            "hookEventName": "SessionStart", "additionalContext": "plain body"
+        }
+
     def test_unknown_harness_falls_back_to_plain_text(self):
-        assert wrap("plain body", "codex") == "plain body"
+        assert wrap("plain body", "other") == "plain body"
 
     def test_empty_harness_falls_back_to_plain_text(self):
         assert wrap("plain body", "") == "plain body"
@@ -53,6 +58,12 @@ class TestWrap:
 
 
 class TestSuppressed:
+    def test_compact_and_resume_sources_reprime_despite_startup_marker(self):
+        env = {STARTUP_PROMPT_DELIVERED_ENV: "1"}
+        assert not suppressed(env, True, "compact")
+        assert not suppressed(env, True, "resume")
+        assert suppressed(env, True, "startup")
+
     def test_delivered_and_hook_mode_is_suppressed(self):
         env = {STARTUP_PROMPT_DELIVERED_ENV: "1"}
         assert suppressed(env, hook_mode=True) is True

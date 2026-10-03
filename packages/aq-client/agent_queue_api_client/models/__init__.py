@@ -285,6 +285,12 @@ from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
 from .env_var_reference import EnvVarReference
+from .epic_delivery_ref import EpicDeliveryRef
+from .epic_delivery_ref_kind import EpicDeliveryRefKind
+from .epic_delivery_status import EpicDeliveryStatus
+from .epic_delivery_status_evidence import EpicDeliveryStatusEvidence
+from .epic_delivery_status_hold_type_0 import EpicDeliveryStatusHoldType0
+from .epic_delivery_status_state import EpicDeliveryStatusState
 from .escalation_action import EscalationAction
 from .escalation_action_parameters import EscalationActionParameters
 from .escalation_action_result_type_0 import EscalationActionResultType0
@@ -824,6 +830,11 @@ from .object_checkpoint_read_request import ObjectCheckpointReadRequest
 from .object_checkpoint_read_response import ObjectCheckpointReadResponse
 from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
 from .object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
+from .object_loop_inputs_request import ObjectLoopInputsRequest
+from .object_loop_inputs_response import ObjectLoopInputsResponse
+from .object_loop_inputs_response_422 import ObjectLoopInputsResponse422
+from .object_loop_inputs_response_loops_item import ObjectLoopInputsResponseLoopsItem
+from .object_loop_inputs_response_starts_item import ObjectLoopInputsResponseStartsItem
 from .object_loop_reconcile_request import ObjectLoopReconcileRequest
 from .object_loop_reconcile_response import ObjectLoopReconcileResponse
 from .object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
@@ -1990,6 +2001,12 @@ __all__ = (
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
     "EnvVarReference",
+    "EpicDeliveryRef",
+    "EpicDeliveryRefKind",
+    "EpicDeliveryStatus",
+    "EpicDeliveryStatusEvidence",
+    "EpicDeliveryStatusHoldType0",
+    "EpicDeliveryStatusState",
     "EscalationAction",
     "EscalationActionParameters",
     "EscalationActionResultType0",
@@ -2523,6 +2540,11 @@ __all__ = (
     "ObjectCheckpointReadResponse",
     "ObjectCheckpointReadResponse422",
     "ObjectCheckpointReadResponseState",
+    "ObjectLoopInputsRequest",
+    "ObjectLoopInputsResponse",
+    "ObjectLoopInputsResponse422",
+    "ObjectLoopInputsResponseLoopsItem",
+    "ObjectLoopInputsResponseStartsItem",
     "ObjectLoopReconcileRequest",
     "ObjectLoopReconcileResponse",
     "ObjectLoopReconcileResponse422",

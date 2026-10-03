@@ -48,6 +48,7 @@ from src.database.queries.integration_reconciliation_queries import (
 )
 from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
 from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
+from src.database.queries.integration_subject_queries import IntegrationSubjectQueriesMixin
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.job_queries import JobQueriesMixin
 from src.database.queries.knowledge_queries import KnowledgeQueryMixin
@@ -101,6 +102,7 @@ class PostgreSQLDatabaseAdapter(
     IntegrationReconciliationQueriesMixin,
     IntegrationScheduleQueriesMixin,
     IntegrationStateQueriesMixin,
+    IntegrationSubjectQueriesMixin,
     HierarchyQueryMixin,
     LayoutQueryMixin,
     AssignmentRouteQueryMixin,

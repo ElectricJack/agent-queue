@@ -10,6 +10,7 @@ from __future__ import annotations
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
     "object_loop_start": "task",
+    "object_loop_inputs": "task",
     "object_loop_reconcile": "task",
     "object_score_record": "task",
     "object_checkpoint_read": "task",
@@ -7588,10 +7589,13 @@ _ALL_TOOL_DEFINITIONS.extend([
         },
     },
     {
-        "name": "wait_get", "description": "Read a durable wait and its bounded result pointer.",
+        "name": "wait_get",
+        "description": "Read a durable wait, optionally consuming its result notification.",
         "input_schema": {
             "type": "object", "additionalProperties": False, "required": ["wait_id"],
             "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "consume": {"type": "boolean", "default": False},
+                           "claim_epoch": {"type": "integer", "minimum": 0},
                            "project_id": {"type": "string"}, "task_id": {"type": "string"},
                            "session_id": {"type": "string"}},
         },

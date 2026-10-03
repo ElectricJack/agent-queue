@@ -403,6 +403,39 @@ You do not need to restart the daemon; the vault watcher picks the file up.
 > harness CLIs and `gh` — rather than deriving it from the vault, so a
 > harness you add yourself will not appear in that check's output.
 
+### Two harnesses, one CLI
+
+A provider-agnostic CLI can serve two backends that fail independently.
+OpenCode is the example: `opencode` runs local models through Ollama
+(`provider: "ollama"`, models `ollama/<name>`), and `opencode-zen` runs the
+same executable against the hosted OpenCode Zen gateway
+(`provider: "opencode"`, models `opencode/<name>`). Write the second one as a
+**standalone file, not a `base:` variant**, when the backends must stay apart:
+
+* **`provider`** picks the intelligence-class slice a launch reads, so the
+  hosted model lives under its own key (`"opencode": {"model": ...}`) and the
+  local slice is never edited.
+* **Availability** is keyed `harness.base or harness.id`
+  ([provider failover](../specs/provider-failover.md) D0). A `base:` variant
+  shares its parent's row, so a gateway rate limit would hold the local lane
+  too; a standalone file gets a row of its own.
+
+The cost is a copied `## Config`; keep the shared keys of the two files in
+step by hand.
+
+Behaviour that belongs to the CLI rather than to one file follows the
+executable, not the id. OpenCode's prime addendum and AQ's read of its native
+question store apply to every harness whose `command` is named `opencode`
+([`runs_cli`](../../src/sessions/harness_registry.py)). A launcher in front of
+the CLI (`npx opencode`) is not recognised, so point `command` at the binary
+or a shim named after it.
+
+The routing policy names harnesses, so a new harness id reaches work only
+through a lane or as a general candidate. A narrow lane is the only way to keep
+it to narrow work: a harness that no narrow lane names is a general candidate
+for every class it has a rung at. The shipped policy's `narrow-hosted` lane
+names `opencode-zen`.
+
 ## Editing a shipped harness
 
 Once a shipped harness has been copied into the vault, the vault copy wins.

@@ -146,6 +146,7 @@ its outbox; transport failures never need a new author turn.
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
     "integration_redrive_child",
+    "integration_reopen_collection",
     "integration_redrive_root",
     "integration_materialize_root",
     "integration_authorize_root",
@@ -401,6 +402,17 @@ its outbox; transport failures never need a new author turn.
   `blocked` (a reviewer rejected the head or is still open, the remote branch
   moved, a no-code child, a parent not collecting) are reported, never forced;
   a no-code child takes `aq integration record-noop`.
+- **A parent whose collection was cancelled.** `cancel-preserving` on a
+  parent's collection operation (not just its expired repair) leaves the
+  parent PAUSED `awaiting_children` with no live operation: `redrive-child`
+  answers "no live collection operation" and a later child's conflict never
+  gets a repair. Run `aq integration reopen-collection <parent>` (a dry run).
+  `would_reopen` → `--apply --head <head_sha> --reason ...` reactivates the
+  same operation in its episode (receipts stay bound), reclaims the collector
+  fence and, for the one current conflict, opens a fresh repair stage with a
+  new delegate. `ambiguous` (an unresolved push), `blocked` (a live or
+  unsettled writer, a hold, a moved branch, several conflicts) and
+  `not_eligible` are reported, never forced.
 - **An open PR whose work already landed.** GitHub closes a PR as merged once
   its exact head reaches the default branch. For one still open — work
   delivered under other commits, or an untracked operator branch — run `aq

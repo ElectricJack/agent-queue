@@ -536,7 +536,8 @@ class Orchestrator(
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
         self.agent_questions = AgentQuestionService(
-            self.db, self.bus, self.session_providers, config
+            self.db, self.bus, self.session_providers, config,
+            harness_registry=self.harness_registry,
         )
         from src.escalations import SupervisorDeliveryWatchdog
 
@@ -896,6 +897,16 @@ class Orchestrator(
         )
         return store.load(artifact_sha256)
 
+    async def _root_subject_session_probe(self, session: dict) -> bool | None:
+        from src.sessions.provider import SessionHandle
+
+        provider = self.session_providers.create(session["provider"], self.config)
+        handle = SessionHandle(name=session["name"], provider=session["provider"],
+                               instance_token=session["instance_token"])
+        if await provider.is_running(handle):
+            return True
+        return False if await provider.confirm_stopped(handle) else None
+
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
         """Resolve the agent profile for a task: its own route.
 
@@ -1211,23 +1222,14 @@ class Orchestrator(
                 observation
             )
 
-    async def _dispatch_pending_integration_repairs(self, _now):
+    async def _dispatch_integration_repair_stage(self, row):
+        """Dispatch one stage the integration service selected; it owns pacing."""
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:
-            return
-        repair = self._command_handler._integration_repair_service()
-        after = getattr(self, "_repair_dispatch_after", None)
-        rows = await repair.pending_dispatches(after=after)
-        if not rows and after is not None:
-            rows = await repair.pending_dispatches()
-        self._repair_dispatch_after = ((rows[-1]["operation_id"], rows[-1]["ordinal"]) if rows else None)
+            return {"success": False, "outcome": "not_ready"}
         with principal_context(ExecutionPrincipal.service("integration-repair-continuation")):
-            for row in rows:
-                try:
-                    await self._command_handler._cmd_integration_repair_dispatch({
-                        "operation_id": row["operation_id"], "stage": row["ordinal"]})
-                except Exception:
-                    logger.exception("Integration repair continuation failed for %s", row["operation_id"])
+            return await self._command_handler._cmd_integration_repair_dispatch({
+                "operation_id": row["operation_id"], "stage": int(row["ordinal"])})
 
     async def _drain_branch_materializations(self, now: float) -> None:
         """Materialize reserved task refs through the fenced hierarchy service."""
@@ -1740,6 +1742,7 @@ class Orchestrator(
             daemon_functional_preflight,
         )
         from src.integration.main_promotion import RootPromotionService
+        from src.integration.models import integration_max_wait_seconds
         from src.integration.outbox import IntegrationOutbox
         from src.integration.promotion import PromotionService
         from src.integration.protection import (
@@ -1753,16 +1756,27 @@ class Orchestrator(
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
         ) -> bool:
+            # Paused playbooks are no evidence that nothing subscribes: the
+            # event stays retryable until they return or max_wait expires.
             if self.playbook_manager is None:
                 return False
+            # The runtime raises NoIntegrationEventConsumer only with proof;
+            # the outbox sinks the reviewed unsubscribed types on it.
             return await self.playbook_manager.accept_integration_event(
-                event_type, payload, event_id
+                event_type, payload, event_id, prove_no_consumer=True
+            )
+
+        async def project_max_wait(project_id: str) -> float:
+            project = await self.db.get_project(project_id)
+            return integration_max_wait_seconds(
+                None if project is None else project.hierarchical_integration_policy
             )
 
         self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             before_dispatch=self.integration_scheduler.maintain_lease,
+            project_max_wait=project_max_wait,
         )
         github_clients = {}
 
@@ -1891,6 +1905,7 @@ class Orchestrator(
         from src.integration.github_review_poll import GitHubReviewPoller
         from src.integration.green_continuation import GreenPromotionReconciler
         from src.integration.owner_recovery import owner_recovery_for
+        from src.integration.parent_intents import ParentIntentReconciler
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
         async def development_confirm_stopped(session):
@@ -1914,6 +1929,11 @@ class Orchestrator(
         self._development_completion_unsub = self.bus.subscribe(
             "task.completed", self.development_integration.on_task_completed,
         )
+        from src.integration.root_runtime import root_runtime_for
+        from src.integration.parent_runtime import parent_runtime_for
+
+        self.parent_owner_recovery = owner_recovery
+        self.parent_subject_runtime = parent_runtime_for(self, parent_ci)
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -1927,6 +1947,9 @@ class Orchestrator(
             collection_handler=collection.tick,
             development_handler=self.development_integration.tick,
             unresolved_intent_handler=reconcile_root_intent,
+            parent_intent_handler=ParentIntentReconciler(
+                self.db, commands=lambda: self._command_handler
+            ).reconcile,
             cleanup_handler=self.integration_cleanup_service.handle_item,
             drain_handler=self.integration_control_service.reconcile_drains,
             branch_discard_handler=self._drain_branch_discards,
@@ -1938,10 +1961,15 @@ class Orchestrator(
                 ancestry_handler=self._repair_integration_source_ancestry,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
-            repair_dispatch_handler=self._dispatch_pending_integration_repairs,
+            repair_dispatcher=self._dispatch_integration_repair_stage,
             green_promotion_handler=GreenPromotionReconciler(
                 self.db, promotion=self.root_promotion_service
             ).tick,
+            subject_runtime=root_runtime_for(self),
+            parent_subject_runtime=self.parent_subject_runtime,
+            source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
+            item_timeout_seconds=self.config.integration.service_item_timeout_seconds,
+            source_timeouts=self.config.integration.service_source_timeouts,
         )
         self.integration_service.start()
 

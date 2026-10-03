@@ -199,7 +199,7 @@ def _integration_cleanup_reason(blocker: dict, task_id: str):
                 f"{blocker['handoff_state']} (session {blocker['session_id'] or 'none'}, "
                 f"workspace {blocker['workspace_id'] or 'none'}); the checkout is preserved and "
                 "is not released automatically. It is retried by the owner-recovery sweep every "
-                "5 min when `integration.owner_recovery_sweep` is on. Inspect it for unsent work, "
+                "5 min unless `integration.owner_recovery_sweep` is off. Inspect it for unsent work, "
                 f"then run `aq integration release-owner --task-id {task_id}` now"
             ),
             ref=blocker["ref"],
@@ -3673,6 +3673,16 @@ class TaskCommandsMixin:
             ]
 
         info["children"] = await self.db.get_children_summary(task.id)
+        # Implementation progress kept apart from delivery (a read-only
+        # projection; it never changes the stored status shown above).
+        info["delivery_status"] = None
+        if info["children"]:
+            from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
+
+            projection = EpicDeliveryProjection(
+                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None))
+            )
+            info["delivery_status"] = (await projection.for_tasks([task.id])).get(task.id)
 
         return info
 

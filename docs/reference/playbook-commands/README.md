@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-165 commands are registered.
+168 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -98,6 +98,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_development_sweep`](integration_development_sweep.md) | Integration Development Sweep | Authenticated hierarchical integration operational control. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
+| [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
 | [`integration_materialize_root`](integration_materialize_root.md) | Integration Materialize Root | Authenticated hierarchical integration operational control. |
@@ -122,6 +123,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_release_delegates`](integration_release_delegates.md) | Integration Release Delegates | Authenticated hierarchical integration operational control. |
 | [`integration_release_owner`](integration_release_owner.md) | Integration Release Owner | Authenticated hierarchical integration operational control. |
 | [`integration_release_stale_owners`](integration_release_stale_owners.md) | Integration Release Stale Owners | Authenticated hierarchical integration operational control. |
+| [`integration_reopen_collection`](integration_reopen_collection.md) | Integration Reopen Collection | Authenticated hierarchical integration operational control. |
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
@@ -185,6 +187,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`object_checkpoint_read`](object_checkpoint_read.md) | Object Checkpoint Read | Coordinate a bounded, durable object evaluation round. |
+| [`object_loop_inputs`](object_loop_inputs.md) | Object Loop Inputs | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
@@ -219,7 +222,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
 | [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
-| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait and its bounded result pointer. |
+| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
 

@@ -113,3 +113,16 @@ The command is daemon-internal: it is excluded from MCP, the CLI and the HTTP
 API. The reviewed bundle was rebuilt with
 `scripts/rebuild-reviewed-playbook-artifacts.py`. Installs pick the change up
 by re-importing and activating it.
+
+## Amendment — 2026-10-02 (integration delegate recovery notifications)
+
+A delegate owned by an active, escalated or human-required integration repair
+operation retains its durable recovery incident and stage-budget diagnostics,
+but creates no `Task recovery: <delegate>` supervisor message. Recovery belongs
+to that operation's bounded stage and its operation-level escalation. The first
+notification returns `not_actionable` with the incident and operation ids;
+event replays and periodic scans return `existing` without redelivery. They
+archive any notice queued by an earlier version before it can be redelivered.
+Integration parents and ordinary tasks retain their existing notifications.
+Ended-operation delegates retain the existing retirement and incident
+supersession behavior.

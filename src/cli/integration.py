@@ -31,6 +31,41 @@ def integration() -> None:
     """Inspect and control hierarchical integration trains."""
 
 
+@integration.command("engine-transfer")
+@click.argument("repository_id")
+@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--parent-task-id", default=None,
+              help="Transfer this parent instead of repository roots.")
+@click.option("--expected-subject", "expected_subjects", multiple=True,
+              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every selected subject.")
+@click.option("--reason", default="", help="Required explanation when applying the transfer.")
+@click.option("--evidence", multiple=True, help="Shadow, scenario and operator approval references.")
+@click.option("--apply", is_flag=True, help="Apply the exact previewed versions; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_engine_transfer(
+    ctx, repository_id, engine, parent_task_id, expected_subjects, reason, evidence, apply,
+):
+    """Preview or transfer exclusive integration ownership for REPOSITORY_ID."""
+    versions = {}
+    for item in expected_subjects:
+        try:
+            subject_id, version = item.rsplit(":", 1)
+            if not subject_id or int(version) < 0 or subject_id in versions:
+                raise ValueError
+            versions[subject_id] = int(version)
+        except ValueError:
+            raise click.BadParameter("use unique SUBJECT_ID:VERSION with a nonnegative version",
+                                     param_hint="--expected-subject") from None
+    if apply and (not versions or not reason.strip() or (engine == "reconciler" and not evidence)):
+        raise click.UsageError("--apply needs exact subject versions, a reason and cutover evidence")
+    _execute(ctx, "integration_engine_transfer", {
+        "repository_id": repository_id, "engine": engine, "expected_versions": versions,
+        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
+        **({"parent_task_id": parent_task_id} if parent_task_id else {}),
+    })
+
+
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
@@ -588,6 +623,53 @@ def integration_redrive_child(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_child", args)
+
+
+@integration.command("reopen-collection")
+@click.argument("task_id")
+@click.option(
+    "--apply", is_flag=True, help="Reopen the parent's collection; default is a dry run."
+)
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The parent branch head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_reopen_collection(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Reopen parent TASK_ID's collection after cancellation or failed verification.
+
+    The parent keeps its episode, so delivered receipts stay bound as recorded.
+    The dry run proves the parent branch tip is the recorded collection head and
+    that no writer, hold or unresolved push remains, then answers
+    `would_reopen`, `nothing_to_reopen`, `ambiguous`, `blocked` or
+    `not_eligible` with the head, receipts, owner, delegates and any conflict.
+    `--apply` needs that head and a reason: it reclaims the collector fence for
+    the same operation and, for one current conflict, opens a fresh repair stage
+    that files a new delegate. Archived delegates are never restored.
+    A settled failed aggregate verifier requires a completed additional child
+    fix. Recovery preserves its failed completion, advances the checkpoint
+    generation and creates a fresh verifier after collecting the fix.
+    A suspended producer with a confirmed detached workspace is transferred to
+    its existing collector operation after checking holders, holds, gates and
+    unresolved writes. Collection reconciliation performs the same recovery.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_reopen_collection", args)
 
 
 @integration.command("rebind-reused-identity")

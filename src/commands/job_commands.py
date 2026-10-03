@@ -191,14 +191,11 @@ class JobCommandsMixin:
             wait = result.pop("wait", None)
             response = {"success": True, "job": result}
             if wait:
+                from src.agent_waits import wait_next_step
+
                 response.update(
                     wait=wait,
-                    next_step=(
-                        f"End this turn. Resume with aq wait show {wait['id']} --json. "
-                        "The claim, workspace and seat remain held."
-                    )
-                    if wait["state"] == "active"
-                    else f"Read aq wait show {wait['id']} --json.",
+                    next_step=wait_next_step(wait),
                 )
             return response
         except (JobError, WaitError, ValidationError, KeyError, ValueError) as exc:

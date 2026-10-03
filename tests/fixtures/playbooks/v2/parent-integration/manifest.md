@@ -1,7 +1,7 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:aa39297af49a5ae0b34bc65d52a59222b481897c2a2def9f69b5f3ed40c7f834
-source_sha256: sha256:aad657532402ee10ae5d02acf4b1ebe0eda28f3a3914deca81fd62767789f81b
+artifact_sha256: sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9
+source_sha256: sha256:861a07a3730037b82905e7b8ae4a6f783dae0a636bd656c518a9aecdce02cbfb
 contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
 questions_resolved: 0
 capabilities_granted:
@@ -41,3 +41,11 @@ CI repair `clear-quest-21` refreshed the record and timeout command fingerprints
 for the new `supervisor_recovery` action. Reviewed rules, steps, transitions,
 capability grants and source text are unchanged; no-progress incidents remain
 owned by the command service.
+
+Phase 2 adds an inactive parent decision table over the existing primitives.
+It selects receipt-driven collection and intent read-back, the existing failed
+verification recovery, shared verifier filing/lease and exact CI verification.
+Failed children, conflicts, old repair dossiers and expired writer budgets use
+explicit no-default gates. Import remains write-if-absent and no activation or
+engine transfer is authorized by this bundle. Operator rollout review binds the
+new digest before cutover.

@@ -607,6 +607,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Fills reference stubs using the direct LLM path."),
     ("src/prompts/*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Prompt construction helper."),
+    ("src/knowledge/**", "vault", "docs/concepts/configuration-and-vault.md",
+     PRODUCTION,
+     "Knowledge facilities: offline legacy-memory inventory and sealed manifests."),
 
     ("src/llm/providers/adapters/**", "providers", "docs/concepts/providers.md",
      PRODUCTION, "Provider wire-format adapter."),

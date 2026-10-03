@@ -18,6 +18,13 @@ tags: [spec, database]
 
 All database interaction is async. The `Database` object is constructed with a **PostgreSQL DSN** — anything else is a hard error, not a fall-through to a file — then explicitly initialized with `initialize()` before use. `initialize()` runs the Alembic chain, which returns immediately when the database is already stamped at this checkout's head.
 
+The one-way legacy SQLite importer excludes the durable record and knowledge tables
+introduced by PostgreSQL revision `a00000000055`; legacy SQLite files never contained
+them. Import requires an empty target apart from Alembic bookkeeping and the immutable
+`record_installation` identity seed created with the schema. That installation identity
+is preserved. Any other target data, including record scopes or knowledge, refuses import.
+Task record backfill and knowledge import remain separate, explicit operations.
+
 The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
 ---
@@ -852,7 +859,34 @@ No deletes on this table during normal operation. Deleted only as part of cascad
 
 Indexes: `idx_token_ledger_task_attempt` (`task_id`, `attempt_id`) and unique
 `uq_token_ledger_call` (`session_id`, `call_id`). Nullable identities preserve
-historical rows without inventing attribution. Added by Alembic `a00000000047`.
+historical rows without inventing attribution. Added by Alembic `a00000000047`;
+`idx_token_ledger_call_id` (`call_id`, for adopting legacy rows) by `a00000000056`.
+
+### Table: `transcript_usage_calls`
+
+Durable per-API-call usage maxima for transcript ingestion (`azure-vault-92.1`,
+Alembic `a00000000056`). Claude streams one API call as several transcript
+content rows that repeat the same usage; the ledger used to charge each row.
+`record_transcript_usage` (`src/database/queries/token_queries.py`) locks the
+call's row, raises each category to the newly observed maximum and appends only
+the positive increase to `token_ledger` in the same transaction, so replays,
+restarts and concurrent readers never charge a call twice. Existing ledger rows
+are never rewritten.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `usage_key` | TEXT | PRIMARY KEY | `<provider>:<sha256>` of provider, transcript conversation and API call id (`transcript_usage_key`); content UUID when the API id is absent |
+| `first_ledger_id` | TEXT | nullable | First ledger row charged for the call; later increases keep its attribution |
+| `input_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum uncached input observed |
+| `output_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum output observed |
+| `cache_read_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum cache read observed |
+| `cache_write_tokens` | INTEGER | NOT NULL, ≥ 0 | Maximum cache write observed |
+| `updated_at` | REAL | NOT NULL | Daemon clock at the last raise |
+
+`ck_transcript_usage_calls_nonnegative` enforces the bounds. Downgrading drops
+the table and restores per-row charging; ledger rows survive.
+The legacy SQLite importer excludes this table because it was introduced after
+SQLite removal.
 
 ### Table: `benchmark_stage_spans`
 
@@ -2088,6 +2122,98 @@ authorize-root`; there is no update or delete path. See
 Unique constraint `uq_integration_root_authorizations_source` on `(task_id,
 repository_id, source_base, source_head, generation)`.
 
+### Table: `integration_subjects`
+
+One durable row per integration *subject* the level-triggered reconciler
+visits: a root batch, a parent episode or a source (review `rev-agile-ridge`
+revision 2, §3.2). A subject has one owner (`engine`), one due time and one
+pinned policy artifact. Added additively in revision `a00000000057`; nothing
+drives it yet, and every subject defaults to the `legacy` engine. Typed model:
+`src/integration/subjects.py`; queries: `IntegrationSubjectQueriesMixin`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Subject id |
+| `project_id` | TEXT | NOT NULL | Project |
+| `repository_id` | TEXT | NOT NULL | Designated integration repository |
+| `kind` | TEXT | NOT NULL | `root_batch`, `parent_episode` or `source` |
+| `subject_key` | TEXT | NOT NULL, UNIQUE with `(project_id, kind)` | Natural key, `<kind>:<repository>:<parts>`; makes creation idempotent |
+| `engine` | TEXT | NOT NULL, default `legacy` | `legacy` or `reconciler`: the one engine that may mutate the subject |
+| `phase` | TEXT | NOT NULL | `admitting`, `building`, `testing`, `repairing`, `promotable`, `publishing`, `published`, `cleaning`, `done` |
+| `policy_playbook_id` | TEXT | NOT NULL, immutable | Policy playbook the subject runs under |
+| `policy_artifact_sha256` | TEXT | NOT NULL, FK `playbook_artifacts` RESTRICT, immutable | Pinned compiled policy; a new activation never changes a running subject, and artifact collection keeps it |
+| `task_id` | TEXT | nullable, immutable | Source or parent task; NULL exactly for a root batch |
+| `batch_id` | TEXT | nullable, unique when set, immutable once set | Legacy `integration_batches` row a sealed root subject maps onto |
+| `parent_episode_id` | TEXT | nullable, unique when set, immutable once bound; parent/task FK RESTRICT | Additive parent bridge (revision 58); binds the exact episode independently of the moving collection generation and validates repository identity |
+| `target_ref` | TEXT | nullable | Ref the head belongs to; required with `head_sha` |
+| `head_sha` | TEXT | nullable, 40 hex | Exact head the current phase refers to |
+| `base_sha` | TEXT | nullable, 40 hex | Base of that head |
+| `generation` | INTEGER | NOT NULL, default 0, never decreases | Domain generation of the head (review, collection or candidate revision) |
+| `next_due_at` | REAL | nullable | Next visit; NULL only when held by a gate or done |
+| `due_set_at` | REAL | NOT NULL | When the due time was set; the wait bound is measured from it |
+| `max_wait_seconds` | INTEGER | NOT NULL, `> 0` | Pinned bound on any wait |
+| `wait_reason` | TEXT | nullable | Why the subject idles; requires `next_due_at` |
+| `gate_id` | TEXT | nullable | Explicit human gate holding the subject |
+| `refusal_streak` | INTEGER | NOT NULL, default 0, `>= 0` | Consecutive transient refusals (backoff input) |
+| `wake_requested_at` | REAL | nullable | Last event wake; a visit started before it stays due now |
+| `last_visit_at` | REAL | nullable | Last reconciler visit |
+| `last_journal_seq` | BIGINT | nullable | Newest `integration_subject_journal.seq` |
+| `closed_reason` | TEXT | nullable | Required exactly when `phase = 'done'` |
+| `writer_status` | TEXT | NOT NULL, default `none` | `none`, `filed`, `claimed`, `working`, `stopped`, `unknown` |
+| `writer_task_id` | TEXT | nullable, indexed | Writer task; required unless `writer_status = 'none'` |
+| `writer_fence_token` | INTEGER | nullable, `>= 0` | Lease fence |
+| `writer_session_id` | TEXT | nullable | Writer session |
+| `writer_claimed_at` | REAL | nullable | When the writer was claimed |
+| `writer_last_push_at` | REAL | nullable | Writer's last observed push |
+| `writer_stop_proof` | JSONB | nullable | Proof the writer stopped |
+| `budget_ordinal` | INTEGER | nullable, `>= 0` | Current writer ordinal; the budget columns are all set or all NULL |
+| `budget_class` | TEXT | nullable | Intelligence class of the ordinal |
+| `budget_started_at` | REAL | nullable | Budget clock start |
+| `budget_deadline_at` | REAL | nullable, `>= budget_started_at` | Budget clock deadline |
+| `budget_attempts` | INTEGER | NOT NULL, default 0, `>= 0` | Counted conclusive exact-head attempts |
+| `budget_attempt_limit` | INTEGER | nullable, `> 0` | Attempt bound of the ordinal |
+| `version` | INTEGER | NOT NULL, default 0, never decreases | Optimistic-concurrency token of visit writes |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
+
+`ck_integration_subjects_never_blocked` is the schema half of the never-blocked
+guarantee: a `done` subject has a `closed_reason` and no due time, wait or gate;
+any other subject has a `gate_id`, or a `next_due_at` no later than
+`due_set_at + max_wait_seconds`. Partial unique index
+`uq_integration_subjects_admitting_root` allows one admitting root subject per
+`(project_id, repository_id)`; `idx_integration_subjects_due` serves the due
+scan. Trigger `integration_subject_identity_pinned` refuses a change of id,
+project, repository, kind, key, task, pinned policy or a bound batch, a
+decreasing version or generation, and reopening a `done` subject.
+
+### Table: `integration_subject_journal`
+
+Append-only journal of what the reconciler observed, decided and did for one
+subject: policy decisions (shadow and active), primitive outcomes, counted
+attempts and receipts, each with the exact identity and the artifact it ran
+under. Trigger `integration_subject_journal_append_only` refuses UPDATE and
+DELETE. Added in revision `a00000000057`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `seq` | BIGINT | PRIMARY KEY, identity | Append order |
+| `subject_id` | TEXT | NOT NULL, FK `integration_subjects` RESTRICT | Subject |
+| `entry_kind` | TEXT | NOT NULL | `decision`, `action`, `attempt` or `receipt` |
+| `idempotency_key` | TEXT | NOT NULL, UNIQUE with `subject_id` | Makes every append replay-safe |
+| `visit_id` | TEXT | nullable | Visit that wrote the entry |
+| `mode` | TEXT | NOT NULL | `shadow` or `active` |
+| `policy_artifact_sha256` | TEXT | NOT NULL, FK `playbook_artifacts` RESTRICT | Artifact the entry ran under; artifact collection keeps it |
+| `subject_version` | INTEGER | NOT NULL, `>= 0` | Subject version observed |
+| `phase` | TEXT | NOT NULL | Subject phase observed |
+| `head_sha` | TEXT | nullable, 40 hex | Exact head; required for attempts and receipts |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Generation of that head |
+| `rule` | TEXT | nullable | Decision-table line; required for decisions |
+| `primitive` | TEXT | nullable | One of the twenty primitives; required for decisions and actions |
+| `outcome` | TEXT | nullable | Primitive outcome; NULL for decisions, required otherwise |
+| `facts_digest` | TEXT | nullable | `sha256:` of the observation; required for decisions |
+| `payload` | JSONB | NOT NULL, default `{}` | Arguments, details and evidence |
+| `recorded_at` | REAL | NOT NULL | Unix timestamp |
+
 ### Table: `integration_review_evidence`
 
 Immutable record that a reviewer approved (or rejected) an exact
@@ -2215,7 +2341,7 @@ that will be built into a candidate and promoted to `main` together.
 | `trigger` | TEXT | nullable | periodic / manual |
 | `source_manifest_digest` | TEXT | NOT NULL | Digest of the sealed member set |
 | `base_sha` | TEXT | nullable | `main` at seal time; NULL only when `lifecycle = 'empty'` (`ck_integration_batches_empty_identity`) |
-| `lifecycle` | TEXT | NOT NULL | One of: sealing, sealed, building, testing, repairing, human_blocked, promoting, cleanup_pending, promoted, aborted, failed, empty. Cannot return to `sealing`; identity columns are immutable after sealing (triggers) |
+| `lifecycle` | TEXT | NOT NULL | One of: sealing, sealed, building, testing, repairing, human_blocked, promoting, cleanup_pending, promoted, aborted, failed, empty. Cannot return to `sealing`; identity columns are immutable after sealing (triggers). `empty` rows are history only: an empty frontier now consumes its request without inserting a row (`TrainService` answers `batch_id` `integration-empty:<request_id>`) |
 | `current_revision` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Latest candidate revision; monotone (trigger) |
 | `integration_branch` | TEXT | nullable | Candidate branch; NULL only when empty |
 | `pr_url` | TEXT | nullable | Audit PR for the candidate |

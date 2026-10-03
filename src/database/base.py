@@ -16,7 +16,7 @@ every method in this protocol.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
@@ -193,6 +193,48 @@ class DatabaseBackend(Protocol):
 
     async def pending_integration_cleanup_page(
         self, *, now: float, after: tuple[float, str, str] | None, limit: int
+    ) -> list[dict]: ...
+
+    # --- Integration subjects (src/integration/subjects.py) ---
+
+    async def ensure_integration_subject(self, values: dict) -> tuple[dict, bool]: ...
+
+    async def get_integration_subject(self, subject_id: str) -> dict | None: ...
+
+    async def get_integration_subject_by_key(
+        self, *, project_id: str, kind: str, subject_key: str
+    ) -> dict | None: ...
+
+    async def due_integration_subject_page(
+        self,
+        *,
+        now: float,
+        after: tuple[float, str] | None,
+        limit: int,
+        kinds: Sequence[str] | None = None,
+        engine: str | None = None,
+    ) -> list[dict]: ...
+
+    async def wake_integration_subjects(
+        self,
+        *,
+        now: float,
+        subject_ids: Iterable[str] = (),
+        task_ids: Iterable[str] = (),
+        writer_task_ids: Iterable[str] = (),
+        batch_ids: Iterable[str] = (),
+        gate_ids: Iterable[str] = (),
+    ) -> int: ...
+
+    async def append_integration_subject_journal(self, values: dict) -> tuple[dict, bool]: ...
+
+    async def list_integration_subject_journal(
+        self,
+        subject_id: str,
+        *,
+        after_seq: int | None = None,
+        limit: int = 100,
+        entry_kinds: Sequence[str] | None = None,
     ) -> list[dict]: ...
 
     # --- Project onboarding idempotency ---
@@ -938,7 +980,9 @@ class DatabaseBackend(Protocol):
 
     # --- Router (mandatory-routing spec §6.4-§6.6) ---
 
-    async def count_routed_backlog_by_profile(self, *, conn=None) -> dict[str, int]: ...
+    async def count_routed_backlog_by_profile(
+        self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
+    ) -> dict[str, dict[str, int]]: ...
     async def count_busy_sessions_by_profile(self, *, conn=None) -> dict[str, int]: ...
     def routing_apply_lock(self, *, budget_seconds: float = ...) -> Any: ...
     async def get_task_on(self, conn, task_id: str) -> Task | None: ...
@@ -1183,6 +1227,7 @@ class DatabaseBackend(Protocol):
     async def register_agent_wait(self, **kwargs) -> dict: ...
     async def register_agent_wait_in_transaction(self, conn, **kwargs) -> dict: ...
     async def get_agent_wait(self, wait_id: str) -> dict | None: ...
+    async def consume_agent_wait(self, wait_id: str, *, identity: dict, now: float) -> dict: ...
     async def list_agent_waits(self, **kwargs) -> list[dict]: ...
     async def cancel_agent_wait(self, wait_id: str, **kwargs) -> dict: ...
     async def blocking_wait_for(self, session, claim_epoch: int, now: float) -> dict | None: ...

@@ -1538,6 +1538,11 @@ class SessionsConfig:
     #: Maximum historical usage entries an uncheckpointed watcher may see
     #: before treating the batch as restart replay rather than fresh work.
     transcript_startup_replay_limit: int = 100
+    #: Native compaction at future worker launches only; 0 inherits harness defaults.
+    worker_context_compact_tokens: int = 160000
+    worker_context_checkpoint_tokens: int = 120000
+    #: Tool-turn cadence when fresh context measurements are unavailable, not a token estimate.
+    worker_context_unknown_checkpoint_turns: int = 40
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
@@ -1552,8 +1557,16 @@ class SessionsConfig:
     #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
     #: every other provider.
     fake_script_file: str = ""
+    #: Per-worker Claude plugin overrides, keyed by ``name@marketplace``.  A
+    #: non-empty map is merged as ``enabledPlugins`` into the rendered
+    #: ``.aq/hooks/claude.json`` of worker-lifecycle (``task``/``pool``)
+    #: sessions only; the empty default leaves the file byte-identical.
+    worker_claude_plugin_overrides: dict[str, bool] = field(default_factory=dict)
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
+    _PLUGIN_ID_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1608,6 +1621,48 @@ class SessionsConfig:
         ):
             if getattr(self, name) <= 0:
                 errors.append(ConfigError("sessions", name, "must be > 0"))
+        compact = self.worker_context_compact_tokens
+        checkpoint = self.worker_context_checkpoint_tokens
+        if compact != 0 and not 100000 <= compact <= 1000000:
+            errors.append(ConfigError(
+                "sessions", "worker_context_compact_tokens", "must be 0 or 100000..1000000"
+            ))
+        if checkpoint < 0 or (compact > 0 and checkpoint > compact):
+            errors.append(ConfigError(
+                "sessions", "worker_context_checkpoint_tokens",
+                "must be >= 0 and <= an enabled compact window",
+            ))
+        if self.worker_context_unknown_checkpoint_turns <= 0:
+            errors.append(ConfigError(
+                "sessions", "worker_context_unknown_checkpoint_turns", "must be > 0"
+            ))
+        if not isinstance(self.worker_claude_plugin_overrides, dict):
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "worker_claude_plugin_overrides",
+                    "must be a mapping of plugin id (name@marketplace) to bool",
+                )
+            )
+        else:
+            for plugin_id, enabled in self.worker_claude_plugin_overrides.items():
+                if not isinstance(plugin_id, str) or not self._PLUGIN_ID_RE.fullmatch(plugin_id):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id!r}",
+                            "plugin id must look like name@marketplace "
+                            "(e.g. fast-jev-compaction@fast-jev-compaction)",
+                        )
+                    )
+                elif not isinstance(enabled, bool):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id}",
+                            f"must be a bool, got {type(enabled).__name__}",
+                        )
+                    )
         return errors
 
 
@@ -2309,8 +2364,16 @@ class IntegrationConfig:
     merge_require_up_to_date: bool = True
 
     #: Whether to periodically release branch owners whose writers are proven gone.
-    #: Starts disabled so the operator can observe the first backlog releases.
-    owner_recovery_sweep: bool = False
+    #: On by default: stranded-owner recovery is routine, and every release is
+    #: still refused while a writer is live or its branch is not safe on origin.
+    #: An explicit ``false`` keeps the sweep off.
+    owner_recovery_sweep: bool = True
+
+    #: Install root subject observations without performing primitives.
+    reconciler_shadow: bool = False
+    #: Visit roots explicitly transferred to the reconciler. This setting
+    #: never transfers ownership; disabling it requires an audited rollback.
+    reconciler_active: bool = False
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -2318,11 +2381,28 @@ class IntegrationConfig:
     #: Idle ticks and downtime do not count; changed evidence starts over.
     publisher_stall_after: int = 5
 
+    #: Wall-clock budget, in seconds, for one source callback of the
+    #: integration reconciliation service (one bounded page of one source).
+    #: A source past it is cancelled and the pass moves on to the others; its
+    #: durable work stays retryable.  The slowest sources seen on a busy
+    #: install take about two minutes (GitHub PR reviews, the outbox).
+    service_source_timeout_seconds: float = 300.0
+    #: Budget for one item of a page the service iterates itself (a due
+    #: schedule, a repair deadline, a candidate CI row, an intent, a cleanup).
+    service_item_timeout_seconds: float = 60.0
+    #: Per-source overrides of ``service_source_timeout_seconds``, keyed by the
+    #: source name the daemon logs (``integration slow source=<name>``), e.g.
+    #: ``{"GitHub PR reviews": 600}``.
+    service_source_timeouts: dict[str, float] = field(default_factory=dict)
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
 
         errors: list[ConfigError] = []
+        for name in ("reconciler_shadow", "reconciler_active"):
+            if not isinstance(getattr(self, name), bool):
+                errors.append(ConfigError("integration", name, "must be a boolean"))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -2361,11 +2441,29 @@ class IntegrationConfig:
                     "must be a positive integer",
                 )
             )
+        for name in ("service_source_timeout_seconds", "service_item_timeout_seconds"):
+            if not _positive_number(getattr(self, name)):
+                errors.append(ConfigError("integration", name, "must be a positive number"))
+        if not isinstance(self.service_source_timeouts, dict) or any(
+            not isinstance(source, str) or not source.strip() or not _positive_number(value)
+            for source, value in self.service_source_timeouts.items()
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "service_source_timeouts",
+                    "must map source names to positive numbers of seconds",
+                )
+            )
         if self.github_app is not None:
             errors.extend(self.github_app.validate())
         if self.scratch_probe is not None:
             errors.extend(self.scratch_probe.validate(self.github_app))
         return errors
+
+
+def _positive_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float) and value > 0
 
 
 def _opt_int(value) -> int | None:
@@ -4322,6 +4420,17 @@ _SCALAR_COERCIONS: dict[str, Callable[[object], object]] = {
 _CONTAINER_ANNOTATION = re.compile(r"(tuple|list)\[(\w+)(?:, \.\.\.)?\]")
 
 
+def _switch(value: object) -> bool:
+    """A boolean setting where an explicit off must stay off.
+
+    ``bool()`` reads the string ``"false"`` -- what a ``${VAR}`` substitution
+    yields -- as true, which would turn an operator's disable into an enable.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def _coerce_field(annotation: str, value: object) -> object:
     """Coerce one YAML value to the type its dataclass field declares.
 
@@ -4342,6 +4451,15 @@ def _coerce_field(annotation: str, value: object) -> object:
 
 def _test_interpreters(raw: object) -> object:
     """``resources.test_interpreters`` with string keys; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
+
+
+def _worker_plugin_overrides(raw: object) -> object:
+    """``sessions.worker_claude_plugin_overrides``; a non-mapping is kept for validate()."""
     if raw is None:
         return {}
     if isinstance(raw, Mapping):
@@ -4790,11 +4908,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
                     "transcript_startup_replay_limit": int,
+                    "worker_context_compact_tokens": int,
+                    "worker_context_checkpoint_tokens": int,
+                    "worker_context_unknown_checkpoint_turns": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
                     "fake_script_file": str,
+                    "worker_claude_plugin_overrides": _worker_plugin_overrides,
                 },
             )
         )
@@ -4949,9 +5071,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             github_app=github_app,
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
-            owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
+            reconciler_shadow=integ.get("reconciler_shadow", False),
+            reconciler_active=integ.get("reconciler_active", False),
+            owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),
+            service_source_timeout_seconds=integ.get("service_source_timeout_seconds", 300.0),
+            service_item_timeout_seconds=integ.get("service_item_timeout_seconds", 60.0),
+            service_source_timeouts=integ.get("service_source_timeouts") or {},
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

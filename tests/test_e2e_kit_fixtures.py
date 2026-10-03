@@ -1082,15 +1082,16 @@ def test_race_and_plugin_probes_bypass_cli_preloading(tmp_path, argv):
     assert "Traceback" not in result.stderr
 
 
-def test_pytest_collection_selects_only_the_requested_shard():
+@pytest.mark.parametrize("group", SCENARIO_GROUPS)
+def test_pytest_collection_selects_only_the_requested_shard(group):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/test_e2e_cli_stateful.py", "--co", "-q",
-         "-m", "integration", "-k", "graphs"],
+         "-m", "integration", "-k", f"{group}-"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     nodes = [line for line in result.stdout.splitlines()
              if line.startswith("tests/test_e2e_cli_stateful.py::")]
     assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
-        f"graphs-{key}" for key in SCENARIO_GROUPS["graphs"]
+        f"{group}-{key}" for key in SCENARIO_GROUPS[group]
     }

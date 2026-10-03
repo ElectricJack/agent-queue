@@ -1,0 +1,1822 @@
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--adopt-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--checkpoint"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--reconcile"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'action' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stop_reason' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'attempt_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'epic_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'final_reserve' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_artifact' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'limits' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'mandatory_views' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_plateau_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_repair_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'noise_band' could not be determined statically, so the check against number was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'policy_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'render_profile_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'rig_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_reservation' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'scorer_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--adopt-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--checkpoint"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--reconcile"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'action' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stop_reason' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'attempt_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'epic_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'final_reserve' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_artifact' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'limits' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'mandatory_views' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_plateau_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_repair_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'noise_band' could not be determined statically, so the check against number was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'policy_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'render_profile_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'rig_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_reservation' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'scorer_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--adopt-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--checkpoint"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--reconcile"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'action' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stop_reason' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'attempt_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'epic_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'final_reserve' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_artifact' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'limits' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'mandatory_views' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_plateau_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_repair_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'noise_band' could not be determined statically, so the check against number was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'policy_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'render_profile_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'rig_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_reservation' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'scorer_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--adopt-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--checkpoint"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--reconcile"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'action' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stop_reason' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'attempt_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'epic_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'final_reserve' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_artifact' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'limits' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'mandatory_views' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_plateau_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_repair_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'noise_band' could not be determined statically, so the check against number was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'policy_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'render_profile_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'rig_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_reservation' could not be determined statically, so the check against object was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'scorer_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--adopt"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--adopt-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--checkpoint"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--checkpoint-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--deadline"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--reconcile"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'action' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'next_variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'stop_reason' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'receipts' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'spent' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--score-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_version' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--scorer-stop"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'attempt_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'brief_review_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'epic_task_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'final_reserve' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_artifact' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'limits' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'mandatory_views' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_plateau_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'max_repair_rounds' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'noise_band' could not be determined statically, so the check against number was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'object_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'policy_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'render_profile_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'rig_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'score_reservation' could not be determined statically, so the check against object was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'scorer_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'variants' could not be determined statically, so the check against array was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  }
+]
