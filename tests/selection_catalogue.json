@@ -1380,7 +1380,7 @@
       ]
     }
   },
-  "digest": "sha256:7bfdf3a84cbe7f264fd70a4c4488cbf26c5208131d868c8ab9b93a4ed31e3c35",
+  "digest": "sha256:c12ccb2b863d7de83571bc0b2ac10af0542e53d27c4f646de5bd1330796c58e2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7792,6 +7792,8 @@
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.drain_owners",
         "src.integration.hierarchy",
         "src.integration.models",
@@ -7800,7 +7802,9 @@
         "src.integration.parent_completion",
         "src.integration.parent_repair_heads",
         "src.integration.promotion",
+        "src.integration.provenance",
         "src.integration.repair",
+        "src.integration.scheduler",
         "src.integration.status",
         "src.models",
         "src.prime.sections",
