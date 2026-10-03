@@ -258,6 +258,27 @@ def integration_abort(ctx: click.Context, operation_id: str, reason: str) -> Non
     _execute(ctx, "integration_abort", {"operation_id": operation_id, "reason": reason})
 
 
+@integration.command("settle-delivered-batch")
+@click.argument("batch_id")
+@click.option("--apply", is_flag=True, help="Apply the exact preview; default is read-only.")
+@click.option("--candidate", default=None, help="Full candidate SHA from the preview.")
+@click.option("--target-head", default=None, help="Full default-branch SHA from the preview.")
+@click.option("--snapshot", default=None, help="Durable state digest from the preview.")
+@click.option("--reason", default=None)
+@click.pass_context
+@_handle_errors
+def integration_settle_delivered_batch(ctx, batch_id, apply, candidate, target_head, snapshot, reason):
+    """Retire a train whose complete candidate is already on the default branch."""
+    if apply and not (candidate and target_head and snapshot and (reason or "").strip()):
+        raise click.UsageError("--apply requires --candidate, --target-head, --snapshot and --reason")
+    args = {"batch_id": batch_id, "dry_run": not apply}
+    for key, value in (("expected_candidate_sha", candidate), ("expected_target_sha", target_head),
+                       ("expected_snapshot_digest", snapshot), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_settle_delivered_batch", args)
+
+
 @integration.command("retry-cleanup")
 @click.argument("batch_id")
 @click.pass_context

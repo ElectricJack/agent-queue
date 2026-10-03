@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 504,
+    "leaf_commands": 506,
     "registration": {
-      "generated": 329,
-      "handwritten": 175
+      "generated": 330,
+      "handwritten": 176
     },
     "ownership": {
-      "core": 465,
+      "core": 467,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 503
+      "supported": 505
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 329,
-      "registration": 161
+      "dispatch": 330,
+      "registration": 162
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 444
+      "untested": 446
     }
   },
   "commands": [
@@ -4856,6 +4856,42 @@
           "batch_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration settle-delivered-batch",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_settle_delivered_batch",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "batch_id"
+        ],
+        "optional": [
+          "--apply",
+          "--candidate",
+          "--target-head",
+          "--snapshot",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",
@@ -14095,6 +14131,50 @@
         "structured": [],
         "nullable": [
           "--now"
+        ]
+      }
+    },
+    {
+      "path": "aq system integration-settle-delivered-batch",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_settle_delivered_batch",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--expected-candidate-sha",
+          "--expected-target-sha",
+          "--expected-snapshot-digest",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--expected-candidate-sha",
+          "--expected-target-sha",
+          "--expected-snapshot-digest",
+          "--reason"
         ]
       }
     },

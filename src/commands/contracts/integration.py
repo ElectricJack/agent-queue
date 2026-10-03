@@ -92,6 +92,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
         "integration_recover_parent_head",
+        "integration_settle_delivered_batch",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -334,6 +335,45 @@ class IntegrationRebindReusedIdentityArgs(CommandArgs):
         ):
             raise ValueError("applying requires expected_origin_ids and reason")
         return self
+
+
+class IntegrationSettleDeliveredBatchArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_candidate_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    expected_target_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    expected_snapshot_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def apply_requires_preview(self) -> IntegrationSettleDeliveredBatchArgs:
+        if not self.dry_run and (
+            not self.expected_candidate_sha or not self.expected_target_sha
+            or not self.expected_snapshot_digest or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires exact candidate, target, snapshot and reason")
+        return self
+
+
+class IntegrationSettleDeliveredBatchValue(CommandValue):
+    batch_id: str | None = None
+    project_id: str | None = None
+    operation_id: str | None = None
+    revision: int | None = None
+    candidate_sha: str | None = None
+    target_ref: str | None = None
+    target_sha: str | None = None
+    snapshot_digest: str | None = None
+    member_count: int | None = None
+    validation: str | None = None
+    apply_command: str | None = None
+    reason: str | None = None
+    release: dict[str, Any] | None = None
+    operator_id: str | None = None
+    settled_at: float | None = None
+    members: tuple[dict[str, Any], ...] = ()
+    repair_completion_ids: tuple[str, ...] = ()
+    repair_stage_state: str | None = None
 
 
 class IntegrationRebindRepairArgs(CommandArgs):
@@ -1534,6 +1574,15 @@ INTEGRATION_REBIND_REUSED_IDENTITY = _operational_contract(
     REBIND_REUSED_IDENTITY_OUTCOMES,
     successes=frozenset({"rebound", "would_rebind", "nothing_to_rebind"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_SETTLE_DELIVERED_BATCH = _operational_contract(
+    "integration_settle_delivered_batch",
+    IntegrationSettleDeliveredBatchArgs,
+    ("would_settle", "settled", "already_settled", "changed", "blocked"),
+    successes=frozenset({"would_settle", "settled", "already_settled"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationSettleDeliveredBatchValue,
 )
 
 INTEGRATION_REBIND_REPAIR = _operational_contract(
@@ -3126,6 +3175,15 @@ async def _rebind_reused_identity_adapter(
     )
 
 
+async def _settle_delivered_batch_adapter(
+    args: IntegrationSettleDeliveredBatchArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_settle_delivered_batch", args, ctx, IntegrationSettleDeliveredBatchValue,
+        {"would_settle", "settled", "already_settled", "changed", "blocked"},
+    )
+
+
 async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_rebind_repair",
@@ -3321,6 +3379,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REOPEN_COLLECTION, _reopen_collection_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
+        (INTEGRATION_SETTLE_DELIVERED_BATCH, _settle_delivered_batch_adapter),
         (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
         (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
         (INTEGRATION_RECOVER_PARENT_HEAD, _recover_parent_head_adapter),

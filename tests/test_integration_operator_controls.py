@@ -150,6 +150,33 @@ async def test_all_operator_controls_share_the_live_supervisor_matrix(db):
             assert (refusal is None) is allowed, command
 
 
+async def test_delivered_batch_settlement_requires_operator_and_passes_audit_label(db, monkeypatch):
+    monkeypatch.setattr(db, "get_integration_batch", AsyncMock(return_value={"project_id": "p"}))
+    run = AsyncMock(return_value={"outcome": "would_settle", "batch_id": "batch"})
+
+    class Settlement:
+        def __init__(self, promotion):
+            assert promotion == "promotion-service"
+            self.run = run
+
+    monkeypatch.setattr("src.integration.batch_settlement.DeliveredBatchSettlement", Settlement)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler._integration_promotion_service = lambda: "promotion-service"
+    result = await handler._cmd_integration_settle_delivered_batch({"batch_id": "batch"})
+    assert result["success"] is True
+    assert run.await_args.kwargs["principal"] == "human:local-operator"
+    run.reset_mock()
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_settle_delivered_batch({"batch_id": "batch"})
+    assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+    invalid = await handler._cmd_integration_settle_delivered_batch(
+        {"batch_id": "batch", "dry_run": False})
+    assert invalid["outcome"] == "blocked"
+    run.assert_not_awaited()
+
+
 @pytest.mark.parametrize("principal,allowed", [
     (None, True), (_session("super-p", "p"), True),
     (_session("super-other", "other"), False),

@@ -564,6 +564,7 @@
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
+        "tests/test_integration_batch_settlement.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
@@ -1368,7 +1369,7 @@
       ]
     }
   },
-  "digest": "sha256:d1dbaccc453a29eae55cb12887649f6e2dfcb509fd40e609d642aaa8f14f4f2c",
+  "digest": "sha256:c89039200c586c579581d41b592b732c09b587a719147160cfd1b79b8fa45d4b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7105,6 +7106,26 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_integration_batch_settlement.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batch_settlement",
+        "src.integration.promotion",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Externally delivered, completed repair trains can release their sweep safely."
     },
     "tests/test_integration_cancelled_collection.py": {
       "areas": [

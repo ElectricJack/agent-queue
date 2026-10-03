@@ -277,6 +277,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_waive_history",
         "integration_resume",
         "integration_abort",
+        "integration_settle_delivered_batch",
         "integration_develop",
         "integration_adopt",
         "integration_migrate_provenance",
@@ -307,6 +308,37 @@ def test_unimplemented_integration_operations_are_not_registered():
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["would_settle", "settled", "already_settled", "changed", "blocked"])
+async def test_delivered_batch_contract_preserves_preview_identity_and_audit(outcome):
+    payload = dict(batch_id="batch", candidate_sha="a" * 40, target_sha="b" * 40,
+                   snapshot_digest="c" * 64, validation="external delivery; not CI attested",
+                   apply_command="aq integration settle-delivered-batch batch --apply",
+                   repair_completion_ids=["completion"])
+
+    class Handler:
+        async def execute(self, command, args):
+            assert command == "integration_settle_delivered_batch"
+            assert args["batch_id"] == "batch" and args["dry_run"] is True
+            return {"success": outcome in {"would_settle", "settled", "already_settled"},
+                    "outcome": outcome, **payload}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_settle_delivered_batch")
+    set_handler_provider(Handler)
+    try:
+        result = await registration.invoke(
+            registration.contract.execution.args_model(batch_id="batch"), None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == outcome
+    assert result.value.candidate_sha == payload["candidate_sha"]
+    assert result.value.snapshot_digest == payload["snapshot_digest"]
+    assert result.value.apply_command == payload["apply_command"]
+    assert result.value.repair_completion_ids == ("completion",)
 
 
 @pytest.mark.asyncio
