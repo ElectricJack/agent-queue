@@ -30,7 +30,10 @@ from src.database.tables import (
     playbook_artifacts,
     project_integration_leases,
     project_integration_schedules,
+    projects,
+    repos,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_gates,
     task_integration_checkpoints,
@@ -413,16 +416,212 @@ async def _request(db, *, now: float = 10.0) -> dict:
     return await IntegrationScheduler(db).mark_due("p", now, "manual")
 
 
-async def _seed_leaf(db, task_id: str, head: str, **task_overrides) -> dict:
-    review = _review_row(task_id, head, evidence_id=f"review-{task_id}")
+async def _seed_leaf(db, task_id: str, head: str, *, source_base=BASE_SHA, **task_overrides) -> dict:
+    review = _review_row(task_id, head, evidence_id=f"review-{task_id}", source_base=source_base)
     async with db.immediate() as conn:
         await conn.execute(insert(tasks).values(**_task_row(task_id, **task_overrides)))
-        await conn.execute(insert(task_branch_origins).values(**_origin_row(task_id)))
+        await conn.execute(insert(task_branch_origins).values(
+            **{**_origin_row(task_id), "base_sha": source_base}
+        ))
         await conn.execute(
             insert(task_integration_checkpoints).values(**_checkpoint_row(task_id, head))
         )
         await conn.execute(insert(integration_review_evidence).values(**review))
     return review
+
+
+@pytest.fixture
+async def adopted_root(db, tmp_path, request):
+    """Real adoption proof with no root receipt or manufactured CI evidence."""
+    from src.git.manager import GitManager
+    from src.integration.development import DevelopmentIntegration
+    from tests.test_integration_candidates import _git, _make_origin
+
+    origin, work, base, sources = _make_origin(tmp_path)
+    adoption = getattr(request, "param", "main")
+    target = "other" if adoption == "other" else "main"
+    head = sources[0][1]
+    await _enable_train(db)
+    await _seed_leaf(db, "adopted", head, branch_name="root-0", source_base=base)
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(url=str(origin)))
+        await conn.execute(update(task_integration_checkpoints).values(branch="root-0"))
+        await conn.execute(insert(task_completion_records).values(
+            id="adopted-close", task_id="adopted", outcome="pass",
+            commits='["' + head + '"]', completed_at=2.0,
+        ))
+    _git(work, "switch", "main")
+    if adoption == "equivalent":
+        (work / "equivalent.txt").write_text("operator replacement\n")
+        _git(work, "add", ".")
+        _git(work, "commit", "-m", "operator supplied equivalent work")
+    else:
+        _git(work, "merge", "--no-ff", "-m", "deliver root", "root-0")
+    _git(work, "push", "origin", f"HEAD:refs/heads/{target}")
+    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
+    result = await service.adopt(
+        project_id="p", task_ids=["adopted"], target_ref=f"refs/heads/{target}",
+        head_sha=_git(work, "rev-parse", "HEAD"), reason="already deployed",
+        operator_id="local",
+        accept_equivalent=adoption == "equivalent",
+    )
+    assert result["outcome"] == "adopted"
+    db.set_delivery_observer(service.delivery_observer)
+    return service, origin, work, base, sources
+
+
+@pytest.mark.parametrize("adopted_root", ["main", "equivalent"], indirect=True)
+async def test_adopted_default_branch_source_is_not_reseated_on_two_sweeps(db, adopted_root):
+    from src.integration.scheduler import TrainService
+
+    inspector = AsyncMock(return_value=())
+    for now in (10.0, 30.0):
+        request = await _request(db, now=now)
+        result = await TrainService(db, migration_inspector=inspector).seal(
+            "p", request["request_id"], now + 1
+        )
+        assert result["outcome"] == "empty"
+    inspector.assert_not_awaited()
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches))).all() == []
+        assert (await conn.execute(select(task_delivery_receipts))).all() == []
+
+
+@pytest.mark.parametrize("adopted_root", ["other"], indirect=True)
+async def test_adoption_on_another_target_still_needs_default_branch_delivery(db, adopted_root):
+    from src.integration.scheduler import TrainService
+
+    request = await _request(db)
+    result = await TrainService(db).seal("p", request["request_id"], 20.0)
+    assert result["outcome"] == "sealed"
+
+
+async def test_failed_git_observation_does_not_exclude_a_root(db, adopted_root, monkeypatch):
+    from dataclasses import replace
+
+    from src.integration.scheduler import TrainService
+
+    service, *_rest = adopted_root
+    snapshot = service.delivery_observer._snapshot
+
+    async def failed_snapshot(target, max_age=0.0):
+        return replace(await snapshot(target, max_age), target_oid=None, error="fetch_failed")
+
+    monkeypatch.setattr(service.delivery_observer, "_snapshot", failed_snapshot)
+    request = await _request(db)
+    result = await TrainService(db).seal("p", request["request_id"], 20.0)
+    assert result["outcome"] == "sealed"
+
+
+@pytest.mark.parametrize("changed", ["source", "generation", "target", "repository"])
+@pytest.mark.parametrize("during_observation", [False, True])
+async def test_stale_adoption_cannot_hide_current_root(
+    db, adopted_root, monkeypatch, changed, during_observation
+):
+    from src.integration.scheduler import TrainService
+    from tests.test_integration_candidates import _git
+
+    service, _origin, work, base, sources = adopted_root
+
+    async def change_identity():
+        async with db.immediate() as conn:
+            if changed == "source":
+                await conn.execute(update(task_integration_checkpoints).values(
+                    checkpoint_sha=sources[1][1], generation=2,
+                ))
+                await conn.execute(insert(integration_review_evidence).values(**_review_row(
+                    "adopted", sources[1][1], evidence_id="changed-review",
+                    source_base=base, generation=2, created_at=3.0,
+                )))
+            elif changed == "generation":
+                # Same source SHA, a new close without retained provenance:
+                # the old adoption cannot answer this generation.
+                await conn.execute(insert(task_completion_records).values(
+                    id="new-close", task_id="adopted", outcome="pass",
+                    commits='["' + sources[0][1] + '"]', completed_at=3.0,
+                ))
+                await conn.execute(update(task_integration_checkpoints).values(generation=2))
+                await conn.execute(insert(integration_review_evidence).values(**_review_row(
+                    "adopted", sources[0][1], evidence_id="changed-review",
+                    source_base=base, generation=2, created_at=3.0,
+                )))
+            elif changed == "target":
+                _git(work, "push", "origin", f"{base}:refs/heads/other")
+                await conn.execute(update(repos).values(default_branch="other"))
+            else:
+                # The completion ref is fenced to repo, never to this new id.
+                await conn.execute(insert(repos).values(
+                    id="new-repo", project_id="p", source_type="clone",
+                    url=str(_origin), default_branch="main", checkout_base_path="",
+                ))
+                await conn.execute(update(projects).values(integration_repository_id="new-repo"))
+                await conn.execute(update(tasks).values(repo_id="new-repo"))
+                await conn.execute(update(task_integration_checkpoints).values(repository_id="new-repo"))
+                await conn.execute(update(task_branch_origins).values(repository_id="new-repo"))
+                await conn.execute(insert(integration_review_evidence).values(**_review_row(
+                    "adopted", sources[0][1], evidence_id="changed-review",
+                    source_base=base, repository_id="new-repo", created_at=3.0,
+                )))
+
+    if during_observation:
+        observe = service.delivery_observer.observe
+
+        async def observe_then_change(ids):
+            view = await observe(ids)
+            await change_identity()
+            return view
+
+        monkeypatch.setattr(service.delivery_observer, "observe", observe_then_change)
+    else:
+        await change_identity()
+    request = await _request(db)
+    result = await TrainService(db).seal("p", request["request_id"], 20.0)
+    assert result["outcome"] == "sealed"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batch_members.c.task_id))).scalars().all() == ["adopted"]
+
+
+@pytest.mark.parametrize("blocked", [None, "hold", "gate", "review", "reopened"])
+async def test_adopted_dependency_satisfies_ordering_without_bypassing_admission(
+    db, adopted_root, blocked
+):
+    from src.integration.epic_dependencies import declare
+    from src.integration.scheduler import TrainService
+
+    _service, _origin, _work, base, sources = adopted_root
+    await _seed_leaf(db, "dependent", sources[1][1], branch_name="root-1", source_base=base)
+    async with db.immediate() as conn:
+        await declare(conn, dependent_task_id="dependent", dependency_task_id="adopted", now=1.0)
+        # The prerequisite's hold does not revoke its delivery.
+        await conn.execute(insert(task_labels).values(task_id="adopted", label="hold:operator"))
+        if blocked == "hold":
+            await conn.execute(insert(task_labels).values(task_id="dependent", label="hold:operator"))
+        elif blocked == "gate":
+            await conn.execute(insert(gates).values(
+                id="dependent-gate", project_id="p", gate_type="human", title="review",
+                question="Approve delivery?", status="open", created_at=1.0,
+            ))
+            await conn.execute(insert(task_gates).values(task_id="dependent", gate_id="dependent-gate"))
+        elif blocked == "review":
+            await conn.execute(insert(integration_review_evidence).values(**_review_row(
+                "dependent", sources[1][1], evidence_id="rejected-review",
+                source_base=base, verdict="rejected", created_at=3.0,
+            )))
+        elif blocked == "reopened":
+            await conn.execute(update(tasks).where(tasks.c.id == "adopted").values(
+                status="IN_PROGRESS", updated_at=3.0,
+            ))
+    request = await _request(db)
+    # Production also has migration inspection, which must see the dependent
+    # even though its prerequisite has no train receipt.
+    result = await TrainService(db, migration_inspector=AsyncMock(return_value=())).seal(
+        "p", request["request_id"], 20.0
+    )
+    assert result["outcome"] == ("empty" if blocked else "sealed")
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batch_members.c.task_id))).scalars().all() == (
+            [] if blocked else ["dependent"]
+        )
 
 
 async def _seed_exact_parent(db) -> None:
