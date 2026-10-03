@@ -639,7 +639,9 @@
         "tests/test_knowledge_inventory.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_proposals.py",
+        "tests/test_knowledge_provider_absence.py",
         "tests/test_knowledge_redaction.py",
+        "tests/test_knowledge_retrieval.py",
         "tests/test_knowledge_service.py",
         "tests/test_knowledge_task_creation.py",
         "tests/test_record_backfill.py",
@@ -1382,7 +1384,7 @@
       ]
     }
   },
-  "digest": "sha256:968affc866dfd47c8c81ad96c747263c5bae33472ba5dbbbbfdde1bedbaa2863",
+  "digest": "sha256:dc409a5e4f40a306c24e34a6607d79b802cc3f5554e865247fd0a1ef9308a384",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8925,6 +8927,24 @@
       "markers": [],
       "summary": "Exact-base proposal acceptance, decision replay and worker permission boundaries."
     },
+    "tests/test_knowledge_provider_absence.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.knowledge.providers",
+        "src.knowledge.service",
+        "src.plugins.registry",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Inert defaults and degraded optional retrieval preserve ordinary core reads."
+    },
     "tests/test_knowledge_redaction.py": {
       "areas": [
         "knowledge-records"
@@ -8942,6 +8962,26 @@
         "migration"
       ],
       "summary": "Logical denial, one-way erasure, purge recovery and disposable migration checks."
+    },
+    "tests/test_knowledge_retrieval.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.providers",
+        "src.knowledge.service",
+        "src.profiles.capabilities",
+        "src.records.auth",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reference-only optional ranking with real core PostgreSQL authorization."
     },
     "tests/test_knowledge_service.py": {
       "areas": [
