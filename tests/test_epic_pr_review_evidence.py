@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from types import SimpleNamespace
@@ -20,7 +21,9 @@ from src.database.tables import (
     integration_source_ci,
     project_integration_schedules,
     projects,
+    repos,
     task_branch_origins,
+    task_completion_records,
     task_integration_checkpoints,
     task_labels,
     tasks,
@@ -28,13 +31,15 @@ from src.database.tables import (
 from src.doctor.stall_checks import _unmaterialized_pr_findings
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
+from src.integration.delivery_observer import DeliveryObserver
 from src.integration.github_review_poll import GitHubReviewPoller
+from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.root_materialization import RootMaterialization
 from src.integration.scheduler import TrainService
 from src.integration.settling import settled
-from src.models import Project, RepoConfig, RepoSourceType
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, TaskType
 from tests.db_fixtures import lease_dsn
 from tests.test_integration_sealing import _policy
 
@@ -184,6 +189,381 @@ async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(
     changed = await handler._cmd_observe_integration_source_ci(
         SourceCIObservation("e1", next_source, 0, state, checks))
     assert changed["repair_task_id"] not in {first["repair_task_id"], successor["repair_task_id"]}
+
+
+def _land(case, *, squash: bool):
+    """Deliver the fixture's source head to the default branch, for real.
+
+    ``squash`` is the adoption shape: the work reaches main under a different
+    commit, so the source head itself is never an ancestor of the target.  A
+    plain merge keeps it one, which is the ancestry shape.
+    """
+    work = case["work"]
+    _git("checkout", "-B", "main", "origin/main", cwd=work)
+    _git("merge", *("--squash" if squash else "--no-ff", "-m", "deliver e1"),
+         "origin/aq/epic/retire-the-publisher", cwd=work)
+    if squash:
+        _git("commit", "-m", "deliver e1", cwd=work)
+    _git("push", "origin", "main", cwd=work)
+    return _git("rev-parse", "HEAD", cwd=work)
+
+
+def _is_ancestor(work, sha, ref) -> bool:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", sha, ref],
+        cwd=work, check=False, capture_output=True,
+    ).returncode == 0
+
+
+async def _retain_completion(case, *, close_id, commits):
+    """Record the completion and retain its exact source in git, as a close does."""
+    from src.git.manager import GitManager
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    # This fixture is a verified parent, not an ordinary leaf close. A newer
+    # leaf completion must invalidate its earlier parent proof (fair-rapids-53).
+    # Retain the exact verified parent identity and explicitly adopt a squash.
+    store = GitProvenance(
+        GitManager(), str(case["work"]), repository_url=case["remote"]
+    )
+    source = CompletedSource(
+        CompletionIdentity("p", "repo", "e1", "parent:verification-e1"),
+        case["first"],
+    )
+    await store.write_completion(source)
+    if not await store.ancestor(case["first"], commits[-1]):
+        await store.write_replacement(
+            source_oid=commits[-1],
+            base_oid=await store.run("merge-base", case["first"], commits[-1]),
+            replaces=[source], authority="operator", reason="already deployed",
+        )
+
+
+async def _adopt_equivalent(case, *, close_id, replaced, by):
+    """``aq integration adopt --accept-equivalent``: bind *replaced* to *by* in git.
+
+    The operator decision is a replacement record naming the exact immutable
+    completion binding, so delivery truth answers about the generation through
+    the operator's commit rather than through the source head it never received.
+    """
+    from src.git.manager import GitManager
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    store = GitProvenance(GitManager(), str(case["work"]), repository_url=case["remote"])
+    original = CompletedSource(CompletionIdentity("p", "repo", "e1", "parent:verification-e1"), replaced)
+    await store.write_replacement(
+        source_oid=by, base_oid=await store.run("merge-base", replaced, by),
+        replaces=[original], authority="operator", reason="already deployed",
+    )
+
+
+async def _source_handler(case, tmp_path):
+    """A CommandHandler over the fixture, with filing isolated and counted."""
+    from unittest.mock import AsyncMock
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+    from src.vault import ensure_default_intelligence_classes
+
+    data = str(tmp_path / "handler-data")
+    ensure_default_intelligence_classes(data)
+    config = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
+                       database=DatabaseConfig(url=lease_dsn("source-delivery.db")),
+                       data_dir=data)
+    orch = Orchestrator(config)
+    orch.db = case["db"]
+    handler = CommandHandler(orch, config)
+    filed = []
+
+    async def filing(args):
+        existing = await case["db"].find_task_by_dedup_key("p", args["dedup_key"])
+        if existing:
+            return {"success": True, "task_id": existing.id, "created": False}
+        task_id = f"source-repair-{len(filed)}"
+        filed.append(task_id)
+        await case["db"].create_task(Task(
+            id=task_id, project_id="p", repo_id="repo", title=args["title"],
+            description=args["description"], dedup_key=args["dedup_key"],
+            task_type=TaskType.BUGFIX, status=TaskStatus.READY))
+        return {"success": True, "task_id": task_id, "created": True}
+
+    counting = AsyncMock(side_effect=filing)
+    handler._cmd_ensure_task = counting
+    return handler, counting
+
+
+async def _red_observation(case):
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    entries = [{"id": 1, "name": policy.root.required_checks.names[0],
+                "head_sha": source["head"], "app": {"id": int(policy.root.required_checks.producer_id)},
+                "status": "completed", "conclusion": "failure",
+                "html_url": "https://github.com/o/r/actions/runs/1",
+                "output": {"summary": "tests/test_source.py::test_delivery failed"}}]
+    state, checks = classify_source_checks(
+        entries, head=source["head"], required=policy.root.required_checks)
+    return source, SourceCIObservation("e1", source, 0, state, checks)
+
+
+async def _delivered_handler(case, tmp_path, *, squash):
+    """A handler whose registered observer can prove e1 delivered, for real.
+
+    The returned observer counts fetches, so a test can assert that the review
+    poller's repeated ticks ask git once per source generation and attempt.
+    """
+    from src.integration.delivery_observer import DeliveryObserver
+
+    await _retain_completion(
+        case, close_id="close-e1", commits=[_land(case, squash=squash)])
+
+    class _Counting(DeliveryObserver):
+        fetches = 0
+
+        async def observe(self, task_ids, *, max_age=0.0):
+            _Counting.fetches += 1
+            return await super().observe(task_ids, max_age=max_age)
+
+    observer = _Counting(case["db"], git=GitManager(), data_dir=tmp_path / "observer")
+    case["db"].set_delivery_observer(observer)
+    handler, filing = await _source_handler(case, tmp_path)
+    return handler, filing, observer
+
+
+async def _observed_proof(case):
+    async with case["db"]._engine.connect() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    return record["evidence"].get("source_delivery")
+
+
+async def _withheld(case, tmp_path):
+    """The queued source-CI repairs a claim would withhold, proved right now."""
+    from src.integration.source_delivery import delivered_queued_repairs
+
+    return await delivered_queued_repairs(
+        case["db"], case["db"]._delivery_observer, project_id="p")
+
+
+def _publish(case, ref: str, sha: str) -> None:
+    """Force *ref* to *sha* on the real origin, retarget or rewind included."""
+    _git("push", "--force", "origin", f"{sha}:refs/heads/{ref}", cwd=case["work"])
+
+
+async def _set_default_branch(case, ref: str) -> None:
+    async with case["db"].immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(default_branch=ref))
+
+
+async def test_delivered_source_generation_is_not_repaired(case, tmp_path):
+    # Ancestry: the source head itself is an ancestor of the default target.
+    handler, filing, observer = await _delivered_handler(case, tmp_path, squash=False)
+    source, observation = await _red_observation(case)
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "source_delivered", result
+    assert result["delivery"]["state"] == "delivered"
+    assert result["delivery"]["target_ref"] == "refs/heads/main"
+    assert result["delivery"]["source_oid"] and result["delivery"]["target_oid"]
+    assert "repair_task_id" not in result
+    assert filing.await_count == 0
+    async with case["db"]._engine.connect() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["repair_task_id"] is None and record["repair_attempt"] == 0
+    # What was observed is recorded for audit, without displacing the check
+    # evidence it sits beside.
+    assert record["evidence"]["source_delivery"]["state"] == "delivered"
+    assert record["evidence"]["failing_checks"] == observation.evidence["failing_checks"]
+    # The next tick asks git again rather than trusting the record: delivery
+    # truth is request-scoped and a remembered answer goes stale when the
+    # target moves.
+    replay = await handler._cmd_observe_integration_source_ci(observation)
+    assert replay["outcome"] == "source_delivered" and filing.await_count == 0
+    assert replay["delivery"] == result["delivery"]
+    assert observer.fetches == 2
+    assert source["head"] == case["first"]
+
+
+async def test_source_adopted_under_other_commits_is_not_repaired(case, tmp_path):
+    # Adoption: the work reached main as a squash, so the observed source head
+    # is not an ancestor of anything. The proof names the generation's retained
+    # source, with explicit replacement evidence binding it to the squash.
+    handler, filing, _observer = await _delivered_handler(case, tmp_path, squash=True)
+    _source, observation = await _red_observation(case)
+    assert not _is_ancestor(case["work"], observation.source["head"], "main"), (
+        "adoption needs a source head main never received"
+    )
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "source_delivered", result
+    assert result["delivery"]["source_oid"] == observation.source["head"]
+    assert filing.await_count == 0
+
+
+async def test_source_covered_by_an_explicit_adoption_is_not_repaired(case, tmp_path):
+    # The incident shape: an operator recorded that the generation's work was
+    # already deployed under another commit, so the source head is on nothing.
+    await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
+    await _adopt_equivalent(
+        case, close_id="close-e1", replaced=case["first"],
+        by=_land(case, squash=True),
+    )
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    handler, filing = await _source_handler(case, tmp_path)
+    _source, observation = await _red_observation(case)
+    assert not _is_ancestor(case["work"], observation.source["head"], "main")
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "source_delivered", result
+    assert result["delivery"]["source_oid"] == case["first"]
+    assert filing.await_count == 0
+
+
+async def test_a_source_git_cannot_place_is_still_repaired(case, tmp_path):
+    handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    # A real branch, no completion generation retained: nothing stands in for
+    # this generation's final artifact, so delivery stays unknown.
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "repair_created", result
+    assert filing.await_count == 1
+    assert (await _observed_proof(case))["state"] == "undelivered"
+
+
+async def test_a_genuinely_undelivered_source_is_still_repaired(case, tmp_path):
+    await _retain_completion(case, close_id="close-e1", commits=[case["first"]])
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    handler, filing = await _source_handler(case, tmp_path)
+    _source, observation = await _red_observation(case)
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "repair_created", result
+    assert filing.await_count == 1
+    assert (await _observed_proof(case))["state"] == "undelivered"
+    # An undelivered answer withholds nothing: the repair stays queued.
+    assert result["repair_task_id"] not in await _withheld(case, tmp_path)
+
+
+async def test_unknown_delivery_evidence_still_files_a_repair(case, tmp_path):
+    class _Broken:
+        async def observe(self, task_ids, *, max_age=0.0):
+            raise OSError("no route to host")
+
+    handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(_Broken())
+    _source, observation = await _red_observation(case)
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "repair_created", result
+    assert filing.await_count == 1
+    assert (await _observed_proof(case))["state"] == "unknown"
+
+
+async def test_a_source_that_moves_before_its_proof_is_refused(case, tmp_path):
+    # The delivery answer is git I/O taken outside the hierarchy lock, so the
+    # exact source identity is re-read under it. A generation that moved has no
+    # answer, and withholding a repair it may still need would strand work.
+    class _Racing(DeliveryObserver):
+        async def observe(self, task_ids, *, max_age=0.0):
+            view = await super().observe(task_ids, max_age=max_age)
+            async with case["db"].immediate() as conn:
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "e1"
+                ).values(generation=2, verified_generation=2))
+            return view
+
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    case["db"].set_delivery_observer(_Racing(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    handler, filing = await _source_handler(case, tmp_path)
+    _source, observation = await _red_observation(case)
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result == {
+        "success": False, "outcome": "stale",
+        "error": "source changed before its delivery proof",
+    }, result
+    assert filing.await_count == 0
+    assert await _observed_proof(case) is None
+
+
+async def test_an_open_delegate_is_never_ended_by_a_delivery_proof(case, tmp_path):
+    handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    first = await handler._cmd_observe_integration_source_ci(observation)
+    assert first["outcome"] == "repair_created" and filing.await_count == 1
+    repair_id = first["repair_task_id"]
+    assert repair_id not in await _withheld(case, tmp_path)
+    # The source lands, so the delegate's work is now already delivered. The
+    # handler reports both facts and leaves the delegate exactly as it is.
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    landed = await handler._cmd_observe_integration_source_ci(observation)
+    assert landed["outcome"] == "already_repairing", landed
+    assert landed["repair_task_id"] == repair_id
+    assert landed["delivery"]["state"] == "delivered"
+    assert filing.await_count == 1
+    task = await case["db"].get_task(repair_id)
+    assert task is not None and task.status.value == "READY"
+    # A claim withholds it, from a proof taken now rather than from the record.
+    assert repair_id in await _withheld(case, tmp_path)
+
+
+async def test_a_retargeted_default_target_is_answered_afresh(case, tmp_path):
+    # Delivery truth is request-scoped: the same source, the same repair
+    # attempt, and a target that moved. A recorded proof must never answer for
+    # a branch the project no longer delivers to.
+    handler, filing, _observer = await _delivered_handler(case, tmp_path, squash=False)
+    _source, observation = await _red_observation(case)
+    assert (await handler._cmd_observe_integration_source_ci(observation))["outcome"] \
+        == "source_delivered"
+    _publish(case, "release", case["base"])
+    await _set_default_branch(case, "release")
+    retargeted = await handler._cmd_observe_integration_source_ci(observation)
+    assert retargeted["outcome"] == "repair_created", retargeted
+    assert retargeted["delivery"]["state"] == "undelivered"
+    assert retargeted["delivery"]["target_ref"] == "refs/heads/release"
+    assert filing.await_count == 1
+
+
+async def test_a_target_that_loses_containment_repairs_again(case, tmp_path):
+    handler, filing, _observer = await _delivered_handler(case, tmp_path, squash=False)
+    _source, observation = await _red_observation(case)
+    assert (await handler._cmd_observe_integration_source_ci(observation))["outcome"] \
+        == "source_delivered"
+    # The default branch is rewound past the generation's retained source.
+    _publish(case, "main", case["base"])
+    rewound = await handler._cmd_observe_integration_source_ci(observation)
+    assert rewound["outcome"] == "repair_created", rewound
+    assert rewound["delivery"]["state"] == "undelivered"
+    assert filing.await_count == 1
+
+
+async def test_delivery_arriving_after_a_negative_answer_is_answered_freshly(case, tmp_path):
+    handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    first = await handler._cmd_observe_integration_source_ci(observation)
+    assert first["outcome"] == "repair_created" and filing.await_count == 1
+    assert (await _observed_proof(case))["state"] == "undelivered"
+    repair_id = first["repair_task_id"]
+    assert repair_id not in await _withheld(case, tmp_path)
+    # The work reaches the default branch after the negative answer. The next
+    # tick asks again instead of re-reading the record, and the claim gate
+    # withholds the queued delegate from a proof taken now.
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    arrived = await handler._cmd_observe_integration_source_ci(observation)
+    assert arrived["outcome"] == "already_repairing", arrived
+    assert arrived["delivery"]["state"] == "delivered"
+    assert (await _observed_proof(case))["state"] == "delivered"
+    assert repair_id in await _withheld(case, tmp_path)
+    # ...and withholding is not durable either: rewind the target and the same
+    # queued delegate is claimable again.
+    _publish(case, "main", case["base"])
+    assert repair_id not in await _withheld(case, tmp_path)
+    assert (await case["db"].get_task(repair_id)).status.value == "READY"
 
 
 def test_cancelled_old_check_cannot_supersede_newer_run():
@@ -539,6 +919,7 @@ async def case(tmp_path):
         "db": db,
         "producer": ReviewEvidenceProducer(db, promotion, clock=lambda: 1000.0),
         "work": work,
+        "remote": str(remote),
         "first": first,
         "second": second,
         "tree": tree,

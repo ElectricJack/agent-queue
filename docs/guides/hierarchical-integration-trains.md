@@ -736,6 +736,29 @@ when a repaired source is green, both it and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. Every final
 candidate still requires its own exact authenticated green CI.
 
+Before filing a repair, AQ asks canonical delivery truth the same way root
+admission does (`src/integration/source_delivery.py`): the exact completion
+generation, the exact repository and the exact default target ref, with git
+proving the generation's retained source is contained there. A source already
+delivered under other commits — merged, squashed, cherry-picked, or covered by
+an `aq integration adopt --accept-equivalent` replacement — therefore files no
+repair, and what was observed is recorded on the observation for an operator to
+read. Only a proven answer withholds work: an unreachable repository, a missing
+retained source, a new checkpoint generation, a reopened task, a different
+target or a source that is genuinely not on the target all file the repair as
+before.
+
+Every eligibility decision observes afresh, and nothing persisted is read back
+to decide one. Admission asks again on each poll, and a claim asks again before
+it withholds a queued delegate — so a retargeted or rewound default branch, a
+target that lost containment, and a delivery or adoption that arrives after an
+earlier negative answer each release the repair again. A claim that cannot
+reach git withholds nothing. The exact source identity is revalidated under the
+hierarchy lock immediately before a proof is used, so a generation that moved
+while git was read is a `stale` refusal rather than a withheld repair. An
+already-filed delegate is never ended by this check, and a claimed one keeps its
+writer.
+
 With batch conflict scope, the assignment includes the whole frozen source
 manifest. Start at its partial head, merge every remaining source in order, and
 resolve all needed files in that one workspace. Earlier code, migrations and
