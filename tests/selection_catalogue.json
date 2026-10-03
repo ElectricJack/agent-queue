@@ -767,6 +767,7 @@
         "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
+        "tests/test_migration_conversation_kind.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
         "tests/test_migration_escalation_state.py",
@@ -1389,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:a5fe05dd56b83a0ef3551399f627ef52df0a67f9e822d7da8ef807ace315ed97",
+  "digest": "sha256:96903585f2b9db271306ee60a236a46ee7cf0d52d3774dca83a91c7f0f020677",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4204,6 +4205,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.conversations",
         "src.conversations.intake",
         "src.conversations.limits",
@@ -4308,6 +4310,7 @@
       "imports": [
         "src.commands.principal",
         "src.config",
+        "src.conversations.intake",
         "src.conversations.outbox",
         "src.conversations.preconditions",
         "src.digest",
@@ -9780,6 +9783,18 @@
         "migration"
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
+    },
+    "tests/test_migration_conversation_kind.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The conversation-kind revision upgrades idempotently on PostgreSQL."
     },
     "tests/test_migration_epic_pull_requests.py": {
       "areas": [

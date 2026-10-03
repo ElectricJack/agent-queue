@@ -299,7 +299,9 @@
         "bot_token": "",
         "channel_id": "",
         "conversation": {
-          "enabled": false
+          "allow_dm": false,
+          "enabled": false,
+          "require_mention": true
         },
         "digest": {
           "catchup_hours": 24,
@@ -345,11 +347,21 @@
         "conversation": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allow_dm": false,
+            "enabled": false,
+            "require_mention": true
           },
           "properties": {
+            "allow_dm": {
+              "default": false,
+              "type": "boolean"
+            },
             "enabled": {
               "default": false,
+              "type": "boolean"
+            },
+            "require_mention": {
+              "default": true,
               "type": "boolean"
             }
           },

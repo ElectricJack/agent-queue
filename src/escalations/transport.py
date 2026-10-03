@@ -83,6 +83,23 @@ class EscalationTransport(Protocol):
 
     async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None: ...
 
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        """Replace one already-posted message wherever it lives (§2.4).
+
+        ``thread_id`` picks the thread the message is in; ``None`` means the
+        channel itself.  A message that no longer exists is
+        :class:`TransportMissing`, never a silent success.
+        """
+        ...
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        """Remove one already-posted message, idempotently by intent."""
+        ...
+
     async def archive_thread(self, *, thread_id: str) -> None: ...
 
     async def find_marker(
@@ -177,6 +194,23 @@ class SinkTransport:
             raise TransportMissing(f"root {root_message_id} is gone")
         self.messages[root_message_id].content = content
         self.edits.append((root_message_id, content))
+
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        self.calls.append("edit_message")
+        self._maybe_fail("edit_message")
+        if message_id not in self.messages:
+            raise TransportMissing(f"message {message_id} is gone")
+        self.messages[message_id].content = content
+        self.edits.append((message_id, content))
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        self.calls.append("delete_message")
+        self._maybe_fail("delete_message")
+        self.messages.pop(message_id, None)
 
     async def archive_thread(self, *, thread_id: str) -> None:
         self.calls.append("archive_thread")

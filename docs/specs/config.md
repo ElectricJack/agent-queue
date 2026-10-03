@@ -174,13 +174,20 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
-| `conversation` | object | `enabled: false` | Opt-in bot-mention conversations with the existing elevated global supervisor. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
+
+`discord.conversation.require_mention` is the routing flag: true (the default)
+admits a top-level message only when the gateway saw a bot-user mention, while
+false makes the channel's one conversation answer any message from the
+allow-list. `allow_dm` admits a direct message from an allow-listed user as its
+own channel conversation and requires `enabled`; it is off by default. Both
+default to the mention-routing behaviour, so either is a rollback switch.
 
 `discord.conversation.enabled` is a boolean, false by default. Enabling it
 requires a non-empty `authorized_users` allowlist and configured `guild_id` and
