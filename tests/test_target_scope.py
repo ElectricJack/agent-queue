@@ -1,0 +1,705 @@
+"""Per-project elevated tokens may run target-keyed commands (azure-journey-72).
+
+The bug: ``check_command_scope`` injected ``project_id`` into every
+per-project elevated call, and every ``CommandArgs`` model sets
+``extra="forbid"``, so ``aq integration reserve-owner`` died with
+
+    invalid reservation request: 1 validation error for
+    IntegrationReserveOwnerArgs
+    project_id  Extra inputs are not permitted [type=extra_forbidden]
+
+for the one caller the runbooks give that recovery to.  The fix stops injecting
+a key the contract forbids and moves the project's isolation onto the target:
+:mod:`src.api.target_scope` resolves the row the command names and compares its
+project with the token's, failing closed whenever it cannot.
+
+Under test are the two layers that failed to compose — the pure scope gate and
+the request-level gate that has a database — plus one end-to-end dispatch
+through ``CommandHandler.execute`` for the exact reproduction.
+"""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import AsyncMock
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import insert
+
+from src.api.auth import RequestScope
+from src.api.scope import _forbids_project_id, check_command_scope, check_request_scope
+from src.api.target_scope import (
+    TARGET_REFERENCE_NAMES,
+    TARGET_REFERENCE_SUFFIX,
+    TARGET_RESOLVERS,
+    VALUE_ARGUMENTS,
+    target_references,
+    target_scope_error,
+    unresolvable_targets,
+)
+from src.commands.contracts import CONTRACTS
+from src.commands.contracts.models import CommandArgs
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.database.tables import (
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
+    integration_candidate_member_results,
+    integration_candidate_resolutions,
+    integration_candidate_revisions,
+    integration_parent_episodes,
+    integration_repair_operations,
+    integration_repair_stages,
+    integration_review_evidence,
+    workspaces,
+)
+from src.models import (
+    AgentProfile,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+)
+from src.profiles.capabilities import DENY_ALL
+
+SUPERVISOR = "sup-p"
+SUPERVISOR_GLOBAL = "sup-global"
+
+
+def _scope(project_id: str | None, *, elevated: bool = True, session_id: str = SUPERVISOR):
+    return RequestScope(
+        kind="session", session_id=session_id, task_id=None, project_id=project_id,
+        elevated=elevated,
+    )
+
+
+def _elevated_scope_envelope(project_id: str | None) -> dict:
+    """What ``/api/execute`` forwards to ``execute`` as the trusted envelope."""
+    return {
+        "kind": "session",
+        "session_id": SUPERVISOR_GLOBAL if project_id is None else SUPERVISOR,
+        "task_id": None,
+        "project_id": project_id,
+        "elevated": True,
+    }
+
+
+def _principal(project_id: str | None) -> ExecutionPrincipal:
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=DENY_ALL,
+        session_id=SUPERVISOR,
+        project_id=project_id,
+        elevated=True,
+    )
+
+
+@pytest.fixture
+async def db(reuse_database):
+    """Two projects, each with a task, a repo, a batch, a parent operation,
+    a candidate reservation and a branch owner row."""
+    database = await reuse_database("target-scope")
+    await database.create_project(Project(id="p", name="Project"))
+    await database.create_project(Project(id="other", name="Other project"))
+    await database.create_profile(
+        AgentProfile(
+            id="supervisor",
+            name="Supervisor",
+            harness="codex",
+            lifecycle="named",
+            aq_commands=[],
+            harness_tools=[],
+            plugin_tools=[],
+            needs_workspace=False,
+        )
+    )
+    for session_id, project_id in (
+        (SUPERVISOR, "p"),
+        (SUPERVISOR_GLOBAL, None),
+        ("delegate", "p"),
+    ):
+        await database.create_session(
+            SessionRecord(
+                id=session_id,
+                project_id=project_id,
+                profile_id="supervisor",
+                harness="codex",
+                provider="fake",
+                name=session_id,
+                lifecycle="named",
+                work_dir=f"/tmp/{session_id}",
+                epoch="epoch",
+                instance_token=f"token-{session_id}",
+                started_at=time.time(),
+                state="running",
+                desired_state="running",
+            )
+        )
+    for task_id, project_id in (("own", "p"), ("foreign", "other")):
+        await database.create_task(
+            Task(id=task_id, project_id=project_id, title=task_id, description="")
+        )
+    for repo_id, project_id in (("repo-p", "p"), ("repo-other", "other")):
+        await database.create_repo(
+            RepoConfig(
+                id=repo_id,
+                project_id=project_id,
+                url=f"https://example.test/{repo_id}.git",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+    async with database._engine.begin() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="ws",
+                project_id="p",
+                workspace_path="/tmp/ws",
+                source_type="link",
+                enabled=True,
+                created_at=1.0,
+            )
+        )
+        for batch_id, project_id, repository_id in (
+            ("batch-p", "p", "repo-p"),
+            ("batch-other", "other", "repo-other"),
+        ):
+            await conn.execute(
+                insert(integration_batches).values(
+                    id=batch_id,
+                    project_id=project_id,
+                    repository_id=repository_id,
+                    request_id="req",
+                    trigger="manual",
+                    source_manifest_digest="sha256:" + "4" * 64,
+                    base_sha="a" * 40,
+                    lifecycle="sealing",
+                    current_revision=0,
+                    integration_branch=f"refs/heads/aq/integration/{project_id}/1",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        # A parent-targeted repair operation reaches its project through the
+        # task its ``target_kind`` names, which is the hop that is easy to get
+        # wrong and the reason the resolver is shared with the handler.
+        for task_id, repository_id in (("own", "repo-p"), ("foreign", "repo-other")):
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    id=f"episode-{task_id}",
+                    parent_task_id=task_id,
+                    repository_id=repository_id,
+                    generation=1,
+                    pre_collection_checkpoint_sha="b" * 40,
+                    created_at=1.0,
+                )
+            )
+        for operation_id, task_id in (("op-p", "own"), ("op-other", "foreign")):
+            await conn.execute(
+                insert(integration_repair_operations).values(
+                    id=operation_id,
+                    target_kind="parent",
+                    batch_id=None,
+                    parent_task_id=task_id,
+                    episode_id=f"episode-{task_id}",
+                    active_stage=0,
+                    state="active",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    required_check_version="v1",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        # A candidate reservation hangs off a built revision's member result,
+        # which hangs off the batch's reviewed member.  Seeding the chain is the
+        # price of proving ``reservation_id`` against a real row rather than a
+        # mock: it is one of the four families the task names.
+        for batch_id, task_id, repository_id in (
+            ("batch-p", "own", "repo-p"),
+            ("batch-other", "foreign", "repo-other"),
+        ):
+            await conn.execute(
+                insert(integration_review_evidence).values(
+                    id=f"evidence-{batch_id}",
+                    source_task_id=task_id,
+                    repository_id=repository_id,
+                    source_base="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    review_kind="source",
+                    generation=1,
+                    verdict="approved",
+                    evidence={},
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_batch_members).values(
+                    batch_id=batch_id,
+                    ordinal=0,
+                    task_id=task_id,
+                    repository_id=repository_id,
+                    source_base_sha="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    review_evidence_id=f"evidence-{batch_id}",
+                    review_evidence={},
+                )
+            )
+            await conn.execute(
+                insert(integration_candidate_revisions).values(
+                    batch_id=batch_id,
+                    revision=0,
+                    construction_base_sha="a" * 40,
+                    source_manifest={},
+                    next_member_ordinal=1,
+                    head_sha="b" * 40,
+                    state="testing",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_candidate_member_results).values(
+                    batch_id=batch_id,
+                    revision=0,
+                    member_ordinal=0,
+                    input_head_sha="b" * 40,
+                    input_tree_sha="c" * 40,
+                    result="applied",
+                    generated_squash_sha="d" * 40,
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        for operation_id in ("op-p", "op-other"):
+            await conn.execute(
+                insert(integration_repair_stages).values(
+                    operation_id=operation_id,
+                    ordinal=0,
+                    policy={},
+                    starting_sha="b" * 40,
+                    attempts=0,
+                    state="active",
+                )
+            )
+        for reservation_id, batch_id, project_id, operation_id, repository_id in (
+            ("res-p", "batch-p", "p", "op-p", "repo-p"),
+            ("res-other", "batch-other", "other", "op-other", "repo-other"),
+        ):
+            await conn.execute(
+                insert(integration_candidate_resolutions).values(
+                    id=reservation_id,
+                    batch_id=batch_id,
+                    revision=0,
+                    member_ordinal=0,
+                    operation_id=operation_id,
+                    operation_episode_id="episode",
+                    stage_ordinal=0,
+                    stage_deadline_at=1000.0,
+                    project_id=project_id,
+                    repair_task_id="own",
+                    repair_session_id="delegate",
+                    repair_session_instance_token="token",
+                    repair_workspace_id="ws",
+                    repair_workspace_path="/tmp/ws",
+                    repository_id=repository_id,
+                    branch="refs/heads/aq/task",
+                    target_branch="refs/heads/main",
+                    target_kind="qualified",
+                    fence_owner_id="owner",
+                    fence_token=1,
+                    partial_head_sha="c" * 40,
+                    source_base_sha="a" * 40,
+                    source_head_sha="b" * 40,
+                    resolved_head_sha="d" * 40,
+                    resolved_tree_sha="e" * 40,
+                    repair_commit_shas=["d" * 40],
+                    state="reserved",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        for row_id, repository_id in (("owner-p", "repo-p"), ("owner-other", "repo-other")):
+            await conn.execute(
+                insert(integration_branch_owners).values(
+                    id=row_id,
+                    repository_id=repository_id,
+                    ref="refs/heads/aq/task",
+                    owner_id="agent",
+                    owner_role="producer",
+                    fence_token=1,
+                    handoff_state="attached",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+    return database
+
+
+# ---------------------------------------------------------------------------
+# The reproduction: reserve-owner under a per-project supervisor token
+# ---------------------------------------------------------------------------
+
+
+async def test_reserve_owner_on_its_own_task_reaches_the_handler(
+    db, command_handler_factory, monkeypatch
+):
+    """The exact call that failed, end to end through ``execute``."""
+    handler = await command_handler_factory()
+    handler.orchestrator.db = db
+    handler.config.security.capability_enforcement = "off"
+    reserve = AsyncMock(return_value={"outcome": "acquired", "task_id": "own"})
+    monkeypatch.setattr(
+        "src.integration.canonical_reservation.reserve_canonical_task_branch", reserve
+    )
+
+    args = {"task_id": "own"}
+    assert await check_request_scope("integration_reserve_owner", args, _scope("p"), db=db) is None
+    assert "project_id" not in args, "the gate must not write a key the contract forbids"
+
+    with principal_context(_principal("p")):
+        result = await handler.execute(
+            "integration_reserve_owner",
+            {"task_id": "own", "_scope": _elevated_scope_envelope("p")},
+        )
+
+    assert "error" not in result, result
+    assert result["outcome"] == "acquired"
+    reserve.assert_awaited_once_with(db, "own")
+
+    # Negative control: the handler still validates its own args, so the pass
+    # above is the gate no longer injecting a forbidden key — not the contract
+    # being loosened to accommodate it.
+    with principal_context(_principal("p")):
+        sloppy = await handler.execute(
+            "integration_reserve_owner",
+            {"task_id": "own", "not_an_arg": 1, "_scope": _elevated_scope_envelope("p")},
+        )
+    assert "Extra inputs are not permitted" in sloppy["error"]
+
+
+async def test_reserve_owner_on_a_foreign_task_is_refused_at_the_scope_layer(db):
+    args = {"task_id": "foreign"}
+
+    error = await check_request_scope("integration_reserve_owner", args, _scope("p"), db=db)
+
+    assert error is not None
+    assert "another project" in error
+    assert args == {"task_id": "foreign"}, "a refused call is given no injected key"
+
+
+#: The four families the task names, each on this project's row and on another
+#: project's, so "resolves the target" is proven per resolver rather than once.
+_FOREIGN_TARGETS = [
+    ("integration_reserve_owner", {"task_id": "foreign"}),
+    ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
+    ("integration_abort", {"operation_id": "op-other", "reason": "stop"}),
+    ("integration_release", {"batch_id": "batch-other"}),
+    ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
+    ("integration_release_owner", {"owner_row_id": "owner-other"}),
+    ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
+]
+_OWN_TARGETS = [
+    ("integration_reserve_owner", {"task_id": "own"}),
+    ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
+    ("integration_abort", {"operation_id": "op-p", "reason": "stop"}),
+    ("integration_release", {"batch_id": "batch-p"}),
+    ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
+    ("integration_release_owner", {"owner_row_id": "owner-p"}),
+    ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
+]
+
+
+@pytest.mark.parametrize(("command", "args"), _FOREIGN_TARGETS)
+async def test_a_foreign_target_is_refused_whichever_key_names_it(db, command, args):
+    error = await check_request_scope(command, dict(args), _scope("p"), db=db)
+
+    assert error is not None, f"{command} admitted {args}"
+    assert "another project" in error
+
+
+@pytest.mark.parametrize(("command", "args"), _OWN_TARGETS)
+async def test_the_same_call_on_this_projects_target_is_admitted(db, command, args):
+    assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
+
+
+# ---------------------------------------------------------------------------
+# The whole surface: no injected key a contract forbids, for any command
+# ---------------------------------------------------------------------------
+
+
+def _commands_without_project_id() -> list[str]:
+    return sorted(name for name in CONTRACTS.names() if _forbids_project_id(name))
+
+
+def test_the_derivation_is_not_vacuously_small():
+    derived = set(_commands_without_project_id())
+    # The families the task names, and the registry's size today.
+    assert {
+        "integration_reserve_owner",
+        "integration_release_owner",
+        "integration_settle_delivered_batch",
+        "integration_reopen_collection",
+    } <= derived
+    assert len(derived) > 40
+
+
+def test_extra_forbid_is_untouched_on_every_contract():
+    """The mechanism is target resolution, never a looser model."""
+    for name in CONTRACTS.names():
+        model = CONTRACTS.get(name).contract.execution.args_model
+        assert issubclass(model, CommandArgs)
+        assert model.model_config.get("extra") == "forbid", name
+
+
+def test_the_scope_gate_injects_project_id_only_where_the_contract_declares_it():
+    """No contract that lacks the field ever has it written into its args.
+
+    Some of these commands are refused earlier by another gate (the
+    conversation inbox is global-only), which is why the assertion is about the
+    injection rather than about the verdict.
+    """
+    scope = _scope("p")
+
+    for name in _commands_without_project_id():
+        args: dict = {}
+        check_command_scope(name, args, scope)
+        assert "project_id" not in args, name
+
+    declared: dict = {}
+    assert check_command_scope("integration_release_stale_owners", declared, scope) is None
+    assert declared == {"project_id": "p"}
+
+
+def _plausible_args(command: str) -> dict:
+    """*command*'s required arguments, filled with ids this project's rows own.
+
+    Optional id arguments are left out: the contract says what a call must
+    carry, and a real caller supplies what it has.
+    """
+    known = {
+        "depends_on": ["own"],
+        "task_id": "own",
+        "parent_task_id": "own",
+        "child_task_id": "own",
+        "source_task_id": "own",
+        "parent_id": "own",
+        "operation_id": "op-p",
+        "batch_id": "batch-p",
+        "reservation_id": "res-p",
+        "owner_row_id": "owner-p",
+        "intent_id": "intent-p",
+        "session_id": SUPERVISOR,
+        "repository_id": "repo-p",
+    }
+    model = CONTRACTS.get(command).contract.execution.args_model
+    return {
+        name: known.get(name, f"value-{name}")
+        for name, spec in model.model_fields.items()
+        if spec.is_required()
+    }
+
+
+@pytest.mark.parametrize("command", _commands_without_project_id())
+async def test_no_target_keyed_command_dies_on_an_injected_project_id(db, command):
+    """Every registered command whose args model lacks ``project_id``, run under
+    a per-project elevated scope.
+
+    Whatever the scope layer answers, the args it hands on must survive the
+    contract's own ``extra="forbid"``.  A refusal is a legitimate answer — a
+    global-only surface, or a target this module cannot resolve to an owner —
+    but an injected key is not, and that is the bug this task closed.
+    """
+    args = _plausible_args(command)
+
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+
+    if error is not None:
+        assert error.startswith("out of scope"), error
+        return
+    model = CONTRACTS.get(command).contract.execution.args_model
+    try:
+        model.model_validate(args)
+    except ValidationError as exc:
+        forbidden = [
+            item["loc"] for item in exc.errors() if item["type"] == "extra_forbidden"
+        ]
+        assert not forbidden, f"{command} refuses scope-injected {forbidden}"
+
+
+#: Commands whose required target references this module deliberately cannot
+#: resolve, so a per-project supervisor is refused rather than admitted on a
+#: partial check.  Each is here for a stated reason; a new one is a gap in
+#: :data:`TARGET_RESOLVERS`, not an oversight in the policy.
+_UNRESOLVED_TARGETS = {
+    "escalation_apply_reply": ["target_id"],  # an action's target is polymorphic
+    "integration_repair_start": ["trigger_id"],  # a daemon event, not a project row
+    "integration_transfer_owner": ["next_owner_id"],  # an agent, resolved in-handler
+    "report_brief": ["request_id"],  # report requests carry no project
+    "report_get": ["report_id"],  # reports are keyed by scope, not by project
+    "report_request": ["request_id"],
+    "report_submit": ["request_id"],
+    "supervisor_inbox_reply": ["conversation_id", "input_id"],  # daemon-internal
+}
+
+
+def test_the_refused_surface_is_exactly_the_one_that_is_declared():
+    """Guard the guard: a new command cannot inherit an unverifiable target.
+
+    Every ``_id``-shaped argument a contract *requires* must be resolvable here
+    or be declared a value in :data:`VALUE_ARGUMENTS`.  Anything else makes
+    :func:`target_scope_error` refuse the command, which is the safe answer but
+    not a working one — so the refusals are pinned as an exact set.
+    """
+    unresolvable: dict[str, list[str]] = {}
+    for name in _commands_without_project_id():
+        model = CONTRACTS.get(name).contract.execution.args_model
+        args = {
+            field: "x"
+            for field, spec in model.model_fields.items()
+            if spec.is_required() and field not in VALUE_ARGUMENTS
+        }
+        missing = unresolvable_targets(args)
+        if missing:
+            unresolvable[name] = missing
+    assert unresolvable == _UNRESOLVED_TARGETS
+
+
+def test_the_resolver_table_names_only_row_references():
+    """A resolver key must be a reference :func:`target_references` recognises."""
+    for name in TARGET_RESOLVERS:
+        assert name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES, name
+    assert not set(TARGET_RESOLVERS) & VALUE_ARGUMENTS
+
+
+# ---------------------------------------------------------------------------
+# The policy itself
+# ---------------------------------------------------------------------------
+
+
+async def test_a_command_naming_no_target_is_refused(db):
+    error = await target_scope_error("list_projects", {}, "p", db=db)
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
+async def test_a_target_that_cannot_be_resolved_to_an_owner_is_refused(db):
+    error = await target_scope_error(
+        "integration_transfer_owner", {"next_owner_id": "agent-1"}, "p", db=db
+    )
+
+    assert error is not None
+    assert "cannot be resolved" in error
+    assert "next_owner_id" in error
+
+
+async def test_a_missing_database_refuses_rather_than_admits():
+    error = await target_scope_error(
+        "integration_reserve_owner", {"task_id": "own"}, "p", db=None
+    )
+
+    assert error is not None
+    assert "without a database" in error
+
+
+async def test_a_target_row_that_is_gone_is_left_to_the_handler(db):
+    """No row means no cross-project read; the handler answers ``not_found``."""
+    assert (
+        await target_scope_error("integration_reserve_owner", {"task_id": "gone"}, "p", db=db)
+        is None
+    )
+
+
+async def test_every_target_named_is_checked_not_just_the_first(db):
+    """The batch is this project's; the task is not.  Both are checked."""
+    error = await target_scope_error(
+        "integration_eject", {"batch_id": "batch-p", "task_id": "foreign"}, "p", db=db
+    )
+
+    assert error is not None
+    assert "task_id belongs to other" in error
+
+
+async def test_a_list_valued_reference_is_checked_element_by_element(db):
+    assert (
+        await target_scope_error(
+            "add_dependency", {"task_id": "own", "depends_on": ["foreign"]}, "p", db=db
+        )
+        is not None
+    )
+    assert (
+        await target_scope_error(
+            "add_dependency", {"task_id": "own", "depends_on": ["own"]}, "p", db=db
+        )
+        is None
+    )
+
+
+def test_target_references_classify_by_argument_name():
+    args = {
+        "task_id": "t",
+        "depends_on": ["a", "b"],
+        "external_message_id": "discord-1",
+        "fence": 7,
+        "reason": "why",
+        "session_id": None,
+        "owner": "agent",
+    }
+
+    assert target_references(args) == {"task_id": ["t"], "depends_on": ["a", "b"]}
+
+
+# ---------------------------------------------------------------------------
+# Scopes that must not move
+# ---------------------------------------------------------------------------
+
+
+async def test_the_global_supervisor_is_unaffected(db):
+    """``project_id=None`` returns before any of this: it owns every project."""
+    args = {"task_id": "foreign"}
+
+    assert await check_request_scope("integration_reserve_owner", args, _scope(None), db=db) is None
+    assert "project_id" not in args
+
+
+async def test_a_contract_that_declares_project_id_still_gets_it_injected(db):
+    args: dict = {}
+
+    error = await check_request_scope(
+        "integration_release_stale_owners", args, _scope("p"), db=db
+    )
+
+    assert error is None
+    assert args == {"project_id": "p"}
+
+
+async def test_a_foreign_project_id_is_still_a_mismatch_on_a_declaring_contract(db):
+    args = {"project_id": "other"}
+
+    assert (
+        await check_request_scope("integration_release_stale_owners", args, _scope("p"), db=db)
+        == "out of scope: project_id mismatch"
+    )
+
+
+async def test_a_worker_token_still_gets_the_injected_id_triple():
+    """The agent branch is unchanged: handlers there read the injected key."""
+    args = {"task_id": "own"}
+
+    assert check_command_scope("task_show", args, _scope("p", elevated=False)) is None
+    assert args == {"task_id": "own", "project_id": "p", "session_id": SUPERVISOR}
+
+
+def test_the_local_operator_bypasses_both_gates():
+    """Loopback is trusted: no injection to make and no target to resolve."""
+    args: dict = {}
+
+    assert check_command_scope("integration_reserve_owner", args, RequestScope(kind="local")) is None
+    assert args == {}

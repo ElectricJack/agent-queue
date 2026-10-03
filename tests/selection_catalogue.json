@@ -57,6 +57,7 @@
         "tests/test_reviewer_api_scope.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_target_scope.py",
         "tests/test_triage_api_scope.py",
         "tests/test_worker_git_scope.py"
       ]
@@ -1384,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:a2ec51e6c711778f8eedbbe40cce2e8e1e3b1cd2de046e4f13e360bdfb031e00",
+  "digest": "sha256:b3c0e255360a32094380c6f2aa64df93ef2c0e5a3ea1190f26f2a1a9f383fd48",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14189,6 +14190,27 @@
       ],
       "markers": [],
       "summary": "Tests for path= validation in _cmd_read_prompt / _cmd_render_prompt."
+    },
+    "tests/test_target_scope.py": {
+      "areas": [
+        "api-scope"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Per-project elevated tokens may run target-keyed commands (azure-journey-72)."
     },
     "tests/test_task_activity.py": {
       "areas": [
