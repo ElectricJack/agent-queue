@@ -1321,6 +1321,185 @@ class RepairService:
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
 
+    async def _settle_resolved_parent_dispatch(self, operation_id):
+        """Refuse a dispatch whose stage already recorded its own resolution.
+
+        A parent conflict repair ends with one frozen, fenced and pushed
+        resolution on its promotion intent. Once the stage's subject has
+        advanced to exactly that head, the remaining work is verification of the
+        new aggregate: the closed delegate's bookkeeping is not a demand for
+        another writer, and no successor stage may be allocated with nothing to
+        repair.
+        """
+        async with self.db.immediate() as conn:
+            operation = (await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+            )).mappings().one_or_none()
+            if operation is None or operation["target_kind"] != "parent":
+                return None
+            try:
+                project_id = await self._operation_project_id_on(conn, dict(operation))
+            except ValueError:
+                return None
+            await self.db.lock_hierarchy_project(conn, project_id)
+            locked = (await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+                .with_for_update()
+            )).mappings().one_or_none()
+            if locked is None or locked["target_kind"] != "parent":
+                return None
+            current = (await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == locked["active_stage"],
+                )
+            )).mappings().one_or_none()
+            if current is None or not await self._settle_resolved_parent_on(
+                conn, dict(locked), dict(current), now=self.clock()
+            ):
+                return None
+            head = self._subject_sha(current["current_subject"])
+            return self._dispatch_value(
+                "already_dispatched", operation_id, int(current["ordinal"]),
+                repair_task_id=current["repair_task_id"], writer_kind="repair_delegate",
+            ) | {
+                "reason": "resolution_recorded_for_subject",
+                "head_sha": head,
+            }
+
+    async def _recorded_parent_resolution_on(self, conn, operation, stage):
+        """Return the committed resolution whose recorded head is this subject."""
+        head = self._subject_sha(stage["current_subject"])
+        subject = stage["current_subject"] or {}
+        if (
+            operation["target_kind"] != "parent"
+            or subject.get("kind") != "parent"
+            or stage["repair_task_id"] is None
+            or not is_valid_git_oid(head)
+        ):
+            return None
+        intents = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.operation_key == operation["id"],
+                    integration_promotion_intents.c.state == "committed",
+                    integration_promotion_intents.c.resolution_operation_id == operation["id"],
+                    integration_promotion_intents.c.resolution_head_sha == head,
+                )
+                .order_by(integration_promotion_intents.c.id)
+                .limit(2)
+            )
+        ).mappings().all()
+        if len(intents) != 1:
+            # A recorded resolution is one immutable fact; an ambiguous set is
+            # an operator question, never an inferred handback.
+            return None
+        intent = dict(intents[0])
+        evidence = intent["resolution_push_evidence"] or {}
+        if (
+            evidence.get("kind") != "exact_resolution_push_observed"
+            or evidence.get("remote_sha") != head
+        ):
+            return None
+        return intent
+
+    async def _settle_resolved_parent_on(
+        self, conn, operation: dict[str, Any], stage: dict[str, Any], *, now: float
+    ) -> bool:
+        """End a parent stage whose recorded conflict resolution is its subject.
+
+        A successor stage is legitimately needed only for a concrete failure.
+        Once the subject is this operation's own committed resolution head and no
+        conclusive failure is recorded there, the stage ends as passed: the
+        operation stays live for verification of that head, the parent goes back
+        to its collector, and no repair writer and no no-progress incident are
+        created.
+        """
+        if operation["state"] not in {"active", "escalated"} or (
+            stage["state"] not in {"active", "awaiting_completion"}
+        ):
+            return False
+        if stage["repair_task_id"] is not None:
+            # Only a closed writer's bookkeeping is settled here. A delegate
+            # that has not closed keeps its own deadline classification.
+            delegate = (await conn.execute(
+                select(tasks.c.status).where(tasks.c.id == stage["repair_task_id"])
+            )).scalar_one_or_none()
+            if delegate != TaskStatus.COMPLETED.value:
+                return False
+        intent = await self._recorded_parent_resolution_on(conn, operation, stage)
+        if intent is None:
+            return False
+        head = intent["resolution_head_sha"]
+        subject = stage["current_subject"] or {}
+        owed = await conn.scalar(
+            select(integration_check_evidence.c.id)
+            .where(
+                integration_check_evidence.c.operation_id == operation["id"],
+                integration_check_evidence.c.parent_task_id == operation["parent_task_id"],
+                integration_check_evidence.c.parent_generation == int(subject["generation"]),
+                integration_check_evidence.c.parent_head_sha == head,
+                integration_check_evidence.c.conclusion == "failure",
+                integration_check_evidence.c.classification != "infrastructure",
+                integration_check_evidence.c.observed_at >= float(intent["committed_at"] or 0.0),
+            )
+            .limit(1)
+        )
+        if owed is not None:
+            # Exact-head CI already failed the resolution: the successor owes a
+            # repair for that failure, not a resolution.
+            return False
+        dossier = dict(stage["dossier"] or {})
+        dossier["resolution_verification"] = {
+            "intent_id": intent["id"],
+            "resolution_head_sha": head,
+            "stage": int(stage["ordinal"]),
+            "recorded_at": now,
+        }
+        ended = await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+                integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
+            )
+            .values(state="passed", completed_at=now, dossier=dossier)
+        )
+        if ended.rowcount != 1:
+            return False
+        await self._verify_resolved_parent_on(conn, operation)
+        return True
+
+    async def _verify_resolved_parent_on(
+        self, conn, operation: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Hand the resolved parent back to its collector for verification.
+
+        The projection is the ordinary one: readiness, the verifier handoff and
+        the checkpoint's verification state. It stays the parent's own lifecycle
+        — a head that is not ready yet simply keeps collecting.
+        """
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.integration.parent_completion import ParentCompletion
+
+        try:
+            return await ParentCompletion(self.db).mark_ready_on(
+                conn, operation["parent_task_id"]
+            )
+        except (HierarchyError, ValueError):
+            # Readiness projection never fails the stage that resolved the
+            # conflict; the collector revisits the parent on its next pass and
+            # the operator keeps the named invariant.
+            logger.warning(
+                "parent %s readiness projection refused after repair resolution",
+                operation["parent_task_id"],
+                exc_info=True,
+            )
+            return {"outcome": "waiting"}
+
     async def _successor_for_closed_writer(self, operation_id, stage):
         async with self.db.immediate() as conn:
             stage = await self._effective_dispatch_stage_on(conn, operation_id, stage)
@@ -1442,6 +1621,9 @@ class RepairService:
                         "already_dispatched", operation_id, int(current["ordinal"]),
                         repair_task_id=current["repair_task_id"], writer_kind="repair_delegate",
                     )
+        resolved = await self._settle_resolved_parent_dispatch(operation_id)
+        if resolved is not None:
+            return resolved
         stage = await self._successor_for_closed_writer(operation_id, stage)
 
         # The durable relationship and paused task are committed before the
@@ -2123,6 +2305,14 @@ class RepairService:
                 stage == 0
                 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
             )
+            if continues and await self._settle_resolved_parent_on(
+                conn, dict(operation), dict(row), now=observed_at
+            ):
+                # This subject is the head of the operation's own recorded
+                # conflict resolution and nothing is owed to a repair writer:
+                # the stage ends for verification instead of escalating an
+                # unchanged-head successor.
+                return self._timeout_value("expired", "none", operation_id, stage)
             if continues and classify:
                 writer = await self._expiring_writer_on(conn, dict(operation), dict(row))
                 disposition = writer["disposition"] if writer is not None else "ladder"

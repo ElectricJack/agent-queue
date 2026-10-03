@@ -897,6 +897,26 @@ once, and at most three writers start on one unchanged subject head; after that
 the ladder's no-progress guard ends the budget once with a
 `Repair … stopped without progress` message.
 
+### A parent conflict resolved, and what the ladder does next
+
+A parent conflict repair ends with one recorded resolution on its promotion
+intent: a frozen head, the authoring fence and the observed push. That head is
+the parent's new aggregate subject, so what remains is verification of it, not
+another repair writer. A stage whose subject is that recorded resolution head
+therefore ends `passed` (`resolution_verification` in its dossier names the
+intent and head) and hands the parent back to its collector; the ordinary
+readiness projection, verifier wake and exact-head CI then run on the new head.
+A stage that changes nothing on such a subject no longer produces a
+`Repair … stopped without progress` incident, and a successor stage is only
+allocated when a conclusive failure is recorded at that head — which the
+successor's dossier then carries.
+
+If a resolution was recorded but the aggregate head still does not include it
+(the stage closed without a commit proof, or its extension edge is missing), the
+operation stays blocked for a human: reconcile it through
+`aq integration recover-parent-head OPERATION_ID --head SHA`, never by
+dispatching another repair stage.
+
 `integration_repair_dispatch` answers `unknown` (with `reason` and
 `reason_code`) for a state it did not expect — a missing or mismatched delegate,
 an id collision, a missing or non-predecessor owner, an incoherent handoff.
