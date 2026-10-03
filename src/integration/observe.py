@@ -1054,16 +1054,37 @@ class IntegrationObserver:
                 None,
             )
             published = next((row.sha for row in remote_heads if row.ref == target.ref), None)
-            if owner and stage and published and published != stage["starting_sha"]:
+            # A batch builder can publish a partial candidate after the stage
+            # starts, before its repair writer claims. Only an advance beyond
+            # the builder's last journalled write can be the writer's push.
+            builder_write = _latest(
+                row
+                for row in snapshot.all("integration_candidate_ref_mutations")
+                if row["batch_id"] == subject.batch_id
+                and row["repository_id"] == subject.repository_id
+                and row["revision"] == subject.generation
+                and _ref(row["target_branch"]) == target.ref
+                and row["purpose"] in {"candidate_partial", "candidate_final", "repair_handoff"}
+                and (
+                    row["state"] == "applied"
+                    or row["state"] == "reserved" and row.get("prewrite_at") is not None
+                )
+            )
+            starting_sha = (
+                builder_write["desired_sha"]
+                if builder_write
+                else stage["starting_sha"] if stage else None
+            )
+            if owner and stage and published and starting_sha and published != starting_sha:
                 try:
                     advanced = await self.git.is_ancestor(
-                        snapshot.repository, stage["starting_sha"], published
+                        snapshot.repository, starting_sha, published
                     )
                 except Exception:
                     advanced = None
                 if advanced is True:
-                    # The fenced live writer owns the ref and its frozen start
-                    # is an ancestor. We know a push happened, not its timestamp.
+                    # The fenced live writer owns the ref and has advanced it
+                    # beyond construction. The push timestamp remains unknown.
                     writer = writer.model_copy(update={"status": WriterStatus.WORKING})
                 elif advanced is None:
                     unknown.append("writer_push_ancestry_unknown:" + writer.task_id)

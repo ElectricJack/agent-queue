@@ -19,6 +19,7 @@ from src.integration.root_runtime import RootObserver, RootSubjectRuntime, root_
 from src.integration.subjects import (
     AdmissionPredicate,
     CIEvidence,
+    CIObserveArgs,
     CIState,
     CIRequestArgs,
     CleanupArgs,
@@ -922,6 +923,46 @@ async def test_runtime_recovers_a_lost_resolved_gate_wake(root):
     await runtime.tick(20)
     row = await db.get_integration_subject(subject.id)
     assert row["next_due_at"] == 20 and row["gate_id"] == "root-gate"
+
+
+@pytest.mark.parametrize("state", [CIState.GREEN, CIState.RED])
+async def test_builder_head_ci_does_not_count_against_a_just_claimed_writer(root, state):
+    from tests.test_integration_observe import (
+        builder_mutation,
+        claimed_candidate_writer,
+        observe,
+        with_rows,
+    )
+
+    db, _, subject = root
+    subject = await activate(db, subject)
+    data = with_rows(
+        claimed_candidate_writer(),
+        integration_candidate_ref_mutations=[builder_mutation()],
+    )
+    observed = await observe(data)
+    assert observed.writer.status is WriterStatus.CLAIMED
+    observer = SimpleNamespace(
+        observe=AsyncMock(
+            return_value=facts(subject, ci=state, writer=observed.writer, budget=observed.budget)
+        )
+    )
+    commands = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True, "outcome": state.value})
+    )
+    adapters = RootPrimitiveAdapters(db, commands, observer)
+    head = facts(subject).candidate
+    result = await adapters.observe_ci(subject, CIObserveArgs(head=head))
+    assert result.outcome == state.value
+    assert result.detail["subject_values"] == {}
+    result = await adapters.attempt(
+        subject,
+        RecordAttemptArgs(
+            head=head, ordinal=observed.budget.ordinal, evidence_id="ci-green", conclusion=state.value
+        ),
+    )
+    assert result.outcome == "not_an_attempt"
+    assert not await db.list_integration_subject_journal(subject.id, entry_kinds=["attempt"])
 
 
 async def test_counted_attempt_replays_once_and_survives_uncommitted_projection(root):

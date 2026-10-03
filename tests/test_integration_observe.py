@@ -706,6 +706,138 @@ async def test_publication_receipt_proves_working_without_fabricating_push_time(
     assert facts.writer.last_push_at == pushed_at
 
 
+def claimed_candidate_writer():
+    data = writer_snapshot(
+        "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]
+    )
+    return with_rows(
+        data,
+        integration_repair_operations=[{"id": "op", "active_stage": 1, "created_at": 800}],
+        integration_repair_stages=[
+            {
+                "operation_id": "op",
+                "ordinal": 1,
+                "repair_task_id": "repair",
+                "starting_sha": BASE,
+            }
+        ],
+        integration_branch_owners=[
+            {
+                "id": "owner",
+                "owner_id": "repair",
+                "ref": "aq/batch",
+                "fence_token": 4,
+                "session_id": "live",
+                "handoff_state": "attached",
+                "updated_at": 900,
+            }
+        ],
+    )
+
+
+def builder_mutation(**overrides):
+    return {
+        "id": "builder",
+        "batch_id": "batch",
+        "repository_id": "repo",
+        "revision": 2,
+        "purpose": "candidate_partial",
+        "target_branch": "aq/batch",
+        "state": "applied",
+        "desired_sha": HEAD,
+        "remote_sha": HEAD,
+        "created_at": 850,
+        "prewrite_at": 860,
+        "updated_at": 870,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize("state", ["applied", "reserved"])
+@pytest.mark.parametrize("purpose", ["candidate_partial", "candidate_final", "repair_handoff"])
+async def test_builder_publication_does_not_prove_a_claimed_writer_pushed(state, purpose):
+    data = with_rows(
+        claimed_candidate_writer(),
+        integration_candidate_ref_mutations=[
+            builder_mutation(
+                state=state, purpose=purpose, remote_sha=HEAD if state == "applied" else None
+            )
+        ],
+    )
+    git = Git(ancestry={(SOURCE, HEAD): True, (HEAD, SOURCE): False, (BASE, HEAD): True})
+    before = deepcopy(data)
+    facts = await observe(data, git)
+    assert facts.writer.status is WriterStatus.CLAIMED
+    assert facts.writer.last_push_at is None and facts.budget.attempts == 2
+    assert ("ancestry", "repo", BASE, HEAD) not in git.calls
+    assert data == before
+
+
+@pytest.mark.parametrize(
+    "advanced,expected",
+    [(True, WriterStatus.WORKING), (False, WriterStatus.CLAIMED), (None, WriterStatus.CLAIMED)],
+)
+async def test_writer_must_advance_beyond_builder_publication(advanced, expected):
+    data = with_rows(
+        claimed_candidate_writer(),
+        integration_candidate_ref_mutations=[builder_mutation()],
+    )
+    git = Git(
+        heads={"refs/heads/main": BASE, "refs/heads/aq/batch": OTHER, "refs/heads/aq/source": SOURCE},
+        ancestry={
+            (SOURCE, HEAD): True,
+            (HEAD, SOURCE): False,
+            (BASE, OTHER): True,
+            (HEAD, OTHER): advanced,
+        },
+    )
+    facts = await observe(data, git)
+    assert facts.writer.status is expected and facts.writer.last_push_at is None
+    assert ("ancestry", "repo", HEAD, OTHER) in git.calls
+    assert ("ancestry", "repo", BASE, OTHER) not in git.calls
+    assert ("writer_push_ancestry_unknown:repair" in facts.unknown) == (advanced is None)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"batch_id": "other-batch"},
+        {"repository_id": "other-repo"},
+        {"revision": 1},
+        {"target_branch": "aq/other"},
+        {"purpose": "repair_resolution"},
+        {"purpose": "root_main"},
+        {"state": "superseded"},
+        {"state": "reserved", "prewrite_at": None},
+    ],
+)
+async def test_writer_push_baseline_ignores_unrelated_or_unwritten_mutations(change):
+    data = with_rows(
+        claimed_candidate_writer(),
+        integration_candidate_ref_mutations=[
+            builder_mutation(),
+            builder_mutation(id="unrelated", desired_sha=OTHER, created_at=895, **change),
+        ],
+    )
+    git = Git(
+        heads={"refs/heads/main": BASE, "refs/heads/aq/batch": OTHER, "refs/heads/aq/source": SOURCE},
+        ancestry={(SOURCE, HEAD): True, (HEAD, SOURCE): False, (HEAD, OTHER): True},
+    )
+    assert (await observe(data, git)).writer.status is WriterStatus.WORKING
+
+
+async def test_writer_push_baseline_uses_last_builder_write_not_a_late_reconciliation():
+    data = with_rows(
+        claimed_candidate_writer(),
+        integration_candidate_ref_mutations=[
+            builder_mutation(id="old", desired_sha=SOURCE, created_at=810, updated_at=999),
+            builder_mutation(target_branch="refs/heads/aq/batch"),
+        ],
+    )
+    git = Git(ancestry={(SOURCE, HEAD): True, (HEAD, SOURCE): False, (BASE, HEAD): True})
+    assert (await observe(data, git)).writer.status is WriterStatus.CLAIMED
+
+
 async def test_current_operation_budget_conflicts_and_proven_writer_push():
     data = writer_snapshot(
         "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]

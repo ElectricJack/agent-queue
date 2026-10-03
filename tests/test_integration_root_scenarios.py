@@ -49,7 +49,7 @@ from src.integration.root_adapters import RootPrimitiveAdapters
 from src.integration.root_runtime import PinnedRootPolicy, RootObserver, RootSubjectRuntime
 from src.integration.scheduler import IntegrationScheduler, TrainService
 from src.integration.service import IntegrationService
-from src.integration.subjects import PrimitivePorts, RemoteHead, Subject, SubjectPhase
+from src.integration.subjects import PrimitivePorts, RemoteHead, Subject, SubjectPhase, WriterStatus
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord
 from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
@@ -1070,6 +1070,9 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     first = await train.stage(operation["id"], 0)
     writer = await train.claim(first["repair_task_id"], batch)
     await train.tick()
+    claimed = await train.observer.observe(await train.subject(subject.id))
+    assert claimed.writer.status is WriterStatus.CLAIMED
+    assert claimed.writer.last_push_at is None and claimed.budget.attempts == 0
     partial = writer.checkout(batch["integration_branch"])
     for name in ("bravo", "charlie"):
         merged = _git_status(writer.path, "merge", "--no-ff", "--no-edit", train.heads[name])
