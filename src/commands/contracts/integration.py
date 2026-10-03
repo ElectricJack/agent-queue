@@ -1221,6 +1221,8 @@ class IntegrationRecordRepairValue(CommandValue):
         "block_for_human",
         "supervisor_recovery",
         "duplicate",
+        "stage_opened",
+        "no_stage_blocked",
         "stale",
     ] | None = None
     attempts: int | None = None
@@ -1861,7 +1863,7 @@ INTEGRATION_RECORD_REPAIR = _repair_contract(
     "integration_record_repair",
     IntegrationRecordRepairArgs,
     IntegrationRecordRepairValue,
-    ("continue", "escalate", "human_required", "budget_exhausted"),
+    ("continue", "started", "escalate", "human_required", "budget_exhausted"),
     summary="Record one exact repair check attempt against the current stage budget.",
     effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
 )

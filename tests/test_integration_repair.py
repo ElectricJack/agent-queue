@@ -1241,6 +1241,95 @@ async def test_start_reports_corrupt_persisted_identity_as_invariant(db, corrupt
     assert result == {"outcome": "invariant_error", "operation_id": operation_id}
 
 
+async def test_parent_red_without_a_stage_opens_one_and_wakes_the_verifier(db):
+    """A parent's first trusted red has no stage yet and must still land somewhere.
+
+    Batches open stage 0 when the candidate is built and parents only on a merge
+    conflict, so the first red aggregate reached ``record_result`` with no stage
+    row, reported ``stale``, and let the playbook complete the run green while
+    the held verifier waited on a head that could never verify.
+    """
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await db.create_task(
+        Task(
+            id="verifier",
+            project_id="p",
+            title="Verify parent",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            repo_id="repo",
+            branch_name="aq/parent",
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "operation")
+            .values(verifier_task_id="verifier")
+        )
+    service = RepairService(db)
+
+    result = await service.record_result("operation", "failed-check", now=105.0)
+    replay = await service.record_result("operation", "failed-check", now=106.0)
+
+    assert result["outcome"] == "started"
+    assert result["action"] == "stage_opened"
+    assert result["stage"] == 0
+    stage = await _repair_stage(db, "operation", 0)
+    assert stage["state"] == "active"
+    assert stage["starting_sha"] == STARTING_SHA
+    assert stage["trigger_id"] == "failed-check"
+    # The triggering red opens the stage exactly as a conflict does, so it
+    # spends no attempt, and no writer is named until dispatch claims it.
+    assert stage["attempts"] == 0
+    assert stage["repair_task_id"] is None
+    # A redelivery dedupes through the existing duplicate branch.
+    assert replay["action"] == "duplicate"
+    async with db._engine.connect() as conn:
+        notes = (
+            await conn.execute(select(messages).where(messages.c.to_id == "verifier"))
+        ).mappings().all()
+        links = (
+            await conn.execute(select(integration_repair_stage_evidence))
+        ).mappings().all()
+    assert [note["to_kind"] for note in notes] == ["task"]
+    assert STARTING_SHA in notes[0]["body"]
+    assert [(link["evidence_id"], link["counted_attempt"]) for link in links] == [
+        ("failed-check", False)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("generation", "head_sha"),
+    [(2, STARTING_SHA), (3, "b" * 40)],
+    ids=["superseded_generation", "superseded_head"],
+)
+async def test_parent_red_about_a_superseded_subject_stays_stale(db, generation, head_sha):
+    """``stale`` is reserved for evidence the parent has already moved past."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(
+        db,
+        "superseded",
+        run_id="run-superseded",
+        conclusion="failure",
+        generation=generation,
+        head_sha=head_sha,
+    )
+
+    result = await RepairService(db).record_result("operation", "superseded", now=105.0)
+
+    assert result == {"outcome": "continue", "action": "stale", "attempts": 0}
+    async with db._engine.connect() as conn:
+        stages = (await conn.execute(select(integration_repair_stages))).mappings().all()
+        notes = (await conn.execute(select(messages))).mappings().all()
+    assert stages == []
+    assert notes == []
+
+
 async def test_record_result_counts_each_conclusive_run_attempt_once(db):
     """Duplicate and infrastructure evidence must not consume repair attempts."""
     from src.integration.repair import RepairService
