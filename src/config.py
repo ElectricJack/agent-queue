@@ -379,6 +379,46 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordEscalationsConfig:
+    """The §5.2/§5.5 stateful-escalation phase, behind one rollback flag.
+
+    Distinct from :class:`DiscordEscalationConfig`, which holds the older
+    *post-delivery* switches.  This section is the phase the Discord design
+    spec §7.1 calls P1: the escalation state machine, edit-in-place posts and
+    the collapsed one-line form.  With ``stateful`` off, the behaviour is
+    exactly what shipped before the phase -- one root post per incident, edited
+    only when it is closed, no auto-resolution and no collapse bookkeeping.
+
+    ``delete_collapsed_after_hours`` is the retention opt-in §5.2 and §8 Q3
+    describe.  It defaults off, and off means "never": a resolved or obsolete
+    post stays in the channel forever as the one-line form Discord can express.
+    Nothing in this phase deletes posts; the key exists so the §5.6 sweep and
+    an operator decision have one place to read.
+    """
+
+    stateful: bool = False
+    delete_collapsed_after_hours: int = field(
+        default=0, metadata={"json_schema": {"minimum": 0, "maximum": 8760}}
+    )
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.stateful, bool):
+            errors.append(ConfigError("discord.escalations", "stateful", "must be a boolean"))
+        hours = self.delete_collapsed_after_hours
+        if isinstance(hours, bool) or not isinstance(hours, int) or not 0 <= hours <= 8760:
+            errors.append(
+                ConfigError(
+                    "discord.escalations",
+                    "delete_collapsed_after_hours",
+                    "must be 0 (never delete a collapsed post) or between 1 and 8760 hours; "
+                    f"got {hours}",
+                )
+            )
+        return errors
+
+
+@dataclass
 class DiscordConversationConfig:
     """Opt-in @mention conversations with the addressed supervisor.
 
@@ -410,6 +450,9 @@ class DiscordConfig:
     project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
+    #: §7.1 P1: the stateful escalation phase.  Separate from ``escalation``
+    #: so one rollback flag turns the whole phase off and nothing else.
+    escalations: DiscordEscalationsConfig = field(default_factory=DiscordEscalationsConfig)
     conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
@@ -467,6 +510,7 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.escalations.validate())
         errors.extend(self.conversation.validate())
         if self.conversation.enabled and not (
             self.has_allowlist and self.guild_id and self.channel_id
@@ -4743,6 +4787,11 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         conv = d.get("conversation", {}) or {}
         conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
+        escs = d.get("escalations", {}) or {}
+        escalations_cfg = DiscordEscalationsConfig(
+            stateful=bool(escs.get("stateful", False)),
+            delete_collapsed_after_hours=int(escs.get("delete_collapsed_after_hours", 0)),
+        )
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
@@ -4751,6 +4800,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
+            escalations=escalations_cfg,
             conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),

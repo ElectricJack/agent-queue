@@ -320,6 +320,10 @@
           "reminder_minutes": 0,
           "supervisor_delivery_timeout_minutes": 15
         },
+        "escalations": {
+          "delete_collapsed_after_hours": 0,
+          "stateful": false
+        },
         "guild_id": "",
         "project_id": "",
         "rate_guard_critical": 5000,
@@ -452,6 +456,26 @@
               "maximum": 1440,
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "escalations": {
+          "additionalProperties": false,
+          "default": {
+            "delete_collapsed_after_hours": 0,
+            "stateful": false
+          },
+          "properties": {
+            "delete_collapsed_after_hours": {
+              "default": 0,
+              "maximum": 8760,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "stateful": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"

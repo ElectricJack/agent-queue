@@ -174,6 +174,7 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
+| `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
 | `conversation` | object | `enabled: false` | Opt-in bot-mention conversations with the existing elevated global supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
@@ -181,6 +182,24 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 `digest.project_ids: []` means all projects visible to this destination.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
+
+`discord.escalations` is the P1 phase of the Discord design spec (§5.2, §5.5,
+§7.1) and is the only rollback flag for it:
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `stateful` | `bool` | `false` | One channel post per incident, edited in place as it moves and collapsed to one line when it closes; incidents whose source went away close themselves. |
+| `delete_collapsed_after_hours` | `int` | `0` | Retention opt-in for collapsed posts. 0 (the default) never deletes: a closed incident stays in the channel forever as the one-line form Discord can express. |
+
+`discord.escalations.stateful: false` is not a degraded mode — it is exactly the
+behaviour that shipped before the phase: one root post per incident, edited only
+when it closes, no auto-resolution and no collapse bookkeeping. Turning it off
+also fences any state edit a daemon had already queued, so rollback never leaves
+half a phase running. The two keys are additive columns
+(`escalations.outcome`, `escalations.collapsed_at`), so an incident raised
+before the phase reads as unbacked and keeps the create-only post.
+`discord.escalation.reminder_minutes` remains the stale timer that decides when
+an open incident's post says it has been sitting unanswered; 0 disables it.
 
 `discord.conversation.enabled` is a boolean, false by default. Enabling it
 requires a non-empty `authorized_users` allowlist and configured `guild_id` and

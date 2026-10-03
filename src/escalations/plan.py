@@ -25,8 +25,16 @@ from src.escalations.facts import (
     PRIORITY_FOLLOWUP,
     PRIORITY_RESOLUTION,
     PRIORITY_ROOT,
+    PRIORITY_STATE,
     EscalationFacts,
     TransportBinding,
+)
+from src.escalations.state import (
+    KIND_STATE,
+    STATE_OPEN,
+    display_state,
+    is_collapsed,
+    state_dedup_key,
 )
 
 #: A delivery is abandoned to ``unknown`` after this many attempts rather than
@@ -166,6 +174,8 @@ def plan_deliveries(
     deliveries: Sequence[Mapping[str, Any]],
     messages: Sequence[Mapping[str, Any]],
     relay_authors: Sequence[str] = (),
+    stateful: bool = False,
+    stale: bool = False,
 ) -> DeliveryPlan:
     """The full set of deliveries the incident's current state implies.
 
@@ -173,6 +183,13 @@ def plan_deliveries(
     and the unique ``dedup_key`` makes a repeat a no-op.  ``skipped`` carries
     the reason a plausible delivery was withheld so an operator surface can
     say why nothing was posted.
+
+    ``stateful`` is §7.1's P1 flag.  With it off this is byte-for-byte the
+    pre-phase plan -- a root post, the thread follow-ups and one resolution --
+    because the state edit is the only delivery this phase adds.  With it on,
+    one edit is planned per *distinct display form* the incident has not shown
+    yet, keyed on the form so a replay or a second daemon converges on the same
+    row (§5.1: nothing appends a second root).
     """
     if not facts.wants_human_delivery:
         return DeliveryPlan(skipped=("supervisor delivery incidents stay in internal inboxes",))
@@ -181,6 +198,7 @@ def plan_deliveries(
     generation = current_generation(deliveries)
     binding = binding_from_deliveries(deliveries)
     known = {row["dedup_key"] for row in deliveries}
+    display = display_state(facts.state, stale=stale)
 
     root_key = root_dedup_key(facts.id, generation)
     if root_key not in known:
@@ -245,6 +263,25 @@ def plan_deliveries(
                     kind=KIND_RESOLUTION,
                     payload={"revision": facts.revision},
                     priority=PRIORITY_RESOLUTION,
+                    generation=generation,
+                )
+            )
+    elif stateful and posted and not is_collapsed(display) and display != STATE_OPEN:
+        # §5.2's *live* rows that are edits rather than a creation:
+        # ``answered`` and ``stale``.  ``open`` is deliberately excluded -- it is
+        # the root post's own text, so planning an edit for it would spend a
+        # Discord mutation (and a rate-limit token) to rewrite a post with the
+        # bytes it already has.  A terminal incident is excluded too: its
+        # collapsed form is the resolution's job, so the post is edited exactly
+        # once on the way to being closed.
+        key = state_dedup_key(facts.id, generation, display)
+        if key not in known:
+            planned.append(
+                PlannedDelivery(
+                    dedup_key=key,
+                    kind=KIND_STATE,
+                    payload={"display": display, "revision": facts.revision},
+                    priority=PRIORITY_STATE,
                     generation=generation,
                 )
             )

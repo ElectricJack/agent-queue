@@ -1521,6 +1521,21 @@ messages = Table(
     Index("idx_messages_thread_sequence", "project_id", "thread_id", "created_seq"),
 )
 
+#: The closed reasons an incident's ``outcome`` may name: ``human`` for one a
+#: person closed, and otherwise the §5.5 rule that closed it on its own.  It is
+#: a check-constrained vocabulary rather than free text so the collapsed post's
+#: "why is this gone" line and the sweep's audit trail can both be read back
+#: without parsing prose.
+ESCALATION_OUTCOMES = (
+    "human",
+    "gate_resolved",
+    "notice_delivered",
+    "supervisor_started",
+    "task_terminal",
+    "stale_expired",
+    "sweep",
+)
+
 # Transport-neutral human escalation state.  ``task_id`` and the source
 # identifiers are deliberately soft references: an escalation is an incident
 # record and must remain usable after its source task/session is archived or
@@ -1546,6 +1561,12 @@ escalations = Table(
     Column("revision", Integer, nullable=False, server_default="0"),
     Column("terminal_outcome", Text, nullable=True),
     Column("terminal_evidence", JSON, nullable=True),
+    # Which §5.5 rule closed the incident, and when its channel post was last
+    # edited into the collapsed one-line form.  Both are additive: an incident
+    # that predates the stateful-escalations phase has NULL for each and keeps
+    # the create-only post behaviour.
+    Column("outcome", Text, nullable=True),
+    Column("collapsed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("terminal_at", Float, nullable=True),
@@ -1588,6 +1609,21 @@ escalations = Table(
         "AND terminal_outcome IS NULL) OR (state IN ('resolved','cancelled','stale') "
         "AND terminal_at IS NOT NULL AND terminal_outcome IS NOT NULL)",
         name="ck_escalations_terminal_state",
+    ),
+    CheckConstraint(
+        "outcome IS NULL OR outcome IN ("
+        + ", ".join(f"'{o}'" for o in ESCALATION_OUTCOMES)
+        + ")",
+        name="ck_escalations_outcome",
+    ),
+    # A collapsed post is a closed incident's post, so the two are the same
+    # fact.  This is what makes "already collapsed" an idempotency check rather
+    # than a guess about the channel.  It does *not* require every closed
+    # incident to be stamped: an incident closed before this phase (or one whose
+    # post never reached the channel) has NULL and reads as never collapsed.
+    CheckConstraint(
+        "collapsed_at IS NULL OR state IN ('resolved','cancelled','stale')",
+        name="ck_escalations_collapsed",
     ),
     Index("idx_escalations_project_state", "project_id", "state", "updated_at"),
     Index("idx_escalations_task", "task_id", "created_at"),

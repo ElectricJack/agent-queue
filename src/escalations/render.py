@@ -33,13 +33,23 @@ from src.discord.render_budget import (
     ESCALATION_CLOSED,
     ESCALATION_OPEN,
     ESCALATION_THREAD,
+    GLYPH_ANSWERED,
     GLYPH_LANDED,
     GLYPH_NEEDS_YOU,
+    GLYPH_OBSOLETE,
+    GLYPH_WORKING,
     compose,
     cut,
     link_line,
 )
 from src.escalations.facts import EscalationFacts, MentionPolicy, TransportBinding
+from src.escalations.state import (
+    STATE_ANSWERED,
+    STATE_OBSOLETE,
+    STATE_OPEN,
+    STATE_STALE,
+    is_collapsed,
+)
 
 #: Longest a single interpolated field may be before it is elided. The post's
 #: own budget is smaller (§3.2); this only keeps one field from dominating the
@@ -57,6 +67,27 @@ _TRACEBACK = re.compile(r"traceback \(most recent call last\)", re.IGNORECASE)
 #: .find_marker` looks for when a previous attempt ended ambiguously, so it
 #: has to be stable and unique per delivery.
 MARKER_PREFIX = "aq-esc"
+
+#: The stored ``outcome`` values that mean "a person closed this" rather than
+#: "a §5.5 rule closed this".  Only these keep §5.2's resolved wording; a rule
+#: -closed incident gets the obsolete line, which is the point of the split.
+HUMAN_OUTCOMES = frozenset({"", "human"})
+
+
+def _timestamp(epoch: float | None) -> str:
+    """A Discord relative-time token, or nothing when there is no time.
+
+    Discord renders ``<t:…:f>`` in the *reader's* locale and timezone, which is
+    what §5.2's "answered 14:02" needs and what a daemon-side ``strftime`` would
+    get wrong.  It is not interpolated into a fact, so it is the one markup this
+    module emits itself besides the link.
+    """
+    if epoch is None:
+        return ""
+    try:
+        return f"<t:{int(float(epoch))}:f>"
+    except (TypeError, ValueError):  # pragma: no cover - a row always carries a float
+        return ""
 
 
 def marker_for(dedup_key: str) -> str:
@@ -165,6 +196,10 @@ def render_resolved_root(facts: EscalationFacts, *, dedup_key: str) -> str:
     above it and from the thread.  A real incident id is
     ``escalation-<uuid>``, so a link plus the delivery marker would spend the
     whole 160 characters and leave nothing to say.
+
+    This is the pre-phase wording and it stays reachable: with
+    ``discord.escalations.stateful`` off, a closed incident renders exactly
+    what it always has.
     """
     verb = {"resolved": "Resolved", "cancelled": "Cancelled", "stale": "Stale"}.get(
         facts.state, facts.state.title()
@@ -174,6 +209,89 @@ def render_resolved_root(facts: EscalationFacts, *, dedup_key: str) -> str:
     )
     lines = [f"{GLYPH_LANDED} {verb}: {outcome}" if outcome else f"{GLYPH_LANDED} {verb}."]
     return compose(lines, ESCALATION_CLOSED, marker=marker_line(dedup_key))
+
+
+def render_collapsed_root(facts: EscalationFacts, *, display: str, dedup_key: str) -> str:
+    """§5.2's collapsed rows: what a closed incident's one post says.
+
+    Two forms, one per side of the difference that matters to a reader
+    scanning the channel: a question somebody answered ends in **resolved**
+    ("✅ Resolved: …"), and a question nobody needs any more ends in
+    **obsolete** ("⚪ No longer needed: …").  ``escalations.outcome`` is what
+    tells them apart -- a rule-closed incident never got the answer.
+
+    Everything else here is the §3.2 collapsed budget: one line, 160 characters,
+    no mention, no link.  The post is never deleted (§5.2); the one-line form is
+    the state Discord can express.
+    """
+    if not is_collapsed(display):
+        raise ValueError(f"{display!r} is not a collapsed display state")
+    reason = _one_line(facts.terminal_outcome, limit=120) or _one_line(
+        facts.decision_requested, limit=120
+    )
+    if display == STATE_OBSOLETE and str(facts.outcome or "") not in HUMAN_OUTCOMES:
+        headline = f"{GLYPH_OBSOLETE} No longer needed: {reason}" if reason else (
+            f"{GLYPH_OBSOLETE} No longer needed."
+        )
+    else:
+        verb = {"resolved": "Resolved", "cancelled": "Cancelled", "stale": "Stale"}.get(
+            facts.state, "Resolved"
+        )
+        headline = f"{GLYPH_LANDED} {verb}: {reason}" if reason else f"{GLYPH_LANDED} {verb}."
+    return compose([headline], ESCALATION_CLOSED, marker=marker_line(dedup_key))
+
+
+def render_state_root(
+    facts: EscalationFacts,
+    *,
+    display: str,
+    base_url: str,
+    dedup_key: str,
+    dashboard_notice: str = "",
+    answered_at: float | None = None,
+) -> str:
+    """§5.2's live rows: the one post, rewritten as the incident moves.
+
+    ``answered`` and ``stale`` are the two forms that exist only because the
+    post is edited in place: the first says the human has spoken and the
+    supervisor is acting, the second says the incident has been sitting long
+    enough to notice.  Neither is a new message; both replace the open form in
+    the same post, which is the whole of §5.1.
+
+    ``open`` is accepted too and renders as the initial root, so one function
+    owns the live rows and a caller that re-edits an unchanged state writes the
+    same bytes rather than a near-copy.
+    """
+    link = escalation_url(base_url, facts.id, unavailable_notice=dashboard_notice)
+    if display == STATE_ANSWERED:
+        stamp = _timestamp(answered_at)
+        headline = (
+            f"{GLYPH_ANSWERED} Answered {stamp}; the supervisor is acting on it."
+            if stamp
+            else f"{GLYPH_ANSWERED} Answered in the thread; the supervisor is acting on it."
+        )
+        return compose([headline], ESCALATION_OPEN, link=link, marker=marker_line(dedup_key))
+    if display == STATE_STALE:
+        opened = _timestamp(facts.created_at)
+        headline = (
+            f"{GLYPH_WORKING} Still open since {opened}."
+            if opened
+            else f"{GLYPH_WORKING} Still open and unanswered."
+        )
+        return compose([headline], ESCALATION_OPEN, link=link, marker=marker_line(dedup_key))
+    if display != STATE_OPEN:
+        raise ValueError(f"{display!r} is not a live display state; use render_collapsed_root")
+    return compose(
+        [
+            (
+                f"{GLYPH_NEEDS_YOU} {_subject(facts)} needs a decision: "
+                f"{_one_line(facts.decision_requested, limit=110)}"
+            )
+        ],
+        ESCALATION_OPEN,
+        link=link,
+        marker=marker_line(dedup_key),
+    )
 
 
 def render_thread_opener(
@@ -288,6 +406,7 @@ def _subject(facts: EscalationFacts) -> str:
 
 
 __all__ = [
+    "HUMAN_OUTCOMES",
     "MARKER_PREFIX",
     "MAX_FIELD_CHARS",
     "MAX_THREAD_NAME_CHARS",
@@ -296,10 +415,12 @@ __all__ = [
     "marker_line",
     "render_ack",
     "render_binding_note",
+    "render_collapsed_root",
     "render_relay",
     "render_resolution",
     "render_resolved_root",
     "render_root",
+    "render_state_root",
     "render_thread_opener",
     "sanitise",
     "thread_name",

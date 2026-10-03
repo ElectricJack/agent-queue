@@ -772,6 +772,7 @@
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
         "tests/test_migration_escalation_state.py",
+        "tests/test_migration_escalation_stateful_outcomes.py",
         "tests/test_migration_guard.py",
         "tests/test_migration_guard_restoration.py",
         "tests/test_migration_handoff.py",
@@ -1391,7 +1392,7 @@
       ]
     }
   },
-  "digest": "sha256:07c4aae31615ea9188d2598a624f5de52c10fd9f2fa626bda8ecd757e87eb4b0",
+  "digest": "sha256:175edaea186e07298cc137ad26b5bea728cd5e3ac05b37b458dced39b9671f6e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5816,14 +5817,18 @@
       "imports": [
         "src.config",
         "src.database",
+        "src.database.queries.escalation_queries",
         "src.database.tables",
         "src.escalations",
+        "src.escalations.dispatch",
+        "src.escalations.plan",
+        "src.escalations.render",
         "src.models"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Supervisor delivery incidents stay internal and close on observed recovery."
+      "summary": "Escalations are stateful: one post, edited in place, closed on evidence."
     },
     "tests/test_event_bus.py": {
       "areas": [
@@ -9861,6 +9866,18 @@
         "migration"
       ],
       "summary": "The post-squash escalation revision upgrades and rolls back on PostgreSQL."
+    },
+    "tests/test_migration_escalation_stateful_outcomes.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The stateful-escalations columns revision upgrades and rolls back on PostgreSQL."
     },
     "tests/test_migration_guard.py": {
       "areas": [

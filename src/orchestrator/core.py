@@ -544,6 +544,13 @@ class Orchestrator(
         self.supervisor_delivery_watchdog = SupervisorDeliveryWatchdog(
             self.db, self.bus, config
         )
+        # §5.5 auto-resolution: closes an incident whose gate resolved, whose
+        # task finished, or that nobody has touched in a week.  Mechanism only,
+        # and gated on ``discord.escalations.stateful``, so it needs no
+        # transport and no main.py wiring — the delivery pass ticks it.
+        from src.escalations import EscalationAutoResolver
+
+        self.escalation_auto_resolver = EscalationAutoResolver(self.db, config)
         self.transcript_watcher = TranscriptWatcher(
             db=self.db,
             bus=self.bus,
@@ -3584,6 +3591,10 @@ class Orchestrator(
             await self.supervisor_delivery_watchdog.tick(now)
         except Exception:
             logger.exception("Supervisor delivery watchdog pass failed")
+        try:
+            await self.escalation_auto_resolver.tick()
+        except Exception:
+            logger.exception("Escalation auto-resolution pass failed")
 
     async def _revoke_expired_tokens(self) -> None:
         """Sweep expired API session tokens out of ``api_session_tokens``.
