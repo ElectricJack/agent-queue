@@ -145,7 +145,7 @@ def plan_replacement(
     not reopen resolved work — and refused while another root is still owed,
     which is the "at most one pending replacement at a time" rule.
     """
-    if facts.is_terminal:
+    if facts.is_terminal or not facts.wants_human_delivery:
         return None
     generation = current_generation(deliveries)
     if has_pending_root(deliveries):
@@ -174,6 +174,8 @@ def plan_deliveries(
     the reason a plausible delivery was withheld so an operator surface can
     say why nothing was posted.
     """
+    if not facts.wants_human_delivery:
+        return DeliveryPlan(skipped=("supervisor delivery incidents stay in internal inboxes",))
     planned: list[PlannedDelivery] = []
     skipped: list[str] = []
     generation = current_generation(deliveries)

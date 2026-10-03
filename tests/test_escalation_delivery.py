@@ -106,6 +106,35 @@ def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
 
 
+@pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])
+def test_supervisor_delivery_plans_never_post_or_replace_a_human_notice(state):
+    facts = EscalationFacts(
+        id="internal", project_id="p", state=state, revision=0, severity="high",
+        summary="Supervisor offline", investigation="Internal delivery delay",
+        decision_requested="Restore delivery", source_kind="supervisor_delivery",
+    )
+    assert not plan_deliveries(facts, deliveries=[], messages=[]).deliveries
+    assert plan_replacement(facts, []) is None
+
+
+@pytest.mark.parametrize("kind", ["root", "ack", "relay", "resolution"])
+async def test_legacy_supervisor_delivery_rows_never_call_the_human_transport(db, kind):
+    incident = await make_incident(db, source_kind="supervisor_delivery")
+    await db.enqueue_escalation_delivery(
+        incident["id"], dedup_key=f"legacy:{kind}", kind=kind, payload={}, available_at=10,
+    )
+    transport = SinkTransport()
+    service = make_service(db, transport)
+    assert await service.reconcile(incident) == []
+    await service.pump()
+    assert transport.calls == []
+    delivery = (await db.list_escalation_deliveries(incident["id"]))[0]
+    assert delivery["status"] == "unknown"
+    assert "internal-only" in delivery["last_error"]
+    await service.tick()
+    assert transport.calls == []
+
+
 # ---------------------------------------------------------------- rendering
 
 

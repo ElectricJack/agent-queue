@@ -362,6 +362,23 @@ class EscalationDeliveryService:
             return None
 
     async def _deliver_one(self, row: Mapping[str, Any], report: TickReport) -> None:
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        if incident is None:
+            await self._finish(
+                row, report, status="unknown", last_error="escalation record is gone"
+            )
+            return
+        facts = EscalationFacts.from_row(incident)
+        if not facts.wants_human_delivery:
+            # Also fences rows queued by an older daemon, including retries
+            # and follow-ups on a root that was posted before the cutover.
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="supervisor delivery incident is internal-only; nothing was sent",
+            )
+            return
         channel_id = self._channel_id
         if not channel_id:
             await self._finish(
@@ -381,13 +398,6 @@ class EscalationDeliveryService:
             )
             return
 
-        incident = await self.db.get_escalation(str(row["escalation_id"]))
-        if incident is None:
-            await self._finish(
-                row, report, status="unknown", last_error="escalation record is gone"
-            )
-            return
-        facts = EscalationFacts.from_row(incident)
         deliveries = await self.db.list_escalation_deliveries(facts.id)
         binding = binding_from_deliveries(deliveries)
         kind = str(row["kind"])
