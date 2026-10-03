@@ -59,6 +59,7 @@ class KnowledgeImportValue(CommandValue):
     snapshot_id: str | None = None
     snapshot_timestamp: str | None = None
     manifest_sha256: str | None = None
+    manifest_content_base64: str | None = None
     vector_observation: str | None = None
     counts: dict[str, Any] | None = None
     items: list[dict[str, Any]] | None = None

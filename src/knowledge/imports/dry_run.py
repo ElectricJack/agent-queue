@@ -14,6 +14,7 @@ identity that the accounting must close on.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,10 @@ class DryRunReport:
     snapshot_id: str
     snapshot_timestamp: str
     manifest_sha256: str
+    # The canonical sealed bytes, base64-encoded (lossless for any content):
+    # the hash above is the seal on exactly this artifact, and K07 persists
+    # the (content, sha256) pair together per the K06 handoff.
+    manifest_content_base64: str
     vector_observation: str
     counts: dict[str, Any]
     items: tuple[dict[str, Any], ...]
@@ -46,6 +51,7 @@ class DryRunReport:
             "snapshot_id": self.snapshot_id,
             "snapshot_timestamp": self.snapshot_timestamp,
             "manifest_sha256": self.manifest_sha256,
+            "manifest_content_base64": self.manifest_content_base64,
             "vector_observation": self.vector_observation,
             "counts": dict(self.counts),
             "items": list(self.items),
@@ -150,6 +156,7 @@ async def run_dry_run(
         snapshot_id=snapshot_id,
         snapshot_timestamp=snapshot_timestamp,
         manifest_sha256=manifest.sha256,
+        manifest_content_base64=base64.b64encode(manifest.content).decode("ascii"),
         vector_observation=document["vector_observation"],
         counts=counts,
         items=items,

@@ -20,6 +20,7 @@ from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.principal import (
+    TRUSTED_LOCAL,
     ExecutionPrincipal,
     PrincipalKind,
     principal_context,
@@ -241,6 +242,7 @@ def test_knowledge_import_result_schema_matches_report_shape():
         "snapshot_id",
         "snapshot_timestamp",
         "manifest_sha256",
+        "manifest_content_base64",
         "vector_observation",
         "counts",
         "items",
@@ -386,6 +388,56 @@ async def test_knowledge_import_dry_run_returns_reconciliation(tmp_path):
     # The accounting closes: every identity maps exactly once.
     id_keys = {(m["source_kind"], m["source_scope"], m["source_key"]) for m in result["mappings"]}
     assert len(id_keys) == len(result["mappings"])
+
+
+async def test_knowledge_import_sealed_manifest_content_is_verifiable(tmp_path):
+    """The operator can recover the exact sealed seal, not just its hash.
+
+    ROOT REVIEW BLOCKER: the CLI previously returned only ``manifest_sha256``
+    and discarded ``manifest.content``. The report must carry the sealed
+    canonical bytes (lossless, base64-encoded) so the operator can re-run
+    ``verify_manifest`` against ``manifest_sha256`` — the integrity check
+    that is the K06 handoff, not a trust assumption.
+    """
+    import base64
+    import hashlib
+    import json
+
+    from src.knowledge.imports.manifest import verify_manifest
+
+    root_dir = tmp_path / "notes"
+    root_dir.mkdir()
+    original_bytes = b"Exact retained original.\n"
+    (root_dir / "paired.md").write_bytes(original_bytes)
+
+    handler = _stub_handler(
+        KnowledgeConfig(
+            enabled=True,
+            import_inventory=KnowledgeFeatureConfig(enabled=True),
+        )
+    )
+    with principal_context(TRUSTED_LOCAL):
+        result = await handler._cmd_knowledge_import(_args(tmp_path))
+
+    content_b64 = result["manifest_content_base64"]
+    content = base64.b64decode(content_b64, validate=True)
+
+    # Round-trip: the exact sealed bytes re-hashed to the returned digest.
+    assert hashlib.sha256(content).hexdigest() == result["manifest_sha256"]
+
+    # verify_manifest against that same pair succeeds: the pair is canonical
+    # (no drift, seal matches, artifacts decode to their declared hashes).
+    document = verify_manifest(content, result["manifest_sha256"])
+
+    # Offline / original evidence is preserved on the source metadata.
+    artifact = document["artifacts"][0]
+    assert base64.b64decode(artifact["bytes_base64"], validate=True) == original_bytes
+    assert artifact["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+
+    # The sealed document is the canonical JSON form the hash was computed on.
+    assert json.loads(content) == document
+    assert document["source_installation_id"] == "synthetic-installation"
+    assert document["snapshot_id"] == "synthetic-snapshot"
 
 
 def re_full_match(hexdigest: str) -> bool:
