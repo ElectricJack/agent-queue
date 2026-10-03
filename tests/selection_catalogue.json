@@ -1373,7 +1373,7 @@
       ]
     }
   },
-  "digest": "sha256:04f344d439fe01b56ffb09fa201290479dfaaafdf5dd39199eeddb7bbc0a1ff9",
+  "digest": "sha256:a9d628a5138795a2f769459585babd3acfa7608ab95659e91f2e7eb5c12cf8ee",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7788,6 +7788,7 @@
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.ownership",
+        "src.integration.parent_completion",
         "src.integration.parent_repair_heads",
         "src.integration.promotion",
         "src.integration.repair",
@@ -8211,6 +8212,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.development",
         "src.integration.epic_dependencies",
         "src.integration.migration_heads",
         "src.integration.models",

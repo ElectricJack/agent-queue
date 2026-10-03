@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,11 @@ WORK_OUTCOME_NO_OP = "no-op"
 #: ``src/review_keys.py`` owns the set — the close path's ``review_task``
 #: guard reads the same ids, and the two must not drift apart.
 NO_CODE_PROFILE_IDS = REVIEW_PROFILE_IDS
+
+#: Task metadata holding the subject/evidence state of the last aggregate
+#: verifier close refused for absent trusted verification evidence.  It is the
+#: deduplication key for that refusal: an unchanged replay is a proven stall.
+TRUSTED_EVIDENCE_WAIT_KEY = "integration_trusted_evidence_wait"
 
 
 @dataclass(frozen=True)
@@ -119,6 +125,118 @@ class GitOpsMixin:
             message = f"{message}\nRun: {context['remedy']}"
         self._aggregate_verifier_retry(ctx, message)
 
+    async def _trusted_evidence_refusal(
+        self, ctx: PipelineContext, parent_id: str, completion: dict
+    ) -> PhaseResult:
+        """Refuse an aggregate-verifier close that is waiting on trusted CI.
+
+        The verifier's own aggregate proof already passed; what is missing is
+        the trusted integration check evidence for this exact generation and
+        head, which only the daemon's parent CI producer and the
+        parent-integration playbook may record.  Answering that with a fixable
+        in-session issue is what sent every retry back through the whole local
+        suite while no evidence had changed (calm-grove-25 generation 5 ran the
+        450-test focused/schema sweep twice on an unchanged aggregate).
+
+        So the refusal names the missing binding, keeps the claim and the
+        fenced checkout, and records the subject/evidence state it refused on.
+        A replay of that *identical* state is the proven stall: it escalates
+        once (deduplicated by the recorded fingerprint) so the worker stops
+        re-running instead of looping, and the operator gets the exact next
+        action.
+        """
+        reason = str(completion.get("reason") or "verification_not_recorded")
+        head = str(completion.get("head_sha") or "")
+        generation = completion.get("generation")
+        fingerprint = hashlib.sha256(
+            ":".join(
+                [
+                    parent_id,
+                    str(generation),
+                    head,
+                    reason,
+                    str(completion.get("verified_generation")),
+                    str(completion.get("verified_sha")),
+                    str(completion.get("verification_id")),
+                ]
+            ).encode()
+        ).hexdigest()[:16]
+        recorded = await self.db.get_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY)
+        previous = recorded if isinstance(recorded, dict) else {}
+        repeated = bool(previous) and previous.get("fingerprint") == fingerprint
+        refusals = int(previous.get("refusals") or 0) + 1
+        await self.db.set_task_meta(
+            ctx.task.id,
+            TRUSTED_EVIDENCE_WAIT_KEY,
+            {
+                "fingerprint": fingerprint,
+                "reason": reason,
+                "parent_task_id": parent_id,
+                "generation": generation,
+                "head_sha": head,
+                "required_producer_id": completion.get("required_producer_id"),
+                "required_check_version": completion.get("required_check_version"),
+                "required_check_names": completion.get("required_check_names"),
+                "recorded_evidence_ids": completion.get("recorded_evidence_ids") or [],
+                "recorded_conclusions": completion.get("recorded_conclusions") or [],
+                "next_owner": completion.get("next_owner"),
+                "refusals": refusals,
+                "project_id": ctx.task.project_id,
+            },
+        )
+        checks = ", ".join(completion.get("required_check_names") or []) or "the required checks"
+        recorded_ids = completion.get("recorded_evidence_ids") or []
+        subject = (
+            f"parent {parent_id} generation {generation} at {head or 'its collected head'}"
+        )
+        evidence = (
+            f"Trusted check evidence is already recorded for {subject} "
+            f"({', '.join(completion.get('recorded_conclusions') or [])}, "
+            f"{len(recorded_ids)} row(s)) but no verification binds it"
+            if recorded_ids
+            else f"Trusted integration check evidence is not recorded for {subject}"
+        )
+        message = (
+            f"Parent integration completion was refused: awaiting_trusted_verification "
+            f"({reason}). {evidence}; required producer "
+            f"{completion.get('required_producer_id') or 'unknown'} version "
+            f"{completion.get('required_check_version') or 'unknown'} covering {checks}. "
+            f"Trusted CI evidence cannot be produced from this workspace: re-running the "
+            f"test suite does not change this refusal. Next owner: "
+            f"{completion.get('next_owner') or 'parent_ci_producer'}. "
+            f"{completion.get('next_action') or ''}"
+        ).strip()
+        if repeated:
+            ctx.verification_escalated = True
+            flag = f"awaiting_trusted_verification:{reason}"
+            try:
+                await self.db.set_task_meta(ctx.task.id, "needs_attention", flag)
+                await self.bus.emit(
+                    "task.needs_attention",
+                    {
+                        "task_id": ctx.task.id,
+                        "project_id": ctx.task.project_id,
+                        "title": ctx.task.title,
+                        "reason": flag,
+                    },
+                )
+            except Exception:
+                # Flagging is best-effort; the refusal itself is the contract.
+                logger.warning(
+                    "Task %s: could not flag the trusted-evidence wait for attention",
+                    ctx.task.id,
+                    exc_info=True,
+                )
+            message += (
+                f"\nRefusal {refusals} on the same subject and the same absent evidence, "
+                f"so the wait is stalled rather than pending: the task has been flagged "
+                f"for an operator (needs_attention={flag}) and stays yours and "
+                f"IN_PROGRESS. Do not re-run the suite and do not close --outcome fail to "
+                f"escape it — report the blocker with `aq message send "
+                f"--to user:dashboard`."
+            )
+        return self._aggregate_verifier_retry(ctx, message)
+
     async def _phase_verify_aggregate_verifier(
         self, ctx: PipelineContext, operation: dict,
     ) -> PhaseResult:
@@ -136,7 +254,10 @@ class GitOpsMixin:
         from src.integration.hierarchy import resolve_workspace_checkpoint
         from src.integration.models import BranchKey
         from src.integration.ownership import BranchOwnership
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.parent_completion import (
+            AWAITING_TRUSTED_VERIFICATION,
+            ParentCompletion,
+        )
 
         task = ctx.task
         workspace = ctx.workspace_path
@@ -229,6 +350,8 @@ class GitOpsMixin:
         completion = await ParentCompletion(self.db, git_manager=self.git).complete_parent(
             parent_id, int(checkpoint["generation"]), head
         )
+        if completion["outcome"] == AWAITING_TRUSTED_VERIFICATION:
+            return await self._trusted_evidence_refusal(ctx, parent_id, completion)
         if completion["outcome"] not in {"completed", "already_completed"}:
             return self._aggregate_verifier_retry(
                 ctx,
