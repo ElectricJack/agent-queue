@@ -1,6 +1,6 @@
-"""Digest preview and status: the dashboard's read-only view of §8 and §9.
+"""Digest preview, status, and the §4 supervisor-authored window.
 
-Two named commands, no dashboard-only business logic:
+Four named commands, no dashboard-only business logic:
 
 ``digest_preview``
     Evaluates the current window with exactly the code path that delivery
@@ -17,14 +17,26 @@ Two named commands, no dashboard-only business logic:
     ``intake`` block counts the inbound Discord messages the gateway ignored
     in the last hour, by reason code.
 
-Both are installation-wide reads of one shared destination, so a
-project-scoped session principal only ever sees its own project's activity;
-the configured project filter is applied before any row is read.
+``digest_facts`` / ``digest_post`` / ``digest_request``
+    Phase P3 of *Discord as a chat extension of the supervisor* (§4): the
+    daemon keeps the window, freezes the facts and holds it; the supervisor
+    reads those facts and posts three sentences.  ``digest_facts`` is the
+    bounded read of one window's frozen evidence, ``digest_post`` the single
+    CAS write of its body (rendered inside the §3.2 budget with the needs-you
+    link appended by the daemon), and ``digest_request`` the minute
+    reconciliation that hands held windows to the supervisor's inbox.  All
+    three exist only while ``discord.digest.supervisor_authored`` is on.
+
+``digest_preview`` and ``digest_status`` are installation-wide reads of one
+shared destination, so a project-scoped session principal only ever sees its
+own project's activity; the configured project filter is applied before any row
+is read.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -33,6 +45,7 @@ from src.digest.aggregate import build_digest
 from src.digest.dispatch import reported_so_far
 from src.digest.facts import CATEGORIES
 from src.digest.schedule import provider_facts_enabled, schedule_for, validate_settings
+from src.digest.supervisor import render_authored_digest
 from src.discord.intake_diagnostics import empty_snapshot
 
 logger = logging.getLogger(__name__)
@@ -44,6 +57,10 @@ _PENDING_DELIVERY_STATUSES = frozenset({"pending", "sending", "retry", "unknown"
 #: How many recent windows ``digest_status`` reports, and how far back a
 #: preview looks for wording it has already said.
 _RECENT_WINDOWS = 20
+
+#: A body that carries its own link is refused: §3.1 gives every post exactly
+#: one link, and the daemon appends the needs-you page itself.
+_BODY_URL = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -235,6 +252,9 @@ class DigestCommandsMixin:
                 "project_ids": list(schedule.project_ids),
                 "categories": sorted(schedule.categories),
                 "catchup_hours": config.digest.catchup_hours,
+                "supervisor_authored": schedule.supervisor_authored,
+                "cadence_minutes": config.digest.cadence_minutes,
+                "author_fallback_minutes": config.digest.author_fallback_minutes,
             },
             "escalation": {
                 "enabled": config.escalation.enabled,
@@ -268,3 +288,178 @@ class DigestCommandsMixin:
             "settings_errors": validate_settings(config, known),
             "warnings": warnings,
         }
+
+    # -- §4 the supervisor-authored window --------------------------------
+    def _digest_author_allowed(self) -> bool:
+        """Who may read a window's facts and post its body.
+
+        The author is the supervisor: the live global launch, or an install-wide
+        service/playbook principal (the playbook's own reconciliation, and an
+        operator reading along).  A *project*-scoped session is refused rather
+        than narrowed -- the brief is the fleet's frozen evidence for a window the
+        whole destination shares, and there is no honest per-project projection
+        of it at read time.
+        """
+        principal = current_principal()
+        if principal is None or principal.kind == PrincipalKind.LOCAL:
+            return True
+        if principal.kind in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK):
+            return principal.project_id is None
+        return bool(
+            principal.kind == PrincipalKind.SESSION
+            and principal.elevated
+            and principal.project_id is None
+        )
+
+    async def _digest_window_for(self, args: dict[str, Any]) -> tuple[Any, Any] | None:
+        """The window and author request this call names.
+
+        ``--since`` is how the supervisor reads a window: the wake message names
+        the start, and the start is the window's identity inside its generation.
+        With no ``--since`` the newest evaluated window answers, so a recovery
+        read does not need the number.
+        """
+        schedule = schedule_for(self.orchestrator.config.discord)
+        if args.get("since") is None:
+            window = await self.db.latest_digest_window(
+                destination=schedule.destination, generation=schedule.generation
+            )
+            if window is None:
+                return None
+            return await self.db.find_digest_request(
+                destination=schedule.destination,
+                generation=schedule.generation,
+                window_start=float(window["window_start"]),
+            )
+        try:
+            start = float(args["since"])
+        except (TypeError, ValueError):
+            return None
+        return await self.db.find_digest_request(
+            destination=schedule.destination, generation=schedule.generation, window_start=start
+        )
+
+    async def _cmd_digest_facts(self, args: dict[str, Any]) -> dict[str, Any]:
+        """The frozen facts for one window, exactly as the author is woken."""
+        if not self._digest_author_allowed():
+            return _error(
+                "out_of_scope",
+                "digest facts are the supervisor's author turn; a project-scoped "
+                "session cannot read the fleet window",
+            )
+        schedule = schedule_for(self.orchestrator.config.discord)
+        if not schedule.supervisor_authored:
+            return _error(
+                "digest.disabled",
+                "discord.digest.supervisor_authored is off; the deterministic digest "
+                "is what posts and it has no author window",
+            )
+        found = await self._digest_window_for(args)
+        if found is None:
+            return _error("not_found", "no digest window at that start in this generation")
+        window, request = found
+        if not request:
+            return _error(
+                "not_found",
+                "that window was not held for an author: it was suppressed, already "
+                "posted, or predates supervisor authoring",
+            )
+        return {
+            "success": True,
+            "request_id": request["id"],
+            "window_id": window["id"],
+            "state": request["state"],
+            "deadline": float(request["deadline"]),
+            "seconds_remaining": max(
+                0.0, float(request["deadline"]) - float(args.get("now") or time.time())
+            ),
+            "facts": dict(request["brief"] or {}),
+            "facts_hash": request["brief_hash"],
+        }
+
+    async def _cmd_digest_post(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Submit the supervisor's three sentences for one held window."""
+        if not self._digest_author_allowed():
+            return _error(
+                "out_of_scope", "only the supervisor author, or an install-wide service, may post"
+            )
+        schedule = schedule_for(self.orchestrator.config.discord)
+        if not schedule.supervisor_authored:
+            return _error(
+                "digest.disabled",
+                "discord.digest.supervisor_authored is off; there is no author window to post",
+            )
+        if args.get("window") is None:
+            return _error("digest.invalid", "window is required: pass the window start")
+        found = await self._digest_window_for(args)
+        if found is None:
+            return _error("not_found", "no digest window at that start in this generation")
+        window, request = found
+        if not request:
+            return _error("not_found", "that window was never held for an author")
+        if request["state"] not in ("reserved", "requested"):
+            # ``submitted`` is a window already posted; ``fallback`` and
+            # ``cancelled`` are windows the daemon owns.  None of them is this
+            # author's to write, and a window posts exactly once.
+            return _error(
+                "digest.closed",
+                f"window {window['id']} is {request['state']}; a window posts once and is "
+                "never edited afterwards",
+            )
+        body = str(args.get("body") or "")
+        if not body.strip():
+            return _error("digest.invalid", "digest body is empty")
+        if _BODY_URL.search(body):
+            return _error("digest.invalid", "digest links are inserted by the daemon")
+        dashboard_url, dashboard_notice = "", ""
+        resolver = getattr(self.orchestrator, "dashboard_links", None)
+        if resolver is not None:
+            link = await resolver.resolve()
+            dashboard_url, dashboard_notice = link.url, link.unavailable_notice
+        try:
+            text = render_authored_digest(body, base_url=dashboard_url, notice=dashboard_notice)
+        except ValueError as exc:
+            return _error("digest.invalid", str(exc))
+        changed = await self.db.submit_digest_post(request["id"], text=text, now=time.time())
+        if changed is None:
+            return _error(
+                "digest.closed",
+                "the window is no longer yours: it was claimed for delivery or its deadline passed",
+            )
+        return {
+            "success": True,
+            "request_id": changed["id"],
+            "window_id": window["id"],
+            "state": changed["state"],
+            "version": changed["version"],
+            "text": text,
+            "characters": len(text),
+        }
+
+    async def _cmd_digest_request(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Reconcile held digest windows into supervisor author turns (service only)."""
+        principal = current_principal()
+        if not (
+            principal
+            and principal.kind in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK)
+            and principal.project_id is None
+        ):
+            return _error(
+                "out_of_scope", "only the install-wide digest service/playbook may request"
+            )
+        now = float(args.get("now") or time.time())
+        schedule = schedule_for(self.orchestrator.config.discord)
+        if not (schedule.enabled and schedule.supervisor_authored):
+            # The flag went off with windows still held: release them to the
+            # deterministic digest rather than leaving them silent until a
+            # cadence that no longer exists.
+            return {
+                "success": True,
+                "requested": 0,
+                "cancelled": await self.db.cancel_digest_requests(now=now),
+            }
+        requested = 0
+        for row in await self.db.list_reserved_digest_requests(now=now):
+            if await self.db.request_report(str(row["id"]), now=now) is not None:
+                requested += 1
+        return {"success": True, "requested": requested, "cancelled": 0}

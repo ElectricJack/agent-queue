@@ -302,6 +302,8 @@
           "enabled": false
         },
         "digest": {
+          "author_fallback_minutes": 10,
+          "cadence_minutes": 120,
           "catchup_hours": 24,
           "categories": [
             "work",
@@ -311,7 +313,13 @@
           ],
           "enabled": true,
           "interval_minutes": 60,
-          "project_ids": []
+          "project_ids": [],
+          "quiet_hours": {
+            "end": "07:00",
+            "start": "22:00"
+          },
+          "quiet_line_after_skips": 3,
+          "supervisor_authored": false
         },
         "escalation": {
           "enabled": true,
@@ -358,6 +366,8 @@
         "digest": {
           "additionalProperties": false,
           "default": {
+            "author_fallback_minutes": 10,
+            "cadence_minutes": 120,
             "catchup_hours": 24,
             "categories": [
               "work",
@@ -367,9 +377,27 @@
             ],
             "enabled": true,
             "interval_minutes": 60,
-            "project_ids": []
+            "project_ids": [],
+            "quiet_hours": {
+              "end": "07:00",
+              "start": "22:00"
+            },
+            "quiet_line_after_skips": 3,
+            "supervisor_authored": false
           },
           "properties": {
+            "author_fallback_minutes": {
+              "default": 10,
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "cadence_minutes": {
+              "default": 120,
+              "maximum": 1440,
+              "minimum": 15,
+              "type": "integer"
+            },
             "catchup_hours": {
               "default": 24,
               "maximum": 168,
@@ -409,6 +437,37 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": {
+                "end": "07:00",
+                "start": "22:00"
+              },
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "quiet_line_after_skips": {
+              "default": 3,
+              "maximum": 24,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "supervisor_authored": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"

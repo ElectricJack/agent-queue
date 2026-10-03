@@ -234,6 +234,7 @@
         "tests/test_digest_commands.py",
         "tests/test_digest_dispatch.py",
         "tests/test_digest_queries.py",
+        "tests/test_digest_supervisor.py",
         "tests/test_discord_settings.py",
         "tests/test_morning_reports.py",
         "tests/test_report_delivery.py",
@@ -1391,7 +1392,7 @@
       ]
     }
   },
-  "digest": "sha256:07c4aae31615ea9188d2598a624f5de52c10fd9f2fa626bda8ecd757e87eb4b0",
+  "digest": "sha256:7d90170b0fbaa122317f2fdcf91c6414733116fc0e5419f2f57f2ee8ffebf5bd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5020,6 +5021,27 @@
       ],
       "markers": [],
       "summary": "What a digest window is allowed to see (implementation spec §8)."
+    },
+    "tests/test_digest_supervisor.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.digest.supervisor",
+        "src.escalations.transport",
+        "src.event_bus",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [],
+      "summary": "The §4 supervisor-authored digest window (2026-10-03 §4.1-4.3, §7.1 P3)."
     },
     "tests/test_discord_adapter.py": {
       "areas": [

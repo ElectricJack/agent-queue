@@ -179,6 +179,31 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+#### 4.2.1 Supervisor-authored digest (phase P3, gated)
+
+`discord.digest.supervisor_authored` defaults to **false**, which is the whole
+deterministic digest described above. Turning it on replaces the deterministic
+window with one the supervisor writes; rollback is the flag and nothing else.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `supervisor_authored` | `bool` | `false` | Hold each window for the supervisor instead of posting it directly. |
+| `cadence_minutes` | `int` | `120` | Window length while supervisor-authored; 15–1440, replaces `interval_minutes`. |
+| `quiet_hours.start` / `.end` | `str` | `"22:00"` / `"07:00"` | Local `HH:MM` interval, may cross midnight, in `reports.timezone`. Suppresses the post, never the fact collection. |
+| `author_fallback_minutes` | `int` | `10` | Grace before the deterministic digest posts for an unanswered window; 1–60. |
+| `quiet_line_after_skips` | `int` | `3` | Consecutive unchanged windows before one "nothing needs you" line a day; 1–24. |
+
+With the flag on, each window is reserved on the cadence grid and held until
+`window_end + author_fallback_minutes`. The supervisor reads the frozen facts
+with `aq digest facts --since <window start>` and posts with
+`aq digest post --window <window start> --body "..."`, which the daemon renders
+inside the 600-character digest budget and appends the needs-you link to. A
+window with no new facts and nothing waiting on Jack is skipped; after
+`quiet_line_after_skips` such windows one line is posted per local day, so
+silence stays distinguishable from a dead bot. Authoring also requires the
+`supervisor-digest` playbook, which is shipped disabled and activated by the
+operator; without it every window falls back.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
 

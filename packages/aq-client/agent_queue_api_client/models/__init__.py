@@ -220,8 +220,15 @@ from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .deleted_branch import DeletedBranch
 from .digest_escalation_settings import DigestEscalationSettings
+from .digest_facts_request import DigestFactsRequest
+from .digest_facts_response import DigestFactsResponse
+from .digest_facts_response_facts import DigestFactsResponseFacts
+from .digest_post_request import DigestPostRequest
+from .digest_post_response import DigestPostResponse
 from .digest_preview_request import DigestPreviewRequest
 from .digest_preview_response import DigestPreviewResponse
+from .digest_request_request import DigestRequestRequest
+from .digest_request_response import DigestRequestResponse
 from .digest_schedule_settings import DigestScheduleSettings
 from .digest_status_request import DigestStatusRequest
 from .digest_status_response import DigestStatusResponse
@@ -1960,8 +1967,15 @@ __all__ = (
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DigestEscalationSettings",
+    "DigestFactsRequest",
+    "DigestFactsResponse",
+    "DigestFactsResponseFacts",
+    "DigestPostRequest",
+    "DigestPostResponse",
     "DigestPreviewRequest",
     "DigestPreviewResponse",
+    "DigestRequestRequest",
+    "DigestRequestResponse",
     "DigestScheduleSettings",
     "DigestStatusRequest",
     "DigestStatusResponse",

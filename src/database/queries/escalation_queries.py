@@ -1506,9 +1506,18 @@ class EscalationQueriesMixin:
         payload: Mapping[str, Any] | None,
         suppression_reason: str | None,
         report_candidate: Mapping[str, Any] | None = None,
+        author_candidate: Mapping[str, Any] | None = None,
         now: float | None = None,
     ) -> dict[str, Any] | None:
-        """Persist either sendable output or a durable silent-window result."""
+        """Persist either sendable output or a durable silent-window result.
+
+        ``report_candidate`` is the hourly narrative author and
+        ``author_candidate`` the supervisor-authored digest (2026-10-03 §4.2).
+        Both reserve their author request *inside* this transaction, so a window
+        can never be held for an author that does not exist, and both set
+        ``due_at`` to that author's deadline -- the moment the deterministic
+        fallback becomes owed.
+        """
         suppressed = suppression_reason is not None
         if suppressed == (payload is not None):
             raise ValueError("digest evaluation requires either payload or suppression_reason")
@@ -1540,6 +1549,24 @@ class EscalationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
+            if row is not None and author_candidate is not None:
+                request_id = await self.reserve_digest_request_in_transaction(
+                    conn, candidate=author_candidate
+                )
+                if request_id is not None:
+                    held_payload = dict(payload or {})
+                    held_payload["author_request_id"] = request_id
+                    row = (
+                        await conn.execute(
+                            update(digest_windows)
+                            .where(digest_windows.c.id == window_id)
+                            .values(
+                                due_at=author_candidate["deadline"],
+                                payload=held_payload,
+                            )
+                            .returning(digest_windows)
+                        )
+                    ).mappings().one()
             if row is not None and report_candidate is not None:
                 request_id, skip_reason = await self.reserve_hourly_report_in_transaction(
                     conn, candidate=report_candidate
@@ -1634,7 +1661,10 @@ class EscalationQueriesMixin:
             await conn.execute(
                 update(supervisor_report_requests)
                 .where(
-                    supervisor_report_requests.c.kind == "hourly",
+                    # A claimed window is spoken for: the hourly author lost
+                    # its turn, and so has the supervisor-authored digest author
+                    # (2026-10-03 §4.2) whose deadline is this claim.
+                    supervisor_report_requests.c.kind.in_(("hourly", "digest")),
                     supervisor_report_requests.c.owner_ref.in_(ids),
                     supervisor_report_requests.c.state.in_(("reserved", "requested")),
                 )

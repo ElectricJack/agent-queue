@@ -63,6 +63,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
+    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
