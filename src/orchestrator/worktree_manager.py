@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 
 from src.config import WorktreesConfig
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, _validate_ref
+from src.git.manager import GitError, RemoteRefState, _validate_ref, is_valid_git_oid
 from src.models import (
     RepoSourceType,
     WORKTREE_SENTINEL_NAME,
@@ -535,6 +535,7 @@ class WorktreeSlotManager:
         resume_branch: str | None = None,
         target_branch: str | None = None,
         kind: WorkspaceKind | None = None,
+        operator_handoff: bool = False,
     ) -> str:
         """Bring a slot to a pristine per-task state.  Returns the branch.
 
@@ -557,13 +558,27 @@ class WorktreeSlotManager:
             if resume_branch is not None:
                 raise GitError("exact target and resume branch are mutually exclusive")
 
+        if operator_handoff and (target_branch is None or not is_valid_git_oid(base_branch)):
+            raise GitError("operator handoff requires an exact branch and proved commit")
         slot_dir = Path(slot_ws.workspace_path)
         await self.ensure_git_exclude(slot_dir)
+        if operator_handoff:
+            dirty_paths = await self.git.aget_dirty_paths(str(slot_dir))
+            if dirty_paths is None or dirty_paths:
+                raise GitError("Operator handoff destination is dirty or unproved; "
+                               "workspace was left unchanged")
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
-        checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
+        checkpoint = await prepare_checkpoint(
+            self.db, self.git, task.id, str(slot_dir),
+            handoff_sha=base_branch if operator_handoff else None,
+        )
         if checkpoint:
             if target_branch is not None and checkpoint["branch"] != target_branch:
                 raise GitError("saved checkpoint is not on the exact owned branch")
+            if operator_handoff:
+                base_ws = await self._base_of(slot_ws)
+                async with self._git_mutex(base_ws.workspace_path if base_ws else str(slot_dir)):
+                    await self._detach_stale_branch_holders(slot_dir, checkpoint["branch"])
             # No hard-reset/clean on the saved task branch. Previous users'
             # dirty work is salvaged before switching back to the checkpoint.
             prev = self.read_sentinel(slot_dir)
