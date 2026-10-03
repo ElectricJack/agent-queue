@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-172 commands are registered.
+173 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -172,6 +172,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
 | [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
 | [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |
+| [`knowledge_import`](knowledge_import.md) | Knowledge Import (dry-run) | Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written. |
 | [`knowledge_list`](knowledge_list.md) | Knowledge List | List authorized knowledge metadata with a page cursor. |
 | [`knowledge_proposal_decide`](knowledge_proposal_decide.md) | Knowledge Proposal Decide | Accept or reject an exact proposal; supervisor grant required. |
 | [`knowledge_proposal_show`](knowledge_proposal_show.md) | Knowledge Proposal Show | Read an authorized proposal and its exact hash. |

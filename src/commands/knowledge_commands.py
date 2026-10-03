@@ -318,7 +318,14 @@ class KnowledgeCommandsMixin:
                 "legacy_memory_mode": cfg.legacy_memory_mode,
                 "features": {
                     name: getattr(cfg, name).enabled
-                    for name in ("context", "semantic", "extraction", "consolidation", "export")
+                    for name in (
+                        "context",
+                        "semantic",
+                        "extraction",
+                        "consolidation",
+                        "export",
+                        "import_inventory",
+                    )
                 },
                 "granted_operations": sorted(grants),
             },
@@ -351,6 +358,50 @@ class KnowledgeCommandsMixin:
             )
         except RecordError as exc:
             return exc.result()
+
+    async def _cmd_knowledge_import(self, args):
+        """Scan, seal and verify a legacy import inventory (read-only, operator)."""
+        from pathlib import Path
+
+        from src.commands.principal import PrincipalKind
+        from src.knowledge.imports.dry_run import run_dry_run
+        from src.knowledge.imports.inventory import MalformedSource, RootSpec
+
+        principal = current_principal()
+        if principal is None or principal.kind != PrincipalKind.LOCAL:
+            return _error("knowledge_import.forbidden", "Requires the local operator")
+        cfg = self.config.knowledge
+        if not (cfg.enabled and getattr(cfg, "import_inventory", None).enabled):
+            return _error(
+                "knowledge_import.disabled",
+                "Enable knowledge and knowledge.import_inventory before dry-run",
+            )
+
+        raw_roots = args.get("roots") or []
+        try:
+            roots = tuple(
+                RootSpec(
+                    root_id=str(spec["root_id"]),
+                    path=Path(str(spec["path"])),
+                    source_scope=str(spec["source_scope"]),
+                    source_kind=str(spec.get("source_kind") or "memory"),
+                    relative_paths=tuple(spec.get("relative_paths") or ()) or None,
+                )
+                for spec in raw_roots
+            )
+            report = await run_dry_run(
+                roots=roots,
+                vector_export=Path(args["vector_export"]) if args.get("vector_export") else None,
+                scope_aliases=args.get("scope_aliases"),
+                source_installation_id=str(args.get("source_installation_id") or ""),
+                snapshot_id=str(args.get("snapshot_id") or ""),
+                snapshot_timestamp=str(args.get("snapshot_timestamp") or ""),
+            )
+        except (MalformedSource, ValueError) as exc:
+            return _error("knowledge_import.invalid_input", str(exc))
+        except OSError as exc:
+            return _error("knowledge_import.source_unavailable", str(exc))
+        return report.to_dict()
 
     async def _cmd_link_remove(self, args):
         link_id = args.get("link_id")

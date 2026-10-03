@@ -636,6 +636,9 @@ from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
 from .knowledge_history_response_422 import KnowledgeHistoryResponse422
 from .knowledge_history_response_revisions_item import KnowledgeHistoryResponseRevisionsItem
+from .knowledge_import_request import KnowledgeImportRequest
+from .knowledge_import_request_scope_aliases_type_0 import KnowledgeImportRequestScopeAliasesType0
+from .knowledge_import_response_422 import KnowledgeImportResponse422
 from .knowledge_lifecycle_response import KnowledgeLifecycleResponse
 from .knowledge_list_request import KnowledgeListRequest
 from .knowledge_list_response import KnowledgeListResponse
@@ -2352,6 +2355,9 @@ __all__ = (
     "KnowledgeHistoryResponse",
     "KnowledgeHistoryResponse422",
     "KnowledgeHistoryResponseRevisionsItem",
+    "KnowledgeImportRequest",
+    "KnowledgeImportRequestScopeAliasesType0",
+    "KnowledgeImportResponse422",
     "KnowledgeLifecycleResponse",
     "KnowledgeListRequest",
     "KnowledgeListResponse",
