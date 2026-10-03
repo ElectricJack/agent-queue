@@ -15,11 +15,13 @@ capture and no browser automation.  A step that finds no credential returns
 runs it.  Retrying is just rerunning ``aq install``.
 
 **The probe reads no credential material.**  Readiness is decided by, in
-order: the provider's own non-secret status command (exit status only — its
-output is never captured into a result), the *names* of environment variables
-that are set (never their values), and the *existence* of the provider's
-credential file (never its contents).  That is why a probe can report
-``authenticated`` for a store AQ is not allowed to open.
+order: the provider's own non-secret status command (its exit status answers it,
+and a *failed* run's output is read once, transiently, only to tell a command
+the CLI does not have from an answer about the login — it is never captured into
+a result), the *names* of environment variables that are set (never their
+values), and the *existence* of the provider's credential file (never its
+contents).  That is why a probe can report ``authenticated`` for a store AQ is
+not allowed to open.
 
 **Presence is not authentication.**  A credential file that exists is the
 *shape* of a login, not a statement that the login still works: an expired
@@ -27,7 +29,10 @@ OAuth token leaves exactly that file behind.  So the store is the weakest
 evidence and it is the last resort — a status command that *answered*
 "not signed in" outranks it and is final.  The probe never reads the store to
 find out for itself, because doing so would mean handling material it is
-forbidden to touch; it asks the CLI that already read it.
+forbidden to touch; it asks the CLI that already read it.  What a status command
+*could not* answer is not a denial and refuses nothing: an installed build that
+predates the subcommand complains about the command and exits non-zero, exactly
+as a signed-out answer does, and only the words tell the two apart.
 
 **Nothing durable learns a secret.**  Results carry ``auth_method``,
 ``credential_source`` and ``credential_store`` — names and states, never
@@ -291,24 +296,70 @@ class _StatusAnswer(StrEnum):
     CANNOT_TELL = "cannot_tell"
 
 
-def _ask_status_command(command: Sequence[str], runner: CommandRunner) -> _StatusAnswer:
-    """Run a provider status command and read only its exit status.
+#: What a CLI says when it was asked for a command it does not have.  Every
+#: provider here ships its status subcommand as an addition, so an installed
+#: build from before it existed answers with a usage complaint and a non-zero
+#: exit — the same shape as a signed-out answer, and about the *command* rather
+#: than the login.  Only these phrases mark that run as unanswerable, and only a
+#: run that already failed can match one.
+#:
+#: The list is deliberately narrow, and matched case-insensitively, because the
+#: cost of a false match is the bug this module was written to remove: silence
+#: read as denial leaves an expired login authenticating again.
+_UNAVAILABLE_COMMAND_PHRASES = (
+    "unknown command",
+    "unknown subcommand",
+    "unrecognized command",
+    "unrecognized subcommand",
+    "unsupported command",
+    "unsupported subcommand",
+    "no such command",
+    "invalid command",
+    "command not found",
+)
 
-    The output is deliberately dropped: it can name an account, a plan or an
-    organisation, none of which the installer has any business persisting.
+
+def _command_is_not_there(completed: subprocess.CompletedProcess[str]) -> bool:
+    """True when a *failed* CLI run objected to the command, not the login.
+
+    The text is consulted in memory, folded into this one boolean and dropped:
+    it can name an account, a plan or a key, and none of it leaves here.
+    """
+    spoken = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
+    return any(phrase in spoken for phrase in _UNAVAILABLE_COMMAND_PHRASES)
+
+
+def _ask_status_command(command: Sequence[str], runner: CommandRunner) -> _StatusAnswer:
+    """Run a provider status command and read its exit status.
+
+    The output is never persisted: it can name an account, a plan or an
+    organisation, none of which the installer has any business keeping.  It is
+    read for one thing only, and only after the CLI failed — to tell a build
+    that does not have the command from one that answered the question.
     """
     # One retry when the command could not answer at all: a slow first run
     # is common and transient, and the one-command install should not stop
     # the whole machine setup on it.  A command that *answered* "no" is not
-    # retried.
+    # retried, and neither is one that does not have the subcommand — asking
+    # again cannot add it.
     for _attempt in range(2):
         try:
             completed = runner(tuple(command))
         except (OSError, subprocess.SubprocessError):
-            # A missing subcommand, a hung CLI or an old build is "cannot
-            # tell", and the caller falls through to the environment and store.
+            # A missing executable, a hung CLI or a crash is "cannot tell",
+            # and the caller falls through to the environment and store.
             continue
-        return _StatusAnswer.SIGNED_IN if completed.returncode == 0 else _StatusAnswer.SIGNED_OUT
+        if completed.returncode == 0:
+            # The provider asserted it is signed in, and a phrase somewhere in
+            # what it printed cannot take that back — the output may quote the
+            # operator's own last command, a task title or an account name.
+            return _StatusAnswer.SIGNED_IN
+        if _command_is_not_there(completed):
+            # Silence about the *command*, so silence about the login: this
+            # build cannot vouch for the store it may have written, and must
+            # not be recorded as having denied it either.
+            return _StatusAnswer.CANNOT_TELL
+        return _StatusAnswer.SIGNED_OUT
     return _StatusAnswer.CANNOT_TELL
 
 
@@ -737,11 +788,11 @@ __all__ = [
     "CODEX_LOGIN",
     "GEMINI_LOGIN",
     "STATUS_TIMEOUT_SECONDS",
-    "SettingsEnvironment",
     "AuthProbe",
     "CredentialStore",
     "EnvironmentCredential",
     "ProviderLogin",
+    "SettingsEnvironment",
     "login_instructions",
     "login_step",
     "login_steps",

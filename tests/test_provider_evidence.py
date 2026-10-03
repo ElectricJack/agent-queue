@@ -576,8 +576,12 @@ async def test_recheck_runs_the_probe_now(env):
     assert env.service.row("codex").last_probe_at == T0
 
 
-def _claude_with_an_expired_login(tmp_path, monkeypatch, *, signed_in: bool):
-    """A home whose ``claude`` answers ``auth status``, over a stale credential."""
+def _claude_with_an_expired_login(tmp_path, monkeypatch, *, signed_in: bool, answer: str = ""):
+    """A home whose ``claude`` answers ``auth status``, over a stale credential.
+
+    *answer* is what the CLI says when the exit status is non-zero: empty for
+    the ordinary denial, and the words of a build that has no such subcommand.
+    """
     credentials = tmp_path / ".claude" / ".credentials.json"
     credentials.parent.mkdir(parents=True, exist_ok=True)
     credentials.write_text('{"claudeAiOauth": {"accessToken": "sk-not-real"}}', encoding="utf-8")
@@ -593,7 +597,7 @@ def _claude_with_an_expired_login(tmp_path, monkeypatch, *, signed_in: bool):
         return "/opt/bin/claude"
 
     def auth_status(argv, **_kwargs):
-        return subprocess.CompletedProcess(argv, 0 if signed_in else 1, "", "")
+        return subprocess.CompletedProcess(argv, 0 if signed_in else 1, "", answer)
 
     monkeypatch.setattr(providers_module, "user_bin_aware_which", lambda: where)
     monkeypatch.setattr(service_module.subprocess, "run", auth_status)
@@ -626,6 +630,34 @@ async def test_a_present_but_expired_login_is_auth_needed_and_never_relaunched(e
     assert env.service.suppresses("claude")
     assert env.service.admit_launch("claude")[0] is False
     assert "claude auth login" in env.service.remediation("claude", UNAUTHENTICATED)
+
+
+async def test_a_build_without_the_status_subcommand_does_not_suppress_claude(
+    env, tmp_path, monkeypatch
+):
+    """The 2026-10-03 follow-up: the same store, a CLI that cannot be asked.
+
+    An installed build from before ``claude auth status`` existed complains
+    about the command and exits non-zero — the same shape as the denial above.
+    Read as a denial it would suppress a provider whose login is fine and stop
+    every launch into it; D5a says only an *answer* may do that.
+    """
+    _claude_with_an_expired_login(
+        tmp_path,
+        monkeypatch,
+        signed_in=False,
+        answer="error: unknown command 'status'",
+    )
+
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+
+    assert (signal, detail) == (
+        PROBE_AUTHENTICATED,
+        {"method": "provider-login", "source": "Claude Code credential file"},
+    )
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert not env.service.suppresses("claude")
+    assert env.service.admit_launch("claude")[0] is True
 
 
 async def test_the_same_store_recovers_once_the_human_confirms_a_fresh_login(env, tmp_path, monkeypatch):
