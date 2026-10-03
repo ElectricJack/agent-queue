@@ -128,6 +128,12 @@ def _held_for(*, unless_stopped: bool) -> StopIntent | None:
 #: when the wait ends sees the recorded stop there and does not spawn.
 START_SETTLE_SECONDS = 45.0
 
+#: Busy installs can take longer than 30 seconds to finish initialization.
+#: Keep the health wait bounded independently of post-start readiness checks.
+DAEMON_START_TIMEOUT_SECONDS = 120.0
+#: Bound both diagnostic I/O and Rich formatting, even for one huge log line.
+LOG_TAIL_MAX_BYTES = 64 * 1024
+
 
 def _read_pid() -> int | None:
     """Read and validate the PID from the PID file.
@@ -141,6 +147,38 @@ def _read_pid() -> int | None:
 def _find_daemon_pid() -> int | None:
     """Find a running daemon PID via PID file or pgrep fallback."""
     return find_daemon_pid(PID_FILE, CONFIG_PATH)
+
+
+def _remove_launched_pid_file(pid: int) -> None:
+    """Remove our child's PID file without deleting a successor's record."""
+    try:
+        if Path(PID_FILE).read_text(encoding="utf-8").strip() == str(pid):
+            os.remove(PID_FILE)
+    except OSError:
+        pass
+
+
+def _startup_health_ok(proc: subprocess.Popen, api_base: str, *, timeout: float = 1) -> bool:
+    """Accept healthy/degraded responses only while our launched child is alive."""
+    import urllib.error
+    import urllib.request
+
+    if proc.poll() is not None:
+        return False
+    try:
+        with urllib.request.urlopen(f"{api_base}/health", timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        exc.close()
+    except (urllib.error.URLError, OSError):
+        return False
+    # A response from another listener must not hide our child's startup exit.
+    if proc.poll() is not None:
+        return False
+    if status == 503:
+        console.print("[yellow]Daemon is running with degraded health; run aq doctor.[/]")
+    return status in (200, 503)
 
 
 def _resolve_agent_queue_bin() -> str:
@@ -721,73 +759,51 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         # Wait until the daemon's HTTP /health endpoint responds — replaces the
         # old fixed 5s pid check, which falsely reported success when crashes
         # (e.g. Discord login failure) happened later in async init. See #28.
-        import urllib.error
-        import urllib.request
-
         from .client import _resolve_api_url
 
         api_base = _resolve_api_url()
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECONDS
         ready = False
-        while time.monotonic() < deadline:
-            # Early-crash detect: if the process is gone, surface the log immediately.
-            try:
-                os.kill(proc.pid, 0)
-            except OSError:
+        while (remaining := deadline - time.monotonic()) > 0:
+            # poll() reaps an exited child, including a zombie that kill(pid, 0)
+            # would still report as alive. Keep the handle for PID-reuse fencing.
+            if proc.poll() is not None:
                 console.print("[bold red]Error:[/] Daemon exited during startup:")
                 _tail_log(30)
-                try:
-                    os.remove(PID_FILE)
-                except OSError:
-                    pass
+                _remove_launched_pid_file(proc.pid)
                 return False
-            # Probe /health. 200 = healthy, 503 = degraded but the daemon is up
-            # and serving (e.g. messaging-degraded mode from #29) — both count
-            # as "started successfully" here.
-            try:
-                with urllib.request.urlopen(f"{api_base}/health", timeout=1) as resp:
-                    if resp.status in (200, 503):
-                        ready = True
-                        break
-            except urllib.error.HTTPError as exc:
-                exc.close()
-                if exc.code == 503:
-                    console.print(
-                        "[yellow]Daemon is running with degraded health; run aq doctor.[/]"
-                    )
-                    ready = True
-                    break
-            except (urllib.error.URLError, OSError):
-                pass  # not yet listening
-            time.sleep(0.5)
+            if _startup_health_ok(proc, api_base, timeout=min(1, remaining)):
+                ready = True
+                break
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
         if not ready:
             console.print(
-                f"[bold red]Error:[/] Daemon process is alive (PID {proc.pid}) but "
-                f"/health didn't respond within 30s. Killing it. Last log lines:"
+                f"[yellow]Daemon (PID {proc.pid}) did not pass /health within "
+                f"{DAEMON_START_TIMEOUT_SECONDS:g}s. Last log lines before rechecking:"
             )
             _tail_log(30)
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-                # Brief grace period, then SIGKILL
-                for _ in range(5):
-                    time.sleep(1)
+            # Reading/printing diagnostics gives async initialization time to
+            # finish. Never act on the health result from before that work.
+            ready = _startup_health_ok(proc, api_base)
+            if not ready:
+                if proc.poll() is None:
+                    console.print("[bold red]Error:[/] Startup health still failed; stopping child.")
                     try:
-                        os.kill(proc.pid, 0)
-                    except OSError:
-                        break
-                else:
-                    try:
-                        os.kill(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-            except OSError:
-                pass
-            try:
-                os.remove(PID_FILE)
-            except OSError:
-                pass
-            return False
+                        # Popen signals poll again internally before using the
+                        # PID, so an exited/reaped child cannot target PID reuse.
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            if proc.poll() is None:
+                                proc.kill()
+                            proc.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        console.print(f"[bold red]Error stopping startup child:[/] {exc}")
+                if proc.poll() is not None:
+                    _remove_launched_pid_file(proc.pid)
+                return False
 
         console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
         _post_daemon_checks()
@@ -938,15 +954,26 @@ def _await_start_in_progress(quiet: bool) -> int | None:
 
 
 def _tail_log(lines: int = 20) -> None:
-    """Print the last N lines of the daemon log."""
+    """Print at most N lines from a bounded byte tail of the daemon log."""
+    if lines <= 0:
+        return
     if not os.path.exists(LOG_PATH):
         console.print(f"[dim]No log file at {LOG_PATH}[/]")
         return
     try:
-        with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-            for line in all_lines[-lines:]:
-                console.print(line.rstrip())
+        with open(LOG_PATH, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - LOG_TAIL_MAX_BYTES)
+            # Read one boundary byte to distinguish a full first line from a
+            # clipped one; the whole read still stays within the byte budget.
+            f.seek(start)
+            tail = f.read(LOG_TAIL_MAX_BYTES)
+        if start > 0:
+            boundary, tail = tail[:1], tail[1:]
+            if boundary != b"\n" and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+        for line in tail.decode("utf-8", "replace").splitlines()[-lines:]:
+            console.print(line.rstrip(), markup=False, highlight=False)
     except OSError as e:
         console.print(f"[bold red]Error reading log:[/] {e}")
 
