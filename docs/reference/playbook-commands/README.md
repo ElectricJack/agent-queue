@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+177 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -99,12 +99,16 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
+| [`integration_explain`](integration_explain.md) | Integration Explain | The last recorded reconciler decisions for a subject and why. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
+| [`integration_gate_answer`](integration_gate_answer.md) | Integration Gate Answer | Answer an open integration gate; only a verified human operator's answer binds. |
+| [`integration_hold`](integration_hold.md) | Integration Hold | Hold or release a subject's integration; the policy may only wait on a hold. |
 | [`integration_materialize_root`](integration_materialize_root.md) | Integration Materialize Root | Authenticated hierarchical integration operational control. |
 | [`integration_migrate_provenance`](integration_migrate_provenance.md) | Integration Migrate Provenance | Inventory exact legacy completions; optionally retain verified Git provenance. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
+| [`integration_policy_activate`](integration_policy_activate.md) | Integration Policy Activate | Activate a project's integration mode and policy behind its generation fence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
 | [`integration_rebind_detached_repair`](integration_rebind_detached_repair.md) | Integration Rebind Detached Repair | Authenticated hierarchical integration operational control. |
