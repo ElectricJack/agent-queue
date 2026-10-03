@@ -514,6 +514,13 @@ with no project is distinct from a missing row. A promotion intent whose `projec
 NULL resolves through its persisted repository; if that repository cannot supply a project,
 the intent remains a present row with no resolved owner.
 
+The provider preference preview names its project in the nested
+`receive_new_work.project_id` field; that project row is resolved by the same guard.
+Only `provider_allocation_preview` recognizes that nested target path; other commands
+receive no project ownership from it.
+The allocation handler still restricts a project supervisor to preference-only changes
+and refuses global lifecycle/bounds changes and busy interruption.
+
 The policy fails closed, because "I could not work out who owns this" is not "allowed":
 
 | Case | Answer |
@@ -521,7 +528,7 @@ The policy fails closed, because "I could not work out who owns this" is not "al
 | every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
 | a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
 | a named target exists but has no resolved project (including a missing indirect owner) | `out of scope: <cmd> targets a row owned by no project` |
-| the call names no target at all (`list_projects`, provider previews) | `out of scope: <cmd> names no project-owned target` |
+| the call names no target at all (`list_projects`, provider previews without a project preference) | `out of scope: <cmd> names no project-owned target` |
 | a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
 | the scope layer has no database | refused rather than admitted unchecked |
 | a target row is gone | no project claim to violate; the handler answers `not_found` |

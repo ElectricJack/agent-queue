@@ -635,6 +635,52 @@ async def test_a_command_naming_no_target_is_refused(db):
     assert "names no project-owned target" in error
 
 
+@pytest.mark.parametrize("project_id", ["p", "other"])
+async def test_provider_preview_resolves_its_nested_project_target(db, project_id):
+    args = {
+        "provider": "codex",
+        "receive_new_work": {"project_id": project_id, "mode": "prefer"},
+    }
+    error = await check_request_scope(
+        "provider_allocation_preview", args, _scope("p"), db=db
+    )
+
+    assert "project_id" not in args
+    if project_id == "p":
+        assert error is None
+    else:
+        assert "receive_new_work.project_id belongs to other" in error
+
+
+@pytest.mark.parametrize("command", ["list_projects", "provider_allocation_status"])
+async def test_other_commands_cannot_borrow_the_provider_preference_target(db, command):
+    args = {"receive_new_work": {"project_id": "p", "mode": "prefer"}}
+
+    error = await target_scope_error(command, args, "p", db=db)
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
+async def test_provider_preview_does_not_search_arbitrary_nested_values(db):
+    args = {"changes": {"receive_new_work": {"project_id": "p", "mode": "prefer"}}}
+
+    error = await target_scope_error("provider_allocation_preview", args, "p", db=db)
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
+@pytest.mark.parametrize("command", ["provider_allocation_preview", "list_projects"])
+async def test_a_dotted_argument_cannot_impersonate_the_nested_project_target(db, command):
+    error = await target_scope_error(
+        command, {"receive_new_work.project_id": "p"}, "p", db=db
+    )
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
 async def test_a_target_that_cannot_be_resolved_to_an_owner_is_refused(db):
     error = await target_scope_error(
         "integration_transfer_owner", {"next_owner_id": "agent-1"}, "p", db=db
@@ -698,7 +744,13 @@ async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
 
 @pytest.mark.parametrize("argument", sorted(TARGET_RESOLVERS))
 async def test_missing_targets_remain_admitted_for_every_resolver(db, argument):
-    assert await target_scope_error("missing_target", {argument: "gone"}, "p", db=db) is None
+    if argument == "receive_new_work.project_id":
+        command = "provider_allocation_preview"
+        args = {"receive_new_work": {"project_id": "gone", "mode": "prefer"}}
+    else:
+        command = "missing_target"
+        args = {argument: "gone"}
+    assert await target_scope_error(command, args, "p", db=db) is None
 
 
 @pytest.mark.parametrize(
