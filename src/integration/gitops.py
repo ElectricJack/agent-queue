@@ -254,7 +254,10 @@ class GitOperations:
 
     ``exclusion`` must be the repository-wide publisher fence. By default this
     is the *same* PostgreSQL advisory lock used by the development publisher,
-    so old and new engines cannot publish concurrently during the cutover.
+    so old and new engines cannot publish concurrently during the cutover. It
+    is called as ``exclusion(repository_id, subject)``: a repository the
+    reconciler engine owns admits no unnamed root mutation, so the fence has to
+    carry the exact subject the primitive acts for.
     Authority and journal ports are mandatory; tests may inject real-Git ports.
     """
 
@@ -270,7 +273,9 @@ class GitOperations:
     ):
         self.git, self.repository, self.authority = git, repository, authority
         self.journal = journal if journal is not None else SubjectGitJournal(db)
-        self.exclusion = exclusion or (lambda rid: publisher_exclusion(db, rid))
+        self.exclusion = exclusion or (
+            lambda rid, subject=None: publisher_exclusion(db, rid, subject=subject)
+        )
 
     def bind(self, ports: PrimitivePorts):
         for primitive, method in (
@@ -410,7 +415,7 @@ class GitOperations:
         p = args.primitive
         try:
             repo = await self._repository(subject, args.repository_id)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.exact(repo, args.base_sha)
                 fence = await self._fence(subject, args.ref)
                 # The default branch always goes through publish's green guard.
@@ -438,7 +443,7 @@ class GitOperations:
         p = args.primitive
         try:
             repo = await self._repository(subject, args.repository_id)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject)
                 await self.exact(repo, args.sha)
                 ref = args.retention_ref
@@ -468,7 +473,7 @@ class GitOperations:
             ref = args.fence.target.branch
             if ref != subject.target_ref or args.new_sha != subject.head_sha:
                 raise StaleFence("publication differs from the subject's exact target/head")
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject, args.fence)
                 await self.exact(repo, args.new_sha)
                 if (
@@ -550,7 +555,7 @@ class GitOperations:
         p = args.primitive
         try:
             repo = await self._repository(subject)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject)
                 if args.target_ref != subject.target_ref:
                     raise StaleFence("merge target differs from subject")
