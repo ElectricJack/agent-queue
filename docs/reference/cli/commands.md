@@ -180,6 +180,7 @@ a server-derived principal — no field in the message body is trusted.
 | `aq escalation get` | `escalation_get` | gen | Get one visible escalation with immutable messages, deliveries, and actions. |
 | `aq escalation list` | `escalation_list` | gen | List visible escalations with current external-delivery status. |
 | `aq escalation reply` | `escalation_reply` | gen | Append an authenticated human reply and atomically enqueue its owning supervisor. |
+| `aq escalation resolve` | `escalation_resolve` | gen | Close an answered human escalation with the outcome its channel post will show. |
 | `aq escalation update` | `escalation_update` | gen | CAS-update an owned escalation, including explicit terminal resolution. |
 
 ### `aq file`

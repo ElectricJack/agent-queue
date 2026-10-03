@@ -424,7 +424,7 @@ async def test_ambiguous_send_is_reconciled_from_history_instead_of_reposting(db
     # The request left and landed; the response never arrived.
     original_post = sink.post_root
 
-    async def ambiguous_post(*, channel_id: str, content: str):
+    async def ambiguous_post(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)  # it really did land
         raise TransportAmbiguous("timed out waiting for the response")
 
@@ -504,7 +504,7 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def ambiguous_post(*, channel_id: str, content: str):
+    async def ambiguous_post(*, channel_id: str, content: str, buttons=()):
         raise TransportAmbiguous("timed out waiting for the response")
 
     sink.post_root = ambiguous_post  # type: ignore[method-assign]
@@ -525,7 +525,7 @@ async def test_a_confirmed_root_interrupted_before_binding_is_reconciled_not_rep
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def crash_after_posting(*, channel_id: str, content: str):
+    async def crash_after_posting(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)  # Discord accepted it...
         raise RuntimeError("process died before the binding was persisted")
 
@@ -554,7 +554,7 @@ async def test_a_reclaimed_root_with_no_evidence_is_unknown_rather_than_reposted
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def crash_after_posting(*, channel_id: str, content: str):
+    async def crash_after_posting(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)
         raise RuntimeError("process died before the binding was persisted")
 
@@ -612,7 +612,7 @@ async def test_missing_permission_is_an_actionable_fault_and_stops_after_the_bud
     clock = Clock()
     service = make_service(db, sink, clock=clock, max_attempts=2)
 
-    async def forbidden(*, channel_id: str, content: str):
+    async def forbidden(*, channel_id: str, content: str, buttons=()):
         raise TransportUnavailable("missing permission (403)")
 
     sink.post_root = forbidden  # type: ignore[method-assign]

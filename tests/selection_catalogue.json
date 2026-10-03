@@ -248,6 +248,7 @@
         "tests/test_discord_commands.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
+        "tests/test_discord_escalation_buttons.py",
         "tests/test_discord_escalation_transport.py",
         "tests/test_discord_housekeeping.py",
         "tests/test_discord_inbound_router.py",
@@ -1392,7 +1393,7 @@
       ]
     }
   },
-  "digest": "sha256:175edaea186e07298cc137ad26b5bea728cd5e3ac05b37b458dced39b9671f6e",
+  "digest": "sha256:3d79c5b8437d0030e9e53dcaa5d7080f754df9c6d2e7b6431a95eb8374e8339a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5093,6 +5094,28 @@
       ],
       "markers": [],
       "summary": "The Discord/escalation operator docs must describe surfaces that exist."
+    },
+    "tests/test_discord_escalation_buttons.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.queries.escalation_queries",
+        "src.discord.bot",
+        "src.discord.escalation_buttons",
+        "src.discord.escalation_transport",
+        "src.escalations.interactions",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "§5.3's choice buttons: what a post offers, and what a press records."
     },
     "tests/test_discord_escalation_transport.py": {
       "areas": [

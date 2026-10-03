@@ -101,6 +101,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_get": "escalation",
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
+    "escalation_resolve": "escalation",
     "escalation_apply_reply": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
@@ -7299,6 +7300,36 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "terminal_evidence": {"type": "object"},
                 },
                 "required": ["escalation_id", "expected_revision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_resolve",
+            "description": (
+                "Close an answered human escalation with the outcome its channel post will show. "
+                "Owning supervisor only; a newer human reply wins and is reported as a stale "
+                "revision. Cancelling an unanswered question is escalation_update --state cancelled."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "escalation_id": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000,
+                        "description": "What was done, in the words the human will read.",
+                    },
+                    "expected_revision": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "Optional compare-and-set fence. Omit to resolve the revision "
+                            "this incident has now."
+                        ),
+                    },
+                },
+                "required": ["escalation_id", "outcome"],
                 "additionalProperties": False,
             },
         },

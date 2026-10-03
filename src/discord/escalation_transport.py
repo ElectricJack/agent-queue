@@ -3,7 +3,9 @@
 Everything Discord-specific about §7 lives here: how a channel is resolved by
 ID, how a thread is created from the root message, how a deleted post is told
 apart from a rate limit, and how the marker search reads back recent history
-after an ambiguous send.
+after an ambiguous send.  §5.3's buttons come along for the ride -- a post
+carries the component set it is given, and an edit replaces it, which is how a
+closed incident stops offering a choice.
 
 The rest of the feature never imports ``discord``.  That is deliberate: the
 planner, renderer and dispatcher are exercised against
@@ -14,10 +16,12 @@ touches a real gateway.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import discord
+from src.escalations.interactions import ButtonSpec
 from src.escalations.transport import (
     SendOutcome,
     ThreadHandle,
@@ -131,6 +135,40 @@ class DiscordEscalationTransport:
         if not bucket.take():
             raise TransportRetryable("held by the shared Discord outbound budget")
 
+    @staticmethod
+    def _view(buttons: Sequence[ButtonSpec]) -> Any:
+        """The §5.3 components for a post, or ``None`` to carry none."""
+        from src.discord.escalation_buttons import build_view
+
+        return build_view(buttons)
+
+    @classmethod
+    def _edit_view(cls, buttons: Sequence[ButtonSpec]) -> Any:
+        """The components an edit carries.  An empty set is how buttons go.
+
+        Discord reads an edit's components as the message's *whole* component
+        list, so removing them needs an empty view rather than the absence of
+        one -- and it must still be persistent, which is why it is built here
+        instead of passed as ``None``.
+        """
+        return cls._view(buttons) or discord.ui.View(timeout=None)
+
+    @staticmethod
+    def _release(view: Any) -> None:
+        """Drop the in-memory dispatch entry for a view we have already sent.
+
+        The components stay on the message; what stops is the store's mapping
+        from this message to them.  Presses are handled by
+        :meth:`~src.discord.bot.AgentQueueBot.on_interaction` instead, so a
+        button on a post that outlived the daemon that sent it still works.
+        """
+        if view is None:
+            return
+        try:
+            view.stop()
+        except Exception:  # pragma: no cover - the components are already sent
+            logger.debug("could not release an escalation view", exc_info=True)
+
     # -- port ------------------------------------------------------------
     async def read_history(
         self,
@@ -170,12 +208,15 @@ class DiscordEscalationTransport:
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
 
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
+    async def post_root(
+        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
+    ) -> SendOutcome:
         self._outbound_guard()
         channel = await self._channel(channel_id)
+        view = self._view(buttons)
         try:
             message = await channel.send(
-                content, allowed_mentions=_allowed_mentions(self._settings)
+                content, allowed_mentions=_allowed_mentions(self._settings), view=view
             )
         except discord.Forbidden as exc:
             self._record(403)
@@ -185,6 +226,8 @@ class DiscordEscalationTransport:
             raise TransportAmbiguous(f"root post outcome unknown: {exc}") from exc
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
+        finally:
+            self._release(view)
         return SendOutcome(
             receipt_id=str(message.id), channel_id=channel_id, root_message_id=str(message.id)
         )
@@ -246,13 +289,28 @@ class DiscordEscalationTransport:
             raise self._http_error(exc) from exc
         return SendOutcome(receipt_id=str(message.id), thread_id=thread_id)
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None:
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None:
         self._guard()
         channel = await self._channel(channel_id)
+        # An edit carries exactly the buttons it names: an empty set removes
+        # them, which is how an answered or collapsed post stops offering a
+        # choice (§5.2's one-post rule).
+        view = self._edit_view(buttons)
         try:
             message = await channel.fetch_message(int(root_message_id))
             self._outbound_guard()
-            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+            await message.edit(
+                content=content,
+                allowed_mentions=discord.AllowedMentions.none(),
+                view=view,
+            )
         except discord.NotFound as exc:
             raise TransportMissing(f"root message {root_message_id} was deleted") from exc
         except discord.Forbidden as exc:
@@ -262,6 +320,8 @@ class DiscordEscalationTransport:
             raise TransportAmbiguous(f"root edit outcome unknown: {exc}") from exc
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
+        finally:
+            self._release(view)
 
     async def archive_thread(self, *, thread_id: str) -> None:
         self._guard()

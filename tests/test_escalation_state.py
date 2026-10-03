@@ -432,7 +432,7 @@ async def incident(world, **overrides):
 
 async def post_once(world, row):
     """Reconcile and pump until nothing is due, then return the transport calls."""
-    await world.service().reconcile(row)
+    await world.service().reconcile(await world.db.get_escalation(row["id"]) or row)
     for _ in range(6):
         report = await world.service().pump()
         if not report.sent and not report.retried and not report.unknown:
@@ -595,6 +595,90 @@ async def test_the_stale_form_is_one_edit_that_keeps_the_threads_open(world):
     root = next(iter(world.transport.messages))
     assert "Still open since" in world.transport.messages[root].content
     assert world.transport.archived == set(), "a stale incident still wants a human"
+
+
+# ======================================================================
+# §5.3 — the open post offers its choices, and only while it still wants one
+# ======================================================================
+
+CHOICES = ["Cut from main", "Cut from the release branch"]
+
+
+async def test_an_open_post_with_choices_carries_one_button_per_choice_and_reply(world):
+    row = await incident(world, choices=list(CHOICES))
+    await post_once(world, row)
+
+    root = next(iter(world.transport.messages))
+    assert world.transport.messages[root].buttons == (
+        f"aqesc:{row['id']}:choice:0",
+        f"aqesc:{row['id']}:choice:1",
+        f"aqesc:{row['id']}:reply",
+    )
+
+
+async def test_an_incident_with_nothing_to_choose_between_carries_no_buttons(world):
+    row = await incident(world)
+    await post_once(world, row)
+
+    assert world.transport.messages[next(iter(world.transport.messages))].buttons == ()
+
+
+async def test_the_flag_off_post_carries_no_buttons_at_all(world):
+    world.config.discord.escalations.stateful = False
+    row = await incident(world, choices=list(CHOICES))
+    await post_once(world, row)
+
+    assert world.transport.messages[next(iter(world.transport.messages))].buttons == ()
+
+
+async def test_a_stale_reminder_keeps_the_buttons_and_an_answer_drops_them(world):
+    """A stale incident still wants a human, so it keeps its choices.
+
+    An answered one does not: §5.2's ``answered`` row says the supervisor is
+    acting on the answer, and a choice row under it would invite a second one.
+    """
+    row = await incident(world, now=world.clock(), choices=list(CHOICES))
+    world.config.discord.escalation.reminder_minutes = 30
+    await post_once(world, row)
+    root = next(iter(world.transport.messages))
+    offered = world.transport.messages[root].buttons
+
+    world.clock.advance(3600 + EDIT_COALESCE_SECONDS)
+    await world.service().reconcile(await world.db.get_escalation(row["id"]))
+    await world.service().pump()
+    assert "Still open since" in world.transport.messages[root].content
+    assert world.transport.messages[root].buttons == offered
+
+    world.clock.advance(EDIT_COALESCE_SECONDS + 1)
+    await reply(world, row)
+    await world.service().reconcile(await world.db.get_escalation(row["id"]))
+    await world.service().pump()
+    assert "Answered" in world.transport.messages[root].content
+    assert world.transport.messages[root].buttons == ()
+
+
+async def test_a_closed_incident_post_carries_no_buttons_and_its_thread_is_archived(world):
+    row = await incident(world, choices=list(CHOICES))
+    await post_once(world, row)
+    root = next(iter(world.transport.messages))
+    await reply(world, row)
+    await world.db.transition_escalation(
+        row["id"], expected_revision=1, new_state="resolving", now=world.clock()
+    )
+    await world.db.transition_escalation(
+        row["id"],
+        expected_revision=2,
+        new_state="resolved",
+        terminal_outcome="Cut from main",
+        outcome="human",
+        now=world.clock(),
+    )
+    await post_once(world, row)
+
+    assert "Resolved: Cut from main" in world.transport.messages[root].content
+    assert world.transport.messages[root].buttons == ()
+    thread = next(iter(world.transport.threads))
+    assert thread in world.transport.archived
 
 
 # ======================================================================

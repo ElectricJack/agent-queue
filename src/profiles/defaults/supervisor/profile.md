@@ -130,6 +130,7 @@ its outbox; transport failures never need a new author turn.
     "escalation_create",
     "escalation_get",
     "escalation_list",
+    "escalation_resolve",
     "escalation_update",
     "explain_task",
     "formula_list",

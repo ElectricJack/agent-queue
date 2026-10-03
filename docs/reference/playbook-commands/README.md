@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+174 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -73,6 +73,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`escalation_get`](escalation_get.md) | Escalation Get | Read one incident and its authoritative history. |
 | [`escalation_list`](escalation_list.md) | Escalation List | List visible human decision incidents. |
 | [`escalation_reply`](escalation_reply.md) | Escalation Reply | Record authenticated human evidence and notify its supervisor. |
+| [`escalation_resolve`](escalation_resolve.md) | Escalation Resolve | Close an answered incident with the outcome a human reads. |
 | [`escalation_update`](escalation_update.md) | Escalation Update | CAS-update an incident owned by the supervisor. |
 
 ### Integration
