@@ -2780,18 +2780,25 @@ async def test_continuous_replay_never_releases_operator_held_delegate(db, held)
 
     await db.pause_task(repair_task_id)
     assert await service.pending_dispatches() == []
-    # An explicit dispatch may hand the fence over; it never lifts the hold.
-    dispatched = await service.dispatch("operation", 0)
-    assert dispatched["outcome"] == "dispatched", dispatched
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    owner_before = await BranchOwnership(db).get_owner(target)
+    # An explicit dispatch must respect the hold before changing ownership.
+    refused = await service.dispatch("operation", 0)
+    assert refused["outcome"] == "human_required", refused
+    assert "held by an operator" in refused["reason"]
     assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
     assert await db.get_task_meta(repair_task_id, "manual_pause") is not None
-    assert (await service.dispatch("operation", 0))["outcome"] == "already_dispatched"
+    assert (await service.dispatch("operation", 0))["outcome"] == "human_required"
     assert (await db.get_task(repair_task_id)).status is TaskStatus.PAUSED
     assert await service.pending_dispatches() == []
+    assert await BranchOwnership(db).get_owner(target) == owner_before
 
     await db.resume_task(repair_task_id)
     assert (await db.get_task(repair_task_id)).status is TaskStatus.READY
     assert await db.get_task_meta(repair_task_id, "manual_pause") is None
+    assert (await service.dispatch("operation", 0))["outcome"] == "dispatched"
+    assert (await BranchOwnership(db).get_owner(target))["owner_id"] == repair_task_id
+    assert (await service.dispatch("operation", 0))["outcome"] == "already_dispatched"
     assert await service.pending_dispatches() == []
 
 

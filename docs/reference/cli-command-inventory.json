@@ -13273,12 +13273,15 @@
           "--intent-id"
         ],
         "optional": [
+          "--fence",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--fence"
+        ],
         "nullable": []
       }
     },

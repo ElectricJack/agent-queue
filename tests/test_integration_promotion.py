@@ -4010,11 +4010,11 @@ async def test_parent_intent_pass_respects_ended_operations_and_operator_holds(
     )
 
 
-async def test_parent_intent_pass_never_pushes_over_a_diverged_target(db, promotion_case):
+async def test_parent_intent_pass_supersedes_diverged_attempt_and_collects_again(db, promotion_case):
     from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
 
     case = promotion_case
-    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
+    service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
         db, case
     )
     work = case["work"]
@@ -4028,12 +4028,36 @@ async def test_parent_intent_pass_never_pushes_over_a_diverged_target(db, promot
     reconciler = ParentIntentReconciler(db, commands=lambda: handler)
     result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
 
-    assert result["outcome"] == "invariant_error" and "diverged" in result["reason"]
-    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
+    assert result["outcome"] == "superseded"
+    retired = await db.get_integration_promotion_intent(prepared.intent_id)
+    assert retired["state"] == "superseded"
+    assert retired["remote_evidence"]["remote_sha"] == competing
+    assert retired["remote_evidence"]["fence"]["token"] == 2
     assert (
         _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], work).split()[0]
         == competing
     )
+    from src.integration.promotion import PromotionTargetMoved
+
+    with pytest.raises(PromotionTargetMoved, match="superseded"):
+        await service.prepare(case["request"])
+    with pytest.raises(PromotionTargetMoved, match="superseded"):
+        await service.push(prepared.intent_id, await _bump_collector_fence(db))
+    for mutation in (
+        db.mark_integration_promotion_prepared(
+            prepared.intent_id, prepared_sha=prepared.prepared_sha,
+            recovery_ref=retired["recovery_ref"],
+        ),
+        db.mark_integration_promotion_pushed(prepared.intent_id, {}),
+        db.finalize_integration_promotion(prepared.intent_id, {}),
+    ):
+        with pytest.raises(ValueError, match="superseded"):
+            await mutation
+    await _collect_recovered_children(db, case, handler)
+    successor = await db.get_integration_promotion_intent(retired["superseded_by_intent_id"])
+    assert successor["supersedes_intent_id"] == intent["id"]
+    assert successor["receipt_id"] == intent["receipt_id"]
+    assert successor["expected_target"] == competing
 
 
 async def test_parent_intent_pass_declines_root_intents():
@@ -4044,7 +4068,7 @@ async def test_parent_intent_pass_declines_root_intents():
     assert result["outcome"] == "declined"
 
 
-async def test_parent_intent_pass_reports_but_never_rebuilds_an_unprepared_intent(
+async def test_parent_intent_pass_continues_unprepared_intent_through_playbook(
     db, promotion_case
 ):
     """Rebuilding a reserved intent can conflict; that repair is the playbook's call."""
@@ -4063,12 +4087,272 @@ async def test_parent_intent_pass_reports_but_never_rebuilds_an_unprepared_inten
     assert intent["state"] == "reserved" and intent["prepared_sha"] is None
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
     handler = _intent_commands(db, service)
-    calls = []
-    handler._cmd_delivery_promote = lambda args: calls.append(args)
+    from unittest.mock import patch
+
+    current = await _bump_collector_fence(db)
 
     reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+    with patch.object(handler, "_cmd_delivery_promote", new_callable=AsyncMock) as promote:
+        result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+        promote.assert_not_awaited()
 
-    assert result["outcome"] == "invariant_error" and "no prepared commit" in result["reason"]
-    assert calls == []
+    assert result["outcome"] == "continued"
     assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "reserved"
+    # Restarted visitors must see the durable pending continuation and dedup it.
+    restarted = ParentIntentReconciler(db, commands=lambda: handler)
+    repeated = await restarted.reconcile(intent, now=intent["updated_at"] + 600)
+    assert repeated["outcome"] == "waiting"
+    async with db._engine.connect() as conn:
+        event = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "delivery.ready",
+        ))).mappings().one()
+    assert event["payload"]["fence"] == current.model_dump(mode="json")
+    await _collect_recovered_children(db, case, handler, first_event=event)
+
+
+async def _collect_recovered_children(db, case, handler, *, first_event=None):
+    """Drive the real collector and delivery consumer twice, checking receipt identity."""
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.integration.collection import CollectionService
+    from src.integration.hierarchy import HierarchyIntegration
+
+    await db.update_project(
+        "project", hierarchical_integration_mode="hierarchy", integration_repository_id="repo",
+    )
+    await db.create_task(Task(
+        id="child-next", project_id="project", title="Next child", description="",
+        parent_task_id="parent", repo_id="repo", branch_name="aq/child-next",
+    ))
+    _git(["push", "origin", f"{case['head']}:refs/heads/aq/child-next"], case["work"])
+    review = await db.get_integration_review_evidence("review-evidence")
+    await db.append_integration_review_evidence(
+        review | {"id": "review-next", "source_task_id": "child-next"}
+    )
+    async with db.immediate() as conn:
+        origin = dict((await conn.execute(select(task_branch_origins))).mappings().one())
+        await conn.execute(insert(task_branch_origins).values(
+            origin | {"id": "origin-next", "task_id": "child-next"}
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "parent").values(status="PAUSED"))
+        await conn.execute(update(tasks).where(
+            tasks.c.id.in_(("child", "child-next")),
+        ).values(status="COMPLETED"))
+        await conn.execute(update(integration_repair_operations).values(
+            policy_snapshot=_hierarchy_policy(),
+        ))
+        for child in ("child", "child-next"):
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=child, repository_id="repo", branch=f"aq/{child}",
+                checkpoint_sha=case["head"], generation=0, state="working",
+                version=0, updated_at=1.0,
+            ))
+    hierarchy = HierarchyIntegration(db, default_head_resolver=lambda _repo, branch: _git(
+        ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"], case["work"]
+    ).split()[0])
+    collector = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
+    for child in ("child", "child-next"):
+        if first_event is None:
+            assert await collector.collect_parent("parent", 100.0) == "queued"
+            async with db._engine.connect() as conn:
+                event = (await conn.execute(select(integration_outbox).where(
+                    integration_outbox.c.event_type == "delivery.ready",
+                    integration_outbox.c.payload["source_task_id"].as_string() == child,
+                ))).mappings().one()
+        else:
+            event, first_event = first_event, None
+        args = {key: event["payload"][key] for key in PromotionInput.model_fields}
+        with principal_context(ExecutionPrincipal.service("parent-playbook")):
+            promoted = await handler._cmd_delivery_promote(args)
+            assert promoted["outcome"] == "promoted", promoted
+            replay = await handler._cmd_delivery_promote(args)
+            assert replay["outcome"] == "already_promoted", replay
+    async with db._engine.connect() as conn:
+        counts = (await conn.execute(select(
+            task_delivery_receipts.c.source_task_id, func.count(),
+        ).group_by(task_delivery_receipts.c.source_task_id))).all()
+        applied = await conn.scalar(select(func.count()).select_from(integration_outbox).where(
+            integration_outbox.c.event_type == "delivery.applied",
+        ))
+    assert dict(counts) == {"child": 1, "child-next": 1}
+    assert applied == 2
+
+
+async def test_parent_intent_reserved_continuation_retries_after_delivery_and_fence_change(
+    db, promotion_case,
+):
+    from src.integration.parent_intents import ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    now = intent["updated_at"] + 60
+    service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(), clock=lambda: now,
+    )
+    handler = _intent_commands(db, service)
+
+    async def visit():
+        return await ParentIntentReconciler(db, commands=lambda: handler).reconcile(intent, now=now)
+
+    assert (await visit())["outcome"] == "continued"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_outbox).values(delivered_at=now))
+    now += 59
+    assert (await visit())["outcome"] == "waiting"
+    now += 1
+    assert (await visit())["outcome"] == "continued"
+    assert (await visit())["outcome"] == "waiting"
+    await _bump_collector_fence(db)
+    assert (await visit())["outcome"] == "continued"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 3
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+
+@pytest.mark.parametrize("blocker", ["stale_fence", "paused", "cancelled", "absent", "error", "fetch_moved"])
+async def test_parent_intent_fenced_recovery_preserves_intent_without_proof(
+    db, promotion_case, monkeypatch, blocker,
+):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.promotion import PromotionRuntimeError, PromotionService
+
+    case = promotion_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await service.prepare(case["request"])
+    if blocker == "stale_fence":
+        await _bump_collector_fence(db)
+    elif blocker == "paused":
+        await db.set_task_meta("parent", "manual_pause", "{}")
+    elif blocker == "cancelled":
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_operations).values(state="cancelled"))
+    elif blocker in {"absent", "error"}:
+        monkeypatch.setattr(service.git, "als_remote_ref", AsyncMock(return_value=RemoteRefResult(
+            RemoteRefState.ABSENT if blocker == "absent" else RemoteRefState.ERROR,
+        )))
+    else:
+        monkeypatch.setattr(service, "_prepared_reachable", AsyncMock(
+            side_effect=PromotionRuntimeError("target moved while reconciliation fetched it"),
+        ))
+    handler = _intent_commands(db, service)
+    with principal_context(ExecutionPrincipal.service("parent-intent")):
+        result = await handler._cmd_integration_reconcile_promotion({
+            "intent_id": prepared.intent_id, "fence": case["fence"].model_dump(mode="json"),
+        })
+    assert result["success"] is False
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 0
+
+
+async def test_parent_intent_recovery_finalizes_reachable_preparation(db, promotion_case):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await service.prepare(case["request"])
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    _git(["push", str(case["origin"]), f"{prepared.prepared_sha}:refs/heads/aq/parent"], retained)
+    handler = _intent_commands(db, service)
+    with principal_context(ExecutionPrincipal.service("parent-intent")):
+        result = await handler._cmd_integration_reconcile_promotion({
+            "intent_id": prepared.intent_id, "fence": case["fence"].model_dump(mode="json"),
+        })
+    assert result["outcome"] == "applied"
+    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "committed"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+
+
+async def test_parent_intent_supersede_fences_a_push_that_already_loaded_the_intent(
+    db, promotion_case, monkeypatch,
+):
+    from src.integration.promotion import PromotionRecovery, PromotionService, PromotionTargetMoved
+
+    case = promotion_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    stale = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await service.prepare(case["request"])
+    loaded, resume = asyncio.Event(), asyncio.Event()
+    resolve = stale._resolve_repository
+
+    async def paused_resolve(repository_id):
+        repository = await resolve(repository_id)
+        loaded.set()
+        await resume.wait()
+        return repository
+
+    monkeypatch.setattr(stale, "_resolve_repository", paused_resolve)
+    pushing = asyncio.create_task(stale.push(prepared.intent_id, case["fence"]))
+    try:
+        await asyncio.wait_for(loaded.wait(), 5)
+        # A competing target is observed and retired while the push holds an
+        # old intent snapshot. Then an external reset puts its old lease back.
+        _git(["push", "origin", f"{case['head']}:refs/heads/aq/parent"], case["work"])
+        with pytest.raises(PromotionRecovery) as recovered:
+            await service.reconcile(prepared.intent_id, fence=case["fence"])
+        assert recovered.value.outcome == "superseded"
+        _git(["push", "--force", "origin", f"{case['base']}:refs/heads/aq/parent"], case["work"])
+        resume.set()
+        with pytest.raises(PromotionTargetMoved, match="superseded"):
+            await asyncio.wait_for(pushing, 5)
+    finally:
+        resume.set()
+        if not pushing.done():
+            pushing.cancel()
+        await asyncio.gather(pushing, return_exceptions=True)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == case["base"]
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+
+async def test_parent_intent_reserved_continuation_leaves_conflict_decision_to_playbook(
+    db, promotion_case, monkeypatch,
+):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.integration.parent_intents import ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    work = case["work"]
+    _git(["switch", "-c", "competing", case["base"]], work)
+    (work / "child.txt").write_text("conflicting parent addition\n")
+    _git(["add", "child.txt"], work)
+    _git(["commit", "-m", "competing"], work)
+    target = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
+    request = case["request"].model_copy(update={"expected_target": target})
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with monkeypatch.context() as crash:
+        crash.setattr(db, "mark_integration_promotion_conflict", AsyncMock(side_effect=InjectedCrash()))
+        with pytest.raises(InjectedCrash):
+            await service.prepare(request)
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent["state"] == "reserved"
+    handler = _intent_commands(db, service)
+    result = await ParentIntentReconciler(db, commands=lambda: handler).reconcile(
+        intent, now=intent["updated_at"] + 60,
+    )
+    assert result["outcome"] == "continued"
+    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "reserved"
+    async with db._engine.connect() as conn:
+        event = (await conn.execute(select(integration_outbox))).mappings().one()
+    with principal_context(ExecutionPrincipal.service("parent-playbook")):
+        result = await handler._cmd_delivery_promote({
+            key: event["payload"][key] for key in PromotionInput.model_fields
+        })
+    assert result["outcome"] == "conflict"
+    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "conflict"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0

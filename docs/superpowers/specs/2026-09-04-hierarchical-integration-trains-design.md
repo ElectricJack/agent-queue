@@ -1067,6 +1067,16 @@ equals the expected old SHA, the push can be retried under current ownership. Ot
 an invariant error requiring reconciliation, never permission to reapply the diff blindly. Do not
 start the next controlled branch mutation while a previous intent remains unresolved.
 
+For child delivery, reconciliation under the current reserved collector fence may supersede
+a reserved or prepared intent after read-back proves the target moved and the prepared commit
+is absent from its ancestry. Retain the old intent and recovery ref, link the next attempt,
+and preserve the reserved receipt identity. Superseded attempts cannot prepare, push or finalize.
+Collection can then queue the child against the new tip. A reservation interrupted before
+preparation instead emits a paced, durable `delivery.ready` continuation with the current fence;
+the parent playbook owns rebuilding and any conflict repair. Repeated scans and restarts dedup
+pending continuations, and ended operations, operator pauses and other branch writers prevent
+either recovery mutation. A reachable prepared commit is finalized, never superseded.
+
 Root promotion uses the same protocol, with the full-CI attestation and candidate revision pinned
 in its intent. Finalize member receipts idempotently before lease release. Outbox events for
 delivery, schedules, deadlines, and stage transitions are retried until acknowledged or until the

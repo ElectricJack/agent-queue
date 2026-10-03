@@ -562,6 +562,8 @@ class IntegrationDeliveryQueriesMixin:
             row = await self._locked_intent(conn, intent_id)
             if row["state"] == "conflict":
                 raise ValueError("conflicted promotion cannot become prepared")
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot become prepared")
             if row["prepared_sha"] is not None and (
                 row["prepared_sha"] != prepared_sha or row["recovery_ref"] != recovery_ref
             ):
@@ -589,6 +591,8 @@ class IntegrationDeliveryQueriesMixin:
     ) -> dict:
         async with self.immediate() as conn:
             row = await self._locked_intent(conn, intent_id)
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot become a conflict")
             if row["prepared_sha"] is not None or row["state"] == "committed":
                 raise ValueError("prepared promotion cannot become a conflict")
             await conn.execute(
@@ -607,6 +611,8 @@ class IntegrationDeliveryQueriesMixin:
     ) -> None:
         async with self.immediate() as conn:
             row = await self._locked_intent(conn, intent_id)
+            if row["state"] == "superseded":
+                raise ValueError("superseded promotion cannot be pushed")
             if row["state"] == "committed":
                 return
             if row["prepared_sha"] is None:
@@ -629,6 +635,8 @@ class IntegrationDeliveryQueriesMixin:
         intent = await self._locked_intent(conn, intent_id)
         if intent.get("intent_kind", "child") != "child":
             raise ValueError("root intent requires the root-only finalizer")
+        if intent["state"] == "superseded":
+            raise ValueError("superseded promotion cannot be finalized")
         resolution = intent["resolution_head_sha"] is not None
         if not resolution and intent["prepared_sha"] is None:
             raise ValueError("unprepared promotion cannot be finalized")
