@@ -21,6 +21,8 @@ from src.integration.child_delivery import ChildDelivery
 from src.integration.engine import EngineRefused
 from src.integration.parent_adapters import ParentPolicyFacts, ParentPrimitiveAdapters
 from src.integration.parent_engine import ParentEngineOwnership
+from src.integration.parent_ci import ParentCIService
+from src.integration.promotion import PromotionService
 from src.integration.parent_runtime import (
     ParentSubjectRuntime,
     ParentVisitObserver,
@@ -35,6 +37,7 @@ from src.integration.subjects import (
     Subject,
 )
 from src.models import Project, Task, TaskStatus
+from src.git.manager import GitManager
 from src.playbooks.definition import load_definition_json
 from src.playbooks.integration_policy import IntegrationPolicy
 from src.profiles.capabilities import DENY_ALL
@@ -44,6 +47,7 @@ from tests.test_integration_cancelled_collection import (  # noqa: F401
     _rows,
     _commit_on,
     _git,
+    _promote_next,
     case as case_fixture,
 )
 from tests.test_integration_parent_completion import _parent_tree, _code_receipt
@@ -116,6 +120,13 @@ async def setup(
             evidence=("shadow", "scenario", "approval"),
         )
         subject = Subject.from_row(await db.get_integration_subject(subject.id))
+    return runtime_env(
+        db, hierarchy, subject, promotion=promotion, parent_ci=parent_ci, active=active, shadow=shadow
+    )
+
+
+def runtime_env(db, hierarchy, subject, *, promotion=None, parent_ci=None, active=True, shadow=False):
+    """Build fresh process-local components without creating or adopting a subject."""
     observer = ParentVisitObserver(
         ParentDatabaseObservationReader(db), clock=lambda: 1000, facts_type=ParentPolicyFacts
     )
@@ -123,13 +134,13 @@ async def setup(
     adapters = ParentPrimitiveAdapters(
         db, commands, observer, parent_ci=parent_ci, clock=lambda: 1000
     )
-    policy = PinnedParentPolicy(lambda _: artifact)
+    policy = PinnedParentPolicy(lambda _: definition())
     runtime = ParentSubjectRuntime(
         db,
         observer,
         policy,
         adapters,
-        lambda _: artifact,
+        lambda _: definition(),
         active=active,
         shadow=shadow,
         clock=lambda: 1000,
@@ -144,6 +155,15 @@ async def setup(
         policy=policy,
         loop=runtime.loops[0],
         runtime=runtime,
+    )
+
+
+async def restart(env, hierarchy, *, promotion=None, parent_ci=None, active=True, shadow=False):
+    await env.runtime.stop()
+    subject = Subject.from_row(await env.db.get_integration_subject(env.subject.id))
+    return runtime_env(
+        env.db, hierarchy, subject, promotion=promotion, parent_ci=parent_ci,
+        active=active, shadow=shadow,
     )
 
 
@@ -208,6 +228,140 @@ async def test_eight_child_failure_and_conflict_reach_one_gate_without_operator_
     assert await _rows(db, t.integration_repair_stages) == []
 
 
+async def test_real_eight_child_adoption_restart_and_rollback_preserve_gate_and_receipts(
+    case, record_property
+):
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    extra = await case.hierarchy.file_children(
+        "epic", [{"title": f"pending child {i}"} for i in range(4, 9)], checkpoint["generation"]
+    )
+    assert len(extra["children"]) == 5
+    assert await _promote_next(case, 1000)
+    assert await _promote_next(case, 1001) is None  # real shared.txt merge conflict
+    async with case.db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == "epic.3").values(status="FAILED"))
+    original_receipts = await _rows(case.db, t.task_delivery_receipts)
+    original_intents = await _rows(case.db, t.integration_promotion_intents)
+    assert len(original_receipts) == 1
+    assert {r["state"] for r in original_intents} == {"committed", "conflict"}
+    env = await setup(
+        case.db, case.hierarchy, task_id="epic", promotion=case.promotion, active=False, shadow=True
+    )
+    facts = await env.observer.observe(env.subject)
+    assert len(facts.children) == 8 and facts.failed_child_count == 1
+    assert facts.conflicts[0].member_task_id == "epic.2"
+    assert facts.conflicts[0].files == ("shared.txt",)
+    await visit(env)
+    assert env.commands.calls == []
+    shadow = await case.db.list_integration_subject_journal(env.subject.id)
+    assert any(r["entry_kind"] == "decision" and r["mode"] == "shadow" for r in shadow)
+    owner = ParentEngineOwnership(case.db, clock=lambda: 1000)
+    preview = await owner.transfer(
+        "repo", task_id="epic", engine="reconciler", expected_versions={}, reason="", dry_run=True
+    )
+    await owner.transfer(
+        "repo", task_id="epic", engine="reconciler",
+        expected_versions=preview["expected_versions"], reason="disposable scenario adoption",
+        evidence=("fixture-shadow-journal", "fixture-eight-child-scenario", "fixture-approval"),
+        operator_id="fixture-operator",
+    )
+    env = await restart(env, case.hierarchy, promotion=case.promotion)
+    for _ in range(3):
+        await visit(env)
+    row = await case.db.get_integration_subject(env.subject.id)
+    gate_id = row["gate_id"]
+    assert gate_id and row["next_due_at"] is None
+    assert env.commands.calls == ["integration_parent_action"]
+    assert not await _rows(case.db, t.integration_repair_stages)
+    answered = await env.commands.execute(
+        "gate_resolve", {"gate_id": gate_id, "resolution": "hold", "resolved_by": "fixture"}
+    )
+    assert answered["success"], answered
+    env = await restart(env, case.hierarchy, promotion=case.promotion)
+    for _ in range(3):
+        await visit(env)
+    assert env.commands.calls == []
+    assert len(await _rows(case.db, t.gates)) == 1
+    assert (await case.db.get_integration_subject(env.subject.id))["gate_id"] == gate_id
+    assert await _rows(case.db, t.task_delivery_receipts) == original_receipts
+    assert await _rows(case.db, t.integration_promotion_intents) == original_intents
+    # Feature-off stops visits but cannot release durable ownership to legacy.
+    await env.runtime.stop()
+    legacy = CollectionService(case.db, hierarchy_service_factory=lambda: case.hierarchy)
+    assert (await legacy.collect_parent("epic", 1000))["outcome"] == "waiting"
+    preview = await owner.transfer(
+        "repo", task_id="epic", engine="legacy", expected_versions={}, reason="", dry_run=True
+    )
+    await owner.transfer(
+        "repo", task_id="epic", engine="legacy",
+        expected_versions=preview["expected_versions"], reason="disposable feature-off rollback",
+        operator_id="fixture-operator",
+    )
+    with pytest.raises(EngineRefused, match="gate"):
+        async with owner.operation("epic"):
+            pass
+    row = await case.db.get_integration_subject(env.subject.id)
+    assert row["engine"] == "legacy" and row["gate_id"] == gate_id
+    assert row["parent_episode_id"] == original_receipts[0]["parent_episode_id"]
+    assert await _rows(case.db, t.task_delivery_receipts) == original_receipts
+    assert await _rows(case.db, t.integration_promotion_intents) == original_intents
+    transfers = [
+        r for r in await case.db.list_integration_subject_journal(env.subject.id)
+        if r["payload"].get("command") == "integration_engine_transfer"
+    ]
+    assert [(r["payload"]["from"], r["payload"]["to"]) for r in transfers] == [
+        ("legacy", "reconciler"), ("reconciler", "legacy")
+    ]
+    assert all(r["payload"]["operator_id"] == "fixture-operator" for r in transfers)
+    assert _git(["rev-parse", "refs/heads/aq/epic"], case.origin) == original_receipts[0]["after_sha"]
+    assert _git(["rev-parse", "refs/heads/main"], case.origin) == case.base
+    record_property("rollout_evidence", json.dumps({
+        "scenario": "eight_children_failed_child_real_conflict_gate_restart_rollback",
+        "environment": "disposable PostgreSQL and local bare Git; not production",
+        "policy_artifact_sha256": env.subject.policy.artifact_sha256,
+        "base_sha": case.base,
+        "child_heads": case.heads,
+        "receipts": original_receipts,
+        "intents": original_intents,
+        "gate": (await _rows(case.db, t.gates))[0],
+        "shadow_decisions": [r for r in shadow if r["entry_kind"] == "decision"],
+        "transfers": transfers,
+        "final_subject": row,
+    }, sort_keys=True))
+
+
+async def test_stale_rollback_refuses_then_fresh_legacy_service_resumes_same_episode(case):
+    env = await setup(case.db, case.hierarchy, task_id="epic", promotion=case.promotion)
+    await visit(env)  # first real child is delivered by the adopted subject
+    original_receipts = await _rows(case.db, t.task_delivery_receipts)
+    assert len(original_receipts) == 1
+    owner = ParentEngineOwnership(case.db, clock=lambda: 1000)
+    preview = await owner.transfer(
+        "repo", task_id="epic", engine="legacy", expected_versions={}, reason="", dry_run=True
+    )
+    await visit(env)  # refresh receipt-derived head, advancing the exact version
+    before = await case.db.get_integration_subject(env.subject.id)
+    with pytest.raises(EngineRefused, match="version changed"):
+        await owner.transfer(
+            "repo", task_id="epic", engine="legacy",
+            expected_versions=preview["expected_versions"], reason="stale rollback",
+        )
+    assert await case.db.get_integration_subject(env.subject.id) == before
+    await env.runtime.stop()
+    preview = await owner.transfer(
+        "repo", task_id="epic", engine="legacy", expected_versions={}, reason="", dry_run=True
+    )
+    await owner.transfer(
+        "repo", task_id="epic", engine="legacy",
+        expected_versions=preview["expected_versions"], reason="fresh rollback",
+    )
+    assert await _promote_next(case, 1000) is None  # legacy collection resumes and sees the conflict
+    assert await _rows(case.db, t.task_delivery_receipts) == original_receipts
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    assert checkpoint["episode_id"] == env.subject.parent_episode_id
+    assert _git(["rev-parse", "refs/heads/aq/epic"], case.origin) == original_receipts[0]["after_sha"]
+
+
 async def test_receipt_head_refresh_can_file_and_lease_one_unified_verifier(db):
     hierarchy, _, children = await _parent_tree(db, children=1)
     env = await setup(db, hierarchy)
@@ -245,6 +399,7 @@ async def test_interrupted_verifier_filing_replays_same_ordinal_and_links_before
     assert filed.outcome == "filed"
     operation = await db.get_active_parent_integration_operation("parent")
     assert operation["verifier_task_id"] is None
+    env = await restart(env, hierarchy)
     await visit(env)
     operation = await db.get_active_parent_integration_operation("parent")
     assert operation["verifier_task_id"] == filed.detail["task_id"]
@@ -281,11 +436,27 @@ async def test_prepared_parent_intent_resumes_by_readback_without_new_merge(case
                 await case.promotion.push(prepared.intent_id, request.fence)
             case.promotion.crash_hook = None
     assert not await _rows(case.db, t.task_delivery_receipts)
+    # Reconstruct the service and runtime after the interrupted publication.
+    # No pending write identity is carried in process-local memory.
+    promotion = PromotionService(
+        case.db, data_dir=case.promotion.data_dir, git_manager=GitManager()
+    )
+    env = await restart(env, case.hierarchy, promotion=promotion)
     await visit(env)
     [receipt] = await _rows(case.db, t.task_delivery_receipts)
     assert receipt["after_sha"] == prepared.prepared_sha
     [intent] = await _rows(case.db, t.integration_promotion_intents)
     assert intent["state"] == "committed" and intent["id"] == prepared.intent_id
+    assert receipt["parent_episode_id"] == env.subject.parent_episode_id
+    assert receipt["reviewed_head_sha"] == member.head_sha
+    assert receipt["before_sha"] == request.expected_target
+    assert _git(["rev-parse", "refs/heads/aq/epic"], case.origin) == prepared.prepared_sha
+    assert _git(["rev-parse", "refs/heads/main"], case.origin) == case.base
+    original = await _rows(case.db, t.task_delivery_receipts)
+    current = Subject.from_row(await case.db.get_integration_subject(env.subject.id))
+    async with ParentEngineOwnership(case.db).operation("epic", subject=current):
+        await promotion.reconcile(prepared.intent_id)
+    assert await _rows(case.db, t.task_delivery_receipts) == original
     assert env.commands.calls == ["integration_parent_action"]
     journal = await case.db.list_integration_subject_journal(env.subject.id)
     assert any(r["rule"] == "resume-publication" for r in journal)
@@ -516,6 +687,7 @@ async def test_failed_verifier_collects_new_fix_in_same_episode_without_redrives
     assert checkpoint["state"] == "awaiting_children"
     assert checkpoint["episode_id"] == episode and checkpoint["generation"] > env.subject.generation
     assert await _rows(case.db, t.task_delivery_receipts) == original
+    env = await restart(env, case.hierarchy, promotion=case.promotion)
     await visit(env)  # refresh generation, retire failed writer projection
     await visit(env)  # collect new child fix with normal expected-old intent/receipt
     receipts = await _rows(case.db, t.task_delivery_receipts)
@@ -533,6 +705,7 @@ async def test_failed_verifier_collects_new_fix_in_same_episode_without_redrives
     # must survive recovery so the failed task is never filed again on replay.
     await visit(env)  # lease the first unified verifier
     first_unified = current["writer_task_id"]
+    env = await restart(env, case.hierarchy, promotion=case.promotion)
     _git(["fetch", "origin", "aq/epic"], case.work)
     next_head = _commit_on(case.work, "aq/epic.4", current["head_sha"], "fix2.txt", "fix2\n")
     await case.db.create_task(
@@ -602,6 +775,10 @@ async def test_active_engine_blocks_legacy_ticks_and_feature_off_does_not_transf
     collection = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
     result = await collection.collect_parent("parent", 1000)
     assert result["outcome"] == "waiting" and "reconciler" in result["reason"]
+    resolve_binding = AsyncMock()
+    legacy_ci = ParentCIService(SimpleNamespace(db=db), resolve_binding)
+    assert (await legacy_ci.handle({"task_id": "parent"}))["outcome"] == "none"
+    resolve_binding.assert_not_awaited()
     async with db.immediate() as conn:
         ready = await hierarchy.parent_completion.mark_ready_on(conn, "parent")
     assert ready["outcome"] == "waiting"
@@ -619,6 +796,49 @@ async def test_active_engine_blocks_legacy_ticks_and_feature_off_does_not_transf
     async with ParentEngineOwnership(db).operation("parent"):
         pass
     assert (await db.get_integration_subject(env.subject.id))["engine"] == "legacy"
+
+
+@pytest.mark.parametrize("answer", [None, "hold", "retry"])
+async def test_rollback_preserves_binding_gate_for_legacy_mutations(db, answer):
+    hierarchy, _, children = await _parent_tree(db, children=1)
+    async with db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == children[0]).values(status="FAILED"))
+    env = await setup(db, hierarchy)
+    await visit(env)
+    row = await db.get_integration_subject(env.subject.id)
+    gate_id = row["gate_id"]
+    if answer:
+        result = await env.commands.execute(
+            "gate_resolve", {"gate_id": gate_id, "resolution": answer, "resolved_by": "fixture"}
+        )
+        assert result["success"], result
+    owner = ParentEngineOwnership(db)
+    await owner.transfer(
+        "repo", task_id="parent", engine="legacy",
+        expected_versions={env.subject.id: row["version"]}, reason="gate-preserving rollback",
+    )
+    await env.runtime.stop()
+    # The failed child can recover; its transient status must not erase a hold.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.tasks).where(t.tasks.c.id == children[0]).values(status="COMPLETED")
+        )
+        if answer is None:
+            # Expiring the dashboard projection supplies no immutable answer.
+            await conn.execute(update(t.gates).where(t.gates.c.id == gate_id).values(status="expired"))
+    legacy = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
+    if answer == "retry":
+        async with owner.operation("parent"):
+            pass
+    else:
+        with pytest.raises(EngineRefused, match="gate"):
+            async with owner.operation("parent"):
+                pass
+        assert (await legacy.collect_parent("parent", 1000))["outcome"] == "waiting"
+        async with db.immediate() as conn:
+            assert (await hierarchy.parent_completion.mark_ready_on(conn, "parent"))["outcome"] == "waiting"
+    assert (await db.get_integration_subject(env.subject.id))["gate_id"] == gate_id
+    assert len(await _rows(db, t.gates)) == 1
 
 
 async def test_transfer_waits_for_remote_action_and_spawned_task_cannot_inherit_authority(db):
@@ -647,9 +867,12 @@ async def test_transfer_waits_for_remote_action_and_spawned_task_cannot_inherit_
     assert (await transfer)["outcome"] == "transferred"
 
 
-async def test_unresolved_intent_blocks_transfer(db):
+@pytest.mark.parametrize("target_engine", ["reconciler", "legacy"])
+async def test_unresolved_intent_blocks_transfer(db, target_engine):
     hierarchy, _, _ = await _parent_tree(db, children=1)
-    env = await setup(db, hierarchy, active=False, shadow=True)
+    env = await setup(
+        db, hierarchy, active=target_engine == "legacy", shadow=target_engine == "reconciler"
+    )
     async with db.immediate() as conn:
         await conn.execute(
             insert(t.integration_promotion_intents).values(
@@ -675,8 +898,8 @@ async def test_unresolved_intent_blocks_transfer(db):
         await ParentEngineOwnership(db).transfer(
             "repo",
             task_id="parent",
-            engine="reconciler",
-            expected_versions={env.subject.id: 0},
+            engine=target_engine,
+            expected_versions={env.subject.id: env.subject.version},
             reason="cutover",
             evidence=("approved",),
         )

@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 
 from src.database import tables as t
 from src.integration.engine import EngineRefused
+from src.integration.records import journal_entry_on
 from src.integration.subjects import Subject, SubjectEngine, SubjectKind
 
 _scope: ContextVar[tuple | None] = ContextVar("parent_engine_scope", default=None)
@@ -47,15 +48,33 @@ async def legacy_parent_allowed_on(conn, db, task_id):
     await conn.execute(
         text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": parent_lock_key(task_id)}
     )
-    return not await conn.scalar(
-        select(t.integration_subjects.c.id)
-        .where(
-            t.integration_subjects.c.task_id == task_id,
-            t.integration_subjects.c.kind == "parent_episode",
-            t.integration_subjects.c.engine == "reconciler",
-        )
-        .limit(1)
+    rows = (
+        (
+            await conn.execute(
+                select(t.integration_subjects).where(
+                    t.integration_subjects.c.task_id == task_id,
+                    t.integration_subjects.c.kind == "parent_episode",
+                )
+            )
+        ).mappings().all()
     )
+    return await _legacy_refusal_on(conn, rows) is None
+
+
+async def _legacy_refusal_on(conn, rows):
+    if any(row["engine"] == "reconciler" for row in rows):
+        return "parent belongs to the reconciler"
+    for row in rows:
+        gate_id = row["gate_id"]
+        if not gate_id:
+            continue
+        # Rollback keeps the current gate and its immutable answer. The legacy
+        # dashboard projection (including expiry) cannot authorize mutation.
+        answer = await journal_entry_on(conn, row["id"], f"gate-answer:{gate_id}")
+        choice = answer["payload"].get("choice") if answer else None
+        if not choice or choice in {"hold", "reject", "abort"}:
+            return "parent has a binding human gate"
+    return None
 
 
 class ParentEngineOwnership:
@@ -84,20 +103,21 @@ class ParentEngineOwnership:
                             select(t.integration_subjects).where(
                                 t.integration_subjects.c.task_id == task_id,
                                 t.integration_subjects.c.kind == "parent_episode",
-                                t.integration_subjects.c.engine == "reconciler",
                             )
                         )
                     )
                     .mappings()
                     .all()
                 )
-                if subject is None and rows:
-                    raise EngineRefused("parent belongs to the reconciler")
+                if subject is None and (refusal := await _legacy_refusal_on(conn, rows)):
+                    raise EngineRefused(refusal)
                 if subject is not None and (
                     subject.kind is not SubjectKind.PARENT_EPISODE
                     or not subject.is_live
                     or not any(
-                        row["id"] == subject.id and row["version"] == subject.version
+                        row["id"] == subject.id
+                        and row["version"] == subject.version
+                        and row["engine"] == "reconciler"
                         for row in rows
                     )
                 ):
