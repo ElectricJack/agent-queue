@@ -1788,11 +1788,14 @@ escalation_deliveries = Table(
     Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
 )
 
-# An operator @mention of the bot opens one conversation with the global
-# supervisor (Discord mention-routing spec §4.1).  The root message and, once
-# the thread-open delivery confirms, the external thread are each unique per
-# transport; ``thread_id`` is the internal ``messages.thread_id`` both
-# directions of the conversation share.
+# An operator message opens one conversation with the supervisor (Discord
+# mention-routing spec §4.1, chat-extension spec §2.2).  The root message and,
+# once the thread-open delivery confirms, the external thread are each unique
+# per transport; ``thread_id`` is the internal ``messages.thread_id`` both
+# directions of the conversation share.  ``kind`` says which conversation this
+# is: ``thread`` is one conversation per opened thread, ``channel`` is the one
+# conversation a channel carries for the no-mention route, so a channel can
+# never accumulate two of them while one is still live.
 supervisor_conversations = Table(
     "supervisor_conversations",
     metadata,
@@ -1806,6 +1809,7 @@ supervisor_conversations = Table(
     Column("created_by", Text, nullable=False),  # human:discord:<id>
     Column("audience", JSON, nullable=False),  # allowlist snapshot at open
     Column("state", Text, nullable=False, server_default="opening"),
+    Column("kind", Text, nullable=False, server_default="thread"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("closed_at", Float, nullable=True),
@@ -1820,10 +1824,18 @@ supervisor_conversations = Table(
         unique=True,
         postgresql_where=text("external_thread_id IS NOT NULL"),
     ),
+    Index(
+        "uq_supervisor_conversations_channel",
+        "transport",
+        "channel_id",
+        unique=True,
+        postgresql_where=text("kind = 'channel' AND state <> 'closed'"),
+    ),
     CheckConstraint(
         "state IN ('opening','open','closed','delivery_blocked')",
         name="ck_supervisor_conversations_state",
     ),
+    CheckConstraint("kind IN ('thread','channel')", name="ck_supervisor_conversations_kind"),
     Index("idx_supervisor_conversations_state", "state", "updated_at"),
 )
 

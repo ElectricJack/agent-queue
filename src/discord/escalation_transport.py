@@ -263,6 +263,45 @@ class DiscordEscalationTransport:
         except discord.HTTPException as exc:
             raise self._http_error(exc) from exc
 
+    async def edit_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
+    ) -> None:
+        """Replace one message in place: the status-line edit of spec §2.4."""
+        where = await (self._thread(thread_id) if thread_id else self._channel(channel_id))
+        try:
+            message = await where.fetch_message(int(message_id))
+            self._outbound_guard()
+            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+        except discord.NotFound as exc:
+            raise TransportMissing(f"message {message_id} was deleted") from exc
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except (TimeoutError, discord.DiscordServerError) as exc:
+            raise TransportAmbiguous(f"message edit outcome unknown: {exc}") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
+    async def delete_message(
+        self, *, channel_id: str, thread_id: str | None, message_id: str
+    ) -> None:
+        """Remove one message: the retirement of a resolved status line (§2.4)."""
+        where = await (self._thread(thread_id) if thread_id else self._channel(channel_id))
+        try:
+            message = await where.fetch_message(int(message_id))
+            self._outbound_guard()
+            await message.delete()
+        except discord.NotFound:
+            # Already gone is the state the caller asked for.
+            return
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(str(exc)) from exc
+        except (TimeoutError, discord.DiscordServerError) as exc:
+            raise TransportAmbiguous(f"message delete outcome unknown: {exc}") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
     async def archive_thread(self, *, thread_id: str) -> None:
         self._guard()
         thread = await self._thread(thread_id)

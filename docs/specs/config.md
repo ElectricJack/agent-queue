@@ -175,7 +175,7 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
 | `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
-| `conversation` | object | `enabled: false` | Opt-in bot-mention conversations with the existing elevated global supervisor. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
@@ -206,6 +206,13 @@ half a phase running. The two keys are additive columns
 before the phase reads as unbacked and keeps the create-only post.
 `discord.escalation.reminder_minutes` remains the stale timer that decides when
 an open incident's post says it has been sitting unanswered; 0 disables it.
+
+`discord.conversation.require_mention` is the routing flag: true (the default)
+admits a top-level message only when the gateway saw a bot-user mention, while
+false makes the channel's one conversation answer any message from the
+allow-list. `allow_dm` admits a direct message from an allow-listed user as its
+own channel conversation and requires `enabled`; it is off by default. Both
+default to the mention-routing behaviour, so either is a rollback switch.
 
 `discord.conversation.enabled` is a boolean, false by default. Enabling it
 requires a non-empty `authorized_users` allowlist and configured `guild_id` and

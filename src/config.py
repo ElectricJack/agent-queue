@@ -408,18 +408,38 @@ class DiscordEscalationsConfig:
 
 @dataclass
 class DiscordConversationConfig:
-    """Opt-in @mention conversations with the addressed supervisor.
+    """Opt-in conversations with the addressed supervisor.
 
     Off by default.  Enabling means the ``discord.authorized_users`` identities
     are trusted operator correspondents of the *elevated* addressed supervisor;
     there is no sandboxed chatbot.  Every numeric bound is fixed in
     :mod:`src.conversations.limits`, not configured here, and the runtime
     preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
+
+    ``require_mention`` and ``allow_dm`` are the P2 phase flags of the
+    2026-10-03 chat-extension spec (§7.1).  Both default to the routing the
+    mention-routing spec installed, so rollback is a flag change: setting
+    ``require_mention: true`` restores "only a top-level bot mention opens a
+    conversation", and leaving ``allow_dm`` off keeps direct messages ignored.
     """
 
     enabled: bool = False
+    #: Top-level messages open the channel's conversation without an
+    #: ``@agent-queue``.  ``True`` keeps mention-only routing.
+    require_mention: bool = True
+    #: Admit a direct message from an allow-listed user as its own channel
+    #: conversation (``thread_id = dm:<channel>``).  Off until asked.
+    allow_dm: bool = False
 
     def validate(self) -> list[ConfigError]:
+        if self.allow_dm and not self.enabled:
+            return [
+                ConfigError(
+                    "discord.conversation",
+                    "allow_dm",
+                    "discord.conversation.allow_dm requires discord.conversation.enabled",
+                )
+            ]
         return []
 
 

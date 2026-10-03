@@ -16,7 +16,13 @@ from src.commands.principal import (
     matches_session_instance,
 )
 from src.conversations.envelope import ConversationEnvelope
-from src.conversations.intake import normalise_text
+from src.conversations.intake import (
+    DM_GUILD,
+    KIND_CHANNEL,
+    KIND_THREAD,
+    dm_thread_id,
+    normalise_text,
+)
 from src.conversations.limits import (
     AUTHOR_WINDOW_LIMIT,
     CHANNEL_WINDOW_LIMIT,
@@ -24,21 +30,31 @@ from src.conversations.limits import (
     MAX_REPLY_CHARS,
     WINDOW_SECONDS,
 )
-from src.conversations.outbox import ConversationOutbox, UnboundOutbox
+from src.conversations.outbox import ACTION_STATUS_LINE, ConversationOutbox, UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
-from src.conversations.render import render_brief, render_reply, sanitise_reply
+from src.conversations.render import (
+    STATUS_BACK,
+    STATUS_OFFLINE,
+    render_brief,
+    render_reply,
+    sanitise_reply,
+)
 from src.database.queries.conversation_queries import (
     CONVERSATION_STATES,
+    QUEUED_SUPERVISOR_RECIPIENT,
     ConversationClosed,
     ConversationConflict,
     ConversationNotFound,
     ConversationRateLimited,
     ConversationStateError,
-    QUEUED_SUPERVISOR_RECIPIENT,
 )
 from src.sessions.spec import named_session_name
 
 _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
+#: How long after the thread-open ack the §2.4 status line becomes due. The
+#: shared dispatcher claims by ``due_at``, so this is what orders the line
+#: after the thread it posts in instead of leaving it to a delivery-id hash.
+_STATUS_LINE_DELAY = 1.0
 _FORBIDDEN_AUTHORITY_ARGS = frozenset(
     {
         "actor",
@@ -60,6 +76,19 @@ _FORBIDDEN_AUTHORITY_ARGS = frozenset(
 
 def _error(code: str, error: str, **details: Any) -> dict[str, Any]:
     return {"success": False, "error_code": code, "error": error, **details}
+
+
+def _conversation_kind(*, direct: bool, in_thread: bool, require_mention: bool) -> str:
+    """Which conversation a new turn opens (chat-extension spec §2.2).
+
+    The classifier already decided this; the command restates it so the
+    durable row cannot disagree with the decision that produced it. A direct
+    message and a mention-free top-level message are the channel's one
+    conversation; a mention or a thread the operator started is its own.
+    """
+    if direct or not in_thread and not require_mention:
+        return KIND_CHANNEL
+    return KIND_THREAD
 
 
 class ConversationCommandsMixin:
@@ -295,6 +324,17 @@ class ConversationCommandsMixin:
                 "text": discord_text,
             },
         )
+        # §2.4: the supervisor is back, so the offline line says so and is
+        # retired once this answer posts. One second earlier is what orders the
+        # edit before the answer the shared dispatcher claims by ``due_at``.
+        if await self.db.find_conversation_status_line(conversation_id) is not None:
+            await self._queue_status_line(
+                outbox,
+                conversation,
+                state=STATUS_BACK,
+                queued=0,
+                due_at=getattr(self, "_clock", time.time)() - 1,
+            )
         await self.orchestrator.bus.emit(
             "conversation.reply_queued.v1",
             {
@@ -428,8 +468,18 @@ class ConversationCommandsMixin:
         allowlist = [str(author) for author in self.config.discord.authorized_users]
         if envelope.author_id not in allowlist:
             return _error("author_not_allowlisted", "author is not on the conversation allowlist")
-        if envelope.guild_id != str(self.config.discord.guild_id) or envelope.channel_id != str(
-            self.config.discord.channel_id
+        settings = self.config.discord
+        direct = envelope.guild_id == DM_GUILD
+        require_mention = bool(settings.conversation.require_mention)
+        if direct:
+            # §2.1: a direct message is admitted only while the operator has
+            # opted DMs in, and only as the dm: thread of its own channel.
+            if not settings.conversation.allow_dm or envelope.external_thread_id != dm_thread_id(
+                envelope.channel_id
+            ):
+                return _error("dm", "direct messages are not admitted")
+        elif envelope.guild_id != str(settings.guild_id) or envelope.channel_id != str(
+            settings.channel_id
         ):
             return _error("foreign_destination", "message is not in the configured guild/channel")
 
@@ -439,7 +489,17 @@ class ConversationCommandsMixin:
         ):
             return _error("invalid_envelope", "conversation_id must be a non-empty string")
         conversation = None
-        if envelope.external_thread_id:
+        if direct:
+            # §2.2: a direct message belongs to its private channel's one
+            # conversation. Resolving it by the channel rather than by the
+            # thread is what lets a new message start a fresh one after the
+            # previous conversation was closed by the idle sweep.
+            if conversation_id:
+                return _error("invalid_envelope", "a direct message names no conversation")
+            conversation = await self.db.find_channel_conversation(
+                transport=envelope.transport, channel_id=envelope.channel_id
+            )
+        elif envelope.external_thread_id:
             if conversation_id:
                 conversation = await self.db.get_conversation(conversation_id)
             else:
@@ -448,27 +508,40 @@ class ConversationCommandsMixin:
                     channel_id=envelope.channel_id,
                     external_thread_id=envelope.external_thread_id,
                 )
-            if conversation is None:
+            # §2.2: an unbound thread is a conversation the operator started,
+            # which mention-only routing keeps refusing. An escalation thread
+            # never reaches here at all.
+            if conversation is None and require_mention:
                 return _error(
                     "conversation_not_found", "conversation is not bound to a known thread"
                 )
-            if (
-                conversation["transport"] != envelope.transport
-                or conversation["guild_id"] != envelope.guild_id
-                or conversation["channel_id"] != envelope.channel_id
-                or conversation["external_thread_id"] != envelope.external_thread_id
-                or conversation["external_root_message_id"] != envelope.external_root_message_id
-            ):
+        elif conversation_id:
+            return _error("invalid_envelope", "a follow-up must name its observed thread")
+        elif require_mention and not envelope.mentions_bot:
+            # The gateway already refused this; the command refuses it again so
+            # no caller can skip the flag.
+            return _error("no_bot_mention", "top-level message does not mention the bot")
+        if conversation is not None:
+            if direct:
+                disagreement = conversation["guild_id"] != DM_GUILD
+            else:
+                disagreement = (
+                    conversation["transport"] != envelope.transport
+                    or conversation["guild_id"] != envelope.guild_id
+                    or conversation["channel_id"] != envelope.channel_id
+                    or conversation["external_thread_id"] != envelope.external_thread_id
+                    or conversation["external_root_message_id"] != envelope.external_root_message_id
+                )
+            if disagreement:
                 return _error(
-                    "foreign_destination", "conversation disagrees with the observed destination"
+                    "foreign_destination",
+                    "conversation disagrees with the observed destination",
                 )
             if envelope.author_id not in conversation["audience"]:
                 return _error(
                     "author_not_allowlisted", "author is not in the conversation audience"
                 )
             conversation_id = conversation["id"]
-        elif conversation_id:
-            return _error("invalid_envelope", "a follow-up must name its observed thread")
 
         text = normalise_text(
             envelope.text, bot_user_id=getattr(getattr(bot, "user", None), "id", None)
@@ -500,6 +573,7 @@ class ConversationCommandsMixin:
                 or (conversation_id and conversation_id != stored["id"])
             ):
                 return _error("foreign_destination", "replay disagrees with accepted provenance")
+            await self._repair_queued_status_line(outbox, stored)
             return await self._conversation_post_result(
                 item=replay,
                 conversation=stored,
@@ -525,7 +599,7 @@ class ConversationCommandsMixin:
                 self.config.discord.project_id
             )
             accepted = await self.db.accept_conversation_input(
-                **envelope.model_dump(exclude={"mentions_bot", "text"}),
+                **envelope.model_dump(exclude={"mentions_bot", "text", "tag"}),
                 text=text,
                 verified_actor=verified_actor,
                 audience=allowlist,
@@ -536,6 +610,11 @@ class ConversationCommandsMixin:
                 enforce_limits=True,
                 supervisor_recipient=recipient or QUEUED_SUPERVISOR_RECIPIENT,
                 supervisor_project_id=supervisor_project_id,
+                kind=_conversation_kind(
+                    direct=direct,
+                    in_thread=bool(envelope.external_thread_id),
+                    require_mention=require_mention,
+                ),
             )
         except ConversationRateLimited as exc:
             scope_id = envelope.author_id if exc.scope == "author" else envelope.channel_id
@@ -560,10 +639,72 @@ class ConversationCommandsMixin:
             return _error("conversation_closed", "conversation is closed; start a new mention")
         except ConversationNotFound:
             return _error("conversation_not_found", "conversation does not exist")
+        await self._repair_queued_status_line(
+            outbox,
+            accepted["conversation"],
+            forced=recipient is None,
+        )
         return await self._conversation_post_result(
             item=accepted["input"],
             conversation=accepted["conversation"],
             created=accepted["created"],
             source=source,
             outbox=outbox,
+        )
+
+    async def _repair_queued_status_line(
+        self, outbox: ConversationOutbox, conversation: dict, *, forced: bool = False
+    ) -> None:
+        """Reserve the §2.4 status line when a conversation has a queue.
+
+        The line is what tells the operator their message is not lost, so it is
+        reserved from the same transaction boundary as the input and repaired on
+        replay like the thread-open ack is. With *forced* the queue is known to be
+        non-empty even when the count cannot be read yet.
+        """
+        conversation_id = conversation["id"]
+        queued = await self.db.count_queued_conversation_inputs(conversation_id)
+        if not queued and not forced:
+            return
+        # §2.4: one line per conversation, edited in place as the count grows.
+        # It is due just after the thread-open ack so it never races the thread
+        # it is posted in.
+        await self._queue_status_line(
+            outbox,
+            conversation,
+            state=STATUS_OFFLINE,
+            queued=queued or 1,
+            due_at=getattr(self, "_clock", time.time)() + _STATUS_LINE_DELAY,
+        )
+
+    async def _queue_status_line(
+        self,
+        outbox: ConversationOutbox,
+        conversation: dict,
+        *,
+        state: str,
+        queued: int,
+        due_at: float | None = None,
+    ) -> str | None:
+        """Reserve one §2.4 status line for a conversation.
+
+        The queue count is part of the dedup key because the line is edited,
+        not re-posted: each new count is one delivery of the same post. The
+        offline escalation of an unanswered queue is separate -- it rides the
+        ``supervisor_delivery`` incident family and the delay notice.
+        """
+        conversation_id = conversation["id"]
+        return await outbox.enqueue(
+            owner_id=conversation_id,
+            kind=ACTION_STATUS_LINE,
+            dedup_key=f"conv-status:{conversation_id}:{state}:{max(1, int(queued))}",
+            payload={
+                "state": state,
+                "queued": max(1, int(queued)),
+                "conversation_id": conversation_id,
+                "channel_id": conversation["channel_id"],
+                "thread_id": conversation["external_thread_id"],
+                "author_id": conversation["created_by"].removeprefix("human:discord:"),
+            },
+            **({} if due_at is None else {"due_at": due_at}),
         )

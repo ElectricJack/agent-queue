@@ -16,6 +16,7 @@ import tests.test_supervisor_inbox_commands as inbox_tests
 import tests.test_tmux_integration as tmux_tests
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import load_config
+from src.conversations.intake import dm_thread_id
 from src.conversations.outbox import UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
 from src.digest import DigestScheduleService
@@ -54,9 +55,23 @@ from tests.test_tmux_integration import (
 
 
 env = inbox_tests.env
+DM_CHANNEL = "999999999999999999"
 lifecycle_clock = lifecycle_tests.lifecycle_clock
 provider = tmux_tests.provider
 stub_path = tmux_tests.stub_path
+
+
+async def delivery(db, conversation_id, kind):
+    """The one durable delivery row of *kind* for a conversation."""
+    rows = [
+        row
+        for row in await db.list_outbound_deliveries(
+            owner_kind="conversation", owner_id=conversation_id
+        )
+        if row["payload"].get("action") == kind
+    ]
+    assert len(rows) == 1, [(row["dedup_key"], row["state"]) for row in rows]
+    return rows[0]
 
 
 async def supervisor(db, project_id=None, *, state="running", token="live-token", work_dir="/tmp"):
@@ -250,14 +265,158 @@ async def test_shared_dispatch_opens_thread_and_posts_one_explicit_reply(env):
         )
         assert result["success"]
         await service.pump()
-    outbound = [message for message in transport.messages.values() if message.thread_id]
-    assert len(outbound) == 2  # acknowledgement + one answer
-    assert all(message.thread_id == conversation["external_thread_id"] for message in outbound)
-    assert any(
-        "Answer from the supervisor" in message.content for message in transport.messages.values()
+    answers = [
+        message
+        for message in transport.messages.values()
+        if "Answer from the supervisor" in message.content
+    ]
+    assert len(answers) == 1  # the retry carried the same idempotency key
+    assert answers[0].thread_id == conversation["external_thread_id"]
+    # §2.4: the answer arrived before the queued-turn line was ever posted, so
+    # the line is withdrawn rather than appearing under an answered message.
+    assert not any(
+        "Supervisor is offline" in message.content for message in transport.messages.values()
     )
+    assert (await delivery(db, accepted["conversation_id"], "status_line"))["state"] == "cancelled"
     duplicate = await reply(handler, reply_args(accepted, idempotency_key="another"))
     assert not duplicate["success"]
+
+
+def inbound_router(handler):
+    """The gateway router, with escalation intake stubbed as not interested."""
+    intake = SimpleNamespace(
+        handle_detailed=AsyncMock(
+            return_value=SimpleNamespace(consumed=False, failed=False, decision=None)
+        )
+    )
+    return DiscordInboundRouter(
+        bot=handler.orchestrator._discord_bot,
+        config=handler.config,
+        handler=handler,
+        escalation_intake=intake,
+        diagnostics=IgnoreCounter(),
+        cutover_status=lambda: "complete",
+        outbox_bound=lambda: handler.orchestrator.conversation_outbox.bound,
+    )
+
+
+def dm_gateway_message(index, text):
+    """A direct message exactly as the gateway reports it (§2.1)."""
+    return SimpleNamespace(
+        id=700000000000000000 + index,
+        guild=None,
+        channel=SimpleNamespace(id=int(DM_CHANNEL), parent_id=None),
+        author=SimpleNamespace(id=int(AUTHOR), bot=False),
+        content=text,
+        mentions=[],
+        webhook_id=None,
+        created_at=datetime.fromtimestamp(NOW, UTC),
+    )
+
+
+async def test_offline_status_line_is_one_post_edited_in_place_then_retired(env):
+    handler, db = env
+    handler.config.discord.conversation.allow_dm = True
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    clock = [NOW]
+    adapter = service._conversation_adapter
+    adapter.clock = adapter.delivery.clock = lambda: clock[0]
+    service._clock = lambda: clock[0]
+    router = inbound_router(handler)
+
+    assert await router.route(
+        dm_gateway_message(0, "is the release blocked?"), bot_user_id=None
+    ) == ("posted:created")
+    await service.pump()  # the opener posts; the line follows its own due time
+    clock[0] = NOW + 40
+    await service.pump()
+    posted = [m for m in transport.messages.values() if "Supervisor is offline" in m.content]
+    assert len(posted) == 1 and "1 message queued" in posted[0].content
+    conversation = await db.find_conversation_by_thread(
+        transport="discord", channel_id=DM_CHANNEL, external_thread_id=dm_thread_id(DM_CHANNEL)
+    )
+
+    inputs = await db.list_conversation_inputs(conversation["id"])
+
+    # A second queued message edits that one post rather than adding a line.
+    handler._clock = lambda: NOW + 41
+    assert await router.route(dm_gateway_message(1, "and the replica?"), bot_user_id=None) == (
+        "posted:created"
+    )
+    clock[0] = NOW + 42
+    await service.pump()
+    assert [m.id for m in transport.messages.values() if "Supervisor is offline" in m.content] == [
+        posted[0].id
+    ]
+    assert "2 messages queued" in transport.messages[posted[0].id].content
+    assert transport.edits and transport.edits[-1][0] == posted[0].id
+
+    # The answer supersedes it: the line is retired, not left claiming the
+    # supervisor is away.
+    handler._clock = lambda: NOW + 43
+    answerable = {
+        "conversation_id": conversation["id"],
+        "input_id": inputs[0]["id"],
+    }
+    assert (await reply(handler, reply_args(answerable)))["success"]
+    clock[0] = NOW + 44
+    await service.pump()
+    assert posted[0].id not in transport.messages
+    assert not any("Supervisor is offline" in m.content for m in transport.messages.values())
+
+
+async def test_a_direct_message_conversation_answers_in_its_own_channel(env):
+    from src.conversations.intake import DM_GUILD
+
+    handler, db = env
+    handler.config.discord.conversation.allow_dm = True
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+
+    assert await router.route(dm_gateway_message(0, "hello"), bot_user_id=None) == "posted:created"
+    conversation = await db.get_conversation(
+        (
+            await db.find_conversation_by_thread(
+                transport="discord",
+                channel_id=DM_CHANNEL,
+                external_thread_id=dm_thread_id(DM_CHANNEL),
+            )
+        )["id"]
+    )
+    assert (conversation["guild_id"], conversation["kind"]) == (DM_GUILD, "channel")
+    await service.pump()
+    # No thread is opened in a direct message: the ack posts in the DM itself.
+    assert transport.calls == ["post_root"]
+    assert {message.where for message in transport.messages.values()} == {CHANNEL, DM_CHANNEL}
+    assert (await db.get_conversation(conversation["id"]))["state"] == "open"
+
+
+async def test_a_direct_message_is_refused_once_the_opt_in_is_withdrawn(env):
+    from src.conversations.intake import DM_GUILD, dm_thread_id
+
+    handler, _ = env
+    with principal_context(ExecutionPrincipal.service("discord-gateway")):
+        result = await handler.execute(
+            "supervisor_inbox_post",
+            {
+                "envelope": {
+                    "transport": "discord",
+                    "guild_id": DM_GUILD,
+                    "channel_id": DM_CHANNEL,
+                    "external_message_id": "700000000000000000",
+                    "external_root_message_id": "700000000000000000",
+                    "external_thread_id": dm_thread_id(DM_CHANNEL),
+                    "author_id": AUTHOR,
+                    "text": "hello",
+                    "received_at": NOW,
+                    "mentions_bot": False,
+                },
+                "source": "gateway",
+            },
+        )
+    assert result["error_code"] == "dm"
 
 
 async def test_shared_dispatch_cancels_reply_after_allowlist_revocation(env):
@@ -413,5 +572,90 @@ async def test_mention_project_supervisor_tmux_inbox_reply_outbox_round_trip(
             "I received your message." in item.content for item in transport.messages.values()
         )
         assert len(transport.messages) == 3  # inbound root + acknowledgement + answer
+    finally:
+        await provider.stop(handle, grace=0)
+
+
+@pytest.mark.tmux
+async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
+    env, provider, stub_path, tmp_path
+):
+    """§2.2 in a live session: no @agent-queue, one turn, one answer, one thread."""
+    handler, db = env
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    handler.config.discord.conversation.require_mention = False
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    # The operator's plain message already exists in the channel.
+    transport.messages["900000000000000001"] = SinkMessage(
+        id="900000000000000001", where=CHANNEL, content="what is blocking the release?"
+    )
+    spec = _spec(tmp_path, stub_path, name="n-supervisor--agent-queue")
+    handle = await provider.start(spec)
+    try:
+        _row, principal = await supervisor(
+            db, "agent-queue", token=handle.instance_token, work_dir=spec.work_dir
+        )
+        router = DiscordInboundRouter(
+            bot=handler.orchestrator._discord_bot,
+            config=handler.config,
+            handler=handler,
+            escalation_intake=SimpleNamespace(
+                handle_detailed=AsyncMock(
+                    return_value=SimpleNamespace(consumed=False, failed=False, decision=None)
+                )
+            ),
+            diagnostics=IgnoreCounter(),
+            cutover_status=lambda: "complete",
+            outbox_bound=lambda: handler.orchestrator.conversation_outbox.bound,
+        )
+        plain = SimpleNamespace(
+            id=900000000000000001,
+            guild=SimpleNamespace(id=int(GUILD)),
+            channel=SimpleNamespace(id=int(CHANNEL), parent_id=None),
+            author=SimpleNamespace(id=int(AUTHOR), bot=False),
+            content="what is blocking the release?",
+            mentions=[],
+            created_at=datetime.fromtimestamp(NOW, UTC),
+            webhook_id=None,
+        )
+        assert await router.route(plain, bot_user_id=int(BOT)) == "posted:created"
+
+        conversation = await db.get_conversation(
+            (await db.find_channel_conversation(transport="discord", channel_id=CHANNEL))["id"]
+        )
+        assert conversation["kind"] == "channel"
+        pending = await db.get_pending_messages("session", "supervisor-agent-queue")
+        assert [row.id for row in pending] == [
+            (await db.list_conversation_inputs(conversation["id"]))[0]["supervisor_message_id"]
+        ]
+        lens = SessionLens(
+            db=db,
+            providers=SimpleNamespace(create=lambda name: provider),
+            spec_builder=None,
+            harness_registry=None,
+            config=handler.config,
+            profiles_loader=AsyncMock(),
+        )
+        lens._transcript_activity = AsyncMock(return_value="idle")
+        engine = MessageDeliveryEngine(db, lens, handler.config)
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+        assert pending[0].id in await _received(tmp_path)
+
+        await service.pump()
+        assert conversation["external_thread_id"] is None
+        bound = await db.get_conversation(conversation["id"])
+        assert bound["external_thread_id"] and bound["state"] == "open"
+        with principal_context(principal):
+            result = await handler.execute(
+                "message_reply", {"message_id": pending[0].id, "body": "Nothing needs you."}
+            )
+        assert result["success"]
+        await service.pump()
+        answers = [
+            item for item in transport.messages.values() if "Nothing needs you." in item.content
+        ]
+        assert len(answers) == 1
+        assert answers[0].thread_id == bound["external_thread_id"]
     finally:
         await provider.stop(handle, grace=0)
