@@ -55,6 +55,8 @@ __all__ = [
     "CapabilityUnsupported",
     "DialogRule",
     "NotSubmitted",
+    "NudgeDeferred",
+    "NudgeReason",
     "PartialListError",
     "SessionDiedDuringStartup",
     "SessionError",
@@ -309,12 +311,78 @@ class NotSubmitted(SessionError):
         self.composer_dirty = composer_dirty
 
 
+class NudgeReason(StrEnum):
+    """Why no key could be typed — structured, never parsed from prose.
+
+    The stall ladder has to tell a *human draft* (leave the worker alone, a
+    person is mid-thought) from a composer AQ cannot account for (spend a
+    rung, or a wedged-but-live worker holds its task forever).  One message
+    string cannot carry that: "has a draft or its input is unknown" was true
+    of a human's unsent prompt *and* of an OpenCode TUI that wedged mid-turn
+    and kept painting the same stale box, so the ladder treated them alike
+    and a permanently stalled pool holder produced no rung, no event and no
+    escalation at all.
+
+    ``DRAFT``/``TERMINAL_BUSY``/``RECENT_INPUT`` are the reasons a person is
+    demonstrably present: never escalate on them.
+    ``STALE_FRAME``/``UNREADABLE`` assert only that no draft is being typed,
+    so the caller corroborates them with evidence independent of the composer
+    before advancing (:meth:`NudgeDeferred.escalates_ladder`).
+    """
+
+    #: A readable composer holding text: someone is writing a message.
+    DRAFT = "draft"
+    #: An attached client, copy mode, or an unrecognizable input line: a
+    #: person is at this terminal.
+    TERMINAL_BUSY = "terminal_busy"
+    #: Keys were accepted moments ago; an old frame does not describe the
+    #: input that followed them.
+    RECENT_INPUT = "recent_input"
+    #: Idle composer geometry holding text that cannot be typed input — a
+    #: wedged TUI's residue, left by a layout the process cannot repaint.
+    STALE_FRAME = "stale_frame"
+    #: The composer could not be observed consistently: tmux refused the
+    #: read, the pane changed between the two reads, or AQ's own pending
+    #: injection could not be identified or cleared.
+    UNREADABLE = "unreadable"
+
+
+#: Reasons that are *not* evidence of a human at the keyboard.  Only these
+#: may advance the stall ladder, and only with independent evidence behind
+#: them (see :meth:`SessionReconciler._deferral_escalates`).
+LADDER_ESCALATING_REASONS: frozenset[NudgeReason] = frozenset(
+    {NudgeReason.STALE_FRAME, NudgeReason.UNREADABLE}
+)
+
+
 class NudgeDeferred(NotSubmitted):
     """No input was sent: the composer is busy, has a draft, or is unknown.
 
     Retry later without treating this as an agent's failed response or
     consuming a stall/restart attempt. Message delivery remains pending.
+
+    ``reason`` says *why* in a form a caller can branch on.
+    :attr:`reason` defaults to :attr:`NudgeReason.DRAFT` — the protective
+    answer — so a provider that raises this without one keeps today's
+    behavior instead of acquiring a new escalation path.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_name: str = "",
+        composer_dirty: bool = False,
+        reason: NudgeReason | str = NudgeReason.DRAFT,
+    ):
+        super().__init__(
+            message, session_name=session_name, composer_dirty=composer_dirty
+        )
+        self.reason = NudgeReason(reason)
+
+    def escalates_ladder(self) -> bool:
+        """Whether this refusal may advance the stall ladder if corroborated."""
+        return self.reason in LADDER_ESCALATING_REASONS
 
 
 class PartialListError(SessionError):

@@ -277,6 +277,60 @@ blocking limit messages and, on a match, stops the process and applies the exit 
 `rate_limit` verdict instead (provider-failover D13, `src/sessions/usage_limit_screen.py`;
 `provider_failover.mode: enforce` only).
 
+**A composer AQ may not touch.** A nudge the composer guard defers is not a failed
+attempt, so it spends no rung and no backoff — unless the refusal says *no person is
+typing*. The refusal carries a structured `NudgeReason` (`src/sessions/provider.py`) rather
+than prose to be parsed:
+
+| Reason | Producer's evidence | Ladder |
+|---|---|---|
+| `draft` | the composer was read and holds text | holds — a person is writing |
+| `terminal_busy` | copy mode, an attached client, or no known input line | holds |
+| `recent_input` | keys were accepted within the quiet window | holds |
+| `stale_frame` | OpenCode's box at its exact idle geometry holds text on the rows *beside* the cursor, where typed input cannot be | escalates |
+| `unreadable` | tmux refused the read, the pane moved between the two reads, or AQ's own pending injection could not be identified or cleared | escalates |
+
+A refusal of either escalating kind is then put to evidence **independent of the
+composer**, and the answer is three-valued (`StalledDeferral`, `_deferral_verdict`):
+
+| Verdict | Evidence | What the ladder does |
+|---|---|---|
+| `hold` | a person is at the composer, or the harness's own record shows the conversation moving within the lease | nothing spent, nothing announced — as before |
+| `report` | no record exists to ask, or the one named cannot be resolved or stat'ed | nothing spent; **announced** — a WARNING and `task.stalled` with `evidence="unverified"`, quoting how long the pane has shown the same thing |
+| `escalate` | that record is older than the lease (`harness_progress`: the reader-resolved transcript's mtime) | the rung is spent with nothing typed: `task.stalled` carries `deferred_reason`, no `task.nudged` follows, and the existing backoff → restart/quarantine (or pool termination) path runs |
+
+**Unknown is not stalled, and it is not silent either.** `hold`-worthy evidence is the
+progress record: a person typing into a composer writes nothing there. When there *is* no
+such record — `opencode` has no reader and no session identity (neither opencode harness
+declares `session_id_flag`, so `session_key` is null and there is nothing to scope a lookup
+to), or the file cannot be resolved or stat'ed — that is unknown, and unknown must never
+release a claim. Such a stall is **announced** instead: a WARNING naming session, task,
+idle time and reason, plus `task.stalled` with `evidence="unverified"`, rate-limited to
+one announcement per `_STALL_REPORT_INTERVAL_SECONDS` (900 s) per holder instance. That
+announcement is the part that was actually missing — `vivid-quest-44.3` produced **zero**
+`task.stalled` events while holding its task through 116 identical refusals over 78
+minutes.
+
+**Nothing about the terminal can upgrade that answer.** A pane that has stopped moving is
+what an agent *between two writes* looks like as much as what a wedged TUI looks like — one
+long tool leaves the composer untouched for minutes — so the screen is read
+(`peek` on the pane tail, hashed: the whole screen, never the composer box, because the
+composer is what the refusal already described) and **quoted, never spent**. Digests are
+keyed by `(session id, instance token)`, so a relaunched session inherits nothing from its
+predecessor's observations; the clock is the time the screen last *changed*, not the time it
+was last sampled, and a failed read leaves the previous reading untouched rather than
+re-stamping it. Both caches are pruned by age.
+
+Closing this last gap for `opencode` needs **scoped, per-session** activity evidence for a
+harness AQ cannot read — report R7's missing OpenCode session identity, since neither
+opencode harness declares `session_id_flag` and there is therefore nothing to scope a store
+lookup to. Until that exists, a wedged OpenCode holder is reported to a person every
+`_STALL_REPORT_INTERVAL_SECONDS` (900 s) rather than terminated on a reading of a terminal.
+
+Named/supervisor sessions, durable waits and instance-token fencing are unchanged: they are
+filtered before the ladder, and every rung still addresses the session by its exact
+instance.
+
 `stuck_timeout_seconds` (config `agents.stuck_timeout_seconds`) stays as the final backstop
 above the ladder, applied by the reconciler rather than `asyncio.wait_for`.
 
