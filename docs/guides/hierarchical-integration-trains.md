@@ -654,6 +654,17 @@ at least one such receipt the outcome is `delivered`; otherwise it stays
 `working` with no receipts. A receipt for an older head or generation is never
 counted, and the projection only reads; it never writes or rewrites receipts.
 
+Before sealing, the train also asks the shared Git delivery evaluator whether
+each candidate's exact completion source is already contained in the designated
+repository's default branch. This recognizes operator adoption and explicit
+replacement provenance without creating CI evidence or train receipts. It
+rechecks the completion identity, repository, target and current checkpoint
+source in the seal transaction. The same verified deliveries satisfy declared
+epic dependencies, including prerequisites excluded from admission by a hold.
+Changed sources, unproved completion generations, other targets and failed Git
+observations supply no delivery proof. Holds, open gates and exact review rules
+still control admission of any remaining candidate.
+
 ### Epic delivery in the dashboard
 
 Epic cards and the task detail views show implementation progress
