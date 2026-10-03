@@ -6670,6 +6670,53 @@
         }
       }
     },
+    "/api/knowledge/create-task": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "File one task through ordinary routing and gates, with a pinned motivated_by link.",
+        "description": "File one task through ordinary routing and gates, with a pinned motivated_by link.",
+        "operationId": "knowledge_create_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeCreateTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeCreateTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/diff": {
       "post": {
         "tags": [
@@ -37210,6 +37257,30 @@
             "title": "Global Scope",
             "description": "",
             "default": false
+          },
+          "source_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Task Id",
+            "description": ""
+          },
+          "if_link_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Link Token",
+            "description": ""
           }
         },
         "type": "object",
@@ -37303,6 +37374,217 @@
         "additionalProperties": true,
         "type": "object",
         "title": "KnowledgeCreateResponse"
+      },
+      "KnowledgeCreateTaskRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "type": "string",
+            "title": "Revision Id",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": ""
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type",
+            "description": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "description": "",
+            "default": 100
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": ""
+          },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "identity",
+          "revision_id",
+          "title",
+          "description",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeCreateTaskRequest"
+      },
+      "KnowledgeCreateTaskResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "task_record_id": {
+            "type": "string",
+            "title": "Task Record Id"
+          },
+          "link_id": {
+            "type": "string",
+            "title": "Link Id"
+          },
+          "route_source": {
+            "type": "string",
+            "title": "Route Source"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Ids",
+            "default": []
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "task_id",
+          "task_record_id",
+          "link_id",
+          "route_source",
+          "status"
+        ],
+        "title": "KnowledgeCreateTaskResponse"
       },
       "KnowledgeDiffRequest": {
         "properties": {
@@ -37819,6 +38101,30 @@
             "title": "Global Scope",
             "description": "",
             "default": false
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": ""
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": ""
           }
         },
         "type": "object",
@@ -38678,6 +38984,71 @@
             "title": "Hash Version",
             "default": 1
           },
+          "allowed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Actions",
+            "default": []
+          },
+          "protection": {
+            "type": "string",
+            "title": "Protection",
+            "default": "none"
+          },
+          "current_revision_id": {
+            "type": "string",
+            "title": "Current Revision Id"
+          },
+          "current_sequence": {
+            "type": "integer",
+            "title": "Current Sequence"
+          },
+          "scope_key": {
+            "type": "string",
+            "title": "Scope Key"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id"
+          },
+          "change_kind": {
+            "type": "string",
+            "title": "Change Kind"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Reason"
+          },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
           "snapshot": {
             "additionalProperties": true,
             "type": "object",
@@ -38687,6 +39058,14 @@
         },
         "additionalProperties": true,
         "type": "object",
+        "required": [
+          "current_revision_id",
+          "current_sequence",
+          "scope_key",
+          "created_at",
+          "actor_id",
+          "change_kind"
+        ],
         "title": "KnowledgeShowResponse"
       },
       "KnowledgeUpdateRequest": {
@@ -55233,6 +55612,30 @@
             "title": "Global Scope",
             "description": "",
             "default": false
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": ""
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": ""
           }
         },
         "type": "object",

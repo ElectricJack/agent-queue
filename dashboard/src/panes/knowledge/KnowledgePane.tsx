@@ -173,7 +173,7 @@ export default function KnowledgePane({
           ) : (
             <div className="space-y-3">
               {record.summary && <p className="text-sm text-gray-300">{record.summary}</p>}
-              <MarkdownPreview source={record.body ?? ""} />
+              <MarkdownPreview source={record.body ?? ""} allowImages={false} />
               {record.tags.length > 0 && (
                 <p className="text-xs text-gray-500">{record.tags.map((tag) => `#${tag}`).join(" ")}</p>
               )}

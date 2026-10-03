@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 508,
+    "leaf_commands": 509,
     "registration": {
-      "generated": 331,
+      "generated": 332,
       "handwritten": 177
     },
     "ownership": {
-      "core": 469,
+      "core": 470,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 507
+      "supported": 508
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 331,
+      "dispatch": 332,
       "registration": 163
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 448
+      "untested": 449
     }
   },
   "commands": [
@@ -5458,6 +5458,8 @@
           "--metadata",
           "--claim-epoch",
           "--global-scope",
+          "--source-task-id",
+          "--if-link-token",
           "--json",
           "--brief",
           "--save-output",
@@ -5469,6 +5471,56 @@
           "--metadata"
         ],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge create-task",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_create_task",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--identity",
+          "--revision-id",
+          "--title",
+          "--description",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--task-type",
+          "--priority",
+          "--parent-id",
+          "--root",
+          "--reason",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-type",
+          "--parent-id",
+          "--reason",
+          "--claim-epoch"
+        ]
       }
     },
     {
@@ -5614,6 +5666,8 @@
           "--limit",
           "--cursor",
           "--global-scope",
+          "--lifecycle",
+          "--verification",
           "--json",
           "--brief",
           "--save-output",
@@ -10238,6 +10292,8 @@
           "--limit",
           "--cursor",
           "--global-scope",
+          "--lifecycle",
+          "--verification",
           "--json",
           "--brief",
           "--save-output",

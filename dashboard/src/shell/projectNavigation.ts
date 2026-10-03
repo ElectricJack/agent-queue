@@ -6,6 +6,7 @@ export const TASK_TABS = [
 ] as const;
 
 export const PROJECT_TABS = [
+  { tab: "knowledge", label: "Knowledge" },
   { tab: "overview", label: "Overview" },
   { tab: "sessions", label: "Sessions" },
   { tab: "workspaces", label: "Workspaces" },

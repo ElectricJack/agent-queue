@@ -1,3 +1,4 @@
+import { sdk, resetSDK, envelope, recordId as liveId, revisionId as liveRevision } from "../../../pages/knowledge/__tests__/liveMocks";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
@@ -228,7 +229,7 @@ describe("KnowledgePane", () => {
   it("renders markdown through the sanitizing preview: no script, no javascript: href", async () => {
     const fixture = createKnowledgeFixtureAdapter();
     const recordId = fixture.recordIds()[5]!;
-    fixture.simulateExternalEdit(recordId, { body: "[run](javascript:alert(1))\n\n<script>alert(1)</script>\n\n[ok](https://example.test)" });
+    fixture.simulateExternalEdit(recordId, { body: "[run](javascript:alert(1))\n\n<script>alert(1)</script>\n\n[ok](https://example.test)\n\n![remote](https://example.test/tracker.png)" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { container } = render(
       <QueryClientProvider client={client}><Harness adapter={fixture} recordId={recordId} /></QueryClientProvider>,
@@ -238,6 +239,7 @@ describe("KnowledgePane", () => {
     const run = screen.getByText("run");
     expect(run.closest("a")?.getAttribute("href") ?? "").not.toMatch(/^javascript:/i);
     expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it("saves an edit against the observed revision and shows the new one", async () => {
@@ -305,4 +307,64 @@ describe("KnowledgePane", () => {
       .toBe((updates[1]!.args[0] as { idempotencyKey: string }).idempotencyKey);
     expect(screen.getByText(/revision 5 \(current\)/)).toBeInTheDocument();
   });
+});
+
+import { createLiveKnowledgeAdapter } from "../../../pages/knowledge/liveAdapter";
+import { MemoryRouter } from "react-router-dom";
+import KnowledgeWorkflow from "../../../pages/knowledge/KnowledgeWorkflow";
+
+describe("live Knowledge pane", () => {
+  function livePane(workflow = false) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const pane = (onAction?: (action: KnowledgeAction, detail: KnowledgeDetailView) => void) =>
+      <KnowledgePane adapter={createLiveKnowledgeAdapter("p")} recordId={liveId} revisionId={null} onRevisionChange={vi.fn()} onAction={onAction} />;
+    return render(<QueryClientProvider client={client}><MemoryRouter>{workflow
+      ? <KnowledgeWorkflow projectId="p">{pane}</KnowledgeWorkflow> : pane()}</MemoryRouter></QueryClientProvider>);
+  }
+  it("retains the draft and blocks resubmission after a server revision conflict", async () => {
+    resetSDK();
+    sdk.knowledgeUpdate.mockRejectedValue({ payload: { error_code: "record.revision_conflict", current_token: "new-pin", current_sequence: 2 } });
+    livePane(); await screen.findByRole("heading", { level: 2, name: "Live finding" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Body (Markdown)"), { target: { value: "My retained draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("alert");
+    expect(screen.getByLabelText("Body (Markdown)")).toHaveValue("My retained draft");
+    expect(sdk.knowledgeUpdate.mock.calls[0]![0].body.if_revision).toBe(liveRevision);
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(sdk.knowledgeUpdate).toHaveBeenCalledTimes(1);
+  });
+  it("files selected work with the viewed pin and shows its routing receipt", async () => {
+    resetSDK(); sdk.knowledgeCreateTask.mockResolvedValue({ data: { task_id: "new-task", link_id: "pin-link", route_source: "unrouted", status: "BLOCKED", gate_ids: ["gate-routing"] } });
+    livePane(true); await screen.findByRole("heading", { level: 2, name: "Live finding" });
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Investigate" } });
+    fireEvent.change(screen.getByLabelText("Task description"), { target: { value: "User-selected work" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(await screen.findByText(/Gates: gate-routing/)).toBeInTheDocument();
+    expect(sdk.knowledgeCreateTask.mock.calls[0]![0].body).toMatchObject({ identity: `record:${liveId}`, revision_id: liveRevision, title: "Investigate", description: "User-selected work" });
+    expect(screen.getByText("Selected evidence")).toBeInTheDocument();
+  });
+  it("never falls back to current when an exact link pin is redacted", async () => {
+    resetSDK(); sdk.linkList.mockResolvedValue({ data: { links: [{ link_id: "link", target_record_id: "target", target_revision_id: "old-pin", link_type: "references" }] } });
+    sdk.recordShow.mockRejectedValue({ payload: { error_code: "record.revision_redacted" } });
+    const detail = await createLiveKnowledgeAdapter("p").show(liveId, null);
+    expect(detail.links[0]!.resolution).toBe("redacted");
+    expect(sdk.recordShow).toHaveBeenCalledTimes(1);
+    expect(sdk.recordShow.mock.calls[0]![0].body.revision_id).toBe("old-pin");
+    expect(detail.body).toBe(envelope.snapshot.body);
+  });
+});
+
+it("separates cached knowledge when switching project scope", async () => {
+  resetSDK(); sdk.knowledgeShow.mockResolvedValueOnce({ data: { ...envelope, snapshot: { ...envelope.snapshot, title: "Private p finding" } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = (project: string) => <QueryClientProvider client={client}><KnowledgePane
+    adapter={createLiveKnowledgeAdapter(project)} recordId={liveId} revisionId={null} onRevisionChange={vi.fn()} /></QueryClientProvider>;
+  const { rerender } = render(view("p"));
+  await screen.findByRole("heading", { name: "Private p finding" });
+  sdk.knowledgeShow.mockImplementation(() => new Promise(() => {}));
+  rerender(view("q"));
+  expect(await screen.findByText("Loading record…")).toBeInTheDocument();
+  expect(screen.queryByText("Private p finding")).toBeNull();
 });

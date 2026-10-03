@@ -39,7 +39,7 @@ export const knowledgeKeys = {
 
 export function useKnowledgeList(adapter: KnowledgeAdapter, filters: KnowledgeListFilters) {
   return useInfiniteQuery({
-    queryKey: knowledgeKeys.list(filters),
+    queryKey: [...knowledgeKeys.list(filters), adapter.cacheKey ?? "fixture"],
     queryFn: ({ pageParam }) => adapter.list(filters, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
@@ -48,7 +48,7 @@ export function useKnowledgeList(adapter: KnowledgeAdapter, filters: KnowledgeLi
 
 export function useKnowledgeDetail(adapter: KnowledgeAdapter, recordId: string | null, revisionId: string | null) {
   return useQuery({
-    queryKey: knowledgeKeys.detail(recordId ?? "", revisionId),
+    queryKey: [...knowledgeKeys.detail(recordId ?? "", revisionId), adapter.cacheKey ?? "fixture"],
     queryFn: () => adapter.show(recordId!, revisionId),
     enabled: recordId !== null,
   });
@@ -56,7 +56,7 @@ export function useKnowledgeDetail(adapter: KnowledgeAdapter, recordId: string |
 
 export function useKnowledgeHistory(adapter: KnowledgeAdapter, recordId: string, enabled = true) {
   return useInfiniteQuery({
-    queryKey: knowledgeKeys.history(recordId),
+    queryKey: [...knowledgeKeys.history(recordId), adapter.cacheKey ?? "fixture"],
     queryFn: ({ pageParam }) => adapter.history(recordId, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
@@ -66,7 +66,7 @@ export function useKnowledgeHistory(adapter: KnowledgeAdapter, recordId: string,
 
 export function useKnowledgeDiff(adapter: KnowledgeAdapter, recordId: string, from: string | null, to: string | null) {
   return useQuery({
-    queryKey: knowledgeKeys.diff(recordId, from ?? "", to ?? ""),
+    queryKey: [...knowledgeKeys.diff(recordId, from ?? "", to ?? ""), adapter.cacheKey ?? "fixture"],
     queryFn: () => adapter.diff(recordId, from!, to!),
     enabled: from !== null && to !== null,
   });
@@ -74,7 +74,7 @@ export function useKnowledgeDiff(adapter: KnowledgeAdapter, recordId: string, fr
 
 export function useTaskKnowledge(adapter: KnowledgeAdapter, taskId: string) {
   return useQuery({
-    queryKey: knowledgeKeys.task(taskId),
+    queryKey: [...knowledgeKeys.task(taskId), adapter.cacheKey ?? "fixture"],
     queryFn: () => adapter.taskKnowledge(taskId),
   });
 }

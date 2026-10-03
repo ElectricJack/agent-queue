@@ -33,6 +33,7 @@ const ProjectPlaybooks = lazy(() => import("./pages/project/Playbooks"));
 const ProjectConfig = lazy(() => import("./pages/project/Config"));
 const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
 
+const KnowledgeRoute = lazy(() => import("./pages/knowledge/KnowledgeRoute"));
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
@@ -213,6 +214,7 @@ export default function App() {
               <Route index element={<WorkspaceIndexRedirect />} />
               <Route path="graph" element={<CommandCenterGraph />} />
               <Route path="tasks" element={<CommandCenterTasks />} />
+              <Route path="knowledge" element={<KnowledgeRoute />} />
               <Route path="overview" element={<ProjectOverview />} />
               <Route path="sessions" element={<ProjectSessions />} />
               <Route path="chat" element={<Navigate to="/agents" replace />} />

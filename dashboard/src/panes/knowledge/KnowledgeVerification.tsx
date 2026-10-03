@@ -36,8 +36,8 @@ export default function KnowledgeVerification({ detail }: { detail: KnowledgeDet
         {verification.authority ? (
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
             <Field label="Grant"><AuthorityBadge /> <span className="text-gray-400">{verification.authority.kind}</span></Field>
-            <Field label="Bound review">{verification.authority.reviewId ?? "None (explicit grant)"}</Field>
-            <Field label="Granted">{formatKnowledgeTimestamp(verification.authority.grantedAt)} by {verification.authority.grantedBy}</Field>
+            <Field label="Bound review">{verification.authority.reviewId ?? "Not disclosed"}</Field>
+            <Field label="Granted">{verification.authority.grantedAt && verification.authority.grantedBy ? <>{formatKnowledgeTimestamp(verification.authority.grantedAt)} by {verification.authority.grantedBy}</> : "Not disclosed"}</Field>
             <Field label="Reason">{verification.authority.reason ?? "—"}</Field>
           </dl>
         ) : (

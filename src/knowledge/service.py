@@ -1,6 +1,7 @@
 """Guarded knowledge revisions, proposals, authority, sharing and erasure."""
 
 from copy import deepcopy
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -22,7 +23,16 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
         return await self._transaction(lambda conn: self.create_on(conn=conn, **kwargs))
 
     async def create_on(
-        self, snapshot, *, principal, project_id, idempotency_key, claim_epoch=None, conn
+        self,
+        snapshot,
+        *,
+        principal,
+        project_id,
+        idempotency_key,
+        claim_epoch=None,
+        source_task_id=None,
+        if_link_token=None,
+        conn,
     ):
         snapshot = normalize_snapshot(snapshot)
         if (
@@ -39,11 +49,39 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
             conn, principal, "knowledge_create", project_id, write=True, claim_epoch=claim_epoch
         )
         await self._validate_snapshot_access(snapshot, access, conn=conn)
+        task_record = None
+        if source_task_id is not None:
+            task_record = await self.resolve_on(f"task:{source_task_id}", access, conn=conn)
+            access.editable(task_record)
+            await self._access(
+                conn, principal, "link_create", project_id, write=True, claim_epoch=claim_epoch
+            )
+        arguments = (
+            snapshot
+            if source_task_id is None
+            else dict(snapshot=snapshot, source_task_id=source_task_id, if_link_token=if_link_token)
+        )
         receipt, replay = await self._receipt(
-            conn, access, "knowledge_create", idempotency_key, snapshot
+            conn, access, "knowledge_create", idempotency_key, arguments
         )
         if replay:
             return replay
+        if task_record is not None:
+            from src.database.tables import task_record_link_state
+
+            await self._lock_source(task_record, conn=conn)
+            state = (
+                (
+                    await conn.execute(
+                        select(task_record_link_state)
+                        .where(task_record_link_state.c.record_id == task_record["record_id"])
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            self._precondition(if_link_token, state["link_token"], "if_link_token")
         access = await self._access(
             conn, principal, "knowledge_create", project_id, write=True, claim_epoch=claim_epoch
         )
@@ -62,6 +100,13 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
         await self._access(
             conn, principal, "knowledge_create", project_id, write=True, claim_epoch=claim_epoch
         )
+        if task_record is not None:
+            from src.knowledge.task_creation import add_task_link_on
+
+            link = await add_task_link_on(
+                self, conn, task_record, record, result["revision_id"], access, "produces"
+            )
+            result["link_id"] = link["link_id"]
         await self.db.finish_record_request_on(receipt, result, conn=conn)
         return result
 
@@ -69,7 +114,91 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
         access = await self._access(conn, principal, "knowledge_show", project_id)
         record = await self.resolve_on(identity, access, conn=conn)
         revision = await self._revision(record, revision_id, conn=conn)
+        current = await self.db.get_knowledge_revision_on(record["record_id"], conn=conn)
+        protected = (
+            current["snapshot"] is None or current["snapshot"]["verification"] != "unverified"
+        )
+        actions = []
+        try:
+            await self._access(conn, principal, "knowledge_history", project_id)
+            actions.append("history")
+        except RecordError:
+            pass
+        operations = {
+            "edit": "knowledge_update",
+            "link": "link_create",
+            "retire": "knowledge_retire",
+            "restore": "knowledge_restore",
+            "create_task": "knowledge_create_task",
+            "propose_correction": "knowledge_propose",
+        }
+        allowed_epoch = access.claim_epoch
+        if principal.task_id:
+            from src.database.tables import tasks
+
+            allowed_epoch = await conn.scalar(
+                select(tasks.c.claim_epoch).where(tasks.c.id == principal.task_id)
+            )
+        for action, operation in operations.items():
+            if current["snapshot"] is None and action != "create_task":
+                continue
+            if (
+                action not in {"create_task", "restore"}
+                and revision["revision_id"] != current["revision_id"]
+            ):
+                continue
+            if (
+                action in {"edit", "link", "retire"}
+                and current["snapshot"]["lifecycle"] != "active"
+            ):
+                continue
+            if action == "propose_correction" and (
+                access.supervisor or (not protected and record["created_by"] == access.actor_key)
+            ):
+                continue
+            if action == "restore" and current["snapshot"]["lifecycle"] != "retired":
+                continue
+            try:
+                actor = await self._access(
+                    conn, principal, operation, project_id, write=True, claim_epoch=allowed_epoch
+                )
+                if action in {"edit", "link", "retire", "restore"}:
+                    actor.editable(record, current["snapshot"])
+                if action == "create_task":
+                    await self._access(
+                        conn,
+                        principal,
+                        "create_task",
+                        project_id,
+                        write=True,
+                        claim_epoch=allowed_epoch,
+                    )
+                actions.append(action)
+            except RecordError:
+                pass
+        stale_reason = next(
+            (
+                reason
+                for field, reason in (
+                    ("valid_until", "Validity date has passed"),
+                    ("recheck_at", "Recheck date has passed"),
+                )
+                if revision["snapshot"].get(field)
+                and datetime.fromisoformat(revision["snapshot"][field]) < datetime.now(UTC)
+            ),
+            None,
+        )
         return dict(
+            stale=stale_reason is not None,
+            stale_reason=stale_reason,
+            allowed_actions=actions,
+            protection="protected" if protected else "none",
+            current_revision_id=str(current["revision_id"]),
+            current_sequence=current["sequence"],
+            scope_key=record["scope_key"],
+            created_at=revision["created_at"].isoformat(),
+            actor_id=revision["actor_id"],
+            change_kind=revision["change_kind"],
             success=True,
             outcome="read",
             record_id=str(record["record_id"]),
@@ -388,7 +517,10 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
         principal,
         project_id,
         query="",
+        operation="knowledge_search",
         category=None,
+        lifecycle=None,
+        verification=None,
         include_retired=False,
         include_disputed=False,
         limit=25,
@@ -397,14 +529,33 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
     ):
         from src.knowledge.search import lexical_search_on
 
-        access = await self._access(conn, principal, "knowledge_search", project_id)
-        return await lexical_search_on(
+        access = await self._access(conn, principal, operation, project_id)
+        result = await lexical_search_on(
             conn,
             access=access,
             query=query,
             category=category,
+            lifecycle=lifecycle,
+            verification=verification,
             include_retired=include_retired,
             include_disputed=include_disputed,
             limit=limit,
             cursor=cursor,
         )
+
+        # A verification badge alone never confers authority. Recheck active
+        # grants and their bound reviews for the exact visible current pin.
+        for item in result["items"]:
+            item["authoritative"] = False
+            if item["verification"] == "verified":
+                record = await self.resolve_on(f"record:{item['record_id']}", access, conn=conn)
+                revision = await self._revision(record, item["revision_id"], conn=conn)
+                item["authoritative"] = bool(
+                    await authority_on(
+                        conn,
+                        record,
+                        revision,
+                        review_required=self.config.authority_review_required,
+                    )
+                )
+        return result

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:d5fc01e5191aa78a2f174147fcaa378d8ce0ba5dfab2a09705fa4f5551ef5e5a` |
+| Contract fingerprint | `sha256:a18943421116afd8816ec708d5f4f2c7800cac5d1a1480a99d937ebe3bbd5fb4` |
 
 ## Parameters
 
@@ -24,6 +24,8 @@
 | `global_scope` | `boolean` | no | `false` | — |
 | `query` | `string` | no | `""` | — |
 | `category` | `string \| null` | no | `null` | — |
+| `lifecycle` | `"active" \| "retired" \| null` | no | `null` | — |
+| `verification` | `"unverified" \| "verified" \| "disputed" \| null` | no | `null` | — |
 | `include_retired` | `boolean` | no | `false` | — |
 | `include_disputed` | `boolean` | no | `false` | — |
 | `limit` | `integer` | no | `25` | — |
@@ -69,7 +71,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, global_scope, query, category, include_retired, include_disputed, limit, cursor | — | always |
+| Read using project_id, global_scope, query, category, lifecycle, verification, include_retired, include_disputed, limit, cursor | — | always |
 
 <!-- aq:generated:end -->
 

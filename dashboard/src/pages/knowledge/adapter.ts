@@ -38,6 +38,8 @@ export class KnowledgeAdapterError extends Error {
 }
 
 export interface KnowledgeAdapter {
+  /** Separates caches for live project scopes. */
+  cacheKey?: string;
   list(filters: KnowledgeListFilters, cursor: string | null): Promise<KnowledgeListPage>;
   /** `revisionId` null reads the current revision; a named one is pinned and may be historical. */
   show(recordId: string, revisionId: string | null): Promise<KnowledgeDetailView>;

@@ -30,6 +30,8 @@ class KnowledgeCreateRequest:
         metadata (KnowledgeCreateRequestMetadataType0 | None | Unset):
         claim_epoch (int | None | Unset):
         global_scope (bool | Unset):  Default: False.
+        source_task_id (None | str | Unset):
+        if_link_token (None | str | Unset):
     """
 
     title: str
@@ -43,6 +45,8 @@ class KnowledgeCreateRequest:
     metadata: KnowledgeCreateRequestMetadataType0 | None | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
     global_scope: bool | Unset = False
+    source_task_id: None | str | Unset = UNSET
+    if_link_token: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -102,6 +106,18 @@ class KnowledgeCreateRequest:
 
         global_scope = self.global_scope
 
+        source_task_id: None | str | Unset
+        if isinstance(self.source_task_id, Unset):
+            source_task_id = UNSET
+        else:
+            source_task_id = self.source_task_id
+
+        if_link_token: None | str | Unset
+        if isinstance(self.if_link_token, Unset):
+            if_link_token = UNSET
+        else:
+            if_link_token = self.if_link_token
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -126,6 +142,10 @@ class KnowledgeCreateRequest:
             field_dict["claim_epoch"] = claim_epoch
         if global_scope is not UNSET:
             field_dict["global_scope"] = global_scope
+        if source_task_id is not UNSET:
+            field_dict["source_task_id"] = source_task_id
+        if if_link_token is not UNSET:
+            field_dict["if_link_token"] = if_link_token
 
         return field_dict
 
@@ -222,6 +242,24 @@ class KnowledgeCreateRequest:
 
         global_scope = d.pop("global_scope", UNSET)
 
+        def _parse_source_task_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_task_id = _parse_source_task_id(d.pop("source_task_id", UNSET))
+
+        def _parse_if_link_token(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        if_link_token = _parse_if_link_token(d.pop("if_link_token", UNSET))
+
         knowledge_create_request = cls(
             title=title,
             body=body,
@@ -234,6 +272,8 @@ class KnowledgeCreateRequest:
             metadata=metadata,
             claim_epoch=claim_epoch,
             global_scope=global_scope,
+            source_task_id=source_task_id,
+            if_link_token=if_link_token,
         )
 
         knowledge_create_request.additional_properties = d

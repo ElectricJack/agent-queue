@@ -3,6 +3,7 @@
 import base64
 import json
 import math
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import Float, case, cast, func, literal, or_, select, tuple_
@@ -23,6 +24,8 @@ async def lexical_search_on(
     access,
     query="",
     category=None,
+    lifecycle=None,
+    verification=None,
     include_retired=False,
     include_disputed=False,
     limit=25,
@@ -42,6 +45,13 @@ async def lexical_search_on(
         )
     ):
         raise RecordError("record.invalid_input", "Invalid search bounds or filters")
+    if lifecycle not in (None, "active", "retired") or verification not in (
+        None,
+        "unverified",
+        "verified",
+        "disputed",
+    ):
+        raise RecordError("record.invalid_input", "Invalid lifecycle or verification")
     from src.knowledge.sharing import visible_scope
 
     scope = access.scope_key
@@ -52,6 +62,8 @@ async def lexical_search_on(
             actor=access.actor_key,
             query=query,
             category=category,
+            lifecycle=lifecycle,
+            verification=verification,
             retired=include_retired,
             disputed=include_disputed,
             limit=limit,
@@ -75,6 +87,10 @@ async def lexical_search_on(
             s.lifecycle,
             s.verification,
             s.updated_at,
+            s.valid_until,
+            s.recheck_at,
+            knowledge_records.c.current_sequence,
+            knowledge_revision_payloads.c.snapshot["tags"].label("tags"),
             exact.label("exact"),
             verified.label("verified"),
             rank.label("rank"),
@@ -98,9 +114,13 @@ async def lexical_search_on(
         stmt = stmt.where(or_(s.search_vector.op("@@")(tsquery), exact == 1))
     if category:
         stmt = stmt.where(s.category == category)
-    if not include_retired:
+    if lifecycle:
+        stmt = stmt.where(s.lifecycle == lifecycle)
+    if verification:
+        stmt = stmt.where(s.verification == verification)
+    if not include_retired and lifecycle != "retired":
         stmt = stmt.where(s.lifecycle == "active")
-    if not include_disputed:
+    if not include_disputed and verification != "disputed":
         stmt = stmt.where(s.verification != "disputed")
     if cursor:
         try:
@@ -167,8 +187,23 @@ async def lexical_search_on(
                 "verification",
             )
         }
+        stale_reason = next(
+            (
+                reason
+                for field, reason in (
+                    ("valid_until", "Validity date has passed"),
+                    ("recheck_at", "Recheck date has passed"),
+                )
+                if row[field] and row[field] < datetime.now(UTC)
+            ),
+            None,
+        )
         item.update(
             kind="knowledge",
+            stale=stale_reason is not None,
+            stale_reason=stale_reason,
+            tags=row["tags"],
+            sequence=row["current_sequence"],
             record_id=str(row["record_id"]),
             revision_id=str(row["revision_id"]),
             updated_at=row["updated_at"].isoformat(),

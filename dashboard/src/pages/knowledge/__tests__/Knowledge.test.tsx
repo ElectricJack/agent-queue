@@ -1,3 +1,4 @@
+import { sdk, resetSDK } from "./liveMocks";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -147,5 +148,35 @@ describe("Knowledge", () => {
       expect(screen.queryByRole("button", { name: new RegExp(`^${name}`) })).toBeNull();
     }
     expect(screen.getByRole("toolbar", { name: "Knowledge actions" })).toBeInTheDocument();
+  });
+});
+
+// K10 mounts the delivered presentation over the generated SDK.
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import KnowledgeRoute from "../KnowledgeRoute";
+
+describe("live Knowledge route", () => {
+  function mount(path = "/projects/p/knowledge") {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
+      <Routes><Route path="/projects/:projectId/knowledge" element={<KnowledgeRoute />} /></Routes>
+    </MemoryRouter></QueryClientProvider>);
+  }
+  it("keeps the feature unavailable when UI activation is off", async () => {
+    resetSDK();
+    sdk.recordCapabilities.mockResolvedValue({ data: { capabilities: { enabled: true, ui_enabled: false, enabled_projects: ["p"] } } });
+    mount();
+    expect(await screen.findByText("Knowledge is unavailable for this project.")).toBeInTheDocument();
+    expect(sdk.recordSearch).not.toHaveBeenCalled();
+  });
+  it("sends URL filters and preserves the search input while typing", async () => {
+    resetSDK(); mount("/projects/p/knowledge?verification=disputed&lifecycle=any");
+    await screen.findByText("Live finding");
+    expect(sdk.recordSearch.mock.calls[0]![0].body).toMatchObject({ project_id: "p", verification: "disputed", lifecycle: null });
+    const input = screen.getByLabelText("Search knowledge"); input.focus();
+    fireEvent.change(input, { target: { value: "JSONB" } });
+    await waitFor(() => expect(sdk.recordSearch).toHaveBeenLastCalledWith(expect.objectContaining({ body: expect.objectContaining({ query: "JSONB" }) })));
+    expect(screen.getByLabelText("Search knowledge")).toBe(input);
+    expect(input).toHaveFocus();
   });
 });
