@@ -115,7 +115,7 @@ def test_start_scrubs_session_environment_before_launch(
 
     def popen(*args, **kwargs):
         child_environment.update(kwargs["env"])
-        return SimpleNamespace(pid=123)
+        return SimpleNamespace(pid=123, poll=lambda: None)
 
     class HealthyResponse:
         status = 200
@@ -147,7 +147,6 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     import itertools
     import urllib.error
     import urllib.request
-    from types import SimpleNamespace
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("{}")
@@ -162,9 +161,17 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
     monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
     monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
-    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(pid=123))
+    proc = MagicMock(pid=123)
+    proc.poll.return_value = None
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: proc)
     signals = []
     monkeypatch.setattr(daemon_mod.os, "kill", lambda pid, sig: signals.append(sig))
+
+    def terminate():
+        signals.append(daemon_mod.signal.SIGTERM)
+        proc.poll.return_value = -15
+
+    proc.terminate.side_effect = terminate
     ticks = itertools.count(step=15)
     monkeypatch.setattr(daemon_mod.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(daemon_mod.time, "sleep", lambda _: None)
@@ -176,6 +183,330 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     assert daemon_mod.start_daemon() is expected
     assert (tmp_path / "pid").exists() is expected
     assert any(sig != 0 for sig in signals) is (not expected)
+
+
+@pytest.fixture
+def startup_case(tmp_path, monkeypatch):
+    """A launched child and monotonic clock, with every external probe stubbed."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "PID_FILE": tmp_path / "daemon.pid",
+        "LOG_PATH": tmp_path / "daemon.log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr("src.cli.client._resolve_api_url", lambda: "http://daemon.test")
+    proc = MagicMock(pid=123)
+    proc.poll.return_value = None
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: proc)
+    raw_kill = MagicMock(side_effect=AssertionError("startup must use its child handle"))
+    monkeypatch.setattr(daemon_mod.os, "kill", raw_kill)
+    clock = SimpleNamespace(now=0.0, sleeps=[])
+
+    def sleep(seconds):
+        clock.sleeps.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(
+        daemon_mod, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep),
+    )
+    post_start = MagicMock()
+    monkeypatch.setattr(daemon_mod, "_post_daemon_checks", post_start)
+    return SimpleNamespace(
+        proc=proc, clock=clock, post_start=post_start, raw_kill=raw_kill,
+        pid_file=tmp_path / "daemon.pid",
+    )
+
+
+def _health_response(status=200):
+    response = MagicMock()
+    response.__enter__.return_value.status = status
+    return response
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_start_keeps_child_that_becomes_healthy_during_timeout_diagnostics(
+    startup_case, monkeypatch, status,
+):
+    import urllib.error
+
+    diagnostics_done = False
+
+    def tail(lines):
+        nonlocal diagnostics_done
+        assert lines == 30
+        assert startup_case.clock.now == daemon_mod.DAEMON_START_TIMEOUT_SECONDS
+        startup_case.clock.now += 10  # initialization finishes during formatting
+        diagnostics_done = True
+
+    def health(url, *, timeout):
+        assert url == "http://daemon.test/health"
+        assert 0 < timeout <= 1
+        if not diagnostics_done:
+            raise urllib.error.URLError("not listening yet")
+        if status == 503:
+            raise urllib.error.HTTPError(url, status, "degraded", {}, None)
+        return _health_response(status)
+
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+    monkeypatch.setattr("urllib.request.urlopen", health)
+
+    assert daemon_mod.start_daemon() is True
+    assert diagnostics_done
+    assert startup_case.pid_file.read_text() == "123"
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.post_start.assert_called_once_with()
+    assert not (startup_case.pid_file.parent / "daemon.lock").exists()
+
+
+def test_start_allows_slow_initialization_within_bounded_budget(startup_case, monkeypatch):
+    import urllib.error
+
+    def health(url, *, timeout):
+        if startup_case.clock.now < 40:
+            raise urllib.error.URLError("still initializing")
+        return _health_response()
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    tail = MagicMock()
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+
+    assert daemon_mod.start_daemon() is True
+    assert 30 < startup_case.clock.now < daemon_mod.DAEMON_START_TIMEOUT_SECONDS
+    tail.assert_not_called()
+    startup_case.proc.terminate.assert_not_called()
+
+
+@pytest.mark.parametrize("force_kill", [False, True])
+def test_start_stops_truly_unhealthy_child_after_final_probe(
+    startup_case, monkeypatch, force_kill,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 1.25)
+    events = []
+    probe_timeouts = []
+
+    def health(url, *, timeout):
+        events.append("health")
+        probe_timeouts.append(timeout)
+        raise urllib.error.URLError("not listening")
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: events.append("diagnostics"))
+    startup_case.proc.terminate.side_effect = lambda: events.append("terminate")
+    startup_case.proc.kill.side_effect = lambda: events.append("kill")
+    waits = []
+
+    def wait(*, timeout):
+        waits.append(timeout)
+        if force_kill and len(waits) == 1:
+            raise daemon_mod.subprocess.TimeoutExpired("agent-queue", timeout)
+        startup_case.proc.poll.return_value = -9 if force_kill else -15
+        return startup_case.proc.poll.return_value
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    assert events[events.index("diagnostics"):][:3] == ["diagnostics", "health", "terminate"]
+    assert startup_case.clock.now == 1.25
+    assert startup_case.clock.sleeps[-1] == 0.25
+    assert probe_timeouts == [1, 0.75, 0.25, 1]
+    assert waits == ([5, 5] if force_kill else [5])
+    assert startup_case.proc.kill.call_count == int(force_kill)
+    assert not startup_case.pid_file.exists()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.post_start.assert_not_called()
+
+
+@pytest.mark.parametrize("replacement_pid", [None, "456"])
+def test_start_detects_exited_child_without_signaling_or_removing_successor(
+    startup_case, monkeypatch, replacement_pid,
+):
+    startup_case.proc.poll.return_value = 42
+
+    def tail(_):
+        if replacement_pid:
+            startup_case.pid_file.write_text(replacement_pid)
+
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+    probe = MagicMock(side_effect=AssertionError("exited child cannot become healthy"))
+    monkeypatch.setattr("urllib.request.urlopen", probe)
+
+    assert daemon_mod.start_daemon() is False
+    assert startup_case.clock.now == 0
+    if replacement_pid:
+        assert startup_case.pid_file.read_text() == replacement_pid
+    else:
+        assert not startup_case.pid_file.exists()
+    probe.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+
+
+def test_start_does_not_accept_health_from_another_listener_after_child_exits(
+    startup_case, monkeypatch,
+):
+    def health(url, *, timeout):
+        startup_case.proc.poll.return_value = 42
+        startup_case.pid_file.write_text("456")
+        return _health_response()
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: None)
+
+    assert daemon_mod.start_daemon() is False
+    assert startup_case.pid_file.read_text() == "456"
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.post_start.assert_not_called()
+
+
+def test_start_timeout_targets_launched_child_and_preserves_replacement_pid_file(
+    startup_case, monkeypatch,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "urllib.request.urlopen", MagicMock(side_effect=urllib.error.URLError("not listening")),
+    )
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: startup_case.pid_file.write_text("456"))
+
+    def wait(*, timeout):
+        startup_case.proc.poll.return_value = -15
+        return -15
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    startup_case.proc.terminate.assert_called_once_with()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    assert startup_case.pid_file.read_text() == "456"
+
+
+def test_start_does_not_force_kill_a_child_that_exited_at_grace_deadline(
+    startup_case, monkeypatch,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "urllib.request.urlopen", MagicMock(side_effect=urllib.error.URLError("not listening")),
+    )
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: None)
+
+    def wait(*, timeout):
+        startup_case.proc.poll.return_value = 0
+        if startup_case.proc.wait.call_count == 1:
+            raise daemon_mod.subprocess.TimeoutExpired("agent-queue", timeout)
+        return 0
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    startup_case.proc.terminate.assert_called_once_with()
+    startup_case.proc.kill.assert_not_called()
+    assert not startup_case.pid_file.exists()
+
+
+def test_tail_log_reads_bounded_suffix_of_large_log(tmp_path, monkeypatch):
+    import builtins
+
+    log = tmp_path / "large.log"
+    with log.open("wb") as handle:
+        handle.seek(16 * 1024 * 1024)  # sparse file; do not allocate a giant test buffer
+        handle.write(b"\n")
+        for index in range(100):
+            handle.write(f"[red]literal log {index}[/]\n".encode())
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    reads = []
+
+    class BoundedReader:
+        def __enter__(self):
+            self.handle = builtins.open(log, "rb")
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def seek(self, offset, whence=0):
+            return self.handle.seek(offset, whence)
+
+        def read(self, size=-1):
+            assert 0 < size <= daemon_mod.LOG_TAIL_MAX_BYTES
+            data = self.handle.read(size)
+            reads.append(len(data))
+            return data
+
+        def readlines(self):
+            raise AssertionError("must never scan the whole log")
+
+    monkeypatch.setattr(daemon_mod, "open", lambda *a, **kw: BoundedReader(), raising=False)
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    assert sum(reads) == daemon_mod.LOG_TAIL_MAX_BYTES
+    assert [call.args[0] for call in output.call_args_list] == [
+        f"[red]literal log {index}[/]" for index in range(70, 100)
+    ]
+    assert all(call.kwargs == {"markup": False, "highlight": False} for call in output.call_args_list)
+
+
+def test_tail_log_bounds_huge_line_and_replaces_split_utf8(tmp_path, monkeypatch):
+    log = tmp_path / "huge-line.log"
+    log.write_bytes(b"\xff" + "\u20ac".encode() * daemon_mod.LOG_TAIL_MAX_BYTES + b" end")
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    output.assert_called_once()
+    line = output.call_args.args[0]
+    assert len(line) <= daemon_mod.LOG_TAIL_MAX_BYTES
+    assert line.startswith("\ufffd")
+    assert line.endswith(" end")
+
+
+@pytest.mark.parametrize(
+    "contents, budget, expected",
+    [
+        (b"first\nlast\n", 64 * 1024, ["first", "last"]),
+        (b"older line\npartial line\ntwo\nthree\n", 16, ["two", "three"]),
+        (b"old\nhello\nlast\n", 12, ["hello", "last"]),
+    ],
+    ids=["short-log", "clipped-first-line", "complete-line-boundary"],
+)
+def test_tail_log_preserves_complete_recent_lines(tmp_path, monkeypatch, contents, budget, expected):
+    log = tmp_path / "daemon.log"
+    log.write_bytes(contents)
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    monkeypatch.setattr(daemon_mod, "LOG_TAIL_MAX_BYTES", budget)
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    assert [call.args[0] for call in output.call_args_list] == expected
+
+
+@pytest.mark.parametrize("lines", [0, -1])
+def test_tail_log_nonpositive_line_count_does_no_io(monkeypatch, lines):
+    read = MagicMock(side_effect=AssertionError("no log read requested"))
+    monkeypatch.setattr(daemon_mod, "open", read, raising=False)
+    daemon_mod._tail_log(lines)
+    read.assert_not_called()
 
 
 @pytest.fixture
@@ -337,6 +668,7 @@ def test_start_and_stop_ignore_dashboard_server_when_daemon_pid_file_is_missing(
         return MagicMock(returncode=1, stdout="")
 
     proc = MagicMock(pid=12345)
+    proc.poll.return_value = None
     health = MagicMock()
     health.__enter__.return_value.status = 200
     kill = MagicMock()
@@ -609,7 +941,7 @@ def test_start_backs_up_only_when_db_is_behind_code(
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: HealthResp())
 
     def popen(*a, **k):
-        return SimpleNamespace(pid=123)
+        return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(daemon_mod.subprocess, "Popen", popen)
 
