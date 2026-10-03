@@ -77,6 +77,8 @@ def _category_modules() -> tuple[object, ...]:
         task,
         wait,
         job,
+        knowledge,
+        records,
     )
 
     return (
@@ -109,6 +111,8 @@ def _category_modules() -> tuple[object, ...]:
         wait,
         collaboration,
         job,
+        knowledge,
+        records,
     )
 
 

@@ -1988,3 +1988,8 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.handoff import register_handoff_contract
 
     register_handoff_contract(registry)
+    from src.commands.contracts.knowledge import register_knowledge_contracts
+    from src.commands.contracts.records import register_record_contracts
+
+    register_knowledge_contracts(registry)
+    register_record_contracts(registry)
