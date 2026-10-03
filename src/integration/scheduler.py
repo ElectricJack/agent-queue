@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import case, delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.integration_schedule_queries import (
@@ -29,8 +30,11 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
     repos,
+    task_integration_checkpoints,
 )
 from src.git.manager import GitError, _validate_ref
+from src.integration.engine import root_engine_guard
+
 from src.integration.epic_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
@@ -45,6 +49,64 @@ from src.playbooks.artifact_ref import ArtifactRef
 
 ScheduleTrigger = Literal["periodic", "manual"]
 logger = logging.getLogger(__name__)
+
+#: An empty frontier keeps no ``integration_batches`` row.  Its seal answers
+#: with this id instead, naming the request it consumed, so a caller that
+#: hands the seal's ``batch_id`` on -- the root-train playbook releases every
+#: empty seal -- is answered from the schedule rather than from a row.
+EMPTY_SEAL_PREFIX = "integration-empty:"
+_SWEEP_REQUEST = re.compile(r"integration-sweep:(?P<project>.+):(?P<sequence>[1-9][0-9]*)")
+
+
+def empty_seal_id(request_id: str) -> str:
+    """The ``batch_id`` an empty seal of *request_id* answers with."""
+    return EMPTY_SEAL_PREFIX + request_id
+
+
+def empty_seal_request(batch_id: str) -> tuple[str, str] | None:
+    """``(project_id, request_id)`` an empty seal's id names, else ``None``."""
+    if not batch_id.startswith(EMPTY_SEAL_PREFIX):
+        return None
+    request_id = batch_id[len(EMPTY_SEAL_PREFIX):]
+    match = _SWEEP_REQUEST.fullmatch(request_id)
+    return (match["project"], request_id) if match else None
+
+
+async def request_ended_without_batch_on(conn, project_id: str, request_id: str) -> bool:
+    """Whether *project_id*'s sweep request *request_id* ended with no batch row.
+
+    An empty seal consumes its request without a row, and ``stale_schedule``
+    may release a request no seal ever answered.  Either way the request was
+    minted (its sequence is the schedule's or older), is no longer
+    outstanding, and never will be again: ``mark_due`` only mints higher
+    sequences.  Nothing can be sealed under it any more.
+    """
+    match = _SWEEP_REQUEST.fullmatch(request_id)
+    if match is None or match["project"] != project_id:
+        return False
+    schedule = (
+        await conn.execute(
+            select(
+                project_integration_schedules.c.outstanding_request_id,
+                project_integration_schedules.c.request_sequence,
+            ).where(project_integration_schedules.c.project_id == project_id)
+        )
+    ).mappings().one_or_none()
+    if (
+        schedule is None
+        or schedule["outstanding_request_id"] == request_id
+        or int(match["sequence"]) > int(schedule["request_sequence"])
+    ):
+        return False
+    batch_id = (
+        await conn.execute(
+            select(integration_batches.c.id).where(
+                integration_batches.c.project_id == project_id,
+                integration_batches.c.request_id == request_id,
+            )
+        )
+    ).scalar_one_or_none()
+    return batch_id is None
 
 
 class IntegrationScheduler:
@@ -406,6 +468,7 @@ class TrainService:
         default_mode: str = "pull_request",
         page_size: int = DEFAULT_PAGE_SIZE,
         migration_inspector=None,
+        delivery_observer=None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("integration train page size must be positive")
@@ -413,7 +476,77 @@ class TrainService:
         self.default_mode = default_mode
         self.page_size = page_size
         self.migration_inspector = migration_inspector
+        self.delivery_observer = delivery_observer or getattr(db, "_delivery_observer", None)
 
+    async def _observe_root_deliveries(self, project_id, request_id):
+        """Ask canonical Git truth before taking the hierarchy lock.
+
+        Include prerequisites even when they have no review, are held, or have
+        been archived: delivery and permission to enter a train are separate.
+        """
+        if self.delivery_observer is None:
+            return None
+        async with self.db._engine.connect() as conn:
+            prior = await self._batch_for_request(conn, project_id, request_id)
+            if prior is not None and prior["lifecycle"] != "sealing":
+                return None
+            if prior is None and await request_ended_without_batch_on(conn, project_id, request_id):
+                return None
+            repository_id = await conn.scalar(select(projects.c.integration_repository_id).where(
+                projects.c.id == project_id,
+            ))
+            if repository_id is None:
+                return None
+            ids = set()
+            after = None
+            while True:
+                page = await self.db.eligible_root_page_on(
+                    conn, project_id=project_id, repository_id=repository_id,
+                    after=after, limit=self.page_size,
+                )
+                if not page:
+                    break
+                ids.update(row["task_id"] for row in page)
+                after = (page[-1]["task_id"], page[-1]["source_head"])
+            edges = await dependencies_for(conn, list(ids))
+            ids.update(dependency for dependencies in edges.values() for dependency in dependencies)
+        return await self.delivery_observer.observe(ids)
+
+    async def _git_delivered_roots_on(self, conn, view, project_id, repository):
+        """Recheck generation, repository, target and the train's exact source.
+
+        A contained completion can answer a dependency without a checkpoint.
+        When a checkpoint exists, it must name that same source; a previous
+        adoption cannot hide newly checkpointed work. Settlements and empty
+        artifacts are not code delivery to the default branch.
+        """
+        from src.integration.delivery_truth import DeliveryState
+
+        if view is None:
+            return set()
+        verified = await view.verified_on(conn, view.evidence)
+        target_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
+        sources = {task_id: proof.source_oid for task_id, proof in verified.items() if (
+            proof.state == DeliveryState.CONTAINED
+            and proof.request.task_status == "COMPLETED"
+            and (proof.request.project_id, proof.request.repository_id, proof.request.target_ref)
+            == (project_id, repository["id"], target_ref)
+            and view.targets[task_id].repository_url == repository["url"]
+        )}
+        checkpoint = task_integration_checkpoints
+        heads = dict((await conn.execute(
+            select(checkpoint.c.task_id, case(
+                (checkpoint.c.episode_id.is_not(None), checkpoint.c.verified_sha),
+                else_=checkpoint.c.checkpoint_sha,
+            )).where(
+                checkpoint.c.task_id.in_(sources),
+                checkpoint.c.repository_id == repository["id"],
+            )
+        )).all())
+        return {task_id for task_id, source in sources.items()
+                if task_id not in heads or heads[task_id] == source}
+
+    @root_engine_guard("project", outcome="busy")
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         # Keep the public sealed/empty/busy contract. A frontier that moved
         # while Git was being read gets fresh inspection, never unchecked seal.
@@ -438,6 +571,7 @@ class TrainService:
     async def _seal_once(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         if not project_id.strip() or not request_id.strip():
             raise ValueError("integration seal project and request are required")
+        delivery_view = await self._observe_root_deliveries(project_id, request_id)
         inspected = None
         if self.migration_inspector is not None:
             # Git I/O must never hold the hierarchy lock. The transaction below
@@ -446,13 +580,28 @@ class TrainService:
                 prior = await self._batch_for_request(read_conn, project_id, request_id)
                 if prior is not None and prior["lifecycle"] != "sealing":
                     return await self._replay_result(read_conn, prior)
+                if prior is None and await request_ended_without_batch_on(
+                    read_conn, project_id, request_id
+                ):
+                    return self._empty_result(project_id, request_id)
                 project = await self.db.get_project(project_id)
+                preview_delivered = set()
+                if delivery_view is not None and project is not None:
+                    repository = (await read_conn.execute(select(repos).where(
+                        repos.c.id == project.integration_repository_id,
+                        repos.c.project_id == project_id,
+                    ))).mappings().one_or_none()
+                    if repository is not None:
+                        preview_delivered = await self._git_delivered_roots_on(
+                            read_conn, delivery_view, project_id, repository
+                        )
                 preview = (
                     await self._eligible_members(
                         read_conn,
                         project_id=project_id,
                         repository_id=project.integration_repository_id,
                         project_mode=project.integration_mode,
+                        git_delivered=preview_delivered,
                     )
                     if project is not None
                     else []
@@ -466,12 +615,20 @@ class TrainService:
                     member["source_head"],
                 )
                 inspected[key] = await self.migration_inspector(member)
+        if delivery_view is not None and not await delivery_view.fresh():
+            return self._result("stale", project_id, request_id, None, None)
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
 
             request_batch = await self._batch_for_request(conn, project_id, request_id)
             if request_batch is not None and request_batch["lifecycle"] != "sealing":
                 return await self._replay_result(conn, request_batch)
+            # Before the lease: a later train holding it must not turn the
+            # replay of an empty seal into busy.
+            if request_batch is None and await request_ended_without_batch_on(
+                conn, project_id, request_id
+            ):
+                return self._empty_result(project_id, request_id)
 
             lease = (
                 (
@@ -524,6 +681,9 @@ class TrainService:
             ).mappings().one_or_none()
             if repository is None:
                 raise ValueError("designated integration repository does not exist")
+            git_delivered = await self._git_delivered_roots_on(
+                conn, delivery_view, project_id, repository
+            )
 
             policy = HierarchicalIntegrationPolicy.model_validate(
                 project["hierarchical_integration_policy"]
@@ -594,6 +754,7 @@ class TrainService:
                 project_id=project_id,
                 repository_id=repository_id,
                 project_mode=project["integration_mode"],
+                git_delivered=git_delivered,
             )
             if inspected is not None:
                 from src.integration.migration_heads import select_members
@@ -617,6 +778,7 @@ class TrainService:
                     project_id=project_id,
                     repository_id=repository_id,
                 )
+                delivered |= git_delivered
                 members, deferred = select_members(
                     members,
                     inspected,
@@ -641,39 +803,22 @@ class TrainService:
                 )
             if len({member["source_ref"] for member in members}) != len(members):
                 raise ValueError("integration source refs must be unique within a batch")
+
+            if not members:
+                if request_batch is not None:
+                    raise ValueError("expired non-empty sealing batch lost its frontier")
+                # An empty frontier is not a train: consume the request and
+                # keep no batch row.  A replay answers from the schedule.
+                await self._consume_request(conn, project_id, request_id, now)
+                await clear_settling_window(conn, project_id=project_id)
+                return self._empty_result(project_id, request_id)
+
             manifest_digest = self._manifest_digest(members)
             batch_id = (
                 request_batch["id"]
                 if request_batch is not None
                 else self._batch_id(project_id, request_id)
             )
-
-            if not members:
-                if request_batch is not None:
-                    raise ValueError("expired non-empty sealing batch lost its frontier")
-                await conn.execute(
-                    insert(integration_batches).values(
-                        id=batch_id,
-                        project_id=project_id,
-                        repository_id=repository_id,
-                        request_id=request_id,
-                        trigger=schedule["outstanding_trigger"],
-                        source_manifest_digest=manifest_digest,
-                        base_sha=None,
-                        lifecycle="empty",
-                        current_revision=0,
-                        integration_branch=None,
-                        policy_snapshot=policy_snapshot,
-                        artifact_snapshot=artifact_snapshot,
-                        cleanup_state="complete",
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                await self._consume_request(conn, project_id, request_id, now)
-                await clear_settling_window(conn, project_id=project_id)
-                return self._result("empty", project_id, request_id, batch_id, None)
-
             integration_branch = self._integration_branch(project_id, request_id)
             if request_batch is None:
                 await conn.execute(
@@ -838,6 +983,7 @@ class TrainService:
         project_id: str,
         repository_id: str,
         project_mode: str | None,
+        git_delivered: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         members: list[dict[str, Any]] = []
         after: tuple[str, str] | None = None
@@ -883,6 +1029,25 @@ class TrainService:
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        git_delivered = git_delivered or set()
+        members = [member for member in members if member["task_id"] not in git_delivered]
+        from src.integration.engine import current_admission
+
+        admission = current_admission()
+        if admission is not None:
+            if not admission.include_authorized:
+                members = [m for m in members if
+                           m["review"]["evidence"].get("decision_path") != "authorized_task"]
+            if admission.task_kinds and members:
+                from src.database.tables import tasks
+
+                allowed = set((await conn.execute(select(tasks.c.id).where(
+                    tasks.c.id.in_([m["task_id"] for m in members]),
+                    tasks.c.task_type.in_(admission.task_kinds),
+                ))).scalars())
+                members = [m for m in members if m["task_id"] in allowed]
+            if admission.max_members is not None:
+                members = members[:admission.max_members]
         project = (await conn.execute(select(projects).where(projects.c.id == project_id))).mappings().one()
         policy_data = project["hierarchical_integration_policy"]
         policy = HierarchicalIntegrationPolicy.model_validate(policy_data) if policy_data else None
@@ -954,6 +1119,7 @@ class TrainService:
         delivered = await self.db.delivered_root_task_ids_on(
             conn, project_id=project_id, repository_id=repository_id
         )
+        delivered |= git_delivered
         ordered, deferred = order_members(members, edges, delivered)
         for member in deferred:
             logger.info(
@@ -975,7 +1141,13 @@ class TrainService:
         ).mappings().one_or_none()
         return dict(row) if row is not None else None
 
+    def _empty_result(self, project_id: str, request_id: str) -> dict[str, Any]:
+        return self._result(
+            "empty", project_id, request_id, empty_seal_id(request_id), None
+        )
+
     async def _replay_result(self, conn, batch: dict[str, Any]) -> dict[str, Any]:
+        # A row-backed empty seal predates rowless empty seals; it replays as is.
         if batch["lifecycle"] == "empty":
             return self._result(
                 "empty", batch["project_id"], batch["request_id"], batch["id"], None

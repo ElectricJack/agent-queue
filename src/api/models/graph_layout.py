@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.models.graph import GraphGate, GraphTaskNode
-from src.api.models.task import PhaseHoldDetail
+from src.api.models.task import EpicDeliveryStatus, PhaseHoldDetail
 
 __all__ = [
     "AncestorRef",
@@ -135,6 +135,8 @@ class LayoutNode(GraphTaskNode):
     phase_order: int | None = None
     phase_label: str | None = None
     phase_hold: PhaseHoldDetail | None = None
+    # Implementation vs delivery for a node with children (``None`` for a leaf).
+    delivery: EpicDeliveryStatus | None = None
 
 
 class LayoutEdge(BaseModel):

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import delete, insert, or_, select, tuple_, update
+from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -36,10 +37,14 @@ from src.database.tables import (
     sessions,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
 from src.git.manager import GitError, is_valid_git_oid
+from src.integration.engine import root_engine_guard
+from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
+
 from src.integration.green_continuation import (
     enqueue_green_continuation_on,
     promotion_fingerprint,
@@ -49,6 +54,8 @@ from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
+
+logger = logging.getLogger(__name__)
 
 
 def repair_subject_sha(subject: dict[str, Any] | None) -> str:
@@ -74,6 +81,42 @@ STUCK_BATCH_ATTEMPTS = 3
 #: How long a delivered construction re-drive may run before a stage-0 deadline
 #: that still finds no candidate escalates (``_redrive_unfinished_construction_on``).
 CONSTRUCTION_REDRIVE_GRACE_SECONDS = 600.0
+#: A due stage whose writer is live, held, or not yet provably stopped is
+#: revisited on this bounded clock instead of being superseded.
+WRITER_RECHECK_SECONDS = 300.0
+#: Writer allocations that may start on one unchanged subject head: the first
+#: writer plus at most two more (same-ordinal refiles and successor stages).
+MAX_WRITER_ALLOCATIONS_PER_SUBJECT = 3
+#: Same-ordinal refiles of a stopped writer that never published, per stage.
+MAX_REFILES_PER_STAGE = 1
+#: Deadline deferrals each stage dossier keeps verbatim; older ones are counted.
+_DEFERRAL_HISTORY = 10
+#: Deferral reasons the supervisor hears about once per stage.  A live writer,
+#: an operator's own hold, or a row a concurrent expiry already released is
+#: not news.
+_NOTICE_DEFERRALS = frozenset({
+    "writer_unclaimed", "stale_fence", "stop_proof_unavailable", "stale_claim",
+    "checkout_in_use", "origin_unreachable",
+})
+#: Delegate statuses with no writer: the pool has not (re)claimed it yet.
+_UNCLAIMED_STATUSES = frozenset({
+    TaskStatus.DEFINED.value, TaskStatus.PAUSED.value, TaskStatus.READY.value,
+})
+#: Delegate statuses a stopped writer can leave behind without closing.
+_STOPPED_STATUSES = frozenset({
+    TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value, TaskStatus.BLOCKED.value,
+    TaskStatus.PAUSED.value, TaskStatus.READY.value,
+})
+#: Exit-time holds a refile clears; an operator's ``manual_pause`` stays binding.
+_REFILE_CLEARED_HOLDS = ("needs_attention", "claim_prepare_backoff_until")
+
+
+class _StoppedWriter(Exception):
+    """An expiring stage's writer stopped without publishing; prove it outside the lock."""
+
+    def __init__(self, facts: dict[str, Any]) -> None:
+        super().__init__(facts["task_id"])
+        self.facts = facts
 
 
 def _unfinished_candidate_publication(batch_id):
@@ -92,6 +135,17 @@ def _unfinished_candidate_publication(batch_id):
         batch.c.current_revision == revision.c.revision,
         revision.c.state.in_(("built", "green")),
         or_(publication.c.state.is_(None), publication.c.state != "pr_published"),
+    ).exists()
+
+
+def _operator_held(task_id):
+    """``aq task pause`` wrote a hold on *task_id*; only ``aq task resume`` lifts it.
+
+    A held delegate and a never-launched one are both ``PAUSED`` with no
+    timer, so the status alone cannot tell them apart.
+    """
+    return select(task_metadata.c.task_id).where(
+        task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
     ).exists()
 
 
@@ -120,7 +174,11 @@ class RepairService:
         self._archive_cursor: str | None = None
 
     async def pending_dispatches(self, *, after=None, limit=20):
-        """Replay incomplete continuous-policy handoffs through the command path."""
+        """Replay incomplete continuous-policy handoffs through the command path.
+
+        A delegate an operator paused is not replayed: the hold is the
+        operator's decision, and ``aq task resume`` is what releases it.
+        """
         stage = integration_repair_stages
         operation = integration_repair_operations
         statement = select(stage.c.operation_id, stage.c.ordinal).select_from(
@@ -131,9 +189,20 @@ class RepairService:
             operation.c.state.in_(("active", "escalated")),
             stage.c.state == "active",
             ~((stage.c.ordinal == 0) & _unfinished_candidate_publication(operation.c.batch_id)),
-            stage.c.policy["on_exhausted"].as_string() == "continue",
-            or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
-                (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
+            or_(
+                and_(
+                    stage.c.policy["on_exhausted"].as_string() == "continue",
+                    or_(stage.c.repair_task_id.is_(None),
+                        (tasks.c.status == "PAUSED") & ~_operator_held(stage.c.repair_task_id),
+                        (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
+                ),
+                # ``aq integration reopen-collection`` dispatches its stage
+                # itself; whatever the policy, retry a dispatch that failed.
+                and_(
+                    stage.c.repair_task_id.is_(None),
+                    stage.c.dossier["reopened"].as_string().is_not(None),
+                ),
+            ),
         ).order_by(stage.c.operation_id, stage.c.ordinal).limit(limit)
         if after is not None:
             statement = statement.where(tuple_(stage.c.operation_id, stage.c.ordinal) > after)
@@ -269,6 +338,8 @@ class RepairService:
         )
         return operation
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="stale")
     async def start(
         self,
         operation_id: str,
@@ -330,6 +401,16 @@ class RepairService:
                             )
                         )
                     ).mappings().one_or_none()
+            # ``aq integration reopen-collection`` can return a cancelled
+            # parent collection to life with its last stage still cancelled.
+            # That stage has no writer to continue, so the next conflict gets
+            # a fresh stage of its own instead of a stale refusal.
+            reopened = bool(
+                active_stage is not None
+                and active_stage["state"] == "cancelled"
+                and operation["target_kind"] == "parent"
+                and operation["state"] in {"active", "escalated"}
+            )
             # The shipped parent policy passes its operation key on a merge
             # conflict. Resolve that alias to the exact durable intent, never
             # treat the operation ID itself as failure evidence. Older pinned
@@ -338,11 +419,21 @@ class RepairService:
                 trigger_id = await self._resolve_parent_conflict_trigger_on(
                     conn,
                     dict(operation),
-                    dict(active_stage) if active_stage is not None else None,
+                    dict(active_stage) if active_stage is not None and not reopened else None,
                     starting_sha=starting_sha,
                 )
                 if trigger_id is None:
                     return {"outcome": "stale", "operation_id": operation_id}
+            if reopened:
+                return await self._start_fresh_parent_stage_on(
+                    conn,
+                    dict(operation),
+                    dict(active_stage),
+                    starting_sha=starting_sha,
+                    trigger_id=trigger_id,
+                    project_id=project_id,
+                    now=activated_at,
+                )
             if existing is not None:
                 if active_stage is None:
                     return {"outcome": "invariant_error", "operation_id": operation_id}
@@ -424,6 +515,201 @@ class RepairService:
             await self.db._notify_settled(continuation_transition.settled)
             await self.db._notify_ready(continuation_transition.ready)
         return continuation_result
+
+    async def _start_fresh_parent_stage_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        cancelled: dict[str, Any],
+        *,
+        starting_sha: str,
+        trigger_id: str,
+        project_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        """Open a writerless stage for a reopened collection's next conflict."""
+        stale = {"outcome": "stale", "operation_id": operation["id"]}
+        conflict = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(integration_promotion_intents.c.id == trigger_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"]).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if (
+            conflict is None
+            or parent is None
+            or conflict["state"] != "conflict"
+            or conflict["expected_target"] != starting_sha
+            or conflict["operation_key"] != operation["id"]
+            or conflict["fence_owner_id"] != operation["id"]
+            or conflict["target_task_id"] != parent["id"]
+            or conflict["project_id"] != project_id
+            or parent["status"] != TaskStatus.PAUSED.value
+        ):
+            return stale
+        ordinal = int(
+            (
+                await conn.execute(
+                    select(func.max(integration_repair_stages.c.ordinal)).where(
+                        integration_repair_stages.c.operation_id == operation["id"]
+                    )
+                )
+            ).scalar_one()
+        ) + 1
+        plan = await self.fresh_parent_stage_plan_on(conn, operation, dict(conflict), ordinal)
+        if isinstance(plan, str):
+            return stale
+        row = await self.fresh_parent_stage_row_on(
+            conn,
+            operation,
+            dict(conflict),
+            plan,
+            now=now,
+            extra={
+                "previous_stage": {
+                    "ordinal": int(cancelled["ordinal"]),
+                    "state": cancelled["state"],
+                    "trigger_id": cancelled["trigger_id"],
+                    "starting_sha": cancelled["starting_sha"],
+                },
+            },
+        )
+        await conn.execute(insert(integration_repair_stages).values(**row))
+        advanced = await conn.execute(
+            update(integration_repair_operations)
+            .where(
+                integration_repair_operations.c.id == operation["id"],
+                integration_repair_operations.c.state == operation["state"],
+                integration_repair_operations.c.active_stage == cancelled["ordinal"],
+            )
+            .values(
+                active_stage=ordinal,
+                state="active" if ordinal == 0 else "escalated",
+                updated_at=now,
+            )
+        )
+        if advanced.rowcount != 1:
+            raise _RepairInvariant("repair operation changed while opening a fresh stage")
+        return self._start_value(row, outcome="started")
+
+    async def fresh_parent_stage_plan_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        conflict: dict[str, Any],
+        ordinal: int,
+    ) -> dict[str, Any] | str:
+        """The frozen budget of a writerless parent stage bound to *conflict*.
+
+        Used where a parent collection has no live stage to continue: the
+        stage ``aq integration reopen-collection`` opens, and the next conflict
+        of a reopened collection.  Returns why when the operation's frozen
+        route cannot repair *conflict*.
+        """
+        try:
+            context = await self._start_context_on(
+                conn,
+                operation,
+                starting_sha=conflict["expected_target"],
+                trigger_id=conflict["id"],
+            )
+        except _RepairInvariant as exc:
+            return f"the operation's frozen repair route is unusable: {exc}"
+        if context is None:
+            return f"conflict {conflict['id']} does not match the operation's frozen route"
+        _policy, boundary, subject = context
+        repair = boundary.repair
+        if ordinal == 0:
+            intelligence_class = (
+                boundary.primary_intelligence_class or repair.debug_intelligence_class
+            )
+            timeout, limit = repair.primary_seconds, repair.primary_attempts
+        else:
+            intelligence_class = repair.debug_intelligence_class
+            timeout, limit = repair.debug_seconds, repair.debug_attempts
+        return {
+            "ordinal": ordinal,
+            "intelligence_class": intelligence_class,
+            "timeout_seconds": timeout,
+            "attempt_limit": limit,
+            "boundary": boundary,
+            "subject": subject,
+        }
+
+    async def fresh_parent_stage_row_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        conflict: dict[str, Any],
+        plan: dict[str, Any],
+        *,
+        now: float,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """A writerless stage row bound to *conflict*, shaped like a debug escalation's.
+
+        Its dossier carries the continuation marker, so a parent policy's
+        literal stage-zero dispatch selects it (:meth:`_effective_dispatch_stage_on`).
+        """
+        ordinal = int(plan["ordinal"])
+        starting_sha = conflict["expected_target"]
+        deadline_at = now + plan["timeout_seconds"]
+        dossier = await self._initial_dossier_on(
+            conn,
+            operation=operation,
+            subject=plan["subject"],
+            starting_sha=starting_sha,
+            trigger_id=conflict["id"],
+            boundary=plan["boundary"],
+            started_at=now,
+            deadline_at=deadline_at,
+        )
+        dossier["budget"] = {
+            "ordinal": ordinal,
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempt_limit": plan["attempt_limit"],
+            "attempts": 0,
+        }
+        dossier["current_conflict"] = {
+            "intent_id": conflict["id"],
+            "source_task_id": conflict["source_task_id"],
+            "source_head": conflict["source_head"],
+            "source_base": conflict["source_base"],
+            "expected_target": starting_sha,
+            "diagnostics": conflict["conflict_diagnostics"] or {},
+        }
+        dossier["continuations"] = [
+            {"intent_id": conflict["id"], "starting_sha": starting_sha, "recorded_at": now}
+        ]
+        dossier.update(extra or {})
+        return {
+            "operation_id": operation["id"],
+            "ordinal": ordinal,
+            "policy": plan["boundary"].repair.model_dump(mode="json"),
+            "intelligence_class": plan["intelligence_class"],
+            # Deprecated column: the router chooses the route from the class hint.
+            "profile_id": None,
+            "repair_task_id": None,
+            "writer_kind": None,
+            "starting_sha": starting_sha,
+            "trigger_id": conflict["id"],
+            "current_subject": plan["subject"],
+            "deadline_event_id": f"repair-deadline-{operation['id']}-{ordinal}",
+            "success_subject": None,
+            "success_evidence_id": None,
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempts": 0,
+            "dossier": dossier,
+            "state": "active",
+        }
 
     async def _resolve_parent_conflict_trigger_on(
         self,
@@ -784,11 +1070,14 @@ class RepairService:
             "continued": True
         }, transition
 
+    @parent_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
+    @root_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
     async def record_result(
         self, operation_id: str, evidence_id: str, *, now: float | None = None
     ) -> dict[str, Any]:
         """Record one exact check attempt under the current stage budget."""
         recorded_at = self.clock() if now is None else now
+        entry_stage = parent_stage_at_entry(self.db, operation_id)
         post_transition = None
         async with self.db.immediate() as conn:
             operation = (
@@ -799,6 +1088,10 @@ class RepairService:
                 )
             ).mappings().one_or_none()
             if operation is None:
+                return self._result_value("continue", "stale", 0)
+            if entry_stage is not None and operation["active_stage"] != entry_stage:
+                # Deadline processing won after the guarded call observed its
+                # stage. Evidence for that visit cannot count in its successor.
                 return self._result_value("continue", "stale", 0)
             previous = (
                 await conn.execute(
@@ -1118,6 +1411,8 @@ class RepairService:
         )
         return {"outcome": outcome, "dispatch": result}
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="busy")
     async def dispatch(self, operation_id: str, stage: int) -> dict[str, Any]:
         """Create and safely hand off to the exact current repair writer."""
         if stage < 0:
@@ -1173,21 +1468,37 @@ class RepairService:
                     task = await self._restore_archived_delegate_on(
                         conn, repair_task_id, operation, repair_stage, target, project_id
                     )
-                if task is None or repair_stage["writer_kind"] != "repair_delegate":
-                    return self._dispatch_value(
-                        "human_required",
-                        operation_id,
-                        stage,
-                        repair_task_id=repair_task_id,
+                if repair_stage["writer_kind"] != "repair_delegate":
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "writer_kind",
+                        f"stage writer {repair_task_id} is a {repair_stage['writer_kind']}, "
+                        "not a repair delegate this command can hand off",
+                        conn=conn, repair_task_id=repair_task_id,
                         writer_kind=repair_stage["writer_kind"],
                     )
-                if not self._delegate_task_matches(task, operation, target, project_id):
+                if task is None:
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_missing",
+                        f"repair delegate {repair_task_id} has no task row and no "
+                        "restorable archive",
+                        conn=conn, repair_task_id=repair_task_id,
+                        writer_kind=repair_stage["writer_kind"],
+                    )
+                if await self.db._read_manual_pause(conn, repair_task_id) is not None:
+                    # An operator's hold on the delegate is a human decision.
                     return self._dispatch_value(
                         "human_required",
                         operation_id,
                         stage,
                         repair_task_id=repair_task_id,
                         writer_kind="repair_delegate",
+                    ) | {"reason": f"repair delegate {repair_task_id} is held by an operator"}
+                if not self._delegate_task_matches(task, operation, target, project_id):
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_mismatch",
+                        f"repair delegate {repair_task_id} ({task['status']}) does not match "
+                        "the operation's project, branch, provenance or a dispatchable status",
+                        conn=conn, repair_task_id=repair_task_id, writer_kind="repair_delegate",
                     )
             else:
                 # The delegate is filed with the stage's class as a hint; the
@@ -1207,8 +1518,12 @@ class RepairService:
                     )
                 ).mappings().one_or_none()
                 if collision is not None:
-                    return self._dispatch_value(
-                        "human_required", operation_id, stage
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "delegate_id_collision",
+                        f"task {repair_task_id} already exists ({collision['status']}, created "
+                        f"by {collision['created_by_kind']} {collision['created_by_id']}) but "
+                        "is not linked to this stage",
+                        conn=conn,
                     )
                 await self.db.create_task(
                     Task(
@@ -1249,12 +1564,11 @@ class RepairService:
 
         owner = await self._ownership.get_owner(target)
         if owner is None:
-            return self._dispatch_value(
-                "human_required",
-                operation_id,
-                stage,
-                repair_task_id=repair_task_id,
-                writer_kind="repair_delegate",
+            return await self._dispatch_unknown(
+                operation_id, stage, "owner_missing",
+                f"integration branch {target.branch} has no owner row to hand to "
+                f"{repair_task_id}",
+                repair_task_id=repair_task_id, writer_kind="repair_delegate",
             )
         # The deadline retires authority, not the writer's unpublished work.
         # Use the existing provider-backed recovery after drain has stopped
@@ -1303,10 +1617,12 @@ class RepairService:
                             integration_repair_stages.c.operation_id == operation_id,
                             integration_repair_stages.c.ordinal == stage,
                         ).values(dossier=dossier))
+                # Preserved history that no longer proves its lineage is an
+                # unexplained remote move: a human decision, not a retry.
                 return self._dispatch_value(
                     "human_required", operation_id, stage, repair_task_id=repair_task_id,
                     writer_kind="repair_delegate",
-                )
+                ) | {"reason": f"preserved repair progress is unusable: {exc}"}
         if (
             owner["owner_id"] == repair_task_id
             and owner["owner_role"] == "repair"
@@ -1361,12 +1677,12 @@ class RepairService:
                 if not released_primary and not self._predecessor_matches(
                     owner, operation
                 ):
-                    return self._dispatch_value(
-                        "human_required",
-                        operation_id,
-                        stage,
-                        repair_task_id=repair_task_id,
-                        writer_kind="repair_delegate",
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "owner_not_predecessor",
+                        f"the fence belongs to {owner['owner_id']} ({owner['owner_role']}, "
+                        f"{owner['handoff_state']}), which is not a predecessor this stage "
+                        f"may take over for {repair_task_id}",
+                        repair_task_id=repair_task_id, writer_kind="repair_delegate",
                     )
                 old_fence = Fence(
                     target=target,
@@ -1456,12 +1772,12 @@ class RepairService:
                 or int(owner["fence_token"]) != fence.token
                 or not (reserved or attached)
             ):
-                return self._dispatch_value(
-                    "human_required",
-                    operation_id,
-                    stage,
-                    repair_task_id=repair_task_id,
-                    writer_kind="repair_delegate",
+                return await self._dispatch_unknown(
+                    operation_id, stage, "handoff_unconfirmed",
+                    f"after the handoff to {repair_task_id} (fence {fence.token}) the stage, "
+                    "owner row, delegate status or attached session no longer form a "
+                    "coherent reserved or attached writer",
+                    conn=conn, repair_task_id=repair_task_id, writer_kind="repair_delegate",
                 )
             ready = []
             if progress is not None and reserved:
@@ -1470,7 +1786,12 @@ class RepairService:
                     current_stage["current_subject"] != progress["subject"]
                     or (current_stage["dossier"] or {}).get("manifest") != progress["manifest"]
                 ):
-                    return self._dispatch_value("human_required", operation_id, stage)
+                    return await self._dispatch_unknown(
+                        operation_id, stage, "progress_subject_moved",
+                        "the stage subject or manifest changed after preserved progress "
+                        f"{progress['ref']} was proven; it is re-proven on the next dispatch",
+                        conn=conn,
+                    )
                 dossier = dict(current_stage["dossier"] or {})
                 dossier.pop("preserved_progress_blocker", None)
                 dossier.update(
@@ -1489,7 +1810,13 @@ class RepairService:
                         | {"starting_sha": progress["sha"], "dossier": dossier},
                     ),
                 ))
-            if reserved and task["status"] == TaskStatus.PAUSED.value:
+            # The fence is handed over either way; an operator hold keeps the
+            # delegate PAUSED until ``aq task resume`` restores it to READY.
+            if (
+                reserved
+                and task["status"] == TaskStatus.PAUSED.value
+                and await self.db._read_manual_pause(conn, repair_task_id) is None
+            ):
                 transition = await self.db._apply_transition(
                     conn,
                     repair_task_id,
@@ -1670,11 +1997,30 @@ class RepairService:
         await self.db._notify_ready(transition.ready)
         return {"outcome": "completed", "event_id": event_id}
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="stale")
     async def expire(
         self, operation_id: str, stage: int, *, now: float | None = None
     ) -> dict[str, Any]:
-        """Conditionally expire the exact current stage at its absolute deadline."""
+        """Conditionally expire the exact current stage at its absolute deadline.
+
+        Under a continuing ladder the clock alone never allocates a writer that
+        nobody needed: a delegate the pool never claimed extends the stage, a
+        live writer is revisited, and a stopped writer that published nothing
+        is proven gone and refiled at the same ordinal.  Conclusive attempts or
+        a moved subject head escalate as before.
+        """
         observed_at = self.clock() if now is None else now
+        try:
+            return await self._expire(operation_id, stage, observed_at, classify=True)
+        except _StoppedWriter as stopped:
+            return await self._expire_stopped_writer(
+                operation_id, stage, stopped.facts, observed_at
+            )
+
+    async def _expire(
+        self, operation_id: str, stage: int, observed_at: float, *, classify: bool
+    ) -> dict[str, Any]:
         if stage < 0:
             return self._timeout_value("stale", "ignore", operation_id, stage)
         async with self.db.immediate() as conn:
@@ -1773,7 +2119,23 @@ class RepairService:
                     conn, dict(operation), dict(row), now=observed_at
                 ):
                     return self._timeout_value("not_due", "wait", operation_id, stage)
-            if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
+            continues = (
+                stage == 0
+                or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
+            )
+            if continues and classify:
+                writer = await self._expiring_writer_on(conn, dict(operation), dict(row))
+                disposition = writer["disposition"] if writer is not None else "ladder"
+                if disposition == "stopped":
+                    # Nothing was written in this transaction; the stop proof
+                    # runs Git and provider probes without the row locks.
+                    raise _StoppedWriter(writer)
+                if disposition != "ladder":
+                    return await self._defer_expiry_on(
+                        conn, dict(operation), dict(row), writer,
+                        reason=writer["reason"], now=observed_at,
+                    )
+            if continues:
                 continued = await self._activate_debug_on(
                     conn,
                     operation=dict(operation),
@@ -1860,6 +2222,499 @@ class RepairService:
         if started is None:
             started = redrive["available_at"]
         return now - float(started) < CONSTRUCTION_REDRIVE_GRACE_SECONDS
+
+    async def _expiring_writer_on(
+        self, conn, operation: dict[str, Any], stage: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Classify a due stage's delegate from durable facts, never from the clock.
+
+        ``ladder`` keeps the existing escalation: a conclusive attempt, a subject
+        head that moved since this writer was allocated, a writer that closed,
+        or a spent refile budget.  ``unclaimed`` is a capacity wait, ``live``
+        and ``held`` are waits, and ``stopped`` needs a stop proof before its
+        ordinal is refiled.  ``None`` leaves a stage without a delegate (or
+        one this cannot read) to the ladder.
+        """
+        from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+        from src.integration.finished_owners import _live_task_session
+        from src.integration.owner_recovery import RECOVERABLE_STATES
+
+        task_id = stage["repair_task_id"]
+        if (
+            stage["state"] != "active"
+            or stage["writer_kind"] != "repair_delegate"
+            or not task_id
+            or stage["deadline_at"] is None
+        ):
+            return None
+        task = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().one_or_none()
+        context = await self._dispatch_context_on(conn, operation["id"], int(stage["ordinal"]))
+        if task is None or context is None:
+            return None
+        target = context[2]
+        owner = (await conn.execute(
+            select(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            ).with_for_update()
+        )).mappings().one_or_none()
+        rows = await self._stage_rows_on(conn, operation["id"])
+        subject_sha = self._subject_sha(stage["current_subject"])
+        facts = {
+            "operation_id": operation["id"],
+            "batch_id": operation.get("batch_id"),
+            "stage": int(stage["ordinal"]),
+            "task_id": task_id,
+            "task_status": task["status"],
+            "claim_epoch": int(task["claim_epoch"] or 0),
+            "attempts": int(stage["attempts"]),
+            "deadline_at": float(stage["deadline_at"]),
+            "subject_sha": subject_sha,
+            "allocation_sha": self._writer_allocation_sha(stage, rows),
+            "target": target,
+            "owner": dict(owner) if owner is not None else None,
+        }
+
+        def verdict(disposition: str, reason: str) -> dict[str, Any]:
+            return facts | {"disposition": disposition, "reason": reason}
+
+        if (
+            facts["attempts"] > 0
+            or not is_valid_git_oid(subject_sha)
+            or subject_sha != facts["allocation_sha"]
+        ):
+            return verdict("ladder", "progress")
+        if await self.db._read_manual_pause(conn, task_id) is not None:
+            return verdict("held", "operator_hold")
+        if await _live_task_session(conn, task_id) is not None:
+            return verdict("live", "writer_live")
+        status = task["status"]
+        attached = bool(
+            owner is not None
+            and owner["owner_id"] == task_id
+            and owner["handoff_state"] in RECOVERABLE_STATES
+        )
+        if status in _UNCLAIMED_STATUSES and not attached:
+            return verdict("unclaimed", "writer_unclaimed")
+        terminal = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+        ))
+        if status not in _STOPPED_STATUSES or (
+            status == TaskStatus.BLOCKED.value and terminal is not None
+        ):
+            return verdict("ladder", "writer_closed")
+        if (
+            len((stage["dossier"] or {}).get("writer_refiles") or []) >= MAX_REFILES_PER_STAGE
+            or self._allocations_on_head(rows, subject_sha) >= MAX_WRITER_ALLOCATIONS_PER_SUBJECT
+        ):
+            return verdict("ladder", "refile_budget_exhausted")
+        return verdict("stopped", "writer_stopped")
+
+    @staticmethod
+    async def _stage_rows_on(conn, operation_id: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in (await conn.execute(
+            select(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == operation_id)
+            .order_by(integration_repair_stages.c.ordinal)
+        )).mappings()]
+
+    @classmethod
+    def _stage_allocation_sha(cls, stage: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+        """The subject head this stage's first writer was allocated on."""
+        dossier = stage["dossier"] or {}
+        allocated = (dossier.get("allocation") or {}).get("subject_sha")
+        if allocated:
+            return str(allocated)
+        ordinal = int(stage["ordinal"])
+        predecessor = next((row for row in rows if int(row["ordinal"]) == ordinal - 1), None)
+        if ordinal == 0 or predecessor is None or dossier.get("continuations"):
+            # Stage zero and a continued conflict move ``starting_sha`` together
+            # with the subject; a successor inherits its predecessor's subject.
+            return str(stage["starting_sha"] or "")
+        return cls._subject_sha(predecessor["current_subject"])
+
+    @classmethod
+    def _writer_allocation_sha(cls, stage: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+        """The subject head the stage's current writer was allocated (or refiled) on."""
+        refiles = (stage["dossier"] or {}).get("writer_refiles") or []
+        if refiles and refiles[-1].get("subject_sha"):
+            return str(refiles[-1]["subject_sha"])
+        return cls._stage_allocation_sha(stage, rows)
+
+    @classmethod
+    def _allocations_on_head(cls, rows: list[dict[str, Any]], head: str) -> int:
+        """Stages and same-ordinal refiles whose writer started on *head*."""
+        return sum(
+            int(cls._stage_allocation_sha(row, rows) == head)
+            + sum(
+                1
+                for refile in (row["dossier"] or {}).get("writer_refiles") or []
+                if refile.get("subject_sha") == head
+            )
+            for row in rows
+        )
+
+    async def _locked_due_stage_on(
+        self, conn, operation_id: str, stage: int, facts: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Re-lock the exact stage *facts* describe, or ``None`` if it moved on."""
+        project_id = (await conn.execute(
+            select(integration_batches.c.project_id)
+            .join(integration_repair_operations,
+                  integration_repair_operations.c.batch_id == integration_batches.c.id)
+            .where(integration_repair_operations.c.id == operation_id)
+        )).scalar_one_or_none()
+        if project_id is not None:
+            await self.db.lock_hierarchy_project(conn, project_id)
+        operation = (await conn.execute(
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.id == operation_id)
+            .with_for_update()
+        )).mappings().one_or_none()
+        row = (await conn.execute(
+            select(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == stage,
+            )
+            .with_for_update()
+        )).mappings().one_or_none()
+        if (
+            operation is None
+            or row is None
+            or operation["state"] not in {"active", "escalated"}
+            or int(operation["active_stage"]) != stage
+            or row["state"] != "active"
+            or row["repair_task_id"] != facts["task_id"]
+            or row["writer_kind"] != "repair_delegate"
+            or int(row["attempts"]) != facts["attempts"]
+            or row["deadline_at"] is None
+            or float(row["deadline_at"]) != facts["deadline_at"]
+            or self._subject_sha(row["current_subject"]) != facts["subject_sha"]
+        ):
+            return None
+        return dict(operation), dict(row)
+
+    async def _defer_expiry_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        stage: dict[str, Any],
+        facts: dict[str, Any],
+        *,
+        reason: str,
+        now: float,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a due stage's deadline forward without consuming its ordinal.
+
+        An unclaimed delegate gets one primary budget (capacity is not a failed
+        repair); anything else is revisited after :data:`WRITER_RECHECK_SECONDS`.
+        Attempts, ordinal, writer and fence are untouched.
+        """
+        ordinal = int(stage["ordinal"])
+        policy = RepairPolicy.model_validate(stage["policy"])
+        seconds = (
+            policy.primary_seconds if reason == "writer_unclaimed" else WRITER_RECHECK_SECONDS
+        )
+        previous = float(stage["deadline_at"])
+        deadline = max(previous, now) + seconds
+        entry = {
+            "reason": reason,
+            "at": now,
+            "previous_deadline_at": previous,
+            "deadline_at": deadline,
+            "task_id": facts["task_id"],
+            "task_status": facts["task_status"],
+            "claim_epoch": facts["claim_epoch"],
+        }
+        if detail:
+            entry["detail"] = detail
+        dossier = dict(stage["dossier"] or {})
+        history = list(dossier.get("deadline_deferrals") or []) + [entry]
+        dossier["deadline_deferrals"] = history[-_DEFERRAL_HISTORY:]
+        dossier["deadline_deferral_count"] = int(dossier.get("deadline_deferral_count") or 0) + 1
+        dossier["budget"] = dict(dossier.get("budget") or {}) | {"deadline_at": deadline}
+        changed = await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == ordinal,
+                integration_repair_stages.c.state == "active",
+                integration_repair_stages.c.deadline_at == previous,
+            )
+            .values(deadline_at=deadline, dossier=dossier)
+        )
+        waiting = self._timeout_value("not_due", "wait", operation["id"], ordinal)
+        if changed.rowcount != 1:
+            return waiting
+        if reason in _NOTICE_DEFERRALS:
+            if reason == "writer_unclaimed":
+                subject = f"Repair stage {ordinal} of {operation['id']} is waiting for a writer"
+                body = (
+                    f"Repair stage {ordinal} of operation {operation['id']} reached its "
+                    f"deadline before any writer claimed delegate {facts['task_id']} "
+                    f"(status {facts['task_status']}, claim epoch {facts['claim_epoch']}). "
+                    "This is a capacity wait, not a failed repair: the deadline moved by "
+                    f"one primary budget to {deadline} and no successor stage was "
+                    "allocated. If it persists, check pool capacity for intelligence class "
+                    f"{stage['intelligence_class']}."
+                )
+            else:
+                subject = f"Repair stage {ordinal} of {operation['id']} cannot refile its writer"
+                body = (
+                    f"Repair stage {ordinal} of operation {operation['id']} is due and its "
+                    f"delegate {facts['task_id']} (status {facts['task_status']}) has "
+                    f"stopped without publishing, but it was not refiled: {reason}"
+                    + (f": {detail}" if detail else "")
+                    + f". The stage is revisited every {WRITER_RECHECK_SECONDS:.0f}s; no "
+                    "successor stage was allocated and the fence was not moved."
+                )
+            await self._stage_notice_on(
+                conn, operation,
+                key=f"repair-deferred:{operation['id']}:{ordinal}:{reason}",
+                subject=subject, body=body, body_kind="integration_repair_deferred", now=now,
+            )
+        return waiting | {"reason": reason, "deadline_at": deadline}
+
+    async def _defer_expiry(
+        self,
+        operation_id: str,
+        stage: int,
+        facts: dict[str, Any],
+        *,
+        reason: str,
+        now: float,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        async with self.db.immediate() as conn:
+            current = await self._locked_due_stage_on(conn, operation_id, stage, facts)
+            if current is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            operation, row = current
+            return await self._defer_expiry_on(
+                conn, operation, row, facts, reason=reason, now=now, detail=detail
+            )
+
+    async def _expire_stopped_writer(
+        self, operation_id: str, stage: int, facts: dict[str, Any], now: float
+    ) -> dict[str, Any]:
+        """Prove a stopped, unpublished writer gone, then refile its ordinal.
+
+        The stop proof is the existing provider-backed owner recovery.  A dry
+        run first: a checkout with unpublished commits keeps the rollover path,
+        whose successor resumes the preserved tip.  A writer with nothing to
+        preserve is released and its own ordinal is re-armed for a new claim.
+        """
+        from src.integration.owner_recovery import (
+            NOT_ELIGIBLE,
+            PRESERVED_AND_RELEASED,
+            RECOVERABLE_STATES,
+        )
+
+        owner = facts["owner"]
+        if (
+            owner is not None
+            and owner["owner_id"] == facts["task_id"]
+            and owner["handoff_state"] in RECOVERABLE_STATES
+        ):
+            if self._owner_recovery is None:
+                return await self._defer_expiry(
+                    operation_id, stage, facts, reason="stop_proof_unavailable", now=now,
+                    detail="no provider-backed owner recovery is configured",
+                )
+            proofs = []
+            for dry_run in (True, False):
+                recovered = await self._owner_recovery.recover(
+                    owner["id"], principal="repair_stage_expiry", dry_run=dry_run
+                )
+                if recovered.outcome == NOT_ELIGIBLE:
+                    return await self._defer_expiry(
+                        operation_id, stage, facts, reason=recovered.reason or "stop_unproven",
+                        now=now, detail=(recovered.evidence or {}).get("detail"),
+                    )
+                if recovered.outcome == PRESERVED_AND_RELEASED:
+                    return await self._expire(operation_id, stage, now, classify=False)
+                proofs.append(recovered)
+            evidence = proofs[-1].evidence or {}
+            proof = {
+                "owner_row_id": owner["id"],
+                "outcome": proofs[-1].outcome,
+                "released_fence_token": evidence.get("released_fence_token"),
+                "stop_proof": evidence.get("stop_proof"),
+                "claim_released": evidence.get("claim_released"),
+            }
+        else:
+            refusal = self._refile_owner_refusal(owner, facts)
+            if refusal is not None:
+                return await self._defer_expiry(
+                    operation_id, stage, facts, reason="stale_fence", now=now, detail=refusal
+                )
+            proof = {
+                "owner_row_id": owner["id"],
+                "outcome": "detached",
+                "owner_id": owner["owner_id"],
+                "handoff_state": owner["handoff_state"],
+                "fence_token": int(owner["fence_token"]),
+            }
+        return await self._refile_stage(operation_id, stage, facts, proof, now)
+
+    @staticmethod
+    def _refile_owner_refusal(owner: dict[str, Any] | None, facts: dict[str, Any]) -> str | None:
+        """Why the branch fence does not belong to this stage's stopped writer."""
+        if owner is None:
+            return "the integration branch has no owner row"
+        if owner["handoff_state"] == "released":
+            return None
+        if (
+            owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None
+            and owner["workspace_id"] is None
+            and (
+                (owner["owner_id"] == facts["task_id"] and owner["owner_role"] == "repair")
+                or (
+                    owner["owner_role"] == "collector"
+                    and owner["owner_id"] in {facts["operation_id"], facts["batch_id"]}
+                )
+            )
+        ):
+            return None
+        return (
+            f"the fence belongs to {owner['owner_id']} ({owner['owner_role']}, "
+            f"{owner['handoff_state']}, token {owner['fence_token']}), not to stopped "
+            f"writer {facts['task_id']}"
+        )
+
+    async def _refile_stage(
+        self,
+        operation_id: str,
+        stage: int,
+        facts: dict[str, Any],
+        proof: dict[str, Any],
+        now: float,
+    ) -> dict[str, Any]:
+        """Re-arm the same ordinal and delegate for a new claim, with a fresh clock.
+
+        The delegate keeps its identity (and so every stage, archive and
+        release relation); only its claim, hold metadata and deadline renew.
+        Attempts are durable, as with a human resume.
+        """
+        from src.integration.finished_owners import _live_task_session
+
+        task_id = facts["task_id"]
+        transition = None
+        async with self.db.immediate() as conn:
+            current = await self._locked_due_stage_on(conn, operation_id, stage, facts)
+            if current is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            operation, row = current
+            task = (await conn.execute(
+                select(tasks).where(tasks.c.id == task_id).with_for_update()
+            )).mappings().one_or_none()
+            if task is None:
+                return self._timeout_value("not_due", "wait", operation_id, stage) | {
+                    "reason": "stage_changed"
+                }
+            if await self.db._read_manual_pause(conn, task_id) is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="operator_hold", now=now
+                )
+            if await _live_task_session(conn, task_id) is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="writer_live", now=now
+                )
+            claimed = (await conn.execute(
+                select(sessions.c.id).where(
+                    sessions.c.task_id == task_id, sessions.c.claim_phase.is_not(None)
+                ).limit(1)
+            )).scalar_one_or_none()
+            if claimed is not None:
+                return await self._defer_expiry_on(
+                    conn, operation, row, facts, reason="stale_claim", now=now,
+                    detail=f"stopped session {claimed} still holds a claim on {task_id}",
+                )
+            policy = RepairPolicy.model_validate(row["policy"])
+            deadline = now + (policy.primary_seconds if stage == 0 else policy.debug_seconds)
+            dossier = dict(row["dossier"] or {})
+            dossier["writer_refiles"] = list(dossier.get("writer_refiles") or []) + [{
+                "task_id": task_id,
+                "claim_epoch": int(task["claim_epoch"] or 0),
+                "task_status": task["status"],
+                "subject_sha": facts["subject_sha"],
+                "previous_deadline_at": float(row["deadline_at"]),
+                "deadline_at": deadline,
+                "refiled_at": now,
+                "stop_proof": proof,
+            }]
+            dossier["budget"] = dict(dossier.get("budget") or {}) | {"deadline_at": deadline}
+            changed = await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == stage,
+                    integration_repair_stages.c.state == "active",
+                    integration_repair_stages.c.repair_task_id == task_id,
+                )
+                .values(deadline_at=deadline, dossier=dossier)
+            )
+            if changed.rowcount != 1:
+                raise _RepairInvariant("repair stage changed while refiling its writer")
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key.in_(_REFILE_CLEARED_HOLDS),
+            ))
+            if task["status"] != TaskStatus.PAUSED.value:
+                transition = await self.db._apply_transition(
+                    conn,
+                    task_id,
+                    TaskStatus.PAUSED,
+                    context="integration_repair_refile",
+                    force=True,
+                    _manual_pause_control=True,
+                    assigned_agent_id=None,
+                )
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                resume_after=None,
+                description=await self._delegate_description_on(
+                    conn, operation, row | {"dossier": dossier}
+                ),
+            ))
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        try:
+            dispatched = (await self.dispatch(operation_id, stage))["outcome"]
+        except Exception:
+            # The stage is durable; the continuation passes retry its dispatch.
+            logger.warning(
+                "Refiled repair stage %s/%s could not dispatch now; the continuation "
+                "passes retry it", operation_id, stage, exc_info=True,
+            )
+            dispatched = "runtime_error"
+        return self._timeout_value("not_due", "wait", operation_id, stage) | {
+            "reason": "writer_refiled", "deadline_at": deadline, "dispatch": dispatched,
+        }
+
+    async def _stage_notice_on(
+        self, conn, operation: dict[str, Any], *, key: str, subject: str, body: str,
+        body_kind: str, now: float,
+    ) -> None:
+        """One supervisor message per *key*, however often the condition recurs."""
+        project_id = await self._operation_project_id_on(conn, operation)
+        await conn.execute(pg_insert(messages).values(
+            id=f"msg-{key}", project_id=project_id,
+            from_kind="system", from_id="integration-repair", to_kind="session",
+            to_id=f"supervisor-{project_id}", subject=subject, body=body,
+            created_at=now, priority=50, archive_after_inject=1, body_kind=body_kind,
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def due_stages(
         self,
@@ -2771,6 +3626,34 @@ class RepairService:
             dossier = self._dossier_with_repair_commits(
                 stage["dossier"], previous_sha, head_sha, commit_proof
             )
+            if commit_proof is not None and previous_sha != head_sha:
+                from src.integration.parent_repair_heads import (
+                    EXTENSIONS, advance_checkpoint_on, extension,
+                )
+
+                owner = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                    integration_branch_owners.c.ref == checkpoint["branch"],
+                ).with_for_update())).mappings().one_or_none()
+                scope = None
+                if owner is not None and owner["session_id"] is not None:
+                    scope = await self.db.get_repair_filing_scope(
+                        owner["owner_id"], session_id=owner["session_id"], conn=conn,
+                    )
+                pending_receipt = await conn.scalar(select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.operation_key == operation_id,
+                    integration_promotion_intents.c.state.in_(["conflict", "resolution_reserved"]),
+                ).limit(1))
+                if scope is not None and scope["active"] and pending_receipt is None:
+                    if scope["operation_id"] != operation_id or scope["stage"] != stage["ordinal"]:
+                        raise ValueError("repair head authoring fence belongs to another stage")
+                    edge = extension(operation, checkpoint, stage, commit_proof, {
+                        "task_id": owner["owner_id"], "session_id": scope["session_id"],
+                        "instance_token": scope["instance_token"],
+                        "workspace_id": scope["workspace_id"], "fence_token": scope["fence_token"],
+                    })
+                    dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
+                    await advance_checkpoint_on(conn, checkpoint, head_sha, observed_at)
             dossier["receipts"] = await self._current_receipts_on(conn, operation)
             await conn.execute(
                 update(integration_repair_stages)
@@ -3443,6 +4326,13 @@ class RepairService:
             f"Starting SHA: {repair_stage['starting_sha']}\n"
             f"Dossier: {repair_stage['dossier']}"
         )
+        refiles = (repair_stage["dossier"] or {}).get("writer_refiles")
+        if refiles:
+            description += (
+                "\n\nThis stage was refiled at the same ordinal: its previous writer "
+                f"(claim epoch {refiles[-1]['claim_epoch']}) stopped without publishing "
+                "anything. Start from the published stage head."
+            )
         progress = (repair_stage["dossier"] or {}).get("preserved_progress")
         if progress:
             description += (
@@ -3731,6 +4621,20 @@ class RepairService:
                     attempts=attempts, now=now, terminal_state=terminal_state,
                 )
                 return False
+        successor_sha = self._subject_sha(primary["current_subject"])
+        if is_valid_git_oid(successor_sha) and self._allocations_on_head(
+            await self._stage_rows_on(conn, operation["id"]), successor_sha
+        ) >= MAX_WRITER_ALLOCATIONS_PER_SUBJECT:
+            # Refiles and successors share one budget per unchanged head.
+            await self._supervisor_recovery_on(
+                conn, operation=operation, stage=primary | {"dossier": primary_dossier},
+                attempts=attempts, now=now, terminal_state=terminal_state,
+                reason=(
+                    f"{MAX_WRITER_ALLOCATIONS_PER_SUBJECT} writers were already allocated "
+                    "on this unchanged subject head"
+                ),
+            )
+            return False
         await conn.execute(
             update(integration_repair_stages)
             .where(
@@ -3747,6 +4651,12 @@ class RepairService:
         )
         primary_budget = dict(primary_dossier.get("budget", {}))
         debug_dossier = dict(primary_dossier)
+        # Refiles and deadline deferrals belong to the stage that made them.
+        for key in ("writer_refiles", "deadline_deferrals", "deadline_deferral_count"):
+            debug_dossier.pop(key, None)
+        debug_dossier["allocation"] = {
+            "subject_sha": successor_sha, "ordinal": next_ordinal, "allocated_at": now,
+        }
         progress = debug_dossier.get("preserved_progress")
         if progress and progress["subject"] != primary["current_subject"]:
             history = list(debug_dossier.get("preserved_progress_history", []))
@@ -3881,14 +4791,15 @@ class RepairService:
         return conflict
 
     async def _supervisor_recovery_on(
-        self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str
+        self, conn, *, operation, stage, attempts: int, now: float, terminal_state: str,
+        reason: str = "repair subject has not advanced since the preceding stage",
     ) -> None:
         """End an unchanged-head budget once; preserve its writer and incident."""
         incident_id = f"repair-no-progress:{operation['id']}:{stage['ordinal']}"
         dossier = dict(stage["dossier"] or {})
         dossier["supervisor_recovery"] = {
             "incident_id": incident_id,
-            "reason": "repair subject has not advanced since the preceding stage",
+            "reason": reason,
             "subject": stage["current_subject"],
             "stage": int(stage["ordinal"]),
             "attempts": attempts,
@@ -4198,6 +5109,61 @@ class RepairService:
         if fence is not None:
             value["fence"] = fence.model_dump(mode="json")
         return value
+
+    async def _dispatch_unknown(
+        self,
+        operation_id: str,
+        stage: int,
+        reason_code: str,
+        reason: str,
+        *,
+        conn=None,
+        repair_task_id: str | None = None,
+        writer_kind: str | None = None,
+    ) -> dict[str, Any]:
+        """A state dispatch did not expect: retryable ``unknown``, never a human gate.
+
+        Nothing is consumed, so the continuation and reservation passes retry
+        the stage as it is.  The supervisor hears once per (operation, reason);
+        the exact reason travels with every result.
+        """
+        if conn is None:
+            async with self.db.immediate() as own:
+                await self._dispatch_unknown_notice_on(
+                    own, operation_id, stage, reason_code, reason
+                )
+        else:
+            await self._dispatch_unknown_notice_on(
+                conn, operation_id, stage, reason_code, reason
+            )
+        return self._dispatch_value(
+            "unknown", operation_id, stage,
+            repair_task_id=repair_task_id, writer_kind=writer_kind,
+        ) | {"reason": reason, "reason_code": reason_code}
+
+    async def _dispatch_unknown_notice_on(
+        self, conn, operation_id: str, stage: int, reason_code: str, reason: str
+    ) -> None:
+        operation = (await conn.execute(
+            select(integration_repair_operations)
+            .where(integration_repair_operations.c.id == operation_id)
+        )).mappings().one_or_none()
+        if operation is None:
+            return
+        await self._stage_notice_on(
+            conn, dict(operation),
+            key=f"repair-dispatch-unknown:{operation_id}:{reason_code}",
+            subject=f"Repair dispatch for {operation_id} is retrying: {reason_code}",
+            body=(
+                f"Dispatching repair stage {stage} of operation {operation_id} met a state "
+                f"it did not expect ({reason_code}): {reason}. This is not a human "
+                "decision: nothing was consumed and the stage stays retryable by the "
+                "repair continuation and reservation passes. This notice is sent once per "
+                "operation and reason."
+            ),
+            body_kind="integration_repair_dispatch_unknown",
+            now=self.clock(),
+        )
 
     @staticmethod
     def _start_value(stage: Any, *, outcome: str) -> dict[str, Any]:

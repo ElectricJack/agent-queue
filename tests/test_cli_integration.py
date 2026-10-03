@@ -40,6 +40,31 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["settle-delivered-batch", "batch"], "integration_settle_delivered_batch",
+         {"batch_id": "batch", "dry_run": True}),
+        (["settle-delivered-batch", "batch", "--apply", "--candidate", "a" * 40,
+          "--target-head", "b" * 40, "--snapshot", "c" * 64, "--reason", "delivered"],
+         "integration_settle_delivered_batch",
+         {"batch_id": "batch", "dry_run": False, "expected_candidate_sha": "a" * 40,
+          "expected_target_sha": "b" * 40, "expected_snapshot_digest": "c" * 64,
+          "reason": "delivered"}),
+        (["engine-transfer", "repo", "--engine", "legacy"], "integration_engine_transfer",
+         {"repository_id": "repo", "engine": "legacy", "expected_versions": {},
+          "reason": "", "evidence": [], "dry_run": True}),
+        (["engine-transfer", "repo", "--engine", "reconciler", "--apply",
+          "--expected-subject", "root:7", "--reason", "reviewed cutover", "--evidence", "shadow-week"],
+         "integration_engine_transfer",
+         {"repository_id": "repo", "engine": "reconciler", "expected_versions": {"root": 7},
+          "reason": "reviewed cutover", "evidence": ["shadow-week"], "dry_run": False}),
+        (["recover-parent-head", "op", "--head", "a" * 40],
+         "integration_recover_parent_head",
+         {"operation_id": "op", "head_sha": "a" * 40, "dry_run": True}),
+        (["recover-parent-head", "op", "--head", "a" * 40, "--apply", "--episode", "episode",
+          "--generation", "2", "--stage", "12", "--fence", "19", "--reason", "reconcile"],
+         "integration_recover_parent_head",
+         {"operation_id": "op", "head_sha": "a" * 40, "dry_run": False,
+          "expected_episode_id": "episode", "expected_generation": 2, "expected_stage": 12,
+          "expected_fence_token": 19, "reason": "reconcile"}),
         (["recover-preserved-repair", "op", "--intent", "intent", "--candidate", "a" * 40],
          "integration_recover_preserved_repair",
          {"operation_id": "op", "intent_id": "intent", "candidate_sha": "a" * 40, "dry_run": True}),
@@ -222,6 +247,22 @@ def _client(result):
             {
                 "task_id": "sharp-impact.1", "dry_run": False,
                 "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "child never assembled",
+            },
+        ),
+        (
+            ["reopen-collection", "calm-grove-25"],
+            "integration_reopen_collection",
+            {"task_id": "calm-grove-25", "dry_run": True},
+        ),
+        (
+            [
+                "reopen-collection", "calm-grove-25", "--apply",
+                "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--reason", "collection cancelled",
+            ],
+            "integration_reopen_collection",
+            {
+                "task_id": "calm-grove-25", "dry_run": False,
+                "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "collection cancelled",
             },
         ),
         (
@@ -471,6 +512,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_clear_stale_request",
         "integration_redrive_root",
         "integration_redrive_child",
+        "integration_reopen_collection",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
@@ -493,6 +535,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "clear-stale-request",
         "redrive-root",
         "redrive-child",
+        "reopen-collection",
         "rebind-reused-identity",
         "rebind-repair",
         "rebind-detached-repair",
@@ -502,6 +545,17 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
     ):
         assert command in result.output
     assert "probe" not in result.output
+
+
+def test_delivered_batch_apply_requires_preview_fences_before_transport():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "settled"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "settle-delivered-batch", "batch", "--apply"])
+    assert result.exit_code == 2
+    assert "--candidate, --target-head, --snapshot and --reason" in result.output
+    client.execute.assert_not_called()
 
 
 def test_rebind_repair_apply_requires_previewed_head_before_transport():
@@ -651,6 +705,8 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
         ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
         ["redrive-child", "c1", "--apply", "--reason", "stuck"],
         ["redrive-child", "c1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["reopen-collection", "p1", "--apply", "--reason", "stuck"],
+        ["reopen-collection", "p1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ),
 )
 def test_redrive_root_apply_needs_the_head_and_a_reason(argv):

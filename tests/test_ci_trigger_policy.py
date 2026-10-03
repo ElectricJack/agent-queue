@@ -426,7 +426,7 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert job_timeout_seconds - E2E_TEST_TIMEOUT_SECONDS >= 450
     run = next(step['run'] for step in e2e['steps'] if step['name'] == 'Run scenario group')
     assert run == (
-        "pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}' "
+        "pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}-' "
         "-m integration -s --durations=0 --junitxml=e2e-results.xml"
     )
     suites = {suite['name']: suite['command'] for suite in jobs['test']['strategy']['matrix']['suite']}

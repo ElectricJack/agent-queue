@@ -179,6 +179,7 @@ def _node(
     subtask_counts=None,
     phase_meta=None,
     phase_holds=None,
+    deliveries=None,
 ) -> LayoutNode:
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
@@ -204,6 +205,7 @@ def _node(
         phase_order=phase_order,
         phase_label=phase_label,
         phase_hold=(phase_holds or {}).get(task["id"]),
+        delivery=(deliveries or {}).get(task["id"]),
     )
 
 
@@ -212,6 +214,23 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
     # Per-router, so a test's throwaway app never reads another test's
     # geometry back out of a process-wide cache.
     geometry_cache: OrderedDict[tuple, _Geometry] = OrderedDict()
+
+    async def _deliveries(rows: list) -> dict[str, dict]:
+        """The epic delivery projection for the rows that have children.
+
+        One batched read for the whole response (plus collection readiness
+        for the few epics whose children are all done); a read failure
+        leaves ``delivery`` unset rather than failing the layout response.
+        """
+        ids = [row.task_id for row in rows if (row.agg_children or 0) > 0]
+        if not ids:
+            return {}
+        from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
+
+        projection = EpicDeliveryProjection(
+            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None))
+        )
+        return await projection.for_tasks(ids)
 
     async def _project_or_404(project_id: str):
         if await db.get_project(project_id) is None:
@@ -659,6 +678,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
             )
         )
+        deliveries = await _deliveries([with_tasks[t][0] for t in visible if t in with_tasks])
         nodes = [
             _node(
                 with_tasks[t][0],
@@ -669,6 +689,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 subtask_counts,
                 phase_meta,
                 phase_holds,
+                deliveries,
             )
             for t, kind in visible.items()
             if t in with_tasks
@@ -797,6 +818,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
             )
         )
+        deliveries = await _deliveries([rows[t] for t in page])
         nodes = [
             _node(
                 rows[t],
@@ -807,6 +829,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 subtask_counts,
                 phase_meta,
                 phase_holds,
+                deliveries,
             )
             for t in page
         ]
@@ -884,6 +907,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 subtask_counts=subtask_counts,
                 phase_meta=phase_meta,
                 phase_holds=phase_holds,
+                deliveries=await _deliveries([row]),
             ),
             ancestors=ancestors,
             layout_version=meta["layout_version"],

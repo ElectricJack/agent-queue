@@ -277,6 +277,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_waive_history",
         "integration_resume",
         "integration_abort",
+        "integration_settle_delivered_batch",
         "integration_develop",
         "integration_adopt",
         "integration_migrate_provenance",
@@ -293,10 +294,12 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_materialize_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_reopen_collection",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
+        "integration_recover_parent_head",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -305,6 +308,37 @@ def test_unimplemented_integration_operations_are_not_registered():
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["would_settle", "settled", "already_settled", "changed", "blocked"])
+async def test_delivered_batch_contract_preserves_preview_identity_and_audit(outcome):
+    payload = dict(batch_id="batch", candidate_sha="a" * 40, target_sha="b" * 40,
+                   snapshot_digest="c" * 64, validation="external delivery; not CI attested",
+                   apply_command="aq integration settle-delivered-batch batch --apply",
+                   repair_completion_ids=["completion"])
+
+    class Handler:
+        async def execute(self, command, args):
+            assert command == "integration_settle_delivered_batch"
+            assert args["batch_id"] == "batch" and args["dry_run"] is True
+            return {"success": outcome in {"would_settle", "settled", "already_settled"},
+                    "outcome": outcome, **payload}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_settle_delivered_batch")
+    set_handler_provider(Handler)
+    try:
+        result = await registration.invoke(
+            registration.contract.execution.args_model(batch_id="batch"), None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == outcome
+    assert result.value.candidate_sha == payload["candidate_sha"]
+    assert result.value.snapshot_digest == payload["snapshot_digest"]
+    assert result.value.apply_command == payload["apply_command"]
+    assert result.value.repair_completion_ids == ("completion",)
 
 
 @pytest.mark.asyncio
@@ -667,6 +701,46 @@ async def test_complete_parent_adapter_passes_every_reachable_outcome_through(ou
         "head_sha": "a" * 40,
         "operation_id": "operation-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_complete_parent_adapter_routes_a_missing_trusted_binding_as_waiting():
+    """A wait for trusted CI evidence reaches reviewed playbooks as ``waiting``.
+
+    The reviewed bundles pin this contract's fingerprint, so the engine's
+    finer refusal is aliased onto the declared ``waiting`` outcome and the
+    exact reason survives in the summary.
+    """
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_complete_parent"
+            return {
+                "success": False,
+                "outcome": "awaiting_trusted_verification",
+                "task_id": "parent",
+                "generation": 5,
+                "head_sha": "a" * 40,
+                "reason": "verification_not_recorded",
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_complete_parent")
+    args = registration.contract.execution.args_model(
+        task_id="parent", generation=5, head_sha="a" * 40
+    )
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == "waiting"
+    assert result.summary == "verification_not_recorded"
+    # The frozen contract, and therefore its fingerprint, is unchanged.
+    execution = registration.contract.execution
+    assert "awaiting_trusted_verification" not in {row.name for row in execution.outcomes}
 
 
 @pytest.mark.parametrize(

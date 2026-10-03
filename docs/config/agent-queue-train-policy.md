@@ -39,8 +39,8 @@ aq playbook v2-validate --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-validate --path reviewed-playbooks/agent-queue-root-train/artifact.json
 aq playbook v2-import --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-import --path reviewed-playbooks/agent-queue-root-train
-aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:a6a39410cf600b46cf90619966d604ae99284d48cf037f60b575a8d1068532eb --enabled
-aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:ba3c982468daebe36942083b23c5662d8f744815723286d2e5adc32b998b88dd --enabled
+aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:1d9c44b083f599b1c2eb9c51c23e8ffaa368b3594a70cf3230356ba165010a8d --enabled
+aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:387536e8e7b0a903270073ae6ce69f51a4dd4eb44ddd3cfdf50939b84d8ae6db --enabled
 aq playbook activation-health --playbook-id agent-queue-parent-integration
 aq playbook activation-health --playbook-id agent-queue-root-train
 ```

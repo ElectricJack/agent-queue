@@ -150,6 +150,33 @@ async def test_all_operator_controls_share_the_live_supervisor_matrix(db):
             assert (refusal is None) is allowed, command
 
 
+async def test_delivered_batch_settlement_requires_operator_and_passes_audit_label(db, monkeypatch):
+    monkeypatch.setattr(db, "get_integration_batch", AsyncMock(return_value={"project_id": "p"}))
+    run = AsyncMock(return_value={"outcome": "would_settle", "batch_id": "batch"})
+
+    class Settlement:
+        def __init__(self, promotion):
+            assert promotion == "promotion-service"
+            self.run = run
+
+    monkeypatch.setattr("src.integration.batch_settlement.DeliveredBatchSettlement", Settlement)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler._integration_promotion_service = lambda: "promotion-service"
+    result = await handler._cmd_integration_settle_delivered_batch({"batch_id": "batch"})
+    assert result["success"] is True
+    assert run.await_args.kwargs["principal"] == "human:local-operator"
+    run.reset_mock()
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_settle_delivered_batch({"batch_id": "batch"})
+    assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+    invalid = await handler._cmd_integration_settle_delivered_batch(
+        {"batch_id": "batch", "dry_run": False})
+    assert invalid["outcome"] == "blocked"
+    run.assert_not_awaited()
+
+
 @pytest.mark.parametrize("principal,allowed", [
     (None, True), (_session("super-p", "p"), True),
     (_session("super-other", "other"), False),
@@ -503,6 +530,83 @@ async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypat
     assert refused["outcome"] == "unauthorized"
     with principal_context(_session("super-other", "other")):
         foreign = await handler._cmd_integration_redrive_child({"task_id": "c1"})
+    assert foreign["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
+@pytest.mark.parametrize("checkpoint_state", [None, "verifying"])
+async def test_reopen_collection_runs_under_the_derived_operator_label(db, monkeypatch, checkpoint_state):
+    from src.models import Task
+    from src.database.tables import task_integration_checkpoints
+
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description=""))
+    if checkpoint_state is not None:
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="epic", repository_id="repo", branch="aq/epic",
+                state=checkpoint_state, updated_at=1.0,
+            ))
+    run = AsyncMock(
+        return_value={"outcome": "would_reopen", "task_id": "epic", "head_sha": "a" * 40}
+    )
+    constructed = []
+
+    class _Recovery:
+        def __init__(self, database, promotion, *, dispatch=None):
+            constructed.append((database, promotion, dispatch))
+            self.run = run
+
+    dispatched = []
+
+    class _Repair:
+        async def dispatch(self, operation_id, stage):
+            dispatched.append((operation_id, stage))
+            return {"outcome": "dispatched"}
+
+    recovery_path = (
+        "src.integration.failed_verification_recovery.FailedVerificationRecovery"
+        if checkpoint_state is not None
+        else "src.integration.cancelled_collection_recovery.CancelledCollectionRecovery"
+    )
+    monkeypatch.setattr(recovery_path, _Recovery)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(promotion_service="promotion", repair_service=_Repair())
+
+    local = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert (local["success"], local["outcome"], local["dry_run"]) == (
+        True, "would_reopen", True,
+    )
+    [(database, promotion, dispatch)] = constructed
+    assert (database, promotion) == (db, "promotion")
+    # A fresh repair stage is dispatched through the daemon's repair service.
+    assert await dispatch("op", 2) == {"outcome": "dispatched"}
+    assert dispatched == [("op", 2)]
+    assert run.await_args.args == ("epic",)
+    assert run.await_args.kwargs["operator_id"] == "human:local-operator"
+
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_reopen_collection(
+            {"task_id": "epic", "dry_run": False, "expected_head_sha": "a" * 40,
+             "reason": "cancelled the whole collection"}
+        )
+    assert run.await_args.kwargs == {
+        "dry_run": False,
+        "expected_head_sha": "a" * 40,
+        "reason": "cancelled the whole collection",
+        "operator_id": "supervisor session:super-p",
+    }
+
+    run.reset_mock()
+    invalid = await handler._cmd_integration_reopen_collection(
+        {"task_id": "epic", "dry_run": False}
+    )
+    assert invalid["outcome"] == "invalid"
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert refused["outcome"] == "unauthorized"
+    with principal_context(_session("super-other", "other")):
+        foreign = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
     assert foreign["outcome"] == "unauthorized"
     run.assert_not_awaited()
 

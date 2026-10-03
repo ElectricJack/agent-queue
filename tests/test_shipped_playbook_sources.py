@@ -59,6 +59,7 @@ REVIEWED_BUNDLE_ROOTS: tuple[str, ...] = ("src/prompts/reviewed_playbooks",)
 
 #: Prompt Markdown that is not a playbook at all.
 NON_PLAYBOOK_PROMPTS = (
+    "src/prompts/formulas",  # task-graph recipes, installed by ensure_default_formulas
     "src/prompts/consolidation_task.md",
     "src/prompts/default_intelligence_classes",
     "src/prompts/execution_focus.md",

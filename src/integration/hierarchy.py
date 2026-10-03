@@ -297,9 +297,11 @@ class HierarchyIntegration:
         ancestry_verifier: AncestryVerifier | None = None,
         ownership: BranchOwnership | None = None,
         git_manager=None,
+        subject_policy_loader=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
+        self.subject_policy_loader = subject_policy_loader
         self.default_head_resolver = default_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
@@ -717,6 +719,8 @@ class HierarchyIntegration:
                     conn, task_id, TaskStatus.PAUSED, context="integration_parent_suspended",
                     assigned_agent_id=None, _manual_pause_control=True,
                 )
+            from src.integration.parent_runtime import ensure_parent_subject_on
+            await ensure_parent_subject_on(self.db, conn, task_id, self.subject_policy_loader, clock=self.clock)
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
         # Crash recovery re-enters above with the same episode and paused
@@ -854,6 +858,8 @@ class HierarchyIntegration:
                     updated_at=self.clock(),
                 )
             )
+            from src.integration.parent_runtime import ensure_parent_subject_on
+            await ensure_parent_subject_on(self.db, conn, task_id, self.subject_policy_loader, clock=self.clock)
             transition = None
             if _suspend:
                 transition = await self.db._apply_transition(

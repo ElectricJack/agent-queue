@@ -3,18 +3,18 @@
 
 # `wait_get`
 
-**Wait Get.** Read a durable wait and its bounded result pointer.
+**Wait Get.** Read a durable wait, optionally consuming its notification.
 
 | Property | Value |
 |---|---|
 | Capability | `wait_get` |
-| Side effect | `read` |
+| Side effect | `composite` |
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:f2fdc8d9cca75554e778f18651341b2f43fdd10a2ff669adb006c99e21e2240f` |
+| Contract fingerprint | `sha256:c294954efbe7275f7d4f89cc5c7f1dacacb6d83d00a13daeb03b8732289ce9cd` |
 
 ## Parameters
 
@@ -24,6 +24,8 @@
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
 | `wait_id` | `string` | yes | — | — |
+| `consume` | `boolean` | no | `false` | — |
+| `claim_epoch` | `integer \| null` | no | `null` | — |
 
 ## Result
 
@@ -72,7 +74,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, task_id, session_id, wait_id | — | always |
+| Composite using project_id, task_id, session_id, wait_id, consume, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: knowledge-records
+    description: "Durable record identities, knowledge schema and immutable revision integrity."
+    match: [tests/test_record*.py, tests/test_knowledge*.py, tests/test_api_knowledge.py]
   # ---------------------------------------------------------------- tasks
   - id: task-lifecycle
     description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
@@ -75,7 +78,7 @@ areas:
       - tests/test_task_graph_live_events.py
   - id: object-loop
     description: "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion."
-    match: [tests/test_object_loop.py]
+    match: [tests/test_object_loop.py, tests/test_object_loop_playbook.py]
   - id: formulas
     description: "Formulas: vault formula parsing, extends/var resolution and chain hashes, provenance in the creation transaction, formula list/show/cook commands, doctor checks and statement budgets."
     match:
@@ -294,6 +297,7 @@ areas:
     description: "Playbook V2 artifacts: the strict definition model, typed expressions and conditions, whole-graph validation, runtime resolution, intent explanation, graph projection, the artifact store and artifact diffs."
     match:
       - tests/test_playbook_v2_definition.py
+      - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
@@ -354,8 +358,10 @@ areas:
     match:
       - tests/test_integration_state.py
       - tests/test_integration_service.py
+      - tests/test_integration_stall_recovery.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
+      - tests/test_integration_batch_settlement.py
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
@@ -363,18 +369,32 @@ areas:
       - tests/test_integration_accepted_repair.py
       - tests/test_integration_outbox.py
       - tests/test_integration_contracts.py
+      - tests/test_integration_subjects.py
+      - tests/test_integration_records_and_gates.py
+      - tests/test_integration_observe.py
+      - tests/test_integration_parent_subjects.py
+      - tests/test_integration_parent_reconciler.py
+      - tests/test_integration_reconciler.py
+      - tests/test_integration_root_adapters.py
+      - tests/test_integration_root_scenarios.py
+      - tests/test_integration_gitops.py
+      - tests/test_integration_reconciler.py
+      - tests/test_integration_observe.py
+      - tests/test_integration_shadow_report.py
       - tests/test_integration_mode.py
       - tests/test_integration_hierarchy.py
       - tests/test_integration_resume_metadata.py
       - tests/test_integration_completion_recovery.py
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
+      - tests/test_integration_ci_producers.py
       - tests/test_integration_cleanup.py
       - tests/test_attestation_check_run_id.py
       - tests/test_hosted_attestation.py
   - id: integration-ownership
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
+      - tests/test_integration_writers.py
       - tests/test_integration_ownership.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
@@ -393,6 +413,7 @@ areas:
     match:
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
+      - tests/test_integration_cancelled_collection.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
       - tests/test_integration_root_pull_requests.py
@@ -567,6 +588,7 @@ areas:
       - tests/test_cli_formatters.py
       - tests/test_cli_global_options.py
       - tests/test_cli_menus.py
+      - tests/test_cli_knowledge.py
       - tests/test_cli_module_entry.py
       - tests/test_cli_module_map.py
       - tests/test_cli_startup_offline.py
@@ -687,6 +709,9 @@ areas:
     match: [tests/test_editor_*.py]
 
   # ------------------------------------------------------------ vault, memory, prompts
+  - id: knowledge-inventory
+    description: "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests."
+    match: [tests/test_knowledge_inventory.py]
   - id: vault
     description: "The vault: directory initialization, central path resolution, the consolidated migration, the watcher and its service facade, index generation and summaries, glossary, wiki links and aq:// URIs, and vault CLI commands."
     match:
@@ -699,6 +724,9 @@ areas:
       - tests/test_readme_handler.py
       - tests/test_override_handler.py
       - tests/test_reference_stub_*.py
+  - id: knowledge-evaluation
+    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks."
+    match: [tests/test_knowledge_evaluation.py]
   - id: memory-facts
     description: "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection."
     match:

@@ -413,7 +413,7 @@ def _render_nudge(batch: list[Message]) -> str:
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
         wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result")
-        return f"Handle `aq wait show {shlex.quote(wait_id)} --json`."
+        return f"Handle `aq wait show {shlex.quote(wait_id)} --consume --json`."
     if batch[0].body_kind == "job_result":
         job_id = batch[0].id.removeprefix("job:").removesuffix(":terminal")
         return f"Handle `aq job result {shlex.quote(job_id)} --json`."

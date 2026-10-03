@@ -64,6 +64,7 @@ from src.playbooks.validation import (  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
+    "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
@@ -308,6 +309,8 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "object-loop":
+        return _object_loop_body(source)
     if playbook_id == "supervisor-hourly-report":
         return _supervisor_hourly_report_body(source)
     if playbook_id == "default-pipeline":
@@ -318,10 +321,22 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
         return _root_integration_train_body(source)
-    if playbook_id == "parent-integration":
-        return _rebased_recorded_body("agent-queue-parent-integration", source)
-    if playbook_id == "agent-queue-parent-integration":
-        return _recorded_semantic_body(playbook_id)
+    if playbook_id in ("parent-integration", "agent-queue-parent-integration"):
+        body = (
+            _rebased_recorded_body("agent-queue-parent-integration", source)
+            if playbook_id == "parent-integration"
+            else _recorded_semantic_body(playbook_id)
+        )
+        transitions = body["steps"]["reconcile-resolution-push--reconcile"]["transitions"]
+        # Exact remote reconciliation may settle through a successor or wait
+        # for its writer. Preserve the contract's success/refusal distinction.
+        transitions.update({
+            "continued": "reconcile-resolution-push--done",
+            "superseded": "reconcile-resolution-push--done",
+            "waiting": "reconcile-resolution-push--failed",
+            "target_moved": "reconcile-resolution-push--failed",
+        })
+        return body
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
@@ -335,6 +350,140 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
     if playbook_id == "github-issue-triage":
         return _github_issue_triage_body(source)
     return {}
+
+
+def _object_loop_body(source: PlaybookSource) -> dict[str, Any]:
+    """Acyclic per-event policy with finite foreach bodies and durable reads."""
+    from src.commands.contracts.object_loop import ObjectLoopStartArgs, ObjectScoreRecordArgs
+
+    rules, steps = [], {}
+    sweep_ref = _source_ref_for_heading(source, "## Sweep")
+    terminal_ref = _source_ref_for_heading(source, "## Failure handling, uniformly")
+
+    def lit(value):
+        return {"type": "literal", "value": value}
+
+    def bound(binding, path):
+        return {"type": "binding_ref", "binding": binding, "path": path}
+
+    def item(path, binding="object"):
+        return {"type": "loop_ref", "binding": binding, "path": path}
+
+    def compare(left, op, right):
+        return {"type": "comparison", "left": left, "op": op, "right": right}
+
+    def truth(value):
+        return {"type": "exists", "value": value, "mode": "truthy"}
+
+    for rule, event in (
+        ("on-formula", "formula.cooked"), ("on-completion", "task.completed"),
+        ("on-failure", "task.failed"), ("on-review", "review.decided"),
+        ("recover", "timer.5m"),
+    ):
+        def sid(name, rule=rule):
+            return f"{rule}--{name}"
+
+        rules.append({
+            "id": rule, "name": rule, "trigger": {"event_type": event},
+            "entry_step": sid("read"),
+            "source": _source_ref_for_heading(source, f"## Rule: {rule}"),
+        })
+
+        def step(name, kind, *, rule=rule, **fields):
+            steps[sid(name)] = {
+                "type": kind, "rule": rule, "title": name,
+                "source": sweep_ref, **fields,
+            }
+
+        def command(name, cmd, inputs, target, binding=None, rejected="failed"):
+            step(name, "command", command=cmd, inputs=inputs,
+                 transitions={"completed": sid(target), "rejected": sid(rejected),
+                              "runtime_error": sid("failed")},
+                 retry={"max_attempts": 2, "backoff_seconds": 1,
+                        "retry_on": ["runtime_error"]},
+                 **({"save_result_as": binding} if binding else {}))
+
+        def decision(name, cases, default):
+            step(name, "decision", cases=[{"when": cond, "goto": sid(target)}
+                                           for cond, target in cases], default=sid(default))
+
+        def foreach(name, collection, binding, body, target):
+            step(name, "foreach", collection=collection, item_binding=binding,
+                 failure_policy="halt", max_iterations=32, body_entry=sid(body),
+                 transitions={"completed": sid(target), "failed": sid("failed"),
+                              "runtime_error": sid("failed")})
+
+        identity = {"project_id": lit("matter-engine-cpp"), "object_id": item("object_id")}
+        artifact = {"type": "context_ref", "path": "artifact_sha256"}
+        command("read", "object_loop_inputs", {"project_id": lit("matter-engine-cpp"),
+                                               "limit": lit(32)}, "starts", "inputs")
+        foreach("starts", bound("inputs", "starts"), "start", "start-check", "loops")
+        decision("start-check", [({"type": "bool", "op": "and", "operands": [
+            truth(item("proposal_approved", "start")),
+            compare(item("policy_artifact", "start"), "eq", artifact),
+        ]}, "start")], "starts")
+        command("start", "object_loop_start", {
+            key: item("request." + key, "start") for key in ObjectLoopStartArgs.model_fields
+        }, "start-reconcile", "started")
+        command("start-reconcile", "object_loop_reconcile", {
+            "project_id": lit("matter-engine-cpp"), "object_id": bound("started", "object_id"),
+        }, "starts")
+        foreach("loops", bound("inputs", "loops"), "object", "policy", "done")
+        decision("policy", [(compare(item("policy_artifact"), "eq", artifact), "choose")],
+                 "loops")
+        decision("choose", [
+            (compare(item("state.status"), "eq", lit("stopped")), "reconcile"),
+            (compare(item("elapsed_seconds"), "gte", lit(86400)), "deadline"),
+            (truth(item("scorer_failed")), "scorer-stop"),
+            (truth(item("state.checkpoint")), "checkpoint"),
+            (truth(item("score")), "score"),
+        ], "reconcile")
+        command("reconcile", "object_loop_reconcile", identity, "loops")
+
+        def stop(name, reason, version=None, *, identity=identity):
+            command(name, "object_loop_reconcile", {
+                **identity, "expected_version": version or item("version"),
+                "stop_reason": lit(reason),
+            }, "loops")
+
+        stop("deadline", "object wall deadline reached")
+        stop("checkpoint-stop", "checkpoint not accepted; evidence retained")
+        stop("adopt-stop", "checkpoint continuation refused by limits",
+             bound("checkpoint", "version"))
+        command("scorer-stop", "object_score_record", {
+            **identity, "expected_version": item("version"),
+            "score_task_id": item("state.score_task_id"), "receipts": lit([]),
+            "action": lit("stop"),
+            "stop_reason": lit("scorer exhausted; retained incumbent; quality unavailable"),
+        }, "reconcile")
+        command("checkpoint", "object_checkpoint_read", identity, "checkpoint-choice", "checkpoint")
+        decision("checkpoint-choice", [
+            (compare(item("review_state"), "in",
+                     lit(["rejected", "withdrawn", "changes_requested"])), "checkpoint-stop"),
+            ({"type": "bool", "op": "and", "operands": [
+                truth(bound("checkpoint", "approved")), truth(item("next_variants")),
+            ]}, "adopt"),
+        ], "loops")
+        command("adopt", "object_loop_reconcile", {
+            **identity, "expected_version": bound("checkpoint", "version"),
+            "next_variants": item("next_variants"),
+        }, "loops", rejected="adopt-stop")
+        score_inputs = {key: item("score." + key) for key in ObjectScoreRecordArgs.model_fields}
+        command("score", "object_score_record", score_inputs, "reconcile", rejected="score-refused")
+        decision("score-refused", [
+            (compare(item("score.action"), "eq", lit("continue")), "score-stop"),
+        ], "failed")
+        command("score-stop", "object_score_record", {
+            **{key: value for key, value in score_inputs.items()
+               if key not in {"review_id", "review_revision", "review_sha256"}},
+            "action": lit("stop"), "next_variants": lit([]),
+            "stop_reason": lit(
+                "continuation refused by score or budget contract; retained verified result"
+            ),
+        }, "reconcile")
+        for name, outcome in (("done", "completed"), ("failed", "failed")):
+            steps[sid(name)] = _terminal(rule, outcome, terminal_ref)
+    return {"rules": rules, "steps": steps}
 
 
 def _github_issue_triage_body(source: PlaybookSource) -> dict[str, Any]:

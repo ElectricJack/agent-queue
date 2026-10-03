@@ -1034,6 +1034,64 @@ class TestAbandonedPoolClaimLoop:
 
 
 class TestPoolLifecycle:
+    @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
+    async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, during
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 30)
+        original = provider.process_alive if during == "process_probe" else provider.peek
+
+        async def kill_during_probe(*args, **kwargs):
+            # session_kill records intent before signalling. The tick already
+            # holds a snapshot from before that command began.
+            await db.update_session(row.id, desired_state="stopped")
+            provider.script_death(row.name)
+            return await original(*args, **kwargs)
+
+        method = "process_alive" if during == "process_probe" else "peek"
+        monkeypatch.setattr(provider, method, kill_during_probe)
+        if during == "final_capture":
+            provider.script_death(row.name)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+        assert not pool_reconciler.test_orch._pool_quarantine
+        bus_verdict = pool_reconciler.bus.payload("session.exited")
+        assert bus_verdict is not None
+        assert bus_verdict["verdict"] == str(Verdict.DRAINED)
+
+    @pytest.mark.parametrize("changed", ["stopped", "replacement"])
+    async def test_pool_exit_probe_does_not_classify_an_ended_or_replaced_instance(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, changed
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 30)
+        original_peek = provider.peek
+        provider.script_death(row.name)
+
+        async def change_during_capture(*args, **kwargs):
+            if changed == "stopped":
+                await db.update_session(row.id, state="stopped", desired_state="stopped")
+            else:
+                await db.update_session(row.id, instance_token="replacement-instance")
+            return await original_peek(*args, **kwargs)
+
+        monkeypatch.setattr(provider, "peek", change_during_capture)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        assert not pool_reconciler.test_orch.terminations
+        assert not pool_reconciler.test_orch._pool_quarantine
+        assert "session.exited" not in pool_reconciler.bus.types()
+        current = await db.get_session(row.id)
+        if changed == "stopped":
+            assert current.state == "stopped"
+        else:
+            assert current.instance_token == "replacement-instance"
+            assert current.state == "running"
+
     async def test_killed_pool_worker_requeues_task_without_quarantining_pool(
         self, db, provider, pool_reconciler, tmp_path
     ):
@@ -2788,7 +2846,7 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
         orch._last_delivery_pass = 0
         await orch._deliver_messages()
     assert provider.sent_nudges == [
-        (row.name, f"Handle `aq wait show {wait['id']} --json`."),
+        (row.name, f"Handle `aq wait show {wait['id']} --consume --json`."),
     ]
     assert (await db.get_message(result["result_message_id"])).delivered_at == clock
     await orch._reconcile_sessions()
@@ -3040,7 +3098,7 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
             await asyncio.sleep(0.5)
         assert received.exists(), "due timer did not reach the idle terminal within 20 seconds"
         assert await provider.last_activity(handle) >= now
-        expected = f"Handle `aq wait show {wait['id']} --json`.\n"
+        expected = f"Handle `aq wait show {wait['id']} --consume --json`.\n"
         assert received.read_text() == expected
         result = await db.get_agent_wait(wait["id"])
         assert result["state"] == "satisfied" and result["result_ref"] == f"timer:{due}"

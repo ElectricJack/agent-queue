@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@xyflow/react", () => ({ Handle: () => null, Position: { Top: "t", Bottom: "b", Left: "l", Right: "r" } }));
 import ContainerNode from "../ContainerNode";
+import { EPIC_DELIVERY as EPIC } from "../../../../testUtils/epicDelivery";
 
 const node = { id: "e", title: "Epic", status: "IN_PROGRESS", priority: 100, is_blocked: false, x: 0, y: 0, w: 3, h: 2, depth: 0,
   container_id: null, kind: "container", context_only: false, agg_children: 3, agg_descendants: 5, agg_completed: 2, agg_running: 1, agg_blocked: 0, agg_active: 3 };
@@ -171,5 +172,31 @@ describe("ContainerNode", () => {
       expect(row.contains(bar)).toBe(true);
       expect(container.querySelectorAll('[data-container-id="e"] > *')).toHaveLength(1);
     });
+  });
+});
+
+describe("ContainerNode epic delivery", () => {
+  it("shows implementation apart from a blocked delivery and never reads an integration hold as paused", () => {
+    const epic = { ...node, status: "PAUSED", agg_completed: 9, agg_descendants: 9, agg_running: 0, delivery: EPIC.strandedReservation };
+    render(<ContainerNode id="e" data={{ node: epic, projectId: "p1" }} /> as never);
+    expect(screen.getByText("9/9 tasks complete")).toBeInTheDocument();
+    expect(screen.getByText("Verification blocked - branch handoff required")).toBeInTheDocument();
+    expect(screen.queryByText(/paused/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "9 of 9 done" })).toBeInTheDocument();
+  });
+
+  it("keeps Paused for an operator hold", () => {
+    const epic = { ...node, status: "PAUSED", delivery: EPIC.manualPause };
+    render(<ContainerNode id="e" data={{ node: epic, projectId: "p1" }} /> as never);
+    expect(screen.getByText("Paused by operator")).toBeInTheDocument();
+  });
+
+  it("marks delivery complete only from the delivered projection", () => {
+    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.queuedVerifier }, projectId: "p1" }} /> as never);
+    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    expect(screen.queryByText("Delivered")).not.toBeInTheDocument();
+    cleanup();
+    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.delivered }, projectId: "p1" }} /> as never);
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
 });
