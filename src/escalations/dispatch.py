@@ -63,6 +63,7 @@ from src.escalations.transport import (
     TransportAmbiguous,
     TransportError,
     TransportMissing,
+    TransportRejected,
 )
 from src.remote_links import DashboardLinkSource
 
@@ -277,22 +278,26 @@ class EscalationDeliveryService:
         report: TickReport,
         *,
         binding: TransportBinding,
-        error: str,
-        retryable: bool,
+        error: TransportError,
     ) -> None:
-        """Bounded backoff, then honest abandonment to ``unknown``."""
+        """Bounded backoff, then honest abandonment to ``unknown``.
+
+        A rejected request skips the backoff: Discord refuses the same request
+        the same way every time, so the retry budget would buy nothing.
+        """
         attempts = int(row["attempt_count"])
-        if retryable and attempts < self._max_attempts:
+        last_error = self._describe(error)
+        if not isinstance(error, TransportRejected) and attempts < self._max_attempts:
             await self._finish(
                 row,
                 report,
                 status="retry",
                 binding=binding,
                 next_attempt_at=self._clock() + backoff_for(attempts),
-                last_error=error,
+                last_error=last_error,
             )
             return
-        await self._finish(row, report, status="unknown", binding=binding, last_error=error)
+        await self._finish(row, report, status="unknown", binding=binding, last_error=last_error)
 
     async def _request_replacement(
         self,
@@ -487,9 +492,7 @@ class EscalationDeliveryService:
             try:
                 outcome = await self.transport.post_root(channel_id=channel_id, content=content)
             except TransportError as exc:
-                await self._fail(
-                    row, report, binding=current, error=self._describe(exc), retryable=True
-                )
+                await self._fail(row, report, binding=current, error=exc)
                 return
             root_id = outcome.root_message_id or outcome.receipt_id
             current = TransportBinding(
@@ -539,9 +542,7 @@ class EscalationDeliveryService:
                 )
                 return
             except TransportError as exc:
-                await self._fail(
-                    row, report, binding=current, error=self._describe(exc), retryable=True
-                )
+                await self._fail(row, report, binding=current, error=exc)
                 return
             thread_id = handle.thread_id
             opener_may_exist = not handle.created
@@ -594,9 +595,7 @@ class EscalationDeliveryService:
                     ),
                 )
                 return
-            await self._fail(
-                row, report, binding=current, error=self._describe(error), retryable=True
-            )
+            await self._fail(row, report, binding=current, error=error)
             return
 
         await self._finish(
@@ -690,7 +689,7 @@ class EscalationDeliveryService:
                     last_error=f"{self._describe(error)}; no replacement is allowed",
                 )
             return
-        await self._fail(row, report, binding=binding, error=self._describe(error), retryable=True)
+        await self._fail(row, report, binding=binding, error=error)
 
     async def _send_thread_text(
         self,
@@ -797,9 +796,7 @@ class EscalationDeliveryService:
                 # and a closed incident is never reposted into a new thread.
                 thread_note = f"thread unavailable ({self._describe(error)})"
             else:
-                await self._fail(
-                    row, report, binding=binding, error=self._describe(error), retryable=True
-                )
+                await self._fail(row, report, binding=binding, error=error)
                 return
 
         try:
@@ -825,9 +822,7 @@ class EscalationDeliveryService:
             )
             return
         except TransportError as exc:
-            await self._fail(
-                row, report, binding=binding, error=self._describe(exc), retryable=True
-            )
+            await self._fail(row, report, binding=binding, error=exc)
             return
 
         if binding.has_thread:

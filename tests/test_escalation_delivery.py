@@ -17,6 +17,7 @@ from src.escalations import (
     SinkTransport,
     TransportAmbiguous,
     TransportMissing,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
     binding_from_deliveries,
@@ -592,6 +593,21 @@ async def test_missing_permission_is_an_actionable_fault_and_stops_after_the_bud
     row = (await db.list_escalation_deliveries("esc-1"))[0]
     assert row["status"] == "unknown"
     assert "TransportUnavailable" in row["last_error"]
+
+
+async def test_a_rejected_send_stops_at_once_instead_of_spending_the_retry_budget(db):
+    """Discord refusing the request itself (400) answers the same way every time."""
+    await make_incident(db)
+    sink = SinkTransport()
+    sink.faults.append(("post_root", TransportRejected("discord 400 (error code: 50035)")))
+    service = make_service(db, sink)
+
+    await service.tick()
+
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "unknown"
+    assert row["last_error"].startswith("TransportRejected")
+    assert sink.calls == ["post_root"]
 
 
 async def test_unconfigured_channel_never_invents_one(db):
