@@ -100,12 +100,12 @@ def _fix(check_id: str, ctx: DoctorContext):
 def test_the_checks_are_registered_by_the_default_registry():
     ids = set(default_registry().ids())
 
-    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK} <= ids
+    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK, checks.PUBLIC_URL} <= ids
 
 
 @pytest.mark.parametrize(
     "check_id",
-    [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK],
+    [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK, checks.PUBLIC_URL],
 )
 def test_a_disabled_dashboard_server_is_info_everywhere(check_id, monkeypatch):
     monkeypatch.setattr(checks, "_probe", lambda url: pytest.fail("no probe when disabled"))
@@ -417,6 +417,85 @@ def test_no_origin_warns_when_discord_posts_and_never_offers_the_health_port(mon
     for result in (posting, silent):
         assert result.data["url"] is None
         assert "8081" not in json.dumps(result.data) and "8081" not in result.detail
+
+
+# ---------------------------------------------------------------------------
+# dashboard.public_url: set, HTTPS or tailnet, and answering with the /focus shell
+# ---------------------------------------------------------------------------
+
+
+def test_public_url_warns_when_empty():
+    result = _run(checks.PUBLIC_URL, _ctx())
+    assert result.severity is Severity.WARN
+    assert "not set" in result.detail
+    assert result.data["why"] == "empty"
+
+
+def test_public_url_warns_when_not_a_usable_origin():
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="not-a-url"))
+    assert result.severity is Severity.WARN
+    assert "not a usable origin" in result.detail
+    assert result.data["why"]  # a non-empty reason, never the value itself
+
+
+def test_public_url_warns_when_loopback_or_wildcard(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe for a bad origin"))
+    for bad in ["http://127.0.0.1:5173", "https://localhost", "http://0.0.0.0"]:
+        result = _run(checks.PUBLIC_URL, _ctx(public_url=bad))
+        assert result.severity is Severity.WARN, bad
+        assert result.data["why"].startswith("names a loopback"), bad
+
+
+def test_public_url_warns_on_plain_http_to_a_non_tailnet_host(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe for HTTP non-tailnet"))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://dashboard.example.com:5173"))
+    assert result.severity is Severity.WARN
+    assert "plain HTTP" in result.detail
+    assert result.data["why"] == "http_non_tailnet"
+
+
+def test_public_url_ok_for_https_origin_serving_the_focus_shell(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "text/html", ""))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+    assert result.severity is Severity.OK
+    assert "focused shell at /focus" in result.detail
+
+
+def test_public_url_ok_for_http_tailnet_ip(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "text/html; charset=utf-8", ""))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://100.73.221.21:5173"))
+    assert result.severity is Severity.OK
+
+
+def test_public_url_warns_when_host_port_is_not_listening(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (0, "", "host:port 100.73.221.21:5173 did not answer (refused)"))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://100.73.221.21:5173"))
+    assert result.severity is Severity.WARN
+    assert "did not answer" in result.detail
+    assert result.data["status"] == 0
+
+
+def test_public_url_warns_when_focus_answers_with_a_non_200(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (404, "", "answered with a non-200 status (404)"))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+    assert result.severity is Severity.WARN
+    assert "non-200" in result.detail
+
+
+def test_public_url_warns_when_focus_is_not_html(monkeypatch):
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "application/json", "answered but not with an HTML shell"))
+    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+    assert result.severity is Severity.WARN
+    assert "HTML shell" in result.detail
+
+
+def test_public_url_is_registered_with_its_owner_and_a_bounded_timeout(monkeypatch):
+    check = next(c for c in checks.dashboard_server_checks() if c.id == checks.PUBLIC_URL)
+    assert check.owner == checks.OWNER
+    assert check.timeout_s == checks._PROBE_SECONDS + 5
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe when disabled"))
+    result = _run(checks.PUBLIC_URL, _ctx(enabled=False))
+    assert result.severity is Severity.INFO
 
 
 # ---------------------------------------------------------------------------

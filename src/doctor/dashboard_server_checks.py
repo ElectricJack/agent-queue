@@ -30,8 +30,10 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,7 @@ BUNDLE = "dashboard.server.bundle"
 PORT = "dashboard.server.port"
 EXPOSURE = "dashboard.server.exposure"
 REMOTE_LINK = "dashboard.remote_link"
+PUBLIC_URL = "dashboard.public_url"
 
 #: What the dashboard server's ``/__aq/health`` names itself
 #: (``src.dashboard_server.process.SERVICE_NAME``; a test keeps them equal).
@@ -467,6 +470,122 @@ async def _check_remote_link(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# dashboard.public_url
+# ---------------------------------------------------------------------------
+
+
+def _focus_shell_probe(url: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str, str]:
+    """``(status, content_type, why)`` for ``GET <url>/focus``; blocking.
+
+    ``why`` completes "…the focused shell …" ("…did not answer" / "answered
+    with a non-200 status" / "answered but not with an HTML shell") and is
+    empty on success.
+    """
+    # First prove the host:port is listening, distinct from a 404, since that is
+    # the primary failure mode the spec names.
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=timeout):
+            pass
+    except (OSError, ValueError) as error:
+        code = getattr(error, "errno", None)
+        short = (
+            "timed out"
+            if code in (socket.ETIMEDOUT, 110)
+            else "refused"
+            if code in (socket.ECONNREFUSED, 111)
+            else f"{type(error).__name__}"
+        )
+        return 0, "", f"host:port {host}:{port} did not answer ({short})"
+    target = f"{url.rstrip('/')}/focus"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(target, timeout=timeout) as response:
+            content_type = response.headers.get("Content-Type", "") or ""
+            status = response.getcode()
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code, "", f"answered with a non-200 status ({error.code})"
+    except (urllib.error.URLError, OSError) as error:
+        reason = getattr(error, "reason", None) or type(error).__name__
+        reason = getattr(reason, "strerror", None) or str(reason)
+        return 0, "", f"host:port {host}:{port} did not answer ({reason})"
+    if status != 200:
+        return status, content_type, f"answered with a non-200 status ({status})"
+    if "html" not in content_type.lower():
+        return status, content_type, "answered but not with an HTML shell"
+    return status, content_type, ""
+
+
+async def _focus_shell_probe_async(url: str) -> tuple[int, str, str]:
+    return await asyncio.to_thread(_focus_shell_probe, url)
+
+
+async def _check_public_url(ctx: DoctorContext) -> CheckResult:
+    section = _section(ctx)
+    if section is None:
+        return _info(PUBLIC_URL, "no dashboard.server settings configured")
+    if not getattr(section, "enabled", False):
+        return _info(PUBLIC_URL, "the dashboard server is disabled (dashboard.server.enabled: false)")
+    public_url = str(getattr(section, "public_url", "") or "").strip()
+    if not public_url:
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                "dashboard.server.public_url (a.k.a. dashboard.public_url) is not set; "
+                "external posts carry the unavailable notice. Point it at the authenticated "
+                "tailnet proxy's HTTPS origin, or the tailnet IP+port -- see spec §4/8 Q1"
+            ),
+            data={"public_url": "", "why": "empty"},
+        )
+    from src.remote_links import is_tailnet_address, normalise_public_origin
+
+    origin, _why = normalise_public_origin(public_url)
+    if not origin:
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                f"dashboard.server.public_url {public_url!r} is not a usable origin ({_why}); "
+                "external posts carry the unavailable notice"
+            ),
+            data={"public_url": public_url, "why": _why},
+        )
+    host = urllib.parse.urlsplit(public_url).hostname or ""
+    if not (public_url.lower().startswith("https://") or is_tailnet_address(host)):
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                f"dashboard.server.public_url {public_url!r} is plain HTTP to a non-tailnet "
+                "host; prefer HTTPS (Tailscale Serve or a reverse proxy) or a Tailscale address -- "
+                "see spec §4/8 Q1"
+            ),
+            data={"public_url": public_url, "host": host, "why": "http_non_tailnet"},
+        )
+    status, content_type, why = await _focus_shell_probe_async(origin)
+    if why:
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                f"dashboard.server.public_url {public_url!r}: {why}. External dashboard links "
+                "carry the unavailable notice until this passes"
+            ),
+            data={"public_url": public_url, "status": status, "content_type": content_type},
+        )
+    return CheckResult(
+        id=PUBLIC_URL,
+        severity=Severity.OK,
+        detail=f"public_url {public_url!r} is up and serves the focused shell at /focus",
+        data={"public_url": public_url, "origin": origin},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -482,6 +601,7 @@ def dashboard_server_checks() -> list[DoctorCheck]:
         DoctorCheck(id=EXPOSURE, run=_check_exposure, owner=OWNER),
         # The Tailscale probe's 2 s deadline plus the health probe's 3 s.
         DoctorCheck(id=REMOTE_LINK, run=_check_remote_link, timeout_s=10.0, owner=OWNER),
+        DoctorCheck(id=PUBLIC_URL, run=_check_public_url, timeout_s=_PROBE_SECONDS + 5, owner=OWNER),
     ]
 
 

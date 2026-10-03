@@ -406,6 +406,10 @@ class DiscordConfig:
     #: single-channel model binds durable delivery to an ID that survives a
     #: rename (§1, §9).  Empty means "not configured yet".
     channel_id: str = ""
+    #: The project this deployment's conversation is bound to (§2.3).  Empty
+    #: means "derive from the sole project at runtime"; when more than one
+    #: project exists the operator must set it.
+    project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
     conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
@@ -4745,6 +4749,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             guild_id=d.get("guild_id", ""),
             authorized_users=d.get("authorized_users", []),
             channel_id=str(d.get("channel_id", "") or ""),
+            project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
             conversation=conversation_cfg,
