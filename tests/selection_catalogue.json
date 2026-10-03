@@ -1373,7 +1373,7 @@
       ]
     }
   },
-  "digest": "sha256:24c3f9e07a06a3803ba882eb235c4ff98f693af341001f0b4442e649990d1e63",
+  "digest": "sha256:169ac519705b3d9656c5a5dacddb8d61322bccc541b1810e843cfd85ae459d8d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13952,9 +13952,13 @@
         "src.database",
         "src.database.tables",
         "src.escalations",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.ownership",
         "src.messages.delivery",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.task_checkpoint",
         "src.sessions.provider",
         "src.sessions.tmux"
       ],
@@ -15826,9 +15830,12 @@
         "src.event_schemas",
         "src.git.manager",
         "src.models",
+        "src.orchestrator.task_checkpoint",
         "src.orchestrator.worktree_manager"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "WorktreeSlotManager against real temp repos."
     },
     "tests/test_worktree_migration.py": {

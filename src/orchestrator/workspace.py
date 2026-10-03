@@ -791,6 +791,7 @@ class WorkspaceMixin:
                     resume_branch=None,
                     target_branch=branch,
                     kind=attachment.kind,
+                    operator_handoff=bool(origin.get("operator_handoff")),
                 )
                 return fence.target.branch
 
