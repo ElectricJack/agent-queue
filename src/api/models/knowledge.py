@@ -28,6 +28,16 @@ class KnowledgeCreateResponse(KnowledgeEnvelope):
     version: int | None = None
 
 
+class KnowledgeCreateTaskResponse(KnowledgeEnvelope):
+    task_id: str
+    task_record_id: str
+    link_id: str
+    route_source: str
+    status: str
+    gate_ids: list[str] = []
+    parent_id: str | None = None
+
+
 class KnowledgeListResponse(KnowledgeEnvelope):
     items: list[dict] = []
     count: int = 0
@@ -40,6 +50,17 @@ class KnowledgeShowResponse(KnowledgeEnvelope):
     sequence: int = 0
     content_sha256: str | None = None
     hash_version: int = 1
+    allowed_actions: list[str] = []
+    protection: str = "none"
+    current_revision_id: str
+    current_sequence: int
+    scope_key: str
+    created_at: str
+    actor_id: str
+    change_kind: str
+    stale: bool = False
+    stale_reason: str | None = None
+    authority: dict | None = None
     snapshot: dict = {}
 
 
@@ -70,6 +91,7 @@ class KnowledgeExportResponse(KnowledgeEnvelope):
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_create": KnowledgeCreateResponse,
+    "knowledge_create_task": KnowledgeCreateTaskResponse,
     "knowledge_list": KnowledgeListResponse,
     "knowledge_show": KnowledgeShowResponse,
     "knowledge_update": KnowledgeUpdateResponse,

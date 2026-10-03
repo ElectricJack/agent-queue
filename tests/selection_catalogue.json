@@ -631,6 +631,7 @@
         "tests/test_knowledge_proposals.py",
         "tests/test_knowledge_redaction.py",
         "tests/test_knowledge_service.py",
+        "tests/test_knowledge_task_creation.py",
         "tests/test_record_backfill.py",
         "tests/test_record_contracts.py",
         "tests/test_record_doctor.py",
@@ -1370,7 +1371,7 @@
       ]
     }
   },
-  "digest": "sha256:45ab6c83ddf72c942d6f91e4d8933e241e0331c252622ab254f156b76345b8ce",
+  "digest": "sha256:5e073179c1e57757e6852fea7f48ef2fd554afee78fbb9e9e3f0279a6e300476",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8856,6 +8857,21 @@
         "parametrize"
       ],
       "summary": "Real PostgreSQL races, canonical bytes, atomic receipts and lexical retrieval."
+    },
+    "tests/test_knowledge_task_creation.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.records.models"
+      ],
+      "markers": [
+        "usefixtures"
+      ],
+      "summary": "Task filing and Save finding stay atomic, guarded and replayable."
     },
     "tests/test_known_tools.py": {
       "areas": [

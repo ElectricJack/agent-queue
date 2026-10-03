@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.knowledge_show_response_authority_type_0 import KnowledgeShowResponseAuthorityType0
     from ..models.knowledge_show_response_snapshot import KnowledgeShowResponseSnapshot
 
 
@@ -19,6 +20,12 @@ T = TypeVar("T", bound="KnowledgeShowResponse")
 class KnowledgeShowResponse:
     """
     Attributes:
+        current_revision_id (str):
+        current_sequence (int):
+        scope_key (str):
+        created_at (str):
+        actor_id (str):
+        change_kind (str):
         success (bool | Unset):  Default: True.
         outcome (None | str | Unset):
         record_id (None | str | Unset):
@@ -29,9 +36,20 @@ class KnowledgeShowResponse:
         knowledge_alias (None | str | Unset):
         sequence (int | Unset):  Default: 0.
         hash_version (int | Unset):  Default: 1.
+        allowed_actions (list[str] | Unset):
+        protection (str | Unset):  Default: 'none'.
+        stale (bool | Unset):  Default: False.
+        stale_reason (None | str | Unset):
+        authority (KnowledgeShowResponseAuthorityType0 | None | Unset):
         snapshot (KnowledgeShowResponseSnapshot | Unset):
     """
 
+    current_revision_id: str
+    current_sequence: int
+    scope_key: str
+    created_at: str
+    actor_id: str
+    change_kind: str
     success: bool | Unset = True
     outcome: None | str | Unset = UNSET
     record_id: None | str | Unset = UNSET
@@ -42,10 +60,29 @@ class KnowledgeShowResponse:
     knowledge_alias: None | str | Unset = UNSET
     sequence: int | Unset = 0
     hash_version: int | Unset = 1
+    allowed_actions: list[str] | Unset = UNSET
+    protection: str | Unset = "none"
+    stale: bool | Unset = False
+    stale_reason: None | str | Unset = UNSET
+    authority: KnowledgeShowResponseAuthorityType0 | None | Unset = UNSET
     snapshot: KnowledgeShowResponseSnapshot | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.knowledge_show_response_authority_type_0 import KnowledgeShowResponseAuthorityType0
+
+        current_revision_id = self.current_revision_id
+
+        current_sequence = self.current_sequence
+
+        scope_key = self.scope_key
+
+        created_at = self.created_at
+
+        actor_id = self.actor_id
+
+        change_kind = self.change_kind
+
         success = self.success
 
         outcome: None | str | Unset
@@ -86,13 +123,44 @@ class KnowledgeShowResponse:
 
         hash_version = self.hash_version
 
+        allowed_actions: list[str] | Unset = UNSET
+        if not isinstance(self.allowed_actions, Unset):
+            allowed_actions = self.allowed_actions
+
+        protection = self.protection
+
+        stale = self.stale
+
+        stale_reason: None | str | Unset
+        if isinstance(self.stale_reason, Unset):
+            stale_reason = UNSET
+        else:
+            stale_reason = self.stale_reason
+
+        authority: dict[str, Any] | None | Unset
+        if isinstance(self.authority, Unset):
+            authority = UNSET
+        elif isinstance(self.authority, KnowledgeShowResponseAuthorityType0):
+            authority = self.authority.to_dict()
+        else:
+            authority = self.authority
+
         snapshot: dict[str, Any] | Unset = UNSET
         if not isinstance(self.snapshot, Unset):
             snapshot = self.snapshot.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
+        field_dict.update(
+            {
+                "current_revision_id": current_revision_id,
+                "current_sequence": current_sequence,
+                "scope_key": scope_key,
+                "created_at": created_at,
+                "actor_id": actor_id,
+                "change_kind": change_kind,
+            }
+        )
         if success is not UNSET:
             field_dict["success"] = success
         if outcome is not UNSET:
@@ -113,6 +181,16 @@ class KnowledgeShowResponse:
             field_dict["sequence"] = sequence
         if hash_version is not UNSET:
             field_dict["hash_version"] = hash_version
+        if allowed_actions is not UNSET:
+            field_dict["allowed_actions"] = allowed_actions
+        if protection is not UNSET:
+            field_dict["protection"] = protection
+        if stale is not UNSET:
+            field_dict["stale"] = stale
+        if stale_reason is not UNSET:
+            field_dict["stale_reason"] = stale_reason
+        if authority is not UNSET:
+            field_dict["authority"] = authority
         if snapshot is not UNSET:
             field_dict["snapshot"] = snapshot
 
@@ -120,9 +198,22 @@ class KnowledgeShowResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.knowledge_show_response_authority_type_0 import KnowledgeShowResponseAuthorityType0
         from ..models.knowledge_show_response_snapshot import KnowledgeShowResponseSnapshot
 
         d = dict(src_dict)
+        current_revision_id = d.pop("current_revision_id")
+
+        current_sequence = d.pop("current_sequence")
+
+        scope_key = d.pop("scope_key")
+
+        created_at = d.pop("created_at")
+
+        actor_id = d.pop("actor_id")
+
+        change_kind = d.pop("change_kind")
+
         success = d.pop("success", UNSET)
 
         def _parse_outcome(data: object) -> None | str | Unset:
@@ -178,6 +269,38 @@ class KnowledgeShowResponse:
 
         hash_version = d.pop("hash_version", UNSET)
 
+        allowed_actions = cast(list[str], d.pop("allowed_actions", UNSET))
+
+        protection = d.pop("protection", UNSET)
+
+        stale = d.pop("stale", UNSET)
+
+        def _parse_stale_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        stale_reason = _parse_stale_reason(d.pop("stale_reason", UNSET))
+
+        def _parse_authority(data: object) -> KnowledgeShowResponseAuthorityType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                authority_type_0 = KnowledgeShowResponseAuthorityType0.from_dict(data)
+
+                return authority_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(KnowledgeShowResponseAuthorityType0 | None | Unset, data)
+
+        authority = _parse_authority(d.pop("authority", UNSET))
+
         _snapshot = d.pop("snapshot", UNSET)
         snapshot: KnowledgeShowResponseSnapshot | Unset
         if isinstance(_snapshot, Unset):
@@ -186,6 +309,12 @@ class KnowledgeShowResponse:
             snapshot = KnowledgeShowResponseSnapshot.from_dict(_snapshot)
 
         knowledge_show_response = cls(
+            current_revision_id=current_revision_id,
+            current_sequence=current_sequence,
+            scope_key=scope_key,
+            created_at=created_at,
+            actor_id=actor_id,
+            change_kind=change_kind,
             success=success,
             outcome=outcome,
             record_id=record_id,
@@ -196,6 +325,11 @@ class KnowledgeShowResponse:
             knowledge_alias=knowledge_alias,
             sequence=sequence,
             hash_version=hash_version,
+            allowed_actions=allowed_actions,
+            protection=protection,
+            stale=stale,
+            stale_reason=stale_reason,
+            authority=authority,
             snapshot=snapshot,
         )
 

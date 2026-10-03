@@ -16,6 +16,8 @@ import rehypeSlug from "rehype-slug";
 
 export interface MarkdownPreviewProps {
   source: string;
+  /** Knowledge content must not load remote image resources. */
+  allowImages?: boolean;
   className?: string;
   /** Documentation URLs keyed by inline command name. */
   inlineCodeLinks?: ReadonlyMap<string, string>;
@@ -60,6 +62,7 @@ function commandCodeComponents(inlineCodeLinks: ReadonlyMap<string, string>): Co
 
 export default function MarkdownPreview({
   source,
+  allowImages = true,
   className,
   inlineCodeLinks,
   headingComponents,
@@ -76,6 +79,7 @@ export default function MarkdownPreview({
       }
     >
       <ReactMarkdown
+        disallowedElements={allowImages ? undefined : ["img"]}
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSlug]}
         components={Object.keys(components).length > 0 ? components : undefined}

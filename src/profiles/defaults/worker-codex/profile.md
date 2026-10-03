@@ -67,6 +67,22 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "knowledge_create",
+    "knowledge_create_task",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    "knowledge_retire",
+    "knowledge_restore",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "link_create",
+    "link_list",
+    "link_remove",
+
     "knowledge_export",
     "knowledge_propose",
     "knowledge_proposal_show",

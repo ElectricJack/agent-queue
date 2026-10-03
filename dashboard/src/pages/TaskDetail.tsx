@@ -1,3 +1,4 @@
+import TaskKnowledgeSection from "./knowledge/TaskKnowledgeSection";
 import { useState } from "react";
 import { useParams, Link, useLocation } from "react-router-dom";
 import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
@@ -111,7 +112,9 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
 
       {activeTab === "details" && (
         <>
-      <TaskDescription key={task.id} task={task} />
+      <TaskKnowledgeSection key={task.id} projectId={task.project_id ?? ""} taskId={task.id}>
+        <TaskDescription task={task} />
+      </TaskKnowledgeSection>
 
       <TaskSessions taskId={task.id} />
 

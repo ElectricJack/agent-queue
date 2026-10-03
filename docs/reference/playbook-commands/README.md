@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-171 commands are registered.
+172 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -168,6 +168,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
 | [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
+| [`knowledge_create_task`](knowledge_create_task.md) | Knowledge Create Task | File one ordinary task with an exact motivated_by knowledge link. |
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
 | [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
 | [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |

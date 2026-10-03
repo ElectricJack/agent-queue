@@ -28,6 +28,14 @@ def _knowledge_scope(args):
 
 
 class KnowledgeCommandsMixin:
+    async def _cmd_knowledge_create_task(self, args):
+        from src.knowledge.task_creation import create_task_from_knowledge
+
+        try:
+            return await create_task_from_knowledge(self, args, current_principal())
+        except RecordError as exc:
+            return exc.result()
+
     async def _cmd_knowledge_export(self, args):
         from src.records.export import RecordExporter
 
@@ -111,6 +119,8 @@ class KnowledgeCommandsMixin:
             }
             return await self._knowledge_service().create(
                 snapshot=snapshot,
+                source_task_id=args.get("source_task_id"),
+                if_link_token=args.get("if_link_token"),
                 principal=principal,
                 project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
@@ -119,12 +129,15 @@ class KnowledgeCommandsMixin:
         except RecordError as exc:
             return exc.result()
 
-    async def _search(self, args, *, query=""):
+    async def _search(self, args, *, query="", operation="knowledge_list"):
         return await self._knowledge_service().search(
             principal=current_principal(),
             project_id=_knowledge_scope(args),
             query=query,
+            operation=operation,
             category=args.get("category"),
+            lifecycle=args.get("lifecycle"),
+            verification=args.get("verification"),
             include_retired=bool(args.get("include_retired", False)),
             include_disputed=bool(args.get("include_disputed", False)),
             limit=int(args.get("limit", 25)),
@@ -276,6 +289,14 @@ class KnowledgeCommandsMixin:
                 for name in principal.policy.aq_commands
                 if name.startswith(("knowledge_", "record_", "link_"))
             }
+        if principal is not None and principal.kind.value == "local":
+            from src.commands.contracts.registry import CONTRACTS
+
+            grants = {
+                name
+                for name in CONTRACTS.names()
+                if name.startswith(("knowledge_", "record_", "link_"))
+            }
         return {
             "success": True,
             "outcome": "read",
@@ -284,6 +305,16 @@ class KnowledgeCommandsMixin:
                 "global_enabled": cfg.global_enabled,
                 "writes_enabled": cfg.writes_enabled,
                 "ui_enabled": cfg.ui_enabled,
+                "enabled_projects": [
+                    project
+                    for project in cfg.enabled_projects
+                    if principal is not None
+                    and (
+                        principal.kind.value == "local"
+                        or principal.project_id == project
+                        or (principal.elevated and principal.project_id is None)
+                    )
+                ],
                 "legacy_memory_mode": cfg.legacy_memory_mode,
                 "features": {
                     name: getattr(cfg, name).enabled

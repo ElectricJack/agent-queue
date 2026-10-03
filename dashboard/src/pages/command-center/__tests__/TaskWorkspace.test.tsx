@@ -1,3 +1,4 @@
+vi.mock("../../../api/knowledge", () => ({ useKnowledgeCapabilities: () => ({ data: { available: false } }) }));
 /** Entering a container is navigation; changing a filter is not.
  *
  *  Containers are never expanded in place (operator decision 2026-09-20), so

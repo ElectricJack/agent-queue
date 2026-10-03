@@ -70,6 +70,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "knowledge_propose",
         "knowledge_proposal_show",
         "knowledge_create",
+        "knowledge_create_task",
         "knowledge_list",
         "knowledge_show",
         "knowledge_update",
