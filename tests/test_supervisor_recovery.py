@@ -1,6 +1,7 @@
 """Durable incident delivery and bounded, claim-fenced supervisor decisions."""
 
 import asyncio
+import subprocess
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -21,7 +22,8 @@ from src.database.tables import (
     task_integration_checkpoints,
 )
 from src.models import (
-    Agent, AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus,
+    KIND_MODE_WORKTREE, Agent, AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord,
+    Task, TaskStatus, Workspace, WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -768,7 +770,7 @@ async def test_operator_stop_is_a_decision_not_an_incident(env):
     assert not await queued_messages(env)
 
 
-async def released_handoff(env):
+async def released_handoff(env, *, base_sha="a" * 40, preserved_sha="b" * 40):
     """The durable state left by a stopped pool writer and operator release-owner."""
     await env.db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE))
     await env.db.create_profile(AgentProfile(id="codex-worker", name="Codex"))
@@ -793,7 +795,7 @@ async def released_handoff(env):
                 task_id="t",
                 repository_id="r",
                 branch_name="aq/keep",
-                base_sha="a" * 40,
+                base_sha=base_sha,
                 creation_generation=0,
                 reserved=True,
                 materialized=True,
@@ -805,7 +807,7 @@ async def released_handoff(env):
                 task_id="t",
                 repository_id="r",
                 branch="aq/keep",
-                checkpoint_sha="a" * 40,
+                checkpoint_sha=base_sha,
                 updated_at=1,
             )
         )
@@ -837,7 +839,7 @@ async def released_handoff(env):
                     "claim_released": True,
                     "workspace_unlocked": True,
                     "preserved_ref": "aq/preserved/owner",
-                    "preserved_sha": "b" * 40,
+                    "preserved_sha": preserved_sha,
                 "stop_proof": {
                     "session_id": "s",
                     "instance_token": "s",
@@ -891,6 +893,94 @@ async def test_resume_operator_released_reroute_consumes_budget_and_preserves_pr
     assert decided["routing"] == current["routing"]  # Never rewrite the incident snapshot.
     comments = await env.handler.execute("task_comments", {"task_id": "t"})
     assert "Operator handoff evidence" in comments["comments"][0]["body"]
+
+
+def _handoff_git(path, *args):
+    return subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+        cwd=path, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("guard", [None, "stale_fence", "moved_preserved_ref"])
+async def test_audited_operator_handoff_reconciles_saved_checkpoint_in_real_slot(
+    env, tmp_path, guard
+):
+    from src.git.manager import GitError
+    from src.integration.models import Fence
+    from src.integration.ownership import StaleFence
+    from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+    remote = tmp_path / "origin.git"
+    _handoff_git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    base = tmp_path / "base"
+    _handoff_git(tmp_path, "clone", str(remote), str(base))
+    (base / "README.md").write_text("original\n")
+    _handoff_git(base, "add", ".")
+    _handoff_git(base, "commit", "-m", "initial")
+    _handoff_git(base, "push", "origin", "main")
+    original = _handoff_git(base, "rev-parse", "HEAD")
+    kind = WorkspaceKind(project_id="p", id="project-repo", mode=KIND_MODE_WORKTREE)
+    base_ws = Workspace(
+        id="base", project_id="p", workspace_path=str(base),
+        source_type=RepoSourceType.CLONE, kind_id=kind.id,
+    )
+    await env.db.create_workspace(base_ws)
+    mgr = env.orch._worktree_slots()
+    slot = await mgr.create_slot(base_ws, kind, 0)
+    path = tmp_path / "base" / ".aq" / "worktrees" / "slot-0"
+    task = await env.db.get_task("t")
+    await mgr.reset_slot_for_task(slot, task, base_branch=original, target_branch="aq/keep")
+    _handoff_git(path, "push", "origin", "aq/keep")
+    (path / "saved.txt").write_text("staged checkpoint work\n")
+    _handoff_git(path, "add", "saved.txt")
+    (path / "saved.txt").write_text("unstaged checkpoint work\n")
+    await capture_checkpoint(env.db, env.orch.git, "t", str(path))
+    saved = await env.db.get_task_meta("t", CHECKPOINT_META)
+    _handoff_git(path, "reset", "--hard")
+    _handoff_git(path, "clean", "-fd", "-e", ".aq-worktree.json")
+    _handoff_git(path, "switch", "--detach")
+    (path / "preserved.txt").write_text("audited preserved work\n")
+    _handoff_git(path, "add", "preserved.txt")
+    _handoff_git(path, "commit", "-m", "preserved")
+    preserved = _handoff_git(path, "rev-parse", "HEAD")
+    _handoff_git(path, "push", "origin", "HEAD:refs/heads/aq/preserved/owner")
+    # Published continuation after the release also wins over the older snapshot.
+    (path / "published.txt").write_text("newer canonical work\n")
+    _handoff_git(path, "add", "published.txt")
+    _handoff_git(path, "commit", "-m", "published descendant")
+    published = _handoff_git(path, "rev-parse", "HEAD")
+    _handoff_git(path, "push", "origin", "HEAD:refs/heads/aq/keep")
+    await released_handoff(env, base_sha=original, preserved_sha=preserved)
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+    assert "error" not in result, result
+    project = await env.db.get_project("p")
+    task = await env.db.get_task("t")
+    origin, fence, _ = await env.orch._hierarchy_origin_and_fence(task, project)
+    assert origin["operator_handoff"]["sha"] == preserved
+    attachment = SimpleNamespace(workspace=slot, kind=kind)
+    if guard == "stale_fence":
+        fence = Fence(target=fence.target, owner_id=fence.owner_id, token=fence.token - 1)
+    elif guard == "moved_preserved_ref":
+        _handoff_git(path, "push", "origin", "HEAD:refs/heads/aq/preserved/owner")
+    if guard:
+        with pytest.raises(StaleFence if guard == "stale_fence" else GitError):
+            await env.orch._prepare_exact_origin_workspace(task, project, attachment, origin, fence)
+        assert _handoff_git(path, "branch", "--show-current") == ""
+        assert _handoff_git(path, "status", "--porcelain") == ""
+    else:
+        branch = await env.orch._prepare_exact_origin_workspace(
+            task, project, attachment, origin, fence
+        )
+        assert branch == "aq/keep"
+        assert _handoff_git(path, "branch", "--show-current") == branch
+        assert (path / "preserved.txt").read_text() == "audited preserved work\n"
+        assert (path / "published.txt").read_text() == "newer canonical work\n"
+        assert _handoff_git(path, "show", ":saved.txt") == "staged checkpoint work"
+        assert (path / "saved.txt").read_text() == "unstaged checkpoint work\n"
+    assert _handoff_git(path, "rev-parse", "HEAD") == published
+    assert await env.db.get_task_meta("t", CHECKPOINT_META) == saved
+    assert _handoff_git(path, "rev-parse", saved["ref"]) == saved["commit"]
 
 
 @pytest.mark.parametrize(
