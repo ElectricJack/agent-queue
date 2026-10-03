@@ -1,7 +1,7 @@
 """Durable integration subjects and their append-only journal.
 
 Revision ID: a00000000057
-Revises: a00000000054
+Revises: a00000000055
 
 Additive only (rev-agile-ridge revision 2, phase 1): ``integration_subjects``
 is the one row the level-triggered reconciler visits per root batch, parent
@@ -21,7 +21,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "a00000000057"
-down_revision = "a00000000054"
+down_revision = "a00000000055"
 branch_labels = None
 depends_on = None
 

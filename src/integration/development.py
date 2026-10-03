@@ -31,12 +31,15 @@ from src.database.queries.blocked_state import (
     obsolete_marker,
 )
 from src.database.tables import (
-    events, projects, sessions, task_completion_records,
-    task_metadata, tasks,
+    events,
+    projects,
+    sessions,
+    task_completion_records,
+    task_metadata,
+    tasks,
 )
 from src.git.manager import GitError, GitManager, commit_identity, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
-from src.jobs.policy import JobError, presets, validate_args
 from src.integration.delegate_release import release_delegates_on
 from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
@@ -50,24 +53,43 @@ from src.integration.delivery_branches import (
     released_integration_refs,
     remote_heads,
 )
-from src.integration.development_stalls import (
-    DEFAULT_STALL_AFTER, PUBLISHER_SKIP_KEY, PublisherStalls, SweepObservation,
+from src.integration.delivery_truth import (
+    MISSING_PROVENANCE,
+    SETTLEMENT_KEY,
+    DeliverySnapshot,
+    DeliveryState,
+    delivery_snapshot,
+    load_delivery_requests,
+    settlement_fields,
 )
 from src.integration.development_settlement import (
-    DELIVERED_TO_PREVIOUS_TARGET, OPERATOR_SETTLED, REPAIR_FOR_PREVIOUS_TARGET,
-    SOURCES_NOT_OWED, notify_settlements_on, previous_target, repair_target_of, retarget_of,
-    settlement_record, write_settlements_on,
+    DELIVERED_TO_PREVIOUS_TARGET,
+    OPERATOR_SETTLED,
+    REPAIR_FOR_PREVIOUS_TARGET,
+    SOURCES_NOT_OWED,
+    notify_settlements_on,
+    previous_target,
+    repair_target_of,
+    retarget_of,
+    settlement_record,
+    write_settlements_on,
+)
+from src.integration.development_stalls import (
+    DEFAULT_STALL_AFTER,
+    PUBLISHER_SKIP_KEY,
+    PublisherStalls,
+    SweepObservation,
 )
 from src.integration.development_validation import run_check as run_validation_check
-from src.integration.delivery_truth import (
-    MISSING_PROVENANCE, SETTLEMENT_KEY, DeliverySnapshot, DeliveryState, delivery_snapshot,
-    load_delivery_requests, settlement_fields,
-)
-from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.parent_engine import parent_engine_guard
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.publishable_artifact import (
-    EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY, has_publishable_artifact,
+    EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY,
 )
+from src.integration.publishable_artifact import (
+    has_publishable_artifact,
+)
+from src.jobs.policy import JobError, presets, validate_args
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -1554,6 +1576,16 @@ class DevelopmentIntegration:
         project_id = project.id
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
+        # A reconciler-owned target is an expected no-op for the legacy sweep.
+        # Check before entering the root ownership guard so its fail-closed
+        # refusal does not turn ordinary ownership into a publisher failure.
+        # The check inside exclusion remains necessary for concurrent transfers.
+        from src.integration.development_adapter import development_subject_owns_target
+
+        if await development_subject_owns_target(
+            self.db, project_id, repo.id, "refs/heads/" + repo.default_branch,
+        ):
+            return {"outcome": "subject_owned", "parked": []}
         async with nullcontext() if _moved else self.exclusion(repo.id):
             # Shadow subjects and an unowned subject leave this path active.
             # The shared writer takes this same repository exclusion, so a
