@@ -37,8 +37,8 @@ from src.install.steps import StepContext, StepRegistry, StepSpec
 FAKE_KEY = "sk-ant-notarealkey-000111222333444555666777888999"
 
 
-def _completed(command, code=0, stdout=""):
-    return subprocess.CompletedProcess(command, code, stdout=stdout, stderr="")
+def _completed(command, code=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(command, code, stdout=stdout, stderr=stderr)
 
 
 def _support() -> SupportVerdict:
@@ -72,6 +72,36 @@ def _env(tmp_path, **extra) -> dict[str, str]:
 
 def _present(*names):
     return lambda command: f"/opt/bin/{command}" if command in names else None
+
+
+def _found(executable: Path):
+    """A PATH lookup that resolves the bare name to this one file."""
+    return lambda command: str(executable)
+
+
+#: A provider CLI built before it documented the status subcommand, answering
+#: the way a commander-style CLI does: words on stderr, a non-zero exit, and
+#: nothing whatever about a login.  `/bin/sh` keeps the fixture byte-identical
+#: on every host and it names no account, plan or key.
+_WITHOUT_THE_STATUS_SUBCOMMAND = """#!/bin/sh
+echo "error: unknown command 'status'" >&2
+exit 1
+"""
+
+#: The same build answering the question it *was* asked, redacted to the shape
+#: of a real one: not signed in, with nothing identifying in the text.
+_ANSWERED_NOT_SIGNED_IN = """#!/bin/sh
+echo '{"loggedIn": false, "authMethod": "none"}' >&2
+exit 1
+"""
+
+
+def _fake_cli(tmp_path, script: str, name: str = "claude") -> Path:
+    """Write *script* as an executable provider CLI and return its path."""
+    path = tmp_path / name
+    path.write_text(script, encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def _never_signed_in(command):
@@ -474,6 +504,188 @@ def test_a_present_store_survives_a_status_command_that_could_not_tell(tmp_path)
     assert probe.authenticated
     assert probe.source == "Claude Code credential file"
     assert probe.stale_store is None
+
+
+# -- an unavailable status command is not an answer -------------------------
+
+
+def test_a_cli_without_the_status_subcommand_leaves_the_store_standing(tmp_path):
+    """The 2026-10-03 follow-up: an older build answers about its own CLI.
+
+    ``claude auth status`` does not exist in every installed build, and one
+    without it complains about the *command* and exits non-zero — the same
+    shape as a signed-out answer.  Read as a denial it refused the credential
+    store a perfectly good login had left behind and told the operator to sign
+    in again; ``docs/specs/provider-failover.md`` D5a promises the opposite.
+    """
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.installed and probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+def test_a_cli_that_answered_not_signed_in_is_still_a_denial(tmp_path):
+    """The other half of the same fixture pair: an answer keeps refusing."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _ANSWERED_NOT_SIGNED_IN)),
+    )
+
+    assert not probe.authenticated
+    assert probe.stale_store == "Claude Code credential file"
+
+
+def test_a_configured_credential_outranks_a_status_command_that_is_not_there(tmp_path):
+    """Presence is weak evidence and an unavailable command is not evidence."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path, ANTHROPIC_API_KEY=FAKE_KEY),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.authenticated
+    assert probe.method == "api-key"
+    assert probe.source == "ANTHROPIC_API_KEY"
+    assert probe.stale_store is None
+
+
+def test_an_unavailable_status_command_authenticates_nothing_by_itself(tmp_path):
+    """A "cannot tell" answer must not become a claim in either direction."""
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.installed and not probe.authenticated
+    # No store, no environment, no status answer: nothing is claimed and
+    # nothing is blamed.
+    assert probe.stale_store is None
+    assert probe.source is None
+    assert probe.method is None
+
+
+@pytest.mark.parametrize(
+    "complaint",
+    [
+        "error: unknown command 'status'",
+        "error: unrecognized subcommand 'status'",
+        "unknown subcommand: status",
+        "error: unsupported command 'auth status'",
+        "error: no such command 'status'",
+        "error: invalid command 'status'",
+        "error: command not found: status",
+    ],
+)
+def test_a_cli_complaining_about_the_command_itself_cannot_tell(tmp_path, complaint):
+    """The phrases each CLI family uses for a subcommand it does not have."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=1, stderr=complaint),
+    )
+
+    assert probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "",
+        "Not logged in. Run `codex login`.",
+        "Invalid API key · Please run /login",
+        '{"loggedIn": false, "authMethod": "none"}',
+        "OAuth token expired; re-authentication required",
+    ],
+)
+def test_a_provider_asked_about_its_login_answers_signed_out(tmp_path, answer):
+    """No false positives: a denial is a denial, whatever words it uses."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=1, stdout=answer),
+    )
+
+    assert not probe.authenticated
+    assert probe.stale_store == "Claude Code credential file"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Signed in as person@example.com (last command: unknown command aborted)",
+        "Logged in. Recent: `no such command` while resuming an old session",
+    ],
+)
+def test_a_successful_status_command_is_never_downgraded_by_its_output(tmp_path, answer):
+    """A zero exit is an answer, and a phrase inside it cannot take it back.
+
+    The output of a signed-in CLI can quote the operator's own last command, a
+    session title or an account name.  Only a run that already failed is read
+    for a complaint about the command, so none of that can turn a signed-in
+    harness into silence — or, worse, into a denial.
+    """
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=0, stdout=answer),
+    )
+
+    assert probe.authenticated
+    assert probe.source == "claude auth status"
+    assert probe.stale_store is None
+
+
+def test_an_unavailable_status_command_is_not_retried_and_carries_nothing(tmp_path):
+    """Asking a CLI that has no such command again teaches it nothing."""
+    calls = []
+
+    def unavailable(command):
+        calls.append(command)
+        return _completed(
+            command,
+            code=1,
+            stderr=f"error: unknown command 'status' (tried with {FAKE_KEY})",
+        )
+
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=unavailable,
+    )
+
+    assert len(calls) == 1
+    assert probe.authenticated
+    assert probe.stale_store is None
+    # The complaint was read to classify the run and discarded: none of it is
+    # in the answer the operator sees.
+    assert FAKE_KEY not in json.dumps(probe.detail())
 
 
 def test_a_refused_store_names_no_credential_and_fails_the_install_step(tmp_path):
