@@ -610,6 +610,48 @@ async def test_supervisor_answer_closes_the_exact_dialog_and_resumes_that_sessio
     assert env.escalations == []
 
 
+async def test_delivery_re_reads_the_store_in_the_session_project(env):
+    # The scan resolves per session row (see
+    # ``test_the_scan_resolves_each_session_in_its_own_project``), but delivery
+    # re-reads the store itself: ``_native_plan``, ``_press_escape`` and
+    # ``_native_cleared`` each call ``_native_snapshot(row)`` with no source,
+    # so the row's project has to travel from there too.  Reverse override --
+    # the system ``opencode-zen`` runs codex, and project ``p`` alone
+    # overrides it back to the ``opencode`` executable.  Resolved at system
+    # scope the scan still finds the dialog (it resolves through the row) but
+    # delivery then finds no store at all: the accepted answer stays
+    # ``answered``, no Escape reaches the pane, and the worker stays blocked
+    # on the dialog it cannot close.
+    registry = HarnessRegistry()
+    registry.upsert(Harness(id="opencode-zen", command="/opt/bin/codex", provider="opencode"))
+    registry.upsert(Harness(
+        id="opencode-zen", command="/usr/bin/opencode", provider="opencode", project_id="p",
+    ))
+    await env.db.update_session("s", harness="opencode-zen")
+    svc = AgentQuestionService(
+        env.db, env.bus, env.registry, env.config,
+        native_sources=lambda h, project_id=None: resolve_native_question_source(
+            h, env.data_dir, registry=registry, project_id=project_id
+        ),
+    )
+
+    env.store.ask(ROOT, "call_1", at=env.now - 100)
+    await svc.tick(now=env.now)
+    rows = await env.db.list_agent_questions(session_id="s")
+    assert len(rows) == 1
+    q = rows[0]
+    assert parse_native_turn_id(q["turn_id"]) == ("opencode", ROOT, "call_1")
+    env.provider.on_key = lambda key: env.store.settle(ROOT, "call_1", "error")
+
+    result = await handler_for(env, svc).execute(
+        "question_answer",
+        {"question_id": q["id"], "body": "Both", "_scope": await global_supervisor(env)},
+    )
+
+    assert result["state"] == "delivered", result
+    assert env.provider.keys == [("p-worker", "original", "Escape")]
+
+
 @pytest.mark.parametrize("change", ["claim", "instance"])
 async def test_answer_for_a_moved_claim_is_rejected_and_types_nothing(env, change):
     svc, q = await asked(env)
