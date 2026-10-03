@@ -105,6 +105,14 @@ aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-int
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
 
+The controls keyed by a task, operation, batch or reservation — `resume`, `abort`,
+`retry-cleanup`, `eject`, `redrive-root`, `redrive-child`, `reopen-collection`, `record-noop`,
+`reserve-owner`, `release-owner` — take no `project_id`, so who may run them is decided by
+*whose target they name*: the project's own supervisor may run them against its own work, and
+is refused anything belonging to another project. `PROJECT_ID`-keyed controls
+(`enable`, `flush`, `waive-history`, …) are the reverse shape and are pinned to the token's
+project directly. The scope model is [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
 `reopen-collection` also recovers a suspended producer whose close detached its
 workspace but left a `worker` reservation on the parent branch. The dry run
 reports `kind: suspended_worker`, the current episode, operation, published head
