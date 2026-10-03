@@ -113,7 +113,7 @@ def _source_status(source: Any) -> str:
     return str(getattr(raw, "value", raw) or "")
 
 
-def _gate_resolved(
+def gate_resolved_rule(
     row: Mapping[str, Any], ctx: RuleContext, source: Mapping[str, Any] | None
 ) -> AutoDecision | None:
     """§5.5 row 1: the gate resolved, so the question has its answer.
@@ -142,7 +142,7 @@ def _gate_resolved(
     )
 
 
-def _task_terminal(
+def task_terminal_rule(
     row: Mapping[str, Any], ctx: RuleContext, source: Mapping[str, Any] | None
 ) -> AutoDecision | None:
     """§5.5 row 3: the task reached a terminal status, so nobody needs to decide."""
@@ -171,6 +171,12 @@ def _stale_expired(
     the incident -- so a reply, a supervisor turn or a severity change all reset
     the clock.  A gate incident is exempt: a gate that is still open is still
     being waited on, and §5.5 row 1 already owns its closure.
+
+    Deliberately *not* part of the §5.6 sweep's rule table (it is private for
+    that reason): a sweep run over the back-fill pile would retire every
+    month-old task-less question on this row alone, which is the "mark all
+    obsolete" reading of §8 Q5 that Jack rejected in favour of §5.6 step 4's
+    supervisor triage.
     """
     if str(row.get("source_kind") or "") == "gate":
         return None
@@ -192,8 +198,8 @@ def _stale_expired(
 #: a resolved gate is the one closure that carries an *answer*, and an answered
 #: incident should never be recorded as merely abandoned.
 AUTO_RESOLVE_RULES: tuple[Callable[..., AutoDecision | None], ...] = (
-    _gate_resolved,
-    _task_terminal,
+    gate_resolved_rule,
+    task_terminal_rule,
     _stale_expired,
 )
 
@@ -328,4 +334,6 @@ __all__ = [
     "AutoResolveReport",
     "EscalationAutoResolver",
     "RuleContext",
+    "gate_resolved_rule",
+    "task_terminal_rule",
 ]

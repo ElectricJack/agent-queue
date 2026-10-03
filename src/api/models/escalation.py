@@ -135,6 +135,19 @@ class EscalationApplyReplyResponse(BaseModel):
     action_result: dict[str, Any] | None = None
 
 
+class EscalationSweepResponse(BaseModel):
+    """One §5.6 sweep pass: the plan, and what the pass did about it."""
+
+    success: bool = True
+    mode: str
+    plan: dict[str, Any]
+    report: dict[str, Any]
+    open_before: int
+    open_after: int
+    target_open_items: int
+    within_target: bool
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "escalation_create": EscalationCreateResponse,
     "escalation_list": EscalationListResponse,
@@ -142,4 +155,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "escalation_reply": EscalationReplyResponse,
     "escalation_update": EscalationUpdateResponse,
     "escalation_apply_reply": EscalationApplyReplyResponse,
+    "escalation_sweep": EscalationSweepResponse,
 }

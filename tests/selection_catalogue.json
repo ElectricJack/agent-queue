@@ -354,7 +354,8 @@
         "tests/test_escalation_delivery.py",
         "tests/test_escalation_intake.py",
         "tests/test_escalation_queries.py",
-        "tests/test_escalation_state.py"
+        "tests/test_escalation_state.py",
+        "tests/test_escalation_sweep.py"
       ]
     },
     "events": {
@@ -774,6 +775,7 @@
         "tests/test_migration_digest_author_requests.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
+        "tests/test_migration_escalation_message_direction.py",
         "tests/test_migration_escalation_state.py",
         "tests/test_migration_escalation_stateful_outcomes.py",
         "tests/test_migration_guard.py",
@@ -1395,7 +1397,7 @@
       ]
     }
   },
-  "digest": "sha256:fbbd1c56c1c49f169c5edb0161ad43ad6579fc8d8a7ff52e88f0aafe053477fc",
+  "digest": "sha256:bb55c2e13166b7b130b1833bd57e482706c8a09ccf4429ce4999cc94669f901f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5274,6 +5276,7 @@
         "src.doctor.dashboard_server_checks",
         "src.doctor.dashboard_state_checks",
         "src.doctor.db_checks",
+        "src.doctor.escalation_checks",
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
@@ -5857,6 +5860,24 @@
         "parametrize"
       ],
       "summary": "Escalations are stateful: one post, edited in place, closed on evidence."
+    },
+    "tests/test_escalation_sweep.py": {
+      "areas": [
+        "escalations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.doctor.escalation_checks",
+        "src.doctor.models",
+        "src.doctor.runner",
+        "src.escalations.sweep",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "§5.6's back-fill sweep: the pile, the dry run, and what an apply leaves behind."
     },
     "tests/test_event_bus.py": {
       "areas": [
@@ -9906,6 +9927,18 @@
         "migration"
       ],
       "summary": "The verified-reply action reservation revision upgrades on PostgreSQL."
+    },
+    "tests/test_migration_escalation_message_direction.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The ``direction=system`` widening upgrades, is enforced, and refuses to roll back."
     },
     "tests/test_migration_escalation_state.py": {
       "areas": [

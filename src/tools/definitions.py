@@ -102,6 +102,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
@@ -7333,6 +7334,28 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "action_kind",
                     "target_id",
                 ],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_sweep",
+            "description": (
+                "Plan the §5.6 back-fill sweep over the escalation pile and, with apply, run it. "
+                "Without apply it is a dry run that writes nothing: it returns the plan per "
+                "escalation, what it would close, and what it would list for supervisor triage. "
+                "Gated by discord.escalations.stateful; idempotent, so a second run is a no-op."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "apply": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Close and triage as planned instead of only printing it.",
+                    },
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
+                },
                 "additionalProperties": False,
             },
         },

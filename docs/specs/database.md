@@ -153,13 +153,13 @@ Unique: (`project_id`, `incident_key`) and (`project_id`, `source_kind`, `source
 
 ### Table: `escalation_messages`
 
-Immutable inbound and outbound conversation facts. Verified actor identity is supplied by a trusted command boundary. Transport/external-message uniqueness collapses replay. For an accepted open reply, `supervisor_message_id` points to the supervisor notice inserted in the same transaction.
+Immutable conversation facts. Verified actor identity is supplied by a trusted command boundary. Transport/external-message uniqueness collapses replay. For an accepted open reply, `supervisor_message_id` points to the supervisor notice inserted in the same transaction. `direction` names the author: `inbound` is a verified human reply, `outbound` a supervisor answer (the only direction relayed into the channel thread), and `system` the daemon's own audit note — the §5.6 sweep's `sweep: <rule>` trail, which is neither answered nor relayed.
 
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
 | `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
-| `direction` | TEXT | inbound or outbound |
+| `direction` | TEXT | inbound, outbound or system |
 | `transport` | TEXT | NOT NULL |
 | `verified_actor` | TEXT | NOT NULL |
 | `text` | TEXT | NOT NULL, 1–16000 characters |

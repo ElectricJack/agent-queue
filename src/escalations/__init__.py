@@ -18,6 +18,8 @@ interesting rules stay testable without a gateway:
   once, reconciles an ambiguous send and records the receipt;
 * :mod:`src.escalations.autoresolve` — §5.5's rules, which close an incident
   whose source went away;
+* :mod:`src.escalations.sweep` — §5.6's one-shot back-fill sweep over the pile
+  those rules inherited, dry-run first;
 * :mod:`src.escalations.intake` — the mirror of the planner: which inbound
   transport messages are allowed to become a verified human reply.
 
@@ -96,6 +98,18 @@ from src.escalations.state import (
     thread_archived,
 )
 from src.escalations.supervisor import SupervisorDeliveryWatchdog
+from src.escalations.sweep import (
+    ACTION_OBSOLETE,
+    ACTION_RESOLVE,
+    ACTION_TRIAGE,
+    SWEEP_RULES,
+    TARGET_OPEN_ITEMS,
+    EscalationSweeper,
+    SweepFacts,
+    SweepItem,
+    SweepPlan,
+    SweepReport,
+)
 from src.escalations.transport import (
     EscalationTransport,
     SendOutcome,
@@ -111,6 +125,9 @@ __all__ = [
     "ACTION_ACCEPT",
     "ACTION_CLOSED",
     "ACTION_IGNORE",
+    "ACTION_OBSOLETE",
+    "ACTION_RESOLVE",
+    "ACTION_TRIAGE",
     "AUTO_OBSOLETE_TASK_STATUSES",
     "AUTO_RESOLVE_RULES",
     "COLLAPSED_STATES",
@@ -132,12 +149,15 @@ __all__ = [
     "STATE_OPEN",
     "STATE_RESOLVED",
     "STATE_STALE",
+    "SWEEP_RULES",
+    "TARGET_OPEN_ITEMS",
     "AutoDecision",
     "AutoResolveReport",
     "DeliveryPlan",
     "EscalationAutoResolver",
     "EscalationDeliveryService",
     "EscalationFacts",
+    "EscalationSweeper",
     "EscalationTransport",
     "InboundMessage",
     "IntakeDecision",
@@ -147,6 +167,10 @@ __all__ = [
     "SendOutcome",
     "SinkTransport",
     "SupervisorDeliveryWatchdog",
+    "SweepFacts",
+    "SweepItem",
+    "SweepPlan",
+    "SweepReport",
     "TickReport",
     "TransportAmbiguous",
     "TransportBinding",

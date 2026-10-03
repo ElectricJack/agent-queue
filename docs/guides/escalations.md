@@ -326,6 +326,52 @@ reflex:
 Dependency waits, in-flight retries and unchanged queue state never create an
 incident.
 
+## Sweeping the back-fill pile
+
+Before escalations were stateful, every incident the daemon ever raised got a
+channel post and nothing ever edited it, so the channel accumulated a pile of
+questions nobody was waiting on any more. One idempotent pass clears it:
+
+```bash
+aq escalation sweep                    # dry run: writes nothing, prints the plan
+aq escalation sweep --apply            # close and triage exactly what it printed
+aq doctor --check escalations.pile     # the same plan as a health line
+aq doctor --check escalations.pile --fix
+```
+
+What the sweep does, in order:
+
+1. resolve incidents whose gate has already resolved;
+2. obsolete `supervisor_delivery` notices (the delivery backlog behind one has
+   drained, or it never reached a decision point);
+3. obsolete questions whose task reached `COMPLETED`;
+4. obsolete the two provable cases among the task-less questions — an incident
+   in a project that is not `ACTIVE`, and one whose own source record (a gate
+   row) no longer exists — and send the rest to the supervisor's inbox for
+   triage. Every remaining question keeps its `sweep: triage` audit row, so a
+   second run lists nothing twice.
+
+It never guesses. A source kind it cannot resolve (`core`,
+`provider_availability`) is listed for triage rather than called retired, because
+the cheap mistake is a line of text for the supervisor and the expensive one is
+closing a question somebody still wanted answered. Live gates are left alone: a
+gate that is still pending is a decision somebody is owed, not a leftover.
+
+Each closure records the rule that caused it in `escalations.outcome` and one
+`escalation_messages` row with `direction=system` and `text="sweep: <rule>"`, so
+the history shows why an incident closed without anybody speaking. Collapsing
+the channel post is not the sweep's job: a closed incident is already planned
+for one in-place `resolution` edit by the delivery pump, which owns the pacing,
+the retry backoff and the thread archive.
+
+The dry run is the default and `--apply` is the only way to write, so the plan
+can be reviewed first — which is how the rollout was meant to go. Both the
+command and `doctor --fix` build the same plan from
+[`EscalationSweeper`](../../src/escalations/sweep.py), gated on
+`discord.escalations.stateful`; with the flag off the pile is left exactly as it
+is. The check reports the open count against the ten-open-items target, so what
+is still open after a sweep is visible as a number rather than a scroll.
+
 ## For contributors: how delivery stays exactly-once-ish
 
 External delivery is driven from the `escalation_deliveries` outbox by
@@ -467,6 +513,6 @@ of [`src/config.py`](../../src/config.py). The spec is
 ```bash
 aq test tests/test_digest.py tests/test_digest_dispatch.py tests/test_digest_commands.py \
   tests/test_escalation_delivery.py tests/test_escalation_intake.py \
-  tests/test_discord_escalation_transport.py tests/test_discord_intake_diagnostics.py \
-  tests/test_discord_docs.py
+  tests/test_escalation_sweep.py tests/test_discord_escalation_transport.py \
+  tests/test_discord_intake_diagnostics.py tests/test_discord_docs.py
 ```

@@ -15,6 +15,7 @@ from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.database.queries.escalation_queries import EscalationConflict, EscalationStateError
+from src.escalations.sweep import SCAN_LIMIT, TARGET_OPEN_ITEMS, EscalationSweeper
 
 logger = logging.getLogger(__name__)
 
@@ -585,3 +586,72 @@ class EscalationCommandsMixin:
             "escalation": finished["escalation"],
             "action_result": action_result,
         }
+
+    async def _cmd_escalation_sweep(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Plan the §5.6 back-fill sweep; apply it only when asked.
+
+        The dry run is the default and writes nothing, so the review of the plan
+        happens before any incident closes.  ``--apply`` runs the *same* plan --
+        it is not a second code path -- so the two cannot disagree about what
+        would happen.
+        """
+        if error := self._reject_authority_args(args):
+            return error
+        principal = current_principal() or TRUSTED_LOCAL
+        project_id = args.get("project_id")
+        if principal.kind in {PrincipalKind.SESSION, PrincipalKind.PLAYBOOK}:
+            if principal.project_id is None and not principal.elevated:
+                return _error("out_of_scope", "a project-scoped principal is required")
+            if principal.project_id is not None:
+                if project_id is not None and project_id != principal.project_id:
+                    return _error("out_of_scope", "escalations belong to another project")
+                project_id = principal.project_id
+        if project_id is not None:
+            _, error = await self._authorize_escalation_project(project_id)
+            if error:
+                return error
+        apply = args.get("apply", False)
+        if not isinstance(apply, bool):
+            return _error("invalid_request", "apply must be a boolean")
+        limit = args.get("limit", SCAN_LIMIT)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+            return _error("invalid_request", "limit must be between 1 and 500")
+        sweeper = EscalationSweeper(
+            self.db,
+            self.config,
+            on_close=self._emit_sweep_close,
+        )
+        plan, report = await sweeper.run(
+            project_id=project_id, apply_changes=apply, limit=limit
+        )
+        open_after = report.open_after if apply else plan.open_before
+        return {
+            "success": True,
+            "mode": "apply" if apply else "dry_run",
+            "plan": plan.to_dict(),
+            "report": report.to_dict(),
+            "open_before": plan.open_before,
+            "open_after": open_after,
+            "target_open_items": TARGET_OPEN_ITEMS,
+            "within_target": open_after <= TARGET_OPEN_ITEMS,
+        }
+
+    async def _emit_sweep_close(self, incident: Mapping[str, Any]) -> None:
+        """Publish the same version-1 state hint every other escalation write does.
+
+        The sweep closes incidents through the query layer, not through a
+        command, so without this the dashboard and any watcher would only learn
+        about a closure on their next read.
+        """
+        await self._emit_escalation(
+            "escalation.updated.v1",
+            {
+                "escalation_id": incident["id"],
+                "project_id": incident["project_id"],
+                "task_id": incident.get("task_id"),
+                "state": incident["state"],
+                "revision": incident["revision"],
+                "terminal_outcome": incident.get("terminal_outcome"),
+                "swept_by": "escalation_sweep",
+            },
+        )

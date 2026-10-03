@@ -4340,6 +4340,48 @@
         }
       }
     },
+    "/api/escalation/sweep": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Plan the \u00a75.6 back-fill sweep over the escalation pile and, with apply, run it. Without apply it is a dry run that writes nothing: it returns the plan per escalation, what it would close, and what it would list for supervisor triage. Gated by discord.escalations.stateful; idempotent, so a second run is a no-op.",
+        "description": "Plan the \u00a75.6 back-fill sweep over the escalation pile and, with apply, run it. Without apply it is a dry run that writes nothing: it returns the plan per escalation, what it would close, and what it would list for supervisor triage. Gated by discord.escalations.stateful; idempotent, so a second run is a no-op.",
+        "operationId": "escalation_sweep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationSweepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationSweepResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/escalation/update": {
       "post": {
         "tags": [
@@ -30344,6 +30386,87 @@
           "terminal"
         ],
         "title": "EscalationReplyResponse"
+      },
+      "EscalationSweepRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "Close and triage as planned instead of only printing it.",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 500
+          }
+        },
+        "type": "object",
+        "title": "EscalationSweepRequest"
+      },
+      "EscalationSweepResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Plan"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Report"
+          },
+          "open_before": {
+            "type": "integer",
+            "title": "Open Before"
+          },
+          "open_after": {
+            "type": "integer",
+            "title": "Open After"
+          },
+          "target_open_items": {
+            "type": "integer",
+            "title": "Target Open Items"
+          },
+          "within_target": {
+            "type": "boolean",
+            "title": "Within Target"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "plan",
+          "report",
+          "open_before",
+          "open_after",
+          "target_open_items",
+          "within_target"
+        ],
+        "title": "EscalationSweepResponse",
+        "description": "One \u00a75.6 sweep pass: the plan, and what the pass did about it."
       },
       "EscalationUpdateRequest": {
         "properties": {

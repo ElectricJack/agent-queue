@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 513,
+    "leaf_commands": 514,
     "registration": {
-      "generated": 336,
+      "generated": 337,
       "handwritten": 177
     },
     "ownership": {
-      "core": 474,
+      "core": 475,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 512
+      "supported": 513
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 336,
+      "dispatch": 337,
       "registration": 163
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 453
+      "untested": 454
     }
   },
   "commands": [
@@ -1968,6 +1968,41 @@
         ],
         "optional": [
           "--received-sequence",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq escalation sweep",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "escalation_sweep",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--apply",
+          "--limit",
           "--json",
           "--brief",
           "--save-output",
