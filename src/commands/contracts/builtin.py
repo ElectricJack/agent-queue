@@ -1998,6 +1998,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
 
     register_protection_contracts(registry)
     register_knowledge_contracts(registry)
+    from src.commands.contracts.knowledge_generation import register_generation_contracts
+
+    register_generation_contracts(registry)
     register_record_contracts(registry)
     from src.commands.contracts.inventory import register_inventory_contracts
 

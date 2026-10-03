@@ -5946,6 +5946,39 @@ record_backfill_state = Table(
     ),
 )
 
+# K12 derived provider index receipts. A rebuildable checkpoint for one
+# provider's optional semantic index of an exact revision: never
+# authoritative, never a substitute for the revision it describes, and
+# retained after erasure so the acknowledgment stays auditable.
+record_index_state = Table(
+    "record_index_state",
+    metadata,
+    Column("provider_id", Text, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("chunk_manifest_sha256", Text, nullable=False),
+    Column("indexed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("redacted_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("provider_id", "record_id", name="pk_record_index_state"),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id", "sequence"],
+        [
+            "knowledge_revisions.record_id",
+            "knowledge_revisions.revision_id",
+            "knowledge_revisions.sequence",
+        ],
+        name="fk_record_index_state_revision",
+    ),
+    CheckConstraint("sequence > 0", name="ck_record_index_state_sequence"),
+    CheckConstraint(
+        "provider_id ~ '^[a-z][a-z0-9_-]{0,63}$'", name="ck_record_index_state_provider"
+    ),
+    CheckConstraint(
+        "chunk_manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_index_state_manifest"
+    ),
+)
+
 # create_all is used by the squashed baseline as well as disposable fixtures.
 # SQL functions must precede checks; deferred guards follow table creation.
 # K05 protection records. Authoritative state stays in PostgreSQL, not exports.
@@ -6231,6 +6264,94 @@ record_import_items = Table(
     ),
 )
 
-from src.records.schema import register_record_schema_events
+# Prepared evidence and observed delivery are separate from execution state.
+knowledge_context_bundles = Table(
+    "knowledge_context_bundles", metadata,
+    Column("bundle_id", UUID, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_instance", Text, nullable=False),
+    Column("claim_epoch", BigInteger),
+    Column("principal_fingerprint", Text, nullable=False),
+    Column("request_fingerprint", Text, nullable=False),
+    Column("scope_keys", JSONB, nullable=False),
+    Column("budget", JSONB, nullable=False),
+    Column("selection", JSONB, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("prepared_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("redacted_at", DateTime(timezone=True)),
+    CheckConstraint("owner_kind IN ('task_attempt','supervisor_session')",
+                    name="ck_knowledge_context_bundles_owner_kind"),
+    CheckConstraint("(owner_kind = 'task_attempt' AND claim_epoch IS NOT NULL "
+                    "AND claim_epoch >= 0) OR (owner_kind = 'supervisor_session' "
+                    "AND claim_epoch IS NULL)", name="ck_knowledge_context_bundles_claim"),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'",
+                    name="ck_knowledge_context_bundles_hash"),
+    CheckConstraint("jsonb_typeof(scope_keys) = 'array' AND jsonb_typeof(budget) = 'object' "
+                    "AND jsonb_typeof(selection) = 'object'",
+                    name="ck_knowledge_context_bundles_json"),
+    CheckConstraint("expires_at >= prepared_at", name="ck_knowledge_context_bundles_expiry"),
+    Index("idx_knowledge_context_bundles_request", "request_fingerprint", "expires_at"),
+)
+
+knowledge_context_deliveries = Table(
+    "knowledge_context_deliveries", metadata,
+    Column("delivery_id", UUID, primary_key=True),
+    Column("bundle_id", UUID, ForeignKey("knowledge_context_bundles.bundle_id",
+                                       ondelete="RESTRICT"), nullable=False),
+    Column("transport", Text, nullable=False),
+    Column("transport_key", Text, nullable=False, unique=True),
+    Column("state", Text, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("rendered_sha256", Text, nullable=False),
+    CheckConstraint("state IN ('prepared','delivered','failed','unknown')",
+                    name="ck_knowledge_context_deliveries_state"),
+    CheckConstraint("rendered_sha256 ~ '^[0-9a-f]{64}$'",
+                    name="ck_knowledge_context_deliveries_hash"),
+)
+
+knowledge_citations = Table(
+    "knowledge_citations", metadata,
+    Column("citation_id", UUID, primary_key=True),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_instance", Text, nullable=False),
+    Column("task_id", Text),
+    Column("attempt_id", Text),
+    Column("supervisor_session_id", Text),
+    Column("claim_epoch", BigInteger),
+    Column("kind", Text, nullable=False),
+    Column("bundle_id", UUID, ForeignKey("knowledge_context_bundles.bundle_id",
+                                       ondelete="RESTRICT")),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("idempotency_key", Text, nullable=False),
+    ForeignKeyConstraint(["record_id", "revision_id"],
+                         ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+                         name="fk_knowledge_citations_revision", ondelete="RESTRICT"),
+    CheckConstraint("kind IN ('injected','attached','explicit_read')",
+                    name="ck_knowledge_citations_kind"),
+    CheckConstraint("(owner_kind = 'task_attempt' AND task_id IS NOT NULL "
+                    "AND attempt_id IS NOT NULL AND owner_id = attempt_id "
+                    "AND claim_epoch IS NOT NULL AND claim_epoch >= 0 "
+                    "AND supervisor_session_id IS NULL) OR "
+                    "(owner_kind = 'supervisor_session' AND supervisor_session_id IS NOT NULL "
+                    "AND owner_id = supervisor_session_id AND task_id IS NULL "
+                    "AND attempt_id IS NULL AND claim_epoch IS NULL)",
+                    name="ck_knowledge_citations_execution_owner"),
+    CheckConstraint("length(idempotency_key) BETWEEN 1 AND 128",
+                    name="ck_knowledge_citations_key"),
+    UniqueConstraint("owner_kind", "owner_id", "session_instance", "kind", "idempotency_key",
+                     name="uq_knowledge_citations_owner_key"),
+)
+
+from src.records.schema import register_record_schema_events  # noqa: E402
 
 register_record_schema_events(metadata)
+
+from src.knowledge.extraction_schema import register_extraction_schema  # noqa: E402
+
+register_extraction_schema(metadata)
