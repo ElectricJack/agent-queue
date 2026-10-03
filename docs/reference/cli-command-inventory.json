@@ -4205,6 +4205,8 @@
           "--offset",
           "--task-id",
           "--source",
+          "--no-artifact",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",

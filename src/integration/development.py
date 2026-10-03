@@ -55,7 +55,6 @@ from src.integration.delivery_branches import (
     remote_heads,
 )
 from src.integration.delivery_truth import (
-    MISSING_PROVENANCE,
     SETTLEMENT_KEY,
     DeliverySnapshot,
     DeliveryState,
@@ -80,6 +79,7 @@ from src.integration.development_stalls import (
     PUBLISHER_SKIP_KEY,
     PublisherStalls,
     SweepObservation,
+    delivery_skip_reason,
 )
 from src.integration.development_validation import run_check as run_validation_check
 from src.integration.parent_engine import parent_engine_guard
@@ -1922,12 +1922,15 @@ class DevelopmentIntegration:
                         dependency_kind = (
                             dependency_reason if dependency_reason in {
                                 "dependency_cycle", "missing_ref", "missing_provenance",
+                                "invalid_parent_completion", "parent_provenance_mismatch",
                             } else "undelivered_dependency"
                         )
                         detail = {
                             "dependency_cycle": "dependency cycle with",
                             "missing_ref": "missing ref for dependency",
                             "missing_provenance": "missing git provenance for dependency",
+                            "invalid_parent_completion": "invalid parent completion for dependency",
+                            "parent_provenance_mismatch": "parent provenance mismatch for dependency",
                             "undelivered_dependency": "undelivered dependency",
                         }[dependency_kind]
                         logger.warning(
@@ -1943,6 +1946,7 @@ class DevelopmentIntegration:
                     skipped[task["id"]] = (
                         first_reason if first_reason in {
                             "dependency_cycle", "missing_ref", "missing_provenance",
+                            "invalid_parent_completion", "parent_provenance_mismatch",
                         } else "undelivered_dependency", held[0],
                     )
                     continue
@@ -1953,11 +1957,8 @@ class DevelopmentIntegration:
                 ) else None
                 if not source:
                     skipped[task["id"]] = (
-                        "source_parked" if task["id"] in parked_ids else (
-                            "git_error" if evidence.reason == "git_error" else
-                            "missing_provenance" if evidence.reason == MISSING_PROVENANCE else
-                            "missing_ref"
-                        ),
+                        "source_parked" if task["id"] in parked_ids else
+                        delivery_skip_reason(evidence.reason),
                         task["id"],
                     )
                     logger.warning(
