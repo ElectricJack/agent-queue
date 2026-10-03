@@ -100,7 +100,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
             select(literal(1)).where(
                 integration_repair_stages.c.repair_task_id == tasks.c.id,
                 integration_repair_stages.c.writer_kind == "repair_delegate",
-integration_repair_stages.c.state.notin_(("active", "awaiting_completion")),
+                integration_repair_stages.c.state.notin_(("active", "awaiting_completion")),
             )
         ),
     }

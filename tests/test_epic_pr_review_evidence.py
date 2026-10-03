@@ -220,15 +220,23 @@ async def _retain_completion(case, *, close_id, commits):
     from src.git.manager import GitManager
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
-    async with case["db"].immediate() as conn:
-        await conn.execute(insert(task_completion_records).values(
-            id=close_id, task_id="e1", outcome="pass", commits=json.dumps(commits),
-            completed_at=1000.0))
-    await GitProvenance(
+    # This fixture is a verified parent, not an ordinary leaf close. A newer
+    # leaf completion must invalidate its earlier parent proof (fair-rapids-53).
+    # Retain the exact verified parent identity and explicitly adopt a squash.
+    store = GitProvenance(
         GitManager(), str(case["work"]), repository_url=case["remote"]
-    ).write_completion(
-        CompletedSource(CompletionIdentity("p", "repo", "e1", close_id), commits[-1])
     )
+    source = CompletedSource(
+        CompletionIdentity("p", "repo", "e1", "parent:verification-e1"),
+        case["first"],
+    )
+    await store.write_completion(source)
+    if not await store.ancestor(case["first"], commits[-1]):
+        await store.write_replacement(
+            source_oid=commits[-1],
+            base_oid=await store.run("merge-base", case["first"], commits[-1]),
+            replaces=[source], authority="operator", reason="already deployed",
+        )
 
 
 async def _adopt_equivalent(case, *, close_id, replaced, by):
@@ -242,7 +250,7 @@ async def _adopt_equivalent(case, *, close_id, replaced, by):
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
     store = GitProvenance(GitManager(), str(case["work"]), repository_url=case["remote"])
-    original = CompletedSource(CompletionIdentity("p", "repo", "e1", close_id), replaced)
+    original = CompletedSource(CompletionIdentity("p", "repo", "e1", "parent:verification-e1"), replaced)
     await store.write_replacement(
         source_oid=by, base_oid=await store.run("merge-base", replaced, by),
         replaces=[original], authority="operator", reason="already deployed",
@@ -380,7 +388,7 @@ async def test_delivered_source_generation_is_not_repaired(case, tmp_path):
 async def test_source_adopted_under_other_commits_is_not_repaired(case, tmp_path):
     # Adoption: the work reached main as a squash, so the observed source head
     # is not an ancestor of anything. The proof names the generation's retained
-    # source, which is what the root scheduler recognizes.
+    # source, with explicit replacement evidence binding it to the squash.
     handler, filing, _observer = await _delivered_handler(case, tmp_path, squash=True)
     _source, observation = await _red_observation(case)
     assert not _is_ancestor(case["work"], observation.source["head"], "main"), (
@@ -388,7 +396,7 @@ async def test_source_adopted_under_other_commits_is_not_repaired(case, tmp_path
     )
     result = await handler._cmd_observe_integration_source_ci(observation)
     assert result["outcome"] == "source_delivered", result
-    assert result["delivery"]["source_oid"] != observation.source["head"]
+    assert result["delivery"]["source_oid"] == observation.source["head"]
     assert filing.await_count == 0
 
 
