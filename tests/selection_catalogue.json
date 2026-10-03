@@ -600,9 +600,12 @@
       "description": "Durable record identities, knowledge schema and immutable revision integrity.",
       "modules": [
         "tests/test_api_knowledge.py",
+        "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_migrations.py",
+        "tests/test_knowledge_proposals.py",
+        "tests/test_knowledge_redaction.py",
         "tests/test_knowledge_service.py",
         "tests/test_record_backfill.py",
         "tests/test_record_contracts.py",
@@ -1338,7 +1341,7 @@
       ]
     }
   },
-  "digest": "sha256:33bc06c3be5556da852d25fdd905326ced9fe7ea21ac4d62109df60d325a15e2",
+  "digest": "sha256:78de80ca4794a80bfb15b463f2164cdf10f2b971ff5c1a6e05c7619223875bf8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3237,7 +3240,9 @@
       "imports": [
         "src.cli.app"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "CLI surface tests for the 14 K03 knowledge_* and record_* auto-generated commands."
     },
     "tests/test_cli_logs.py": {
@@ -8266,6 +8271,23 @@
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
     },
+    "tests/test_knowledge_authority.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.authority",
+        "src.knowledge.service",
+        "src.records.auth",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [],
+      "summary": "Exact review bindings, revocation and global/source confidentiality."
+    },
     "tests/test_knowledge_authorization.py": {
       "areas": [
         "knowledge-records"
@@ -8312,6 +8334,39 @@
         "migration"
       ],
       "summary": "Real disposable PostgreSQL upgrades, helper reinstall and safe rollback."
+    },
+    "tests/test_knowledge_proposals.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.profiles.capabilities",
+        "src.records.models"
+      ],
+      "markers": [],
+      "summary": "Exact-base proposal acceptance, decision replay and worker permission boundaries."
+    },
+    "tests/test_knowledge_redaction.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.export",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Logical denial, one-way erasure, purge recovery and disposable migration checks."
     },
     "tests/test_knowledge_service.py": {
       "areas": [

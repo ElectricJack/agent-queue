@@ -6529,6 +6529,100 @@
         }
       }
     },
+    "/api/knowledge/authority-grant": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Grant policy authority bound to an exact verified revision and review.",
+        "description": "Grant policy authority bound to an exact verified revision and review.",
+        "operationId": "knowledge_authority_grant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeAuthorityGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/authority-revoke": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Revoke policy authority without rewriting content history.",
+        "description": "Revoke policy authority without rewriting content history.",
+        "operationId": "knowledge_authority_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeAuthorityRevokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/create": {
       "post": {
         "tags": [
@@ -6764,6 +6858,194 @@
         }
       }
     },
+    "/api/knowledge/proposal-decide": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Accept or reject an exact proposal; supervisor grant required.",
+        "description": "Accept or reject an exact proposal; supervisor grant required.",
+        "operationId": "knowledge_proposal_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposalDecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/proposal-show": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read an authorized proposal and its exact hash.",
+        "description": "Read an authorized proposal and its exact hash.",
+        "operationId": "knowledge_proposal_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposalShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/propose": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Submit an unverified correction bound to its exact base.",
+        "description": "Submit an unverified correction bound to its exact base.",
+        "operationId": "knowledge_propose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/redact": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Preview or permanently erase selected knowledge and derived copies; local operator only.",
+        "description": "Preview or permanently erase selected knowledge and derived copies; local operator only.",
+        "operationId": "knowledge_redact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeRedactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/restore": {
       "post": {
         "tags": [
@@ -6858,6 +7140,53 @@
         }
       }
     },
+    "/api/knowledge/share": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Preview or change a global record share; explicit global authority required.",
+        "description": "Preview or change a global record share; explicit global authority required.",
+        "operationId": "knowledge_share",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/show": {
       "post": {
         "tags": [
@@ -6930,6 +7259,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/KnowledgeUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/verify": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Verify or dispute an exact revision with named evidence.",
+        "description": "Verify or dispute an exact revision with named evidence.",
+        "operationId": "knowledge_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProtectionResponse"
                 }
               }
             }
@@ -36386,10 +36762,142 @@
         ],
         "title": "JobSubmitArgs"
       },
+      "KnowledgeAuthorityGrantRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "review": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeAuthorityGrantRequest"
+      },
+      "KnowledgeAuthorityRevokeRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeAuthorityRevokeRequest"
+      },
       "KnowledgeCreateRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -36475,11 +36983,16 @@
             ],
             "title": "Claim Epoch",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "title",
           "body",
           "category",
@@ -36573,7 +37086,14 @@
       "KnowledgeDiffRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -36591,11 +37111,16 @@
             "type": "string",
             "title": "To Revision",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "from_revision",
           "to_revision"
@@ -36697,7 +37222,14 @@
       "KnowledgeExportRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -36717,11 +37249,16 @@
             ],
             "title": "Revision Id",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity"
         ],
         "title": "KnowledgeExportRequest"
@@ -36811,7 +37348,14 @@
       "KnowledgeHistoryRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -36837,11 +37381,16 @@
             "title": "Limit",
             "description": "",
             "default": 25
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity"
         ],
         "title": "KnowledgeHistoryRequest"
@@ -36991,7 +37540,14 @@
       "KnowledgeListRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -37036,12 +37592,15 @@
             ],
             "title": "Cursor",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
-        "required": [
-          "project_id"
-        ],
         "title": "KnowledgeListRequest"
       },
       "KnowledgeListResponse": {
@@ -37130,10 +37689,431 @@
         "type": "object",
         "title": "KnowledgeListResponse"
       },
+      "KnowledgeProposalDecideRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "proposal_sha256": {
+            "type": "string",
+            "title": "Proposal Sha256",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "proposal_sha256",
+          "decision",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeProposalDecideRequest"
+      },
+      "KnowledgeProposalShowRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "KnowledgeProposalShowRequest"
+      },
+      "KnowledgeProposeRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Snapshot",
+            "description": ""
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "link_operations": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link Operations",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "snapshot",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeProposeRequest"
+      },
+      "KnowledgeProtectionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "proposal_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Sha256"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
+          "redaction_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Id"
+          },
+          "cleanup_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleanup State"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeProtectionResponse"
+      },
+      "KnowledgeRedactRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "description": ""
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "idempotency_key",
+          "reason_code"
+        ],
+        "title": "KnowledgeRedactRequest"
+      },
       "KnowledgeRestoreRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -37180,11 +38160,16 @@
             ],
             "title": "Claim Epoch",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "revision_id",
           "reason",
@@ -37195,7 +38180,14 @@
       "KnowledgeRetireRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -37249,21 +38241,107 @@
             ],
             "title": "Claim Epoch",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "reason",
           "idempotency_key"
         ],
         "title": "KnowledgeRetireRequest"
       },
+      "KnowledgeShareRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "target_project_id": {
+            "type": "string",
+            "title": "Target Project Id",
+            "description": ""
+          },
+          "revoke": {
+            "type": "boolean",
+            "title": "Revoke",
+            "description": "",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key",
+          "target_project_id"
+        ],
+        "title": "KnowledgeShareRequest"
+      },
       "KnowledgeShowRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -37283,11 +38361,16 @@
             ],
             "title": "Revision Id",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity"
         ],
         "title": "KnowledgeShowRequest"
@@ -37388,7 +38471,14 @@
       "KnowledgeUpdateRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -37572,11 +38662,16 @@
             ],
             "title": "Summary Of Revision",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "idempotency_key"
         ],
@@ -37653,6 +38748,75 @@
         "additionalProperties": true,
         "type": "object",
         "title": "KnowledgeUpdateResponse"
+      },
+      "KnowledgeVerifyRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "if_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "evidence": {
+            "items": {},
+            "type": "array",
+            "title": "Evidence",
+            "description": ""
+          },
+          "verification": {
+            "type": "string",
+            "title": "Verification",
+            "description": "",
+            "default": "verified"
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "reason",
+          "idempotency_key",
+          "evidence"
+        ],
+        "title": "KnowledgeVerifyRequest"
       },
       "LayoutEdge": {
         "properties": {
@@ -38083,7 +39247,14 @@
       "LinkCreateRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -38138,11 +39309,16 @@
             ],
             "title": "Claim Epoch",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "operations",
           "idempotency_key"
@@ -38152,7 +39328,14 @@
       "LinkListRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -38172,11 +39355,16 @@
             ],
             "title": "Revision Id",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity"
         ],
         "title": "LinkListRequest"
@@ -38280,7 +39468,14 @@
       "LinkRemoveRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -38334,11 +39529,16 @@
             ],
             "title": "Claim Epoch",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity",
           "link_id",
           "idempotency_key"
@@ -53392,6 +54592,12 @@
             ],
             "title": "Project Id",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
@@ -53675,7 +54881,14 @@
       "RecordSearchRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -53732,12 +54945,15 @@
             ],
             "title": "Cursor",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
-        "required": [
-          "project_id"
-        ],
         "title": "RecordSearchRequest"
       },
       "RecordSearchResponse": {
@@ -53807,7 +55023,14 @@
       "RecordShowRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": ""
           },
@@ -53827,11 +55050,16 @@
             ],
             "title": "Revision Id",
             "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "identity"
         ],
         "title": "RecordShowRequest"

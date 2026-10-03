@@ -33,6 +33,8 @@ class TestGroupRegistration:
         expected = {
             "create", "list", "show", "update",
             "history", "diff", "retire", "restore", "export",
+            "propose", "proposal-show", "proposal-decide", "verify", "authority-grant",
+            "authority-revoke", "share", "redact",
         }
         missing = expected - set(kgroup.commands.keys())
         assert not missing, f"knowledge group is missing: {missing}"
@@ -171,3 +173,23 @@ class TestForwarding:
         args = mock.execute.await_args.args[1]
         assert args["project_id"] == "proj"
         assert args["identity"] == "record:abc"
+
+
+@pytest.mark.parametrize("explicit, expected", [(None, 7), (3, 3)])
+def test_proposal_resolves_claim_file_epoch_without_overriding_explicit(runner, explicit, expected):
+    from src.cli.app import cli
+
+    captured = {}
+    mock = _mock_client({"knowledge_propose": {"proposal_id": "p-1"}}, captured)
+    args = ["knowledge", "propose", "--project-id", "proj", "--snapshot",
+            '{"title":"Correction","body":"Evidence","category":"note"}',
+            "--idempotency-key", "propose"]
+    if explicit is not None:
+        args += ["--claim-epoch", str(explicit)]
+    with patch("src.cli.app._get_client", return_value=mock), patch(
+        "src.cli.claim_epoch.resolve_claim_epoch", return_value=7,
+    ):
+        result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert captured["claim_epoch"] == expected
+    assert captured["snapshot"]["title"] == "Correction"

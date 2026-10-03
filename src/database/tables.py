@@ -1933,9 +1933,7 @@ supervisor_report_requests = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
-    CheckConstraint(
-        "kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"
-    ),
+    CheckConstraint("kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"),
     CheckConstraint(
         "state IN ('reserved','requested','submitted','fallback','cancelled')",
         name="ck_supervisor_report_requests_state",
@@ -1996,8 +1994,9 @@ morning_report_coverage = Table(
 morning_report_facts = Table(
     "morning_report_facts",
     metadata,
-    Column("report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"),
-           primary_key=True),
+    Column(
+        "report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"), primary_key=True
+    ),
     Column("fact_key", Text, primary_key=True),
     Column("source", Text, nullable=False),
     Column("record_id", Text, nullable=False),
@@ -3670,9 +3669,7 @@ integration_candidate_ref_mutations = Table(
         name="ck_integration_candidate_ref_mutations_purpose",
     ),
     # Any retained successor stage (a00000000050), as for resolutions.
-    CheckConstraint(
-        "operation_stage >= 0", name="ck_integration_candidate_ref_mutations_stage"
-    ),
+    CheckConstraint("operation_stage >= 0", name="ck_integration_candidate_ref_mutations_stage"),
     CheckConstraint(
         "lease_fence_token >= 0 AND branch_fence_token >= 0",
         name="ck_integration_candidate_ref_mutations_fences",
@@ -4812,9 +4809,7 @@ test_selections = Table(
         "'invalid','over_budget','timeout','model_drift')",
         name="ck_test_selections_jev_status",
     ),
-    CheckConstraint(
-        "marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"
-    ),
+    CheckConstraint("marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"),
     Index("idx_test_selections_project_created", "project_id", "created_at"),
     Index("idx_test_selections_task_created", "task_id", "created_at"),
 )
@@ -4900,11 +4895,18 @@ agent_waits = Table(
         name="ck_agent_waits_deadline",
     ),
     UniqueConstraint(
-        "project_id", "owner_kind", "owner_id", "claim_epoch", "idempotency_key",
+        "project_id",
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "idempotency_key",
         name="uq_agent_waits_idempotency",
     ),
     Index(
-        "uq_agent_waits_active_claim", "owner_id", "claim_epoch", unique=True,
+        "uq_agent_waits_active_claim",
+        "owner_id",
+        "claim_epoch",
+        unique=True,
         postgresql_where=text("state = 'active' AND owner_kind = 'task'"),
     ),
     Index("idx_agent_waits_scan", "state", "checked_at", "deadline_at"),
@@ -5098,7 +5100,8 @@ job_outbox = Table(
 # Shared outbox for new report/conversation lifecycles. Digest and escalation
 # identities remain in their established domain tables.
 outbound_deliveries = Table(
-    "outbound_deliveries", metadata,
+    "outbound_deliveries",
+    metadata,
     Column("id", Text, primary_key=True),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
@@ -5130,8 +5133,7 @@ outbound_deliveries = Table(
         name="ck_outbound_deliveries_lease",
     ),
     CheckConstraint(
-        "state <> 'sent' OR (external_receipt_id IS NOT NULL "
-        "AND receipt_confirmed_at IS NOT NULL)",
+        "state <> 'sent' OR (external_receipt_id IS NOT NULL AND receipt_confirmed_at IS NOT NULL)",
         name="ck_outbound_deliveries_receipt",
     ),
     Index("idx_outbound_deliveries_due", "state", "due_at"),
@@ -5618,6 +5620,194 @@ record_backfill_state = Table(
 
 # create_all is used by the squashed baseline as well as disposable fixtures.
 # SQL functions must precede checks; deferred guards follow table creation.
+# K05 protection records. Authoritative state stays in PostgreSQL, not exports.
+knowledge_proposals = Table(
+    "knowledge_proposals",
+    metadata,
+    Column("proposal_id", UUID, nullable=False),
+    Column("record_id", UUID),
+    Column(
+        "scope_key",
+        Text,
+        ForeignKey("record_scopes.scope_key", name="fk_knowledge_proposals_scope"),
+        nullable=False,
+    ),
+    Column("base_revision_id", UUID),
+    Column("proposed_snapshot", JSONB(none_as_null=True)),
+    Column("source_descriptors", JSONB, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("decided_at", DateTime(timezone=True)),
+    Column("decided_by", Text),
+    Column("resulting_record_id", UUID),
+    Column("resulting_revision_id", UUID),
+    Column("redacted_at", DateTime(timezone=True)),
+    ForeignKeyConstraint(
+        ["record_id", "base_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_proposals_base",
+    ),
+    ForeignKeyConstraint(
+        ["resulting_record_id", "resulting_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_proposals_result",
+    ),
+    CheckConstraint(
+        "(record_id IS NULL) = (base_revision_id IS NULL)", name="ck_knowledge_proposals_base"
+    ),
+    CheckConstraint(
+        "state IN ('pending','accepted','rejected','stale')", name="ck_knowledge_proposals_state"
+    ),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_knowledge_proposals_hash"),
+    CheckConstraint(
+        "(proposed_snapshot IS NULL) = (redacted_at IS NOT NULL)",
+        name="ck_knowledge_proposals_redacted",
+    ),
+    CheckConstraint(
+        "proposed_snapshot IS NULL OR (knowledge_snapshot_valid_v1(proposed_snapshot) "
+        "AND proposed_snapshot->>'verification' = 'unverified' "
+        "AND NOT proposed_snapshot ? 'authority')",
+        name="ck_knowledge_proposals_snapshot",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(source_descriptors) = 'array'", name="ck_knowledge_proposals_sources"
+    ),
+    CheckConstraint(
+        "(state = 'pending') = (decided_at IS NULL AND decided_by IS NULL)",
+        name="ck_knowledge_proposals_decision",
+    ),
+    CheckConstraint(
+        "(state = 'accepted') = (resulting_record_id IS NOT NULL "
+        "AND resulting_revision_id IS NOT NULL)",
+        name="ck_knowledge_proposals_result",
+    ),
+    PrimaryKeyConstraint("proposal_id", name="pk_knowledge_proposals"),
+)
+
+knowledge_authority_grants = Table(
+    "knowledge_authority_grants",
+    metadata,
+    Column("grant_id", UUID, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column(
+        "scope_key",
+        Text,
+        ForeignKey("record_scopes.scope_key", name="fk_knowledge_authority_grants_scope"),
+        nullable=False,
+    ),
+    Column("authority_kind", Text, nullable=False, server_default="policy"),
+    Column("review_id", Text),
+    Column("review_revision", Integer),
+    Column("review_sha256", Text),
+    Column("actor_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("revoked_at", DateTime(timezone=True)),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_authority_revision",
+    ),
+    CheckConstraint("authority_kind = 'policy'", name="ck_knowledge_authority_kind"),
+    CheckConstraint(
+        "(review_id IS NULL AND review_revision IS NULL AND review_sha256 IS NULL) "
+        "OR (review_id IS NOT NULL AND review_revision > 0 "
+        "AND review_sha256 ~ '^[0-9a-f]{64}$')",
+        name="ck_knowledge_authority_review",
+    ),
+    PrimaryKeyConstraint("grant_id", name="pk_knowledge_authority_grants"),
+)
+Index(
+    "uq_knowledge_authority_active",
+    knowledge_authority_grants.c.record_id,
+    unique=True,
+    postgresql_where=knowledge_authority_grants.c.revoked_at.is_(None),
+)
+
+knowledge_global_shares = Table(
+    "knowledge_global_shares",
+    metadata,
+    Column("grant_id", UUID, nullable=False),
+    Column(
+        "record_id",
+        UUID,
+        ForeignKey("knowledge_records.record_id", name="fk_knowledge_global_shares_record"),
+        nullable=False,
+    ),
+    Column("project_id", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("revoked_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("grant_id", name="pk_knowledge_global_shares"),
+)
+Index(
+    "uq_knowledge_global_shares_active",
+    knowledge_global_shares.c.record_id,
+    knowledge_global_shares.c.project_id,
+    unique=True,
+    postgresql_where=knowledge_global_shares.c.revoked_at.is_(None),
+)
+
+knowledge_redactions = Table(
+    "knowledge_redactions",
+    metadata,
+    Column("redaction_id", UUID, nullable=False),
+    Column(
+        "record_id",
+        UUID,
+        ForeignKey("knowledge_records.record_id", name="fk_knowledge_redactions_record"),
+        nullable=False,
+    ),
+    Column("revision_id", UUID),
+    Column("actor_id", Text, nullable=False),
+    Column("reason_code", Text, nullable=False),
+    Column("requested_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("cleanup_state", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_redactions_revision",
+    ),
+    CheckConstraint(
+        "reason_code IN ('sensitive','privacy','operator_erasure')",
+        name="ck_knowledge_redactions_reason",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(cleanup_state) = 'object'", name="ck_knowledge_redactions_cleanup"
+    ),
+    PrimaryKeyConstraint("redaction_id", name="pk_knowledge_redactions"),
+)
+
+knowledge_redaction_targets = Table(
+    "knowledge_redaction_targets",
+    metadata,
+    Column(
+        "revision_id",
+        UUID,
+        ForeignKey(
+            "knowledge_revisions.revision_id", name="fk_knowledge_redaction_targets_revision"
+        ),
+        nullable=False,
+    ),
+    Column(
+        "redaction_id",
+        UUID,
+        ForeignKey(
+            "knowledge_redactions.redaction_id", name="fk_knowledge_redaction_targets_redaction"
+        ),
+        nullable=False,
+    ),
+    Column("content_sha256", Text, nullable=False),
+    CheckConstraint(
+        "content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_knowledge_redaction_targets_hash"
+    ),
+    PrimaryKeyConstraint("revision_id", name="pk_knowledge_redaction_targets"),
+)
+
 from src.records.schema import register_record_schema_events  # noqa: E402
 
 register_record_schema_events(metadata)

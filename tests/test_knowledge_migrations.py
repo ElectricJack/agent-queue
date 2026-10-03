@@ -22,7 +22,14 @@ pytestmark = pytest.mark.migration
 
 def run_migration(conn, action):
     with Operations.context(MigrationContext.configure(conn)):
+        # A current baseline includes later additive protection tables. Exercise
+        # the real downgrade dependency order before dropping the K01 schema.
+        protection = importlib.import_module("migrations.versions.a00000000059_knowledge_protection")
+        if action == "downgrade":
+            protection.downgrade()
         getattr(migration, action)()
+        if action == "upgrade":
+            protection.upgrade()
 
 
 async def test_baseline_created_tables_reinstall_guards_and_keep_installation(db):

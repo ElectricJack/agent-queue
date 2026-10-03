@@ -15,20 +15,26 @@ T = TypeVar("T", bound="KnowledgeExportRequest")
 class KnowledgeExportRequest:
     """
     Attributes:
-        project_id (str):
         identity (str):
+        project_id (None | str | Unset):
         revision_id (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     identity: str
+    project_id: None | str | Unset = UNSET
     revision_id: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         identity = self.identity
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         revision_id: None | str | Unset
         if isinstance(self.revision_id, Unset):
@@ -36,25 +42,37 @@ class KnowledgeExportRequest:
         else:
             revision_id = self.revision_id
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "identity": identity,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if revision_id is not UNSET:
             field_dict["revision_id"] = revision_id
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         identity = d.pop("identity")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_revision_id(data: object) -> None | str | Unset:
             if data is None:
@@ -65,10 +83,13 @@ class KnowledgeExportRequest:
 
         revision_id = _parse_revision_id(d.pop("revision_id", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         knowledge_export_request = cls(
-            project_id=project_id,
             identity=identity,
+            project_id=project_id,
             revision_id=revision_id,
+            global_scope=global_scope,
         )
 
         knowledge_export_request.additional_properties = d

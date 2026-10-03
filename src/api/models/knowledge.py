@@ -79,3 +79,19 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_restore": KnowledgeLifecycleResponse,
     "knowledge_export": KnowledgeExportResponse,
 }
+
+
+class KnowledgeProtectionResponse(KnowledgeEnvelope):
+    proposal_id: str | None = None
+    proposal_sha256: str | None = None
+    state: str | None = None
+    snapshot: dict | None = None
+    authority: dict | None = None
+    redaction_id: str | None = None
+    cleanup_state: dict | None = None
+    dry_run: bool | None = None
+
+
+from src.commands.contracts.knowledge_protection import PROTECTION_COMMANDS  # noqa: E402
+
+RESPONSE_MODELS.update({name: KnowledgeProtectionResponse for name, *_ in PROTECTION_COMMANDS})

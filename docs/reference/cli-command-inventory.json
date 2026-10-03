@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 490,
+    "leaf_commands": 498,
     "registration": {
-      "generated": 318,
+      "generated": 326,
       "handwritten": 172
     },
     "ownership": {
-      "core": 451,
+      "core": 459,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 489
+      "supported": 497
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 318,
+      "dispatch": 326,
       "registration": 158
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 430
+      "untested": 438
     }
   },
   "commands": [
@@ -5009,6 +5009,91 @@
       }
     },
     {
+      "path": "aq knowledge authority-grant",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_authority_grant",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--review",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--review"
+        ],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge authority-revoke",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_authority_revoke",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
       "path": "aq knowledge create",
       "registration": "generated",
       "owner_kind": "core",
@@ -5030,18 +5115,19 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--title",
           "--body",
           "--category",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--summary",
           "--tags",
           "--sources",
           "--metadata",
           "--claim-epoch",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5076,12 +5162,13 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--from-revision",
           "--to-revision"
         ],
         "optional": [
+          "--project-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5112,11 +5199,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity"
         ],
         "optional": [
+          "--project-id",
           "--revision-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5147,12 +5235,13 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity"
         ],
         "optional": [
+          "--project-id",
           "--before-sequence",
           "--limit",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5182,21 +5271,193 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--project-id"
-        ],
+        "required": [],
         "optional": [
+          "--project-id",
           "--category",
           "--include-retired",
           "--include-disputed",
           "--limit",
           "--cursor",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge proposal-decide",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_proposal_decide",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id",
+          "--proposal-sha256",
+          "--decision",
+          "--reason",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge proposal-show",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_proposal_show",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge propose",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_propose",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--snapshot",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--identity",
+          "--if-revision",
+          "--link-operations",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--snapshot",
+          "--link-operations"
+        ],
+        "nullable": [
+          "--project-id",
+          "--identity",
+          "--if-revision",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge redact",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_redact",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--idempotency-key",
+          "--reason-code"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--revision-id",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision",
+          "--revision-id"
+        ]
       }
     },
     {
@@ -5221,15 +5482,16 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--revision-id",
           "--reason",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--if-revision",
           "--claim-epoch",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5260,21 +5522,66 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--reason",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--if-revision",
           "--successor-record-id",
           "--claim-epoch",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge share",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_share",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key",
+          "--target-project-id"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--revoke",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
       }
     },
     {
@@ -5299,11 +5606,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity"
         ],
         "optional": [
+          "--project-id",
           "--revision-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5334,11 +5642,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--if-revision",
           "--claim-epoch",
           "--title",
@@ -5353,6 +5661,7 @@
           "--valid-until",
           "--recheck-at",
           "--summary-of-revision",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -5363,6 +5672,51 @@
           "--metadata"
         ],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge verify",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_verify",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--reason",
+          "--idempotency-key",
+          "--evidence"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--if-revision",
+          "--verification",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--evidence"
+        ],
+        "nullable": [
+          "--project-id",
+          "--if-revision"
+        ]
       }
     },
     {
@@ -9229,6 +9583,7 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -9259,15 +9614,16 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--operations",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--if-revision",
           "--if-link-token",
           "--claim-epoch",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -9300,11 +9656,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity"
         ],
         "optional": [
+          "--project-id",
           "--revision-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -9335,15 +9692,16 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity",
           "--link-id",
           "--idempotency-key"
         ],
         "optional": [
+          "--project-id",
           "--if-revision",
           "--if-link-token",
           "--claim-epoch",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -9409,16 +9767,16 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--project-id"
-        ],
+        "required": [],
         "optional": [
+          "--project-id",
           "--query",
           "--category",
           "--include-retired",
           "--include-disputed",
           "--limit",
           "--cursor",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"
@@ -9449,11 +9807,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
           "--identity"
         ],
         "optional": [
+          "--project-id",
           "--revision-id",
+          "--global-scope",
           "--json",
           "--brief",
           "--api-url"

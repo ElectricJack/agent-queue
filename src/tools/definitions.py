@@ -8288,3 +8288,20 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
     ]
 )
+
+
+# Protection contracts supply the same closed schemas to CLI, HTTP and MCP.
+from src.commands.contracts.knowledge_protection import PROTECTION_COMMANDS  # noqa: E402
+
+for _name, _args, _effect, _description in PROTECTION_COMMANDS:
+    _TOOL_CATEGORIES[_name] = "knowledge"
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description, "input_schema": _args.model_json_schema(),
+    })
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"].startswith(("knowledge_", "record_", "link_")):
+        _schema = _definition["input_schema"]
+        if "project_id" in _schema.get("properties", {}):
+            _schema["properties"]["global_scope"] = {"type": "boolean", "default": False}
+            _schema["required"] = [v for v in _schema.get("required", []) if v != "project_id"]

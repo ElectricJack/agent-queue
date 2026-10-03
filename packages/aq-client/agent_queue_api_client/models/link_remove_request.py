@@ -15,32 +15,38 @@ T = TypeVar("T", bound="LinkRemoveRequest")
 class LinkRemoveRequest:
     """
     Attributes:
-        project_id (str):
         identity (str):
         link_id (str):
         idempotency_key (str):
+        project_id (None | str | Unset):
         if_revision (None | str | Unset):
         if_link_token (None | str | Unset):
         claim_epoch (int | None | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     identity: str
     link_id: str
     idempotency_key: str
+    project_id: None | str | Unset = UNSET
     if_revision: None | str | Unset = UNSET
     if_link_token: None | str | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         identity = self.identity
 
         link_id = self.link_id
 
         idempotency_key = self.idempotency_key
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         if_revision: None | str | Unset
         if isinstance(self.if_revision, Unset):
@@ -60,35 +66,47 @@ class LinkRemoveRequest:
         else:
             claim_epoch = self.claim_epoch
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "identity": identity,
                 "link_id": link_id,
                 "idempotency_key": idempotency_key,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if if_revision is not UNSET:
             field_dict["if_revision"] = if_revision
         if if_link_token is not UNSET:
             field_dict["if_link_token"] = if_link_token
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         identity = d.pop("identity")
 
         link_id = d.pop("link_id")
 
         idempotency_key = d.pop("idempotency_key")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_if_revision(data: object) -> None | str | Unset:
             if data is None:
@@ -117,14 +135,17 @@ class LinkRemoveRequest:
 
         claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         link_remove_request = cls(
-            project_id=project_id,
             identity=identity,
             link_id=link_id,
             idempotency_key=idempotency_key,
+            project_id=project_id,
             if_revision=if_revision,
             if_link_token=if_link_token,
             claim_epoch=claim_epoch,
+            global_scope=global_scope,
         )
 
         link_remove_request.additional_properties = d

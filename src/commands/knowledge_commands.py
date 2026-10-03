@@ -17,6 +17,16 @@ def _error(code, message):
     return {"success": False, "error_code": code, "error": str(message)}
 
 
+def _knowledge_scope(args):
+    from src.records.auth import GLOBAL_SCOPE
+
+    if args.get("global_scope", False):
+        if args.get("project_id"):
+            raise RecordError("record.invalid_input", "Choose project_id or global_scope")
+        return GLOBAL_SCOPE
+    return args.get("project_id")
+
+
 class KnowledgeCommandsMixin:
     async def _cmd_knowledge_export(self, args):
         from src.records.export import RecordExporter
@@ -31,7 +41,7 @@ class KnowledgeCommandsMixin:
             return await exporter.manual(
                 identity=args.get("identity"),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("revision_id"),
             )
         except RecordError as exc:
@@ -102,7 +112,7 @@ class KnowledgeCommandsMixin:
             return await self._knowledge_service().create(
                 snapshot=snapshot,
                 principal=principal,
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 claim_epoch=args.get("claim_epoch"),
             )
@@ -112,7 +122,7 @@ class KnowledgeCommandsMixin:
     async def _search(self, args, *, query=""):
         return await self._knowledge_service().search(
             principal=current_principal(),
-            project_id=args.get("project_id"),
+            project_id=_knowledge_scope(args),
             query=query,
             category=args.get("category"),
             include_retired=bool(args.get("include_retired", False)),
@@ -132,7 +142,7 @@ class KnowledgeCommandsMixin:
             return await self._knowledge_service().show(
                 identity=args.get("identity"),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("revision_id"),
             )
         except RecordError as exc:
@@ -149,7 +159,7 @@ class KnowledgeCommandsMixin:
                 identity=args.get("identity"),
                 patch=patch,
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 if_revision=args.get("if_revision"),
                 claim_epoch=args.get("claim_epoch"),
@@ -162,7 +172,7 @@ class KnowledgeCommandsMixin:
             return await self._knowledge_service().history(
                 identity=args.get("identity"),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 before_sequence=args.get("before_sequence"),
                 limit=int(args.get("limit", 25)),
             )
@@ -177,13 +187,13 @@ class KnowledgeCommandsMixin:
             before = await service.show(
                 identity=identity,
                 principal=principal,
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("from_revision"),
             )
             after = await service.show(
                 identity=identity,
                 principal=principal,
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("to_revision"),
             )
         except RecordError as exc:
@@ -213,7 +223,7 @@ class KnowledgeCommandsMixin:
                 identity=args.get("identity"),
                 reason=args.get("reason", ""),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 if_revision=args.get("if_revision"),
                 successor_record_id=args.get("successor_record_id"),
@@ -229,7 +239,7 @@ class KnowledgeCommandsMixin:
                 revision_id=args.get("revision_id"),
                 reason=args.get("reason", ""),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 if_revision=args.get("if_revision"),
                 claim_epoch=args.get("claim_epoch"),
@@ -244,7 +254,7 @@ class KnowledgeCommandsMixin:
             return await self._record_service().show(
                 identity=args.get("identity"),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("revision_id"),
             )
         except RecordError as exc:
@@ -291,7 +301,7 @@ class KnowledgeCommandsMixin:
                 identity=args.get("identity"),
                 operations=args.get("operations") or [],
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 if_revision=args.get("if_revision"),
                 if_link_token=args.get("if_link_token"),
@@ -305,7 +315,7 @@ class KnowledgeCommandsMixin:
             return await self._record_service().list_links(
                 identity=args.get("identity"),
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 revision_id=args.get("revision_id"),
             )
         except RecordError as exc:
@@ -318,7 +328,7 @@ class KnowledgeCommandsMixin:
                 identity=args.get("identity"),
                 operations=[{"action": "remove", "link_id": link_id}],
                 principal=current_principal(),
-                project_id=args.get("project_id"),
+                project_id=_knowledge_scope(args),
                 idempotency_key=args.get("idempotency_key"),
                 if_revision=args.get("if_revision"),
                 if_link_token=args.get("if_link_token"),
@@ -326,3 +336,42 @@ class KnowledgeCommandsMixin:
             )
         except RecordError as exc:
             return exc.result()
+
+    async def _protection(self, method, args):
+        try:
+            kwargs = {
+                key: value
+                for key, value in args.items()
+                if key not in {"project_id", "global_scope"}
+            }
+            return await getattr(self._knowledge_service(), method)(
+                principal=current_principal(),
+                project_id=_knowledge_scope(args),
+                **kwargs,
+            )
+        except RecordError as exc:
+            return exc.result()
+
+    async def _cmd_knowledge_propose(self, args):
+        return await self._protection("propose", args)
+
+    async def _cmd_knowledge_proposal_show(self, args):
+        return await self._protection("proposal_show", args)
+
+    async def _cmd_knowledge_proposal_decide(self, args):
+        return await self._protection("proposal_decide", args)
+
+    async def _cmd_knowledge_verify(self, args):
+        return await self._protection("verify", args)
+
+    async def _cmd_knowledge_authority_grant(self, args):
+        return await self._protection("authority_grant", args)
+
+    async def _cmd_knowledge_authority_revoke(self, args):
+        return await self._protection("authority_revoke", args)
+
+    async def _cmd_knowledge_share(self, args):
+        return await self._protection("share", args)
+
+    async def _cmd_knowledge_redact(self, args):
+        return await self._protection("redact", args)

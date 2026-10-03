@@ -24,6 +24,7 @@ from src.commands.principal import TRUSTED_LOCAL
 from src.database.tables import record_export_state, record_outbox
 from src.knowledge.models import content_hash
 from src.records.models import RecordError
+from src.records.auth import scope_project
 from src.records.outbox import lease_matches
 from src.records.service import RecordService
 
@@ -181,6 +182,17 @@ class ManagedFile:
         finally:
             os.close(current_fd)
 
+    def purge(self):
+        # Crash-left staging files contain the same private bytes as the export.
+        staged = re.compile(r"\." + re.escape(self.parts[-1]) + r"\.[0-9a-f]{32}\.tmp")
+        for name in os.listdir(self.fd):
+            if name == self.parts[-1] or staged.fullmatch(name):
+                try:
+                    os.unlink(name, dir_fd=self.fd)
+                except FileNotFoundError:
+                    pass
+        os.fsync(self.fd)
+
     def close(self):
         if self.temp_name:
             try:
@@ -246,7 +258,9 @@ class RecordExporter:
             revision = await service._revision(record, revision_id, conn=conn)
             if content_hash(revision["snapshot"]) != revision["content_sha256"]:
                 raise RecordError("record.hash_divergence")
-            safe = await service._safe_snapshot(revision["snapshot"], access, conn=conn)
+            safe = await service._safe_snapshot(
+                revision["snapshot"], access, conn=conn, scope_key=record["scope_key"]
+            )
             installation = await self.db.get_record_installation_on(conn=conn)
         value = render_export(installation, record, revision, safe)
         return dict(
@@ -263,7 +277,7 @@ class RecordExporter:
         if not self.config.export.enabled:
             raise RecordError("record.export_disabled")
         service = RecordService(self.db, self.config)
-        project = event["scope_key"].removeprefix("project:")
+        project = scope_project(event["scope_key"])
         access = await service._access(conn, TRUSTED_LOCAL, "knowledge_export", project)
         row = (
             (
@@ -284,7 +298,9 @@ class RecordExporter:
             return None
         if content_hash(revision["snapshot"]) != revision["content_sha256"]:
             raise RecordError("record.hash_divergence")
-        safe = await service._safe_snapshot(revision["snapshot"], access, conn=conn)
+        safe = await service._safe_snapshot(
+            revision["snapshot"], access, conn=conn, scope_key=record["scope_key"]
+        )
         installation = await self.db.get_record_installation_on(conn=conn)
         state = (
             (
@@ -334,7 +350,7 @@ class RecordExporter:
                 conn,
                 TRUSTED_LOCAL,
                 "knowledge_export",
-                record["scope_key"].removeprefix("project:"),
+                scope_project(record["scope_key"]),
             )
             try:
                 prior = await service._revision(record, prior_id, conn=conn)

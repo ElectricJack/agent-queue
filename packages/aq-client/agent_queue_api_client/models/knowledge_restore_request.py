@@ -15,27 +15,27 @@ T = TypeVar("T", bound="KnowledgeRestoreRequest")
 class KnowledgeRestoreRequest:
     """
     Attributes:
-        project_id (str):
         identity (str):
         revision_id (str):
         reason (str):
         idempotency_key (str):
+        project_id (None | str | Unset):
         if_revision (None | str | Unset):
         claim_epoch (int | None | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     identity: str
     revision_id: str
     reason: str
     idempotency_key: str
+    project_id: None | str | Unset = UNSET
     if_revision: None | str | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         identity = self.identity
 
         revision_id = self.revision_id
@@ -43,6 +43,12 @@ class KnowledgeRestoreRequest:
         reason = self.reason
 
         idempotency_key = self.idempotency_key
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         if_revision: None | str | Unset
         if isinstance(self.if_revision, Unset):
@@ -56,29 +62,32 @@ class KnowledgeRestoreRequest:
         else:
             claim_epoch = self.claim_epoch
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "identity": identity,
                 "revision_id": revision_id,
                 "reason": reason,
                 "idempotency_key": idempotency_key,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if if_revision is not UNSET:
             field_dict["if_revision"] = if_revision
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         identity = d.pop("identity")
 
         revision_id = d.pop("revision_id")
@@ -86,6 +95,15 @@ class KnowledgeRestoreRequest:
         reason = d.pop("reason")
 
         idempotency_key = d.pop("idempotency_key")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_if_revision(data: object) -> None | str | Unset:
             if data is None:
@@ -105,14 +123,17 @@ class KnowledgeRestoreRequest:
 
         claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         knowledge_restore_request = cls(
-            project_id=project_id,
             identity=identity,
             revision_id=revision_id,
             reason=reason,
             idempotency_key=idempotency_key,
+            project_id=project_id,
             if_revision=if_revision,
             claim_epoch=claim_epoch,
+            global_scope=global_scope,
         )
 
         knowledge_restore_request.additional_properties = d

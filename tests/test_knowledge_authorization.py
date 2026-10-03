@@ -333,7 +333,7 @@ async def test_link_remove_requires_current_target_access(context):
     assert exc.value.code == "record.not_found"
 
 
-async def test_no_protected_mutation_before_k05(context):
+async def test_protected_mutations_require_supervisor_and_reset_verification(context):
     from tests.record_helpers import create_knowledge
 
     service, worker, _, supervisor = context
@@ -348,15 +348,19 @@ async def test_no_protected_mutation_before_k05(context):
     assert exc.value.code == "knowledge.operation_unavailable"
     async with service.db.immediate() as conn:
         record_id, revision_id = await create_knowledge(service.db, conn, doc=doc)
-    for principal in (worker, supervisor, TRUSTED_LOCAL):
-        with pytest.raises(RecordError) as exc:
-            await service.update(
-                identity=f"record:{record_id}",
-                patch={"body": "overwrite"},
-                principal=principal,
-                project_id="p",
-                claim_epoch=1,
-                if_revision=revision_id,
-                idempotency_key="protected",
-            )
-        assert exc.value.code == "knowledge.operation_unavailable"
+    with pytest.raises(RecordError) as exc:
+        await service.update(
+            identity=f"record:{record_id}", patch={"body": "overwrite"}, principal=worker,
+            project_id="p", claim_epoch=1, if_revision=revision_id, idempotency_key="protected",
+        )
+    assert exc.value.code == "record.forbidden"
+    for principal in (supervisor, TRUSTED_LOCAL):
+        result = await service.update(
+            identity=f"record:{record_id}", patch={"body": f"Correction {principal.kind}"},
+            principal=principal, project_id="p", claim_epoch=1, if_revision=revision_id,
+            idempotency_key="protected",
+        )
+        revision_id = result["revision_id"]
+        shown = await service.show(identity=f"record:{record_id}", principal=principal, project_id="p")
+        assert shown["snapshot"]["verification"] == "unverified"
+        assert shown["authority"] is None

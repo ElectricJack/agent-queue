@@ -1,4 +1,4 @@
-"""Project-scoped knowledge commands. Protected/global operations ship in K05."""
+"""Guarded knowledge revisions, proposals, authority, sharing and erasure."""
 
 from copy import deepcopy
 
@@ -6,6 +6,10 @@ from sqlalchemy import select
 
 from src.database.tables import record_link_heads, record_link_versions
 from src.knowledge.models import normalize_snapshot
+from src.knowledge.authority import AuthorityMixin, authority_on
+from src.knowledge.proposals import ProposalMixin
+from src.knowledge.sharing import SharingMixin
+from src.knowledge.redaction import RedactionMixin
 from src.records.identity import knowledge_identity
 from src.records.models import RecordError, uuid_value
 from src.records.service import RecordService
@@ -28,7 +32,7 @@ EDIT_FIELDS = frozenset(
 )
 
 
-class KnowledgeService(RecordService):
+class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMixin, RecordService):
     async def create(self, **kwargs):
         return await self._transaction(lambda conn: self.create_on(conn=conn, **kwargs))
 
@@ -90,7 +94,12 @@ class KnowledgeService(RecordService):
             sequence=revision["sequence"],
             content_sha256=revision["content_sha256"],
             hash_version=1,
-            snapshot=await self._safe_snapshot(revision["snapshot"], access, conn=conn),
+            authority=await authority_on(
+                conn, record, revision, review_required=self.config.authority_review_required
+            ),
+            snapshot=await self._safe_snapshot(
+                revision["snapshot"], access, conn=conn, scope_key=record["scope_key"]
+            ),
         )
 
     async def history(self, **kwargs):
@@ -118,6 +127,10 @@ class KnowledgeService(RecordService):
             "revisions": [
                 {
                     **row,
+                    "availability": "record.revision_redacted"
+                    if row["redacted_at"]
+                    else "available",
+                    "redacted_at": row["redacted_at"].isoformat() if row["redacted_at"] else None,
                     "record_id": str(row["record_id"]),
                     "revision_id": str(row["revision_id"]),
                     "parent_revision_id": str(row["parent_revision_id"])

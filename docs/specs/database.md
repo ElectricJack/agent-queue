@@ -3952,3 +3952,76 @@ Alembic revision `c4d5e6f7a8b9` (integration mode) adds `integration_mode` to `t
 
 ### Repos (additional)
 - `update_repo()` — update repo fields
+
+## Knowledge protection (K05)
+
+Proposals and authority are independent of document-review state. Redaction targets are permanent evidence tombstones. All five tables are introduced by migration `a00000000059`; feature flags remain disabled.
+
+### Table: `knowledge_proposals`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `proposal_id` | UUID | PRIMARY KEY |
+| `record_id` | UUID | nullable |
+| `scope_key` | TEXT | NOT NULL |
+| `base_revision_id` | UUID | nullable |
+| `proposed_snapshot` | JSONB | nullable |
+| `source_descriptors` | JSONB | NOT NULL |
+| `content_sha256` | TEXT | NOT NULL |
+| `actor_id` | TEXT | NOT NULL |
+| `state` | TEXT | NOT NULL |
+| `created_at` | DATETIME | NOT NULL |
+| `decided_at` | DATETIME | nullable |
+| `decided_by` | TEXT | nullable |
+| `resulting_record_id` | UUID | nullable |
+| `resulting_revision_id` | UUID | nullable |
+| `redacted_at` | DATETIME | nullable |
+
+### Table: `knowledge_authority_grants`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `grant_id` | UUID | PRIMARY KEY |
+| `record_id` | UUID | NOT NULL |
+| `revision_id` | UUID | NOT NULL |
+| `scope_key` | TEXT | NOT NULL |
+| `authority_kind` | TEXT | NOT NULL |
+| `review_id` | TEXT | nullable |
+| `review_revision` | INTEGER | nullable |
+| `review_sha256` | TEXT | nullable |
+| `actor_id` | TEXT | NOT NULL |
+| `reason` | TEXT | NOT NULL |
+| `created_at` | DATETIME | NOT NULL |
+| `revoked_at` | DATETIME | nullable |
+
+### Table: `knowledge_global_shares`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `grant_id` | UUID | PRIMARY KEY |
+| `record_id` | UUID | NOT NULL |
+| `project_id` | TEXT | NOT NULL |
+| `actor_id` | TEXT | NOT NULL |
+| `created_at` | DATETIME | NOT NULL |
+| `revoked_at` | DATETIME | nullable |
+
+### Table: `knowledge_redactions`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `redaction_id` | UUID | PRIMARY KEY |
+| `record_id` | UUID | NOT NULL |
+| `revision_id` | UUID | nullable |
+| `actor_id` | TEXT | NOT NULL |
+| `reason_code` | TEXT | NOT NULL |
+| `requested_at` | DATETIME | NOT NULL |
+| `completed_at` | DATETIME | nullable |
+| `cleanup_state` | JSONB | NOT NULL |
+
+### Table: `knowledge_redaction_targets`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `revision_id` | UUID | PRIMARY KEY |
+| `redaction_id` | UUID | NOT NULL |
+| `content_sha256` | TEXT | NOT NULL |

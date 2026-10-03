@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:139cb17c0864d3a86fc0f2634e407c1c6e7e42ad2464d182b2f97eb41129c865` |
+| Contract fingerprint | `sha256:3e5c648966fe64bc8091843cee620fa00d67d8e826d8cd24f7c6e7f2fc5040c3` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `idempotency_key` | `string` | yes | — | — |
 | `if_revision` | `string \| null` | no | `null` | — |
@@ -73,7 +74,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Update using project_id, identity, idempotency_key, if_revision, claim_epoch, title, body, category, summary, tags, sources, metadata, change_reason, valid_from, valid_until, recheck_at, summary_of_revision | — | always |
+| Update using project_id, global_scope, identity, idempotency_key, if_revision, claim_epoch, title, body, category, summary, tags, sources, metadata, change_reason, valid_from, valid_until, recheck_at, summary_of_revision | — | always |
 
 <!-- aq:generated:end -->
 

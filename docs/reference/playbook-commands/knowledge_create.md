@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:521c2e48989fd2673c4e337f2918602b0e0745a3fa99bd94e7be6a688c16cc77` |
+| Contract fingerprint | `sha256:47df888189ae945a9486d001fadc41ab6b27d29fc5c3e2ed5825cea45e0e64fe` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `title` | `string` | yes | — | — |
 | `body` | `string` | yes | — | — |
 | `category` | `"fact" \| "decision" \| "policy" \| "procedure" \| "incident" \| "reference" \| "note"` | yes | — | — |
@@ -66,7 +67,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, title, body, category, summary, tags, sources, metadata, idempotency_key, claim_epoch | — | always |
+| Create using project_id, global_scope, title, body, category, summary, tags, sources, metadata, idempotency_key, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

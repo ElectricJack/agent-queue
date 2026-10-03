@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:7af89d6254c41e54cfb8522dee88f88e064a2225274924a354f510ea4897d24a` |
+| Contract fingerprint | `sha256:7e98e4329bb3a34eb31ae022d7c0d10bafb828900bc8ccca01908674f719347e` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `operations` | `object[]` | yes | — | — |
 | `idempotency_key` | `string` | yes | — | — |
@@ -68,7 +69,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Link using project_id, identity, operations, idempotency_key, if_revision, if_link_token, claim_epoch | — | always |
+| Link using project_id, global_scope, identity, operations, idempotency_key, if_revision, if_link_token, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

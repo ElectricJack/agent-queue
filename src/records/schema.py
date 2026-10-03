@@ -562,6 +562,9 @@ def _after_create(metadata, bind, **kwargs):
     # A caller may create an unrelated subset of metadata tables.
     if all(inspect(bind).has_table(name) for name in RECORD_TABLE_NAMES):
         install_record_guards_v1(bind)
+        from src.knowledge.protection_schema import after_create
+
+        after_create(metadata, bind)
 
 
 def register_record_schema_events(metadata) -> None:

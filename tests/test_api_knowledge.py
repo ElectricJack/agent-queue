@@ -21,6 +21,10 @@ pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 # command -> route path.  The path is the command name with its category prefix
 # stripped and ``_`` -> ``-`` (src/api/codegen.py:build_category_routers).
 ROUTES = {
+    **{f"knowledge_{name}": "/api/knowledge/" + name.replace("_", "-") for name in (
+        "propose", "proposal_show", "proposal_decide", "verify", "authority_grant",
+        "authority_revoke", "share", "redact",
+    )},
     "knowledge_create": "/api/knowledge/create",
     "knowledge_list": "/api/knowledge/list",
     "knowledge_show": "/api/knowledge/show",
@@ -101,7 +105,7 @@ def test_every_route_is_registered_with_a_distinct_operation_id(app):
         assert path in paths, f"missing route {path}"
         assert ops_by_path[path] == name, f"{path} -> {ops_by_path[path]} (want {name})"
     assert len(ops) == len(ROUTES)
-    assert len(ROUTES) == len(set(ROUTES.values())) == 16
+    assert len(ROUTES) == len(set(ROUTES.values())) == 24
 
 
 def test_not_found_maps_to_404_on_every_route(app):
