@@ -50,6 +50,11 @@ EXPECTED_AGENT_COMMANDS = {
     # Knowledge records (K03): worker-safe reads and writes; retire/restore are
     # supervisor-only and remain out of the agent set.
     "knowledge_create",
+    # K05 proposals keep decisions supervisor-only; K09 task creation follows
+    # the held project's routing and claim checks.
+    "knowledge_propose",
+    "knowledge_proposal_show",
+    "knowledge_create_task",
     "knowledge_list",
     "knowledge_show",
     "knowledge_update",

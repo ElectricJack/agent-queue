@@ -25,11 +25,16 @@ def run_migration(conn, action):
         # A current baseline includes later additive protection tables. Exercise
         # the real downgrade dependency order before dropping the K01 schema.
         protection = importlib.import_module("migrations.versions.a00000000059_knowledge_protection")
+        inventory = importlib.import_module(
+            "migrations.versions.a00000000060_knowledge_import_inventory"
+        )
         if action == "downgrade":
+            inventory.downgrade()
             protection.downgrade()
         getattr(migration, action)()
         if action == "upgrade":
             protection.upgrade()
+            inventory.upgrade()
 
 
 async def test_baseline_created_tables_reinstall_guards_and_keep_installation(db):

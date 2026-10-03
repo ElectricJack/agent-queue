@@ -4151,3 +4151,59 @@ Proposals and authority are independent of document-review state. Redaction targ
 | `revision_id` | UUID | PRIMARY KEY |
 | `redaction_id` | UUID | NOT NULL |
 | `content_sha256` | TEXT | NOT NULL |
+
+## Legacy import inventory (K06)
+
+Migration `a00000000060` adds the sealed import run, permanent legacy identity
+mapping and item receipt tables. The K06 operator dry run returns its inventory
+in memory; it does not populate these tables. Applying imports is a separate
+operation. A downgrade refuses to remove any table containing data.
+
+### Table: `record_import_runs`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `run_id` | UUID | PRIMARY KEY |
+| `source_installation_id` | TEXT | NOT NULL |
+| `snapshot_id` | TEXT | NOT NULL |
+| `manifest_sha256` | TEXT | NOT NULL, lowercase SHA-256 |
+| `scope_key` | TEXT | NOT NULL, FK → record_scopes.scope_key (RESTRICT) |
+| `state` | TEXT | NOT NULL, prepared/applying/succeeded/failed/cancelled |
+| `started_at` | DATETIME | NOT NULL, default now() |
+| `finished_at` | DATETIME | nullable |
+| `cursor` | JSONB | nullable, object when present |
+| `report` | JSONB | nullable, object when present |
+
+### Table: `record_legacy_mappings`
+
+The composite primary key is `(source_installation_id, source_kind,
+source_scope, source_key)`. Record and revision identities are retained soft
+references so a mapping can also describe an excluded or quarantined source.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `source_installation_id` | TEXT | PRIMARY KEY part, NOT NULL |
+| `source_kind` | TEXT | PRIMARY KEY part, NOT NULL |
+| `source_scope` | TEXT | PRIMARY KEY part, NOT NULL |
+| `source_key` | TEXT | PRIMARY KEY part, NOT NULL |
+| `record_id` | UUID | nullable |
+| `latest_source_sha256` | TEXT | nullable, lowercase SHA-256 when present |
+| `latest_revision_id` | UUID | nullable |
+| `ownership` | TEXT | NOT NULL, legacy/managed/excluded/quarantined |
+| `decision_reason` | TEXT | nullable |
+| `updated_at` | DATETIME | NOT NULL, default now() |
+
+### Table: `record_import_items`
+
+The composite primary key is `(run_id, item_key)`. A revision identity requires
+a record identity; both remain soft references.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `run_id` | UUID | PRIMARY KEY part, FK → record_import_runs.run_id (RESTRICT) |
+| `item_key` | TEXT | PRIMARY KEY part, NOT NULL |
+| `source_sha256` | TEXT | NOT NULL, lowercase SHA-256 |
+| `disposition` | TEXT | NOT NULL, candidate/quarantined/excluded/unavailable |
+| `record_id` | UUID | nullable |
+| `revision_id` | UUID | nullable, requires record_id |
+| `error_code` | TEXT | nullable |

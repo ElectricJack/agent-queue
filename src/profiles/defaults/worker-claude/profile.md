@@ -74,8 +74,6 @@ somehow declares none.
     "knowledge_update",
     "knowledge_history",
     "knowledge_diff",
-    "knowledge_retire",
-    "knowledge_restore",
     "record_show",
     "record_search",
     "record_capabilities",

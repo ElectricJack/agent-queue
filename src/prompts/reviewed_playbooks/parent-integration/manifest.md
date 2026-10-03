@@ -1,8 +1,8 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9
-source_sha256: sha256:861a07a3730037b82905e7b8ae4a6f783dae0a636bd656c518a9aecdce02cbfb
-contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
+artifact_sha256: sha256:5d869c4d28abc7a134c85bb52131e6b6ea261916bd43501bd89676719b45a7b7
+source_sha256: sha256:dbd9e02dd2529ecae9bb46b12a77cef8617f59b998fd4d3dcd02e709ddc9a1f9
+contract_fingerprint: sha256:3e4cad60a27bfb8064b6897a85b865fe667f93fd9710ca9242c444b3b47322fb
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -49,3 +49,8 @@ Failed children, conflicts, old repair dossiers and expired writer budgets use
 explicit no-default gates. Import remains write-if-absent and no activation or
 engine transfer is authorized by this bundle. Operator rollout review binds the
 new digest before cutover.
+
+CI repair stage 1 records every promotion recovery outcome: `applied`,
+`superseded`, and `continued` complete; `not_applied`, `waiting`,
+`target_moved`, and `invariant_error` fail. A continuation or wait never
+asserts a delivery receipt or successful CI. Capability grants are unchanged.
