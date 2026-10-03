@@ -4206,6 +4206,38 @@ class TaskCommandsMixin:
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
+        current = await self.db.get_task(task_id)
+        incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+        if (
+            current is not None
+            and current.status == TaskStatus.BLOCKED
+            and current.route_source == "override"
+            and incident.get("reason") == "session_not_live"
+            and incident.get("end_reason") == "productive_death"
+            and not await self.db.get_task_meta(task_id, "slot_reset_failure")
+        ):
+            from src.commands.supervisor_authority import operator_or_supervisor
+
+            actor, refusal = await operator_or_supervisor(self.db, current.project_id)
+            if refusal:
+                return {"error": refusal}
+            stopped = await self._confirm_recovery_worker_stopped(incident)
+            if "error" in stopped:
+                return stopped
+            await self.db.decide_task_recovery(
+                task_id,
+                incident.get("id"),
+                "retry",
+                "Resume the audited stopped-worker handoff",
+                author_kind="user" if actor == "human:local-operator" else "supervisor",
+                author_id=actor,
+                project_id=current.project_id,
+                stopped_session=stopped,
+                operator_handoff=True,
+            )
+            task = await self.db.get_task(task_id)
+            await self._emit_task_graph_change("task.updated", task)
+            return {"task_id": task_id, "status": task.status.value}
         task = await self.orchestrator.resume_task(task_id)
         await self._emit_task_graph_change("task.updated", task)
         return {"task_id": task_id, "status": task.status.value}
@@ -4216,6 +4248,28 @@ class TaskCommandsMixin:
             return {"error": error}
         return {"stopped": args["task_id"]}
 
+    async def _confirm_recovery_worker_stopped(self, incident: dict) -> dict:
+        from src.sessions.provider import SessionHandle
+
+        row = (
+            await self.db.get_session(incident.get("session_id"))
+            if incident.get("session_id")
+            else None
+        )
+        if row is None:
+            return {"error": "Cannot confirm the old worker has stopped; operator review required"}
+        try:
+            provider = self.orchestrator.session_providers.create(row.provider, self.config)
+            stopped = await asyncio.wait_for(
+                provider.confirm_stopped(SessionHandle(row.name, row.provider, row.instance_token)),
+                timeout=10,
+            )
+        except Exception:
+            return {"error": "Worker liveness check unavailable; recovery was not accepted"}
+        if stopped is not True:
+            return {"error": "The old worker may still be running; recovery was not accepted"}
+        return {"id": row.id, "instance_token": row.instance_token}
+
     async def _cmd_task_recover(self, args: dict) -> dict:
         task_id = args.get("task_id")
         error = await self._task_control_scope_error(task_id)
@@ -4223,7 +4277,11 @@ class TaskCommandsMixin:
             return error
         decision = args.get("decision")
         reason = args.get("reason")
-        if decision not in ("retry", "hold") or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
+        if (
+            decision not in ("retry", "hold")
+            or not isinstance(reason, str)
+            or not 1 <= len(reason.strip()) <= 4000
+        ):
             return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
         expected_hold_at = args.get("expected_hold_at")
         if expected_hold_at is not None and (
@@ -4244,31 +4302,40 @@ class TaskCommandsMixin:
             }
         scope = self._current_scope or {}
         stopped_session = None
+        operator_handoff = False
+        actor = None
         if decision == "retry":
-            from src.sessions.provider import SessionHandle
-
             incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
             if incident.get("id") != args.get("incident_id"):
                 return {"error": "Incident is stale or not found"}
-            row = await self.db.get_session(incident["session_id"])
-            if row is None:
-                return {"error": "Cannot confirm the old worker has stopped; operator review required"}
-            try:
-                provider = self.orchestrator.session_providers.create(row.provider, self.config)
-                stopped = await asyncio.wait_for(provider.confirm_stopped(
-                    SessionHandle(row.name, row.provider, row.instance_token)
-                ), timeout=10)
-            except Exception:
-                return {"error": "Worker liveness check unavailable; recovery was not accepted"}
-            if stopped is not True:
-                return {"error": "The old worker may still be running; recovery was not accepted"}
-            stopped_session = {"id": row.id, "instance_token": row.instance_token}
+            current = await self.db.get_task(task_id)
+            operator_handoff = bool(
+                expected_hold_at is not None
+                and current is not None
+                and current.route_source == "override"
+                and incident.get("reason") == "session_not_live"
+                and incident.get("end_reason") == "productive_death"
+            )
+            if operator_handoff:
+                from src.commands.supervisor_authority import operator_or_supervisor
+
+                actor, refusal = await operator_or_supervisor(self.db, current.project_id)
+                if refusal:
+                    return {"error": refusal}
+            stopped_session = await self._confirm_recovery_worker_stopped(incident)
+            if "error" in stopped_session:
+                return stopped_session
         result = await self.db.decide_task_recovery(
-            task_id, args.get("incident_id"), decision, reason.strip(),
+            task_id,
+            args.get("incident_id"),
+            decision,
+            reason.strip(),
             author_kind="supervisor" if scope.get("kind") == "session" else "user",
-            author_id=scope.get("session_id") or "operator",
-            project_id=scope.get("project_id"), stopped_session=stopped_session,
+            author_id=actor or scope.get("session_id") or "operator",
+            project_id=scope.get("project_id"),
+            stopped_session=stopped_session,
             expected_hold_at=expected_hold_at,
+            operator_handoff=operator_handoff,
         )
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
