@@ -40,6 +40,9 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, is_valid_git_oid
+from src.integration.engine import root_engine_guard
+from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
+
 from src.integration.green_continuation import (
     enqueue_green_continuation_on,
     promotion_fingerprint,
@@ -279,6 +282,8 @@ class RepairService:
         )
         return operation
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="stale")
     async def start(
         self,
         operation_id: str,
@@ -1009,11 +1014,14 @@ class RepairService:
             "continued": True
         }, transition
 
+    @parent_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
+    @root_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
     async def record_result(
         self, operation_id: str, evidence_id: str, *, now: float | None = None
     ) -> dict[str, Any]:
         """Record one exact check attempt under the current stage budget."""
         recorded_at = self.clock() if now is None else now
+        entry_stage = parent_stage_at_entry(self.db, operation_id)
         post_transition = None
         async with self.db.immediate() as conn:
             operation = (
@@ -1024,6 +1032,10 @@ class RepairService:
                 )
             ).mappings().one_or_none()
             if operation is None:
+                return self._result_value("continue", "stale", 0)
+            if entry_stage is not None and operation["active_stage"] != entry_stage:
+                # Deadline processing won after the guarded call observed its
+                # stage. Evidence for that visit cannot count in its successor.
                 return self._result_value("continue", "stale", 0)
             previous = (
                 await conn.execute(
@@ -1343,6 +1355,8 @@ class RepairService:
         )
         return {"outcome": outcome, "dispatch": result}
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="busy")
     async def dispatch(self, operation_id: str, stage: int) -> dict[str, Any]:
         """Create and safely hand off to the exact current repair writer."""
         if stage < 0:
@@ -1895,6 +1909,8 @@ class RepairService:
         await self.db._notify_ready(transition.ready)
         return {"outcome": "completed", "event_id": event_id}
 
+    @parent_engine_guard("operation", outcome="stale")
+    @root_engine_guard("operation", outcome="stale")
     async def expire(
         self, operation_id: str, stage: int, *, now: float | None = None
     ) -> dict[str, Any]:

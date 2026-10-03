@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.integration.engine import root_engine_guard
+
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -114,6 +116,7 @@ class IntegrationCleanupService:
     async def handle_item(self, row: dict[str, Any], now: float) -> CleanupExecutionResult:
         return await self.execute(row["batch_id"], row["kind"], row["identity"], now=now)
 
+    @root_engine_guard("batch", outcome="wait", result_model=CleanupExecutionResult)
     async def execute(
         self, batch_id: str, kind: str, identity: str, *, now: float | None = None
     ) -> CleanupExecutionResult:
@@ -707,6 +710,7 @@ class IntegrationCleanupService:
             attempts=int(row["attempts"]),
         )
 
+    @root_engine_guard("batch", outcome="stale", result_model=CleanupMaterializationResult)
     async def materialize(self, batch_id: str, *, now: float | None = None):
         observed_at = self.clock() if now is None else now
         async with self.db._engine.connect() as conn:

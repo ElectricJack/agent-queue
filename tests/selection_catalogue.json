@@ -570,9 +570,12 @@
         "tests/test_integration_mode.py",
         "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_parent_reconciler.py",
         "tests/test_integration_parent_subjects.py",
+        "tests/test_integration_reconciler.py",
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_resume_metadata.py",
+        "tests/test_integration_root_adapters.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
@@ -820,6 +823,7 @@
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
+        "tests/test_playbook_v2_integration_policy.py",
         "tests/test_playbook_v2_resolution.py",
         "tests/test_playbook_v2_validation.py"
       ]
@@ -1328,7 +1332,7 @@
       ]
     }
   },
-  "digest": "sha256:50f31861b78e80e48bdf034f711aa7188de778d3a5ee20f86b5410415401c95b",
+  "digest": "sha256:08bc93e39212430a14a390f8adb18e6f0fdbf9ea212ed2c5148b5306b26a1d4b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7580,6 +7584,38 @@
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
     },
+    "tests/test_integration_parent_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.gate_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.integration.child_delivery",
+        "src.integration.collection",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.parent_adapters",
+        "src.integration.parent_engine",
+        "src.integration.parent_runtime",
+        "src.integration.parent_subjects",
+        "src.integration.repair",
+        "src.integration.subjects",
+        "src.integration.writers",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
+    },
     "tests/test_integration_parent_subjects.py": {
       "areas": [
         "integration-trains"
@@ -7686,6 +7722,23 @@
         "parametrize"
       ],
       "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
+    },
+    "tests/test_integration_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.reconciler",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
     },
     "tests/test_integration_records_and_gates.py": {
       "areas": [
@@ -7796,6 +7849,34 @@
       ],
       "markers": [],
       "summary": "Trusted real-review verdict production for integration sources."
+    },
+    "tests/test_integration_root_adapters.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.integration.development",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.repair",
+        "src.integration.root_adapters",
+        "src.integration.root_runtime",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Root cutover races, restart/rollback, exact records and trusted publication."
     },
     "tests/test_integration_root_authorization.py": {
       "areas": [
@@ -10225,6 +10306,27 @@
         "parametrize"
       ],
       "summary": "Operator adoption path for reviewed Playbook V2 artifact bundles."
+    },
+    "tests/test_playbook_v2_integration_policy.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.models",
+        "src.integration.subjects",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.playbooks.proposal",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reviewed subject tables: compiler guards, pure decisions and immutable pins."
     },
     "tests/test_playbook_v2_resolution.py": {
       "areas": [

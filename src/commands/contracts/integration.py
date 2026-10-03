@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -3154,6 +3154,17 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    name = "integration_engine_transfer"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationEngineTransferArgs,
+            ("preview", "transferred", "refused"), successes=frozenset({"preview", "transferred"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationEngineTransferValue)
+
+        async def transfer_engine(args, ctx):
+            return await _hierarchy_adapter("integration_engine_transfer", args, ctx, IntegrationEngineTransferValue,
+                                             {"preview", "transferred", "refused"})
+
+        registry.register(CommandRegistration(name, contract, transfer_engine))
     name = "integration_migrate_provenance"
     if registry.get(name) is None:
         contract = _operational_contract(name, IntegrationMigrateProvenanceArgs,
@@ -3267,6 +3278,32 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     ):
         if registry.get(contract.name) is None:
             registry.register(CommandRegistration(contract.name, contract, adapter))
+
+class IntegrationEngineTransferArgs(CommandArgs):
+    parent_task_id: str | None = Field(default=None, min_length=1)
+    repository_id: str = Field(min_length=1)
+    engine: Literal["legacy", "reconciler"]
+    expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
+    reason: str = ""
+    evidence: tuple[str, ...] = ()
+    dry_run: bool = True
+
+    @field_validator("expected_versions")
+    @classmethod
+    def nonnegative_versions(cls, value):
+        if any(not key or isinstance(version, bool) or version < 0 for key, version in value.items()):
+            raise ValueError("expected_versions must name exact nonnegative subject versions")
+        return value
+
+
+class IntegrationEngineTransferValue(CommandValue):
+    repository_id: str | None = None
+    engine: Literal["legacy", "reconciler"] | None = None
+    subject_ids: tuple[str, ...] = ()
+    expected_versions: dict[str, int] = Field(default_factory=dict)
+    current_engines: dict[str, Literal["legacy", "reconciler"]] = Field(default_factory=dict)
+    reason: str | None = None
+
 
 class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):
     """Operator recovery of a malformed reservation which never wrote remotely."""

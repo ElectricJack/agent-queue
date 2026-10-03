@@ -22,6 +22,7 @@ from src.commands.principal import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.ownership import BranchOwnership
 from src.models import RepoConfig, RepoSourceType
 from src.playbooks.invocation import current_invocation
@@ -125,6 +126,7 @@ class PromotionService:
             return None
         return remote.oid
 
+    @parent_engine_guard("request", result_model=True)
     async def prepare(self, request: PromotionInput) -> PromotionValue:
         domain_key = self._domain_key(request)
         intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
@@ -306,6 +308,7 @@ class PromotionService:
         await self._crash("after_prepare")
         return self._value(intent)
 
+    @parent_engine_guard("intent", result_model=True)
     async def push(self, intent_id: str, fence: Fence) -> PromotionValue:
         intent = await self._intent(intent_id)
         if intent["state"] == "committed":
@@ -571,6 +574,7 @@ class PromotionService:
                 )
         return self._value(successor), False
 
+    @parent_engine_guard("intent", result_model=True)
     async def push_resolution(
         self, intent_id: str, fence: Fence
     ) -> tuple[PromotionValue, bool]:
@@ -729,6 +733,7 @@ class PromotionService:
             },
         )
 
+    @parent_engine_guard("intent", result_model=True)
     async def reconcile(self, intent_id: str) -> PromotionValue:
         intent = await self._intent(intent_id)
         if intent["state"] == "committed":

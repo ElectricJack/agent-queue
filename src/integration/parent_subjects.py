@@ -407,19 +407,25 @@ def parent_observation(snapshot: ObservationRows, facts: SubjectFacts) -> dict[s
         {},
     )
     current = checkpoint.get("episode_id") == episode["id"]
-    exact = (
-        current
-        and checkpoint.get("generation") == subject.generation
-        and (checkpoint.get("checkpoint_sha") == subject.head_sha)
-    )
-    if not current:
-        unknown.append("parent_episode_superseded")
-    elif not exact:
-        unknown.append("parent_checkpoint_moved")
     readiness = next(iter(snapshot.all("parent_readiness")), {}) if current else {}
     collection_head = (
         readiness.get("head_sha", checkpoint.get("checkpoint_sha")) if current else None
     )
+    # The trusted receipt chain may advance before readiness projects its head
+    # into the checkpoint. Once the visit CAS adopts that aggregate, the old
+    # checkpoint must not make every later observation stale forever.
+    exact = (
+        current
+        and checkpoint.get("generation") == subject.generation
+        and collection_head == subject.head_sha
+    )
+    if not current:
+        unknown.append("parent_episode_superseded")
+    elif not exact and (
+        checkpoint.get("generation") != subject.generation
+        or checkpoint.get("checkpoint_sha") != subject.head_sha
+    ):
+        unknown.append("parent_checkpoint_moved")
     if current and readiness and collection_head != subject.head_sha:
         unknown.append("parent_collection_head_moved")
         exact = False
