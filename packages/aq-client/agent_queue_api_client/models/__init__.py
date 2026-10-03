@@ -1370,6 +1370,7 @@ from .review_submit_request import ReviewSubmitRequest
 from .review_submit_response import ReviewSubmitResponse
 from .review_submit_response_422 import ReviewSubmitResponse422
 from .review_submit_response_playbook_type_0 import ReviewSubmitResponsePlaybookType0
+from .review_wait import ReviewWait
 from .review_withdraw_request import ReviewWithdrawRequest
 from .review_withdraw_response import ReviewWithdrawResponse
 from .review_withdraw_response_422 import ReviewWithdrawResponse422
@@ -3098,6 +3099,7 @@ __all__ = (
     "ReviewSubmitResponse",
     "ReviewSubmitResponse422",
     "ReviewSubmitResponsePlaybookType0",
+    "ReviewWait",
     "ReviewWithdrawRequest",
     "ReviewWithdrawResponse",
     "ReviewWithdrawResponse422",

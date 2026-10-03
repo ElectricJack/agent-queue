@@ -213,6 +213,28 @@ describe("MobileLayoutLists", () => {
     expect(screen.getByTestId("where")).toHaveTextContent("focus=a");
   });
 
+  it("links a task waiting on a review straight to the review page from a phone tap", async () => {
+    const onTaskClick = vi.fn();
+    list.mockResolvedValueOnce({
+      nodes: [{ ...n("a"), status: "DEFINED", is_blocked: true, review_waits: [{
+        review_id: "brisk-lantern-7", review_state: "changes_requested", review_kind: "plan",
+        review_title: "Plan", gate_id: "g-1", gate_type: "review", gate_status: "open", blocking: true,
+      }] }],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter initialEntries={["/command-center/graph"]}>
+      <MobileLayoutList {...props} onTaskClick={onTaskClick} /><LocationProbe /></MemoryRouter>);
+
+    const link = await screen.findByRole("link", { name: /plan review brisk-lantern-7 \(changes requested\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
+    // A tap is touch events followed by a click; neither may open the task.
+    fireEvent.touchStart(link);
+    fireEvent.touchEnd(link);
+    fireEvent.click(link);
+    expect(screen.getByTestId("where")).toHaveTextContent("/reviews/brisk-lantern-7");
+    expect(onTaskClick).not.toHaveBeenCalled();
+  });
+
   it("omits the headings for a single project", async () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
