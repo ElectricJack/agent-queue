@@ -2,29 +2,32 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    integration_source_ci,
-    task_labels,
     integration_parent_episodes,
     integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
     integration_review_evidence,
+    integration_source_ci,
     project_integration_schedules,
+    projects,
     task_branch_origins,
     task_integration_checkpoints,
+    task_labels,
     tasks,
 )
 from src.doctor.stall_checks import _unmaterialized_pr_findings
-from src.git.manager import GitManager
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, GitManager
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
@@ -92,13 +95,14 @@ async def test_explicit_authorization_admits_chore_without_retagging_parent(case
 async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(case, tmp_path, conclusion, state):
     import asyncio
     from unittest.mock import AsyncMock
+
     from src.commands.handler import CommandHandler
     from src.config import AppConfig, DatabaseConfig, DiscordConfig
-    from src.orchestrator import Orchestrator
     from src.integration.models import HierarchicalIntegrationPolicy
     from src.integration.source_ci import SourceCIObservation, classify_source_checks
-    from src.vault import ensure_default_intelligence_classes
     from src.models import Task, TaskStatus, TaskType
+    from src.orchestrator import Orchestrator
+    from src.vault import ensure_default_intelligence_classes
 
     policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
     async with case["db"]._engine.connect() as conn:
@@ -748,6 +752,297 @@ async def test_poller_warns_when_completed_pr_has_no_source(case, caplog):
     )
     await poller.tick(1000.0)
     assert "Completed train root legacy has PR" in caplog.text
+
+
+class _PollClient:
+    """A GitHub fake whose PR changes between ticks and that records each call."""
+
+    def __init__(self, head: str, reviews: list[dict], *, state: str = "open"):
+        self.head = head
+        self.reviews = reviews
+        self.state = state
+        self.updated_at = "2026-10-02T00:00:00Z"
+        self.calls: list[str] = []
+        self.pull_error: Exception | None = None
+        self.reviews_error: Exception | None = None
+        self.open_error: Exception | None = None
+
+    async def pull_request(self, _url):
+        self.calls.append("pull")
+        if self.pull_error is not None:
+            raise self.pull_error
+        return {
+            "state": self.state,
+            "updated_at": self.updated_at,
+            "head": {"sha": self.head, "ref": "aq/epic/retire-the-publisher", "repo": {"id": 7}},
+            "base": {"ref": "main", "repo": {"id": 7}},
+        }
+
+    async def paged_list(self, path):
+        if "/reviews" in path:
+            self.calls.append("reviews")
+            if self.reviews_error is not None:
+                raise self.reviews_error
+            return list(self.reviews)
+        assert path == "/repositories/7/pulls?state=open&per_page=100"
+        self.calls.append("open")
+        if self.open_error is not None:
+            raise self.open_error
+        return [{"number": 7, "state": "open"}] if self.state == "open" else []
+
+    async def commit_check_runs(self, _sha):
+        self.calls.append("checks")
+        return []
+
+
+class _CountingGit(_ReviewGit):
+    def __init__(self, client):
+        super().__init__(client)
+        self.binds = 0
+        self.error: Exception | None = None
+
+    async def bind_github_repository(self, url):
+        self.binds += 1
+        if self.error is not None:
+            raise self.error
+        return await super().bind_github_repository(url)
+
+
+class _CountingProducer:
+    """Delegate to the real producer, recording each Git-proven snapshot request."""
+
+    def __init__(self, producer):
+        self.producer = producer
+        self.calls: list[tuple] = []
+
+    def __getattr__(self, name):
+        return getattr(self.producer, name)
+
+    async def snapshot_from_pull_request(self, task_id, **kwargs):
+        self.calls.append(("review", kwargs["github_review_id"]))
+        return await self.producer.snapshot_from_pull_request(task_id, **kwargs)
+
+    async def snapshot_authorized(self, task_id, **kwargs):
+        self.calls.append(("authorized", kwargs["policy_generation"]))
+        return await self.producer.snapshot_authorized(task_id, **kwargs)
+
+
+def _review(review_id: int, state: str, head: str) -> dict:
+    return {
+        "id": review_id, "state": state, "commit_id": head, "body": f"{state} on GitHub",
+        "user": {"type": "User", "login": "reviewer"},
+    }
+
+
+async def _review_ids(db) -> list[int]:
+    return sorted(row["evidence"]["github_review_id"] for row in await _rows(db))
+
+
+async def test_poller_rereads_reviews_only_when_the_pull_request_changes(case):
+    client = _PollClient(case["first"], [_review(2, "APPROVED", case["first"])])
+    producer = _CountingProducer(case["producer"])
+    poller = GitHubReviewPoller(case["db"], producer, _ReviewGit(client))
+    await poller.tick(1000.0)
+    await poller.tick(1031.0)
+    await poller.tick(1062.0)
+    # The unchanged PR is fetched on each visit; its reviews and the stored
+    # approval are not read or proven against Git again.
+    assert client.calls == ["pull", "reviews", "pull", "pull"]
+    assert producer.calls == [("review", 2)]
+
+    # A rejection moves updated_at: only the new verdict is proven and stored.
+    client.reviews.append(_review(3, "CHANGES_REQUESTED", case["first"]))
+    client.updated_at = "2026-10-02T00:05:00Z"
+    await poller.tick(1093.0)
+    assert client.calls[-2:] == ["pull", "reviews"]
+    assert producer.calls == [("review", 2), ("review", 3)]
+    latest = max(await _rows(case["db"]), key=lambda row: row["created_at"])
+    assert (latest["verdict"], latest["evidence"]["github_review_id"]) == ("rejected", 3)
+
+    # A dismissed approval is a new verdict for the same review id.
+    client.reviews[0] = {**client.reviews[0], "state": "DISMISSED"}
+    client.updated_at = "2026-10-02T00:06:00Z"
+    await poller.tick(1124.0)
+    assert producer.calls[-1] == ("review", 2)
+    assert [row["verdict"] for row in await _rows(case["db"])].count("rejected") == 2
+
+
+async def test_poller_refresh_reads_unchanged_reviews_without_reproving_stored_ones(case):
+    client = _PollClient(case["first"], [_review(2, "APPROVED", case["first"])])
+    producer = _CountingProducer(case["producer"])
+    poller = GitHubReviewPoller(
+        case["db"], producer, _ReviewGit(client), review_refresh_seconds=300.0
+    )
+    await poller.tick(1000.0)
+    # A verdict GitHub did not surface through updated_at lands at the refresh.
+    client.reviews.append(_review(4, "APPROVED", case["first"]))
+    await poller.tick(1031.0)
+    assert client.calls.count("reviews") == 1
+    await poller.tick(1300.0)
+    assert client.calls.count("reviews") == 2
+    assert producer.calls == [("review", 2), ("review", 4)]
+    assert await _review_ids(case["db"]) == [2, 4]
+
+
+@pytest.mark.parametrize("open_list", ["readable", "unavailable"])
+async def test_poller_skips_a_closed_pull_request_until_it_reopens(case, open_list):
+    client = _PollClient(case["first"], [_review(2, "APPROVED", case["first"])], state="closed")
+    if open_list == "unavailable":
+        client.open_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    poller = GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client))
+    await poller.tick(1000.0)
+    await poller.tick(1031.0)
+    # Without a readable open list the closed PR is fetched as before.
+    assert client.calls == (
+        ["pull", "open"] if open_list == "readable" else ["pull", "open", "pull"]
+    )
+    assert await _rows(case["db"]) == []
+
+    # Reopening is observed on the next visit, and its reviews are read.
+    client.state = "open"
+    client.updated_at = "2026-10-02T00:05:00Z"
+    await poller.tick(1062.0)
+    assert client.calls[-3:] == ["open", "pull", "reviews"]
+    assert await _review_ids(case["db"]) == [2]
+
+    # Closing again is observed on the next visit.
+    client.state = "closed"
+    await poller.tick(1093.0)
+    assert client.calls[-1] == "pull"
+    client.calls.clear()
+    await poller.tick(1124.0)
+    assert client.calls == (["open"] if open_list == "readable" else ["open", "pull"])
+
+
+async def test_cursor_reset_failure_or_restart_cannot_lose_a_review(case):
+    client = _PollClient(case["first"], [])
+    poller = GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client))
+    await poller.tick(1000.0)
+    # A cursor past every root wraps within the tick and still sees the change.
+    client.reviews.append(_review(2, "APPROVED", case["first"]))
+    client.updated_at = "2026-10-02T00:05:00Z"
+    poller.after_id = "zzz"
+    await poller.tick(1031.0)
+    assert await _review_ids(case["db"]) == [2]
+
+    # A failed read is not an observation: the next visit reads again although
+    # the PR has not changed since.
+    client.reviews.append(_review(3, "CHANGES_REQUESTED", case["first"]))
+    client.updated_at = "2026-10-02T00:10:00Z"
+    client.reviews_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    await poller.tick(1062.0)
+    client.reviews_error = None
+    await poller.tick(1093.0)
+    assert await _review_ids(case["db"]) == [2, 3]
+
+    # A restart starts from an empty cache: a verdict GitHub never surfaced
+    # through updated_at is recorded on the first visit.
+    client.reviews.append(_review(4, "APPROVED", case["first"]))
+    await poller.tick(1124.0)
+    assert await _review_ids(case["db"]) == [2, 3]
+    await GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client)).tick(1124.0)
+    assert await _review_ids(case["db"]) == [2, 3, 4]
+
+
+async def test_authorization_is_proven_once_per_identity_and_generation(case):
+    await _continuous_policy(case)
+    observed = []
+
+    async def source_ci(observation):
+        observed.append(observation.state)
+        return {"success": True}
+
+    client = _PollClient(case["first"], [])
+    producer = _CountingProducer(case["producer"])
+    poller = GitHubReviewPoller(
+        case["db"], producer, _ReviewGit(client), source_ci_handler=source_ci
+    )
+    # A hold refuses authorization, which is attempted again until it clears.
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(task_labels).values(task_id="e1", label="hold:product"))
+    await poller.tick(1000.0)
+    await poller.tick(1031.0)
+    assert producer.calls == [("authorized", 0)] * 2
+    async with case["db"].immediate() as conn:
+        await conn.execute(delete(task_labels).where(task_labels.c.task_id == "e1"))
+    await poller.tick(1062.0)
+    await poller.tick(1093.0)
+    assert producer.calls == [("authorized", 0)] * 3
+    assert [row["evidence"]["decision_path"] for row in await _rows(case["db"])] == [
+        "authorized_task"
+    ]
+    # Exact-head source CI is still observed on every visit.
+    assert observed == ["pending"] * 4
+    assert client.calls.count("checks") == 4
+
+    # A new policy generation is a new authorization.
+    async with case["db"].immediate() as conn:
+        await conn.execute(
+            update(projects).where(projects.c.id == "p")
+            .values(hierarchical_integration_generation=1)
+        )
+    await poller.tick(1124.0)
+    assert producer.calls[-1] == ("authorized", 1)
+    assert sorted(
+        row["evidence"]["policy_generation"] for row in await _rows(case["db"])
+    ) == [0, 1]
+
+
+async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
+    caplog.set_level(logging.INFO, logger="src.integration.github_review_poll")
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="legacy", project_id="p", repo_id="repo", title="Legacy root",
+            description="", status="COMPLETED",
+            branch_name="aq/epic/retire-the-publisher",
+            pr_url="https://github.com/o/r/pull/8", created_at=1.0, updated_at=1.0,
+        ))
+    client = _PollClient(case["first"], [])
+    client.pull_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    poller = GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client))
+    for now in (1000.0, 1031.0, 1062.0):
+        await poller.tick(now)
+    assert caplog.text.count("Completed train root legacy has PR") == 1
+    assert caplog.text.count("GitHub PR review poll failed for epic e1") == 1
+
+    # Recovery, then a moved head, then a recurrence: each is a change.
+    client.pull_error = None
+    await poller.tick(1093.0)
+    client.head = case["second"]
+    await poller.tick(1124.0)
+    await poller.tick(1155.0)
+    assert caplog.text.count("does not show its exact source head (head moved)") == 1
+    client.pull_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    await poller.tick(1186.0)
+    assert caplog.text.count("GitHub PR review poll failed for epic e1") == 2
+    assert caplog.text.count("Completed train root legacy has PR") == 1
+
+
+async def test_poller_binds_each_repository_once_per_tick(case, caplog):
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="e2", project_id="p", repo_id="repo", title="Leaf root", description="",
+            status="COMPLETED", branch_name="aq/e2",
+            pr_url="https://github.com/o/r/pull/8", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin-e2", task_id="e2", repository_id="repo", base_sha=case["base"],
+            creation_generation=1, reserved=True, created_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="e2", repository_id="repo", branch="aq/e2",
+            checkpoint_sha=case["second"], generation=0, updated_at=1.0,
+        ))
+    client = _PollClient(case["first"], [])
+    git = _CountingGit(client)
+    poller = GitHubReviewPoller(case["db"], case["producer"], git)
+    await poller.tick(1000.0)
+    assert (git.binds, client.calls.count("pull")) == (1, 2)
+    # A failed bind fails every root of that repository with one attempt.
+    git.error = GitError("GitHub access service is not configured")
+    await poller.tick(1031.0)
+    assert git.binds == 2
+    assert caplog.text.count("GitHub PR review poll failed for epic") == 2
 
 
 async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):

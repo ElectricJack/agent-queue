@@ -621,9 +621,12 @@
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
-        "owner_recovery_sweep": false,
+        "owner_recovery_sweep": true,
         "publisher_stall_after": 5,
-        "scratch_probe": null
+        "scratch_probe": null,
+        "service_item_timeout_seconds": 60.0,
+        "service_source_timeout_seconds": 300.0,
+        "service_source_timeouts": {}
       },
       "properties": {
         "default_mode": {
@@ -690,7 +693,7 @@
           "type": "array"
         },
         "owner_recovery_sweep": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "publisher_stall_after": {
@@ -757,6 +760,21 @@
             "object",
             "null"
           ]
+        },
+        "service_item_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        },
+        "service_source_timeout_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
+        "service_source_timeouts": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "type": "object"
         }
       },
       "type": "object",
