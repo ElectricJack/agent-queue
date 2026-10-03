@@ -1370,7 +1370,7 @@
       ]
     }
   },
-  "digest": "sha256:3f985baba9ec616f018b751efc150ad527cb4a15015302158b1fe7c181313498",
+  "digest": "sha256:ad06bfde71a9b45e6f822f56bf6f61326ac476ff2b93d1c022172327e4e0ae96",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9600,6 +9600,7 @@
         "src.database.engine",
         "src.database.schema_key",
         "src.database.tables",
+        "src.knowledge.protection_schema",
         "src.records.schema"
       ],
       "markers": [

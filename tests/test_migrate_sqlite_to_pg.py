@@ -130,6 +130,20 @@ def test_ordered_tables_has_no_duplicates() -> None:
     assert len(names) == len(set(names)), "duplicate entries in _ORDERED_TABLES"
 
 
+def test_legacy_source_metadata_is_closed_over_foreign_keys() -> None:
+    """The legacy schema must resolve FKs without PostgreSQL-only domains."""
+    from sqlalchemy import MetaData
+
+    source_metadata = MetaData()
+    for table in _ORDERED_TABLES:
+        table.to_metadata(source_metadata)
+
+    for table in source_metadata.tables.values():
+        for fk in table.foreign_keys:
+            assert fk.column.table.metadata is source_metadata
+            assert fk.column.table.name not in _EXCLUDED_TABLES
+
+
 def test_insertion_order_is_fk_safe() -> None:
     """Each table's FK targets are inserted earlier, or the column is deferred."""
     position = {t.name: i for i, t in enumerate(_ORDERED_TABLES)}
