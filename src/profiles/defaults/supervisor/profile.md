@@ -166,7 +166,7 @@ its outbox; transport failures never need a new author turn.
     "integration_settle_delivered_batch",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
-    "integration_recover_unwritten_resolution",
+    "integration_record_noop",
     "integration_redrive_child",
     "integration_reopen_collection",
     "integration_redrive_root",

@@ -30,13 +30,17 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
 
 
-#: Root-train subject commands an elevated live supervisor may re-drive.
-#: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
+#: Root-train subject commands an elevated live supervisor may re-drive, and
+#: ``record_noop``, the no-code disposition the supervisor profile directs it
+#: to (simplification Appendix B.8: it was refused for every session).  Each
+#: re-proves the head, completion and review evidence server-side.  Sealing,
+#: scheduling and parent-delivery writers stay service/playbook-only.
 _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
     "integration_build_candidate",
     "integration_ci_evidence",
     "integration_cleanup",
     "integration_promote_main",
+    "integration_record_noop",
     "integration_release",
     "integration_repair_close_current",
 })
