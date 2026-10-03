@@ -605,6 +605,7 @@ class Orchestrator(
         self.integration_scheduler = None
         self.integration_outbox = None
         self.record_outbox = None
+        self.knowledge_generation_loop = None
         self.integration_service = None
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
@@ -2097,6 +2098,13 @@ class Orchestrator(
             internal_services["vault_watcher"] = self.vault_watcher
         self.plugin_registry.set_internal_services(internal_services)
 
+        from src.knowledge.extraction import KnowledgeGenerationLoop
+
+        self.knowledge_generation_loop = KnowledgeGenerationLoop(
+            lambda: self._command_handler, lambda: self.config, self.bus
+        )
+        self.knowledge_generation_loop.start()
+
         try:
             discovered = await self.plugin_registry.discover_plugins()
             if discovered:
@@ -2788,6 +2796,8 @@ class Orchestrator(
             await self.integration_service.stop()
         if self.record_outbox:
             await self.record_outbox.stop()
+        if self.knowledge_generation_loop:
+            await self.knowledge_generation_loop.stop()
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None

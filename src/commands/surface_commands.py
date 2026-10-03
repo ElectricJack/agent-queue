@@ -375,7 +375,24 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"error": str(exc)}
 
-        return {
+        from src.commands.principal import current_principal
+        from src.knowledge.context import context_enabled
+        from src.records.models import RecordError
+
+        bundle = None
+        # Disabled context leaves prime's reads unchanged.
+        task = await self.db.get_task(task_id) if context_enabled(self.config) else None
+        if task is not None and task.project_id in self.config.knowledge.enabled_projects:
+            try:
+                bundle = await self._knowledge_context_service().prepare(
+                    principal=current_principal(), required=doc.to_markdown(),
+                    query=task.title, project_ids=[task.project_id], claim_epoch=task.claim_epoch,
+                    task_id=task.id,
+                )
+                doc = renderer.with_context(doc, bundle)
+            except RecordError as exc:
+                return exc.result()
+        result = {
             "success": True,
             "body": doc.to_markdown(),
             "sections": [{"key": s.key, "title": s.title, "body": s.body} for s in doc.sections],
@@ -383,6 +400,11 @@ class SurfaceCommandsMixin:
             "tokens_est": doc.tokens_est(),
             "tokens_est_method": "estimated characters / 4; not a measured token count",
         }
+        if bundle is not None:
+            result.update(context_bundle=bundle.to_dict(), context_state="prepared",
+                          tokens_est=bundle.budget["total_tokens"],
+                          tokens_est_method=bundle.budget["method"])
+        return result
 
     # ------------------------------------------------------------------
     # task_handoff — backs `aq handoff` (design §6.1, implementation §3)

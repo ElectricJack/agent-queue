@@ -6623,6 +6623,100 @@
         }
       }
     },
+    "/api/knowledge/cite": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Record an exact readable revision as explicitly read or attached.",
+        "description": "Record an exact readable revision as explicitly read or attached.",
+        "operationId": "knowledge_cite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeCiteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeCitationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/context-deliver": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Acknowledge observed transport delivery; does not prove model reading.",
+        "description": "Acknowledge observed transport delivery; does not prove model reading.",
+        "operationId": "knowledge_context_deliver",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeContextDeliverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeContextDeliveryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/create": {
       "post": {
         "tags": [
@@ -6789,6 +6883,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/KnowledgeExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/generation-status": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Inspect independent generation budgets, circuits and ambiguous calls without provider access.",
+        "description": "Inspect independent generation budgets, circuits and ambiguous calls without provider access.",
+        "operationId": "knowledge_generation_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeGenerationStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGenerationStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/generation-tick": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Reconcile retained inputs and run bounded, explicitly enabled proposal generation.",
+        "description": "Reconcile retained inputs and run bounded, explicitly enabled proposal generation.",
+        "operationId": "knowledge_generation_tick",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeGenerationTickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGenerationTickResponse"
                 }
               }
             }
@@ -37395,6 +37583,276 @@
         ],
         "title": "KnowledgeAuthorityRevokeRequest"
       },
+      "KnowledgeCitationResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "citation_id": {
+            "type": "string",
+            "title": "Citation Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "citation_id"
+        ],
+        "title": "KnowledgeCitationResponse"
+      },
+      "KnowledgeCiteRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "identity": {
+            "type": "string",
+            "title": "Identity",
+            "description": ""
+          },
+          "revision_id": {
+            "type": "string",
+            "title": "Revision Id",
+            "description": ""
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity",
+          "revision_id",
+          "kind",
+          "idempotency_key"
+        ],
+        "title": "KnowledgeCiteRequest"
+      },
+      "KnowledgeContextDeliverRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id",
+            "description": ""
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "rendered_sha256": {
+            "type": "string",
+            "title": "Rendered Sha256",
+            "description": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "",
+            "default": "delivered"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "transport",
+          "idempotency_key",
+          "rendered_sha256"
+        ],
+        "title": "KnowledgeContextDeliverRequest"
+      },
+      "KnowledgeContextDeliveryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "bundle_id": {
+            "type": "string",
+            "title": "Bundle Id"
+          },
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "delivery_id",
+          "state"
+        ],
+        "title": "KnowledgeContextDeliveryResponse"
+      },
       "KnowledgeCreateRequest": {
         "properties": {
           "project_id": {
@@ -38087,6 +38545,101 @@
         "additionalProperties": true,
         "type": "object",
         "title": "KnowledgeExportResponse"
+      },
+      "KnowledgeGenerationStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "KnowledgeGenerationStatusRequest"
+      },
+      "KnowledgeGenerationStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "jobs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Jobs",
+            "default": []
+          },
+          "budgets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Budgets",
+            "default": []
+          },
+          "unknown_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Calls"
+          },
+          "page_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Limit"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeGenerationStatusResponse",
+        "description": "Content-free cost and ambiguity diagnostics; never inspects a provider.\n\n``jobs`` groups by scope / state / error code, ``budgets`` is the daily\nper-feature allowance projection, and ``unknown_calls`` counts reservations\nwhose paid provider operation has no known outcome."
+      },
+      "KnowledgeGenerationTickRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "KnowledgeGenerationTickRequest"
+      },
+      "KnowledgeGenerationTickResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "captured": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured"
+          },
+          "states": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "States",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeGenerationTickResponse",
+        "description": "One bounded tick: how much was retained and the terminal state per job.\n\n``states`` carries one terminal state string per job the tick ran\n(``succeeded`` / ``retry`` / ``quarantined`` / ``cancelled``); it is empty\nwhen no due job was claimed."
       },
       "KnowledgeHistoryRequest": {
         "properties": {

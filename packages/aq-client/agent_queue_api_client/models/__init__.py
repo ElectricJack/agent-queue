@@ -623,6 +623,12 @@ from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityG
 from .knowledge_authority_grant_response_422 import KnowledgeAuthorityGrantResponse422
 from .knowledge_authority_revoke_request import KnowledgeAuthorityRevokeRequest
 from .knowledge_authority_revoke_response_422 import KnowledgeAuthorityRevokeResponse422
+from .knowledge_citation_response import KnowledgeCitationResponse
+from .knowledge_cite_request import KnowledgeCiteRequest
+from .knowledge_cite_response_422 import KnowledgeCiteResponse422
+from .knowledge_context_deliver_request import KnowledgeContextDeliverRequest
+from .knowledge_context_deliver_response_422 import KnowledgeContextDeliverResponse422
+from .knowledge_context_delivery_response import KnowledgeContextDeliveryResponse
 from .knowledge_create_request import KnowledgeCreateRequest
 from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
 from .knowledge_create_response import KnowledgeCreateResponse
@@ -637,6 +643,14 @@ from .knowledge_diff_response_changes_item import KnowledgeDiffResponseChangesIt
 from .knowledge_export_request import KnowledgeExportRequest
 from .knowledge_export_response import KnowledgeExportResponse
 from .knowledge_export_response_422 import KnowledgeExportResponse422
+from .knowledge_generation_status_request import KnowledgeGenerationStatusRequest
+from .knowledge_generation_status_response import KnowledgeGenerationStatusResponse
+from .knowledge_generation_status_response_422 import KnowledgeGenerationStatusResponse422
+from .knowledge_generation_status_response_budgets_item import KnowledgeGenerationStatusResponseBudgetsItem
+from .knowledge_generation_status_response_jobs_item import KnowledgeGenerationStatusResponseJobsItem
+from .knowledge_generation_tick_request import KnowledgeGenerationTickRequest
+from .knowledge_generation_tick_response import KnowledgeGenerationTickResponse
+from .knowledge_generation_tick_response_422 import KnowledgeGenerationTickResponse422
 from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
 from .knowledge_history_response_422 import KnowledgeHistoryResponse422
@@ -2357,6 +2371,12 @@ __all__ = (
     "KnowledgeAuthorityGrantResponse422",
     "KnowledgeAuthorityRevokeRequest",
     "KnowledgeAuthorityRevokeResponse422",
+    "KnowledgeCitationResponse",
+    "KnowledgeCiteRequest",
+    "KnowledgeCiteResponse422",
+    "KnowledgeContextDeliverRequest",
+    "KnowledgeContextDeliverResponse422",
+    "KnowledgeContextDeliveryResponse",
     "KnowledgeCreateRequest",
     "KnowledgeCreateRequestMetadataType0",
     "KnowledgeCreateResponse",
@@ -2371,6 +2391,14 @@ __all__ = (
     "KnowledgeExportRequest",
     "KnowledgeExportResponse",
     "KnowledgeExportResponse422",
+    "KnowledgeGenerationStatusRequest",
+    "KnowledgeGenerationStatusResponse",
+    "KnowledgeGenerationStatusResponse422",
+    "KnowledgeGenerationStatusResponseBudgetsItem",
+    "KnowledgeGenerationStatusResponseJobsItem",
+    "KnowledgeGenerationTickRequest",
+    "KnowledgeGenerationTickResponse",
+    "KnowledgeGenerationTickResponse422",
     "KnowledgeHistoryRequest",
     "KnowledgeHistoryResponse",
     "KnowledgeHistoryResponse422",
