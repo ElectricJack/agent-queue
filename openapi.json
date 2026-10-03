@@ -29100,7 +29100,7 @@
           "display_status"
         ],
         "title": "EpicDeliveryStatus",
-        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with a receipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
+        "description": "Implementation progress kept apart from delivery for a task with children.\n\nA read-only display projection (``src/integration/epic_delivery.py``): it\nnever changes the stored lifecycle and authorizes nothing. ``state`` is\n``integrating``/``verifying`` only with a live, recently active session,\nand ``delivered`` only with evidence for the epic's *current* completion:\ngit's own request-scoped answer that it is on the project's target, or a\nreceipt binding the current head.\n``display_status`` replaces the stored status on an epic card, so\n``Paused`` appears only for an operator hold (``hold == \"operator\"``)."
       },
       "EscalationAction": {
         "properties": {
