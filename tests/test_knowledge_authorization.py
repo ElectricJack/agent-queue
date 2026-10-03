@@ -1,6 +1,8 @@
 """Core access remains fail closed with legacy capability enforcement disabled."""
 
+import ast
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -364,3 +366,53 @@ async def test_protected_mutations_require_supervisor_and_reset_verification(con
         shown = await service.show(identity=f"record:{record_id}", principal=principal, project_id="p")
         assert shown["snapshot"]["verification"] == "unverified"
         assert shown["authority"] is None
+
+
+def test_module_level_imports_of_the_knowledge_layer_stay_acyclic():
+    """The service layer needs ``PrincipalKind``; ``src.commands`` needs the models.
+
+    A module-level cycle between them only shows up when one side is imported
+    first, so no ordinary test order catches it. Read the module-level
+    first-party imports directly instead of paying for one interpreter per
+    module.
+    """
+    sources = {}
+    for package in ("src/knowledge", "src/records", "src/commands"):
+        for path in Path(package).rglob("*.py"):
+            name = str(path.with_suffix("")).replace("/", ".")
+            sources[name.removesuffix(".__init__")] = path
+
+    def module_level_imports(path):
+        found = set()
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                found.add(node.module)
+                found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        return {name for name in found if name in sources}
+
+    graph = {name: module_level_imports(path) for name, path in sources.items()}
+    settled, active, cycles, path = set(), set(), [], []
+    for start in sorted(graph):
+        if start in settled:
+            continue
+        stack = [(start, iter(sorted(graph[start])))]
+        active.add(start)
+        path.append(start)
+        while stack:
+            node, pending = stack[-1]
+            for successor in pending:
+                if successor in active:
+                    cycles.append([*path[path.index(successor) :], successor])
+                elif successor not in settled:
+                    active.add(successor)
+                    path.append(successor)
+                    stack.append((successor, iter(sorted(graph[successor]))))
+                    break
+            else:
+                stack.pop()
+                active.discard(node)
+                path.pop()
+                settled.add(node)
+    assert cycles == [], f"module-level import cycle: {' -> '.join(cycles[0])}"

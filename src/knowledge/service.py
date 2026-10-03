@@ -5,7 +5,7 @@ from copy import deepcopy
 from sqlalchemy import select
 
 from src.database.tables import record_link_heads, record_link_versions
-from src.knowledge.models import normalize_snapshot
+from src.knowledge.models import EDIT_FIELDS, normalize_snapshot
 from src.knowledge.authority import AuthorityMixin, authority_on
 from src.knowledge.proposals import ProposalMixin
 from src.knowledge.sharing import SharingMixin
@@ -14,22 +14,7 @@ from src.records.identity import knowledge_identity
 from src.records.models import RecordError, uuid_value
 from src.records.service import RecordService
 
-EDIT_FIELDS = frozenset(
-    {
-        "title",
-        "body",
-        "category",
-        "tags",
-        "summary",
-        "summary_of_revision",
-        "valid_from",
-        "valid_until",
-        "recheck_at",
-        "sources",
-        "metadata",
-        "change_reason",
-    }
-)
+__all__ = ["EDIT_FIELDS", "KnowledgeService"]
 
 
 class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMixin, RecordService):

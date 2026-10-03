@@ -17,6 +17,26 @@ LINK_TYPES = frozenset(
     {"references", "motivated_by", "produces", "supports", "contradicts", "supersedes"}
 )
 
+#: Snapshot keys a guarded edit may change. Lives here rather than in
+#: ``service`` so ``src.commands`` can read it without importing the service
+#: layer, which imports back into ``src.commands`` for principal kinds.
+EDIT_FIELDS = frozenset(
+    {
+        "title",
+        "body",
+        "category",
+        "tags",
+        "summary",
+        "summary_of_revision",
+        "valid_from",
+        "valid_until",
+        "recheck_at",
+        "sources",
+        "metadata",
+        "change_reason",
+    }
+)
+
 
 def canonical_bytes(value: dict) -> bytes:
     def check(item):

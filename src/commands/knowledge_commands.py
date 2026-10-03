@@ -9,7 +9,7 @@ result. Policy lives in profiles and playbooks, never here.
 from __future__ import annotations
 
 from src.commands.principal import current_principal
-from src.knowledge.service import EDIT_FIELDS
+from src.knowledge.models import EDIT_FIELDS
 from src.records.models import RecordError
 
 
