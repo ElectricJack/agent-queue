@@ -709,6 +709,39 @@ def integration_rebind_repair(
     _execute(ctx, "integration_rebind_repair", args)
 
 
+@integration.command("recover-parent-head")
+@click.argument("operation_id")
+@click.option("--head", "head_sha", required=True, help="Exact published repair commit SHA.")
+@click.option("--dry-run/--apply", default=True)
+@click.option("--episode", "expected_episode_id", help="Episode from preview.")
+@click.option("--generation", "expected_generation", type=int, help="Generation from preview.")
+@click.option("--stage", "expected_stage", type=int, help="Repair stage from preview.")
+@click.option("--fence", "expected_fence_token", type=int, help="Current owner fence from preview.")
+@click.option("--reason", help="Operator reason; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_recover_parent_head(
+    ctx, operation_id, head_sha, dry_run, expected_episode_id, expected_generation,
+    expected_stage, expected_fence_token, reason,
+):
+    """Prove a completed parent repair extends the original child receipts.
+
+    Apply advances the aggregate checkpoint and requires fresh verification.
+    """
+    if not dry_run and (
+        not expected_episode_id or expected_generation is None or expected_stage is None
+        or expected_fence_token is None or not (reason or "").strip()
+    ):
+        raise click.UsageError("--apply requires --episode, --generation, --stage, --fence and --reason")
+    args = {"operation_id": operation_id, "head_sha": head_sha, "dry_run": dry_run}
+    for key, value in (("expected_episode_id", expected_episode_id),
+                       ("expected_generation", expected_generation), ("expected_stage", expected_stage),
+                       ("expected_fence_token", expected_fence_token), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_recover_parent_head", args)
+
+
 @integration.command("recover-preserved-repair")
 @click.argument("operation_id")
 @click.option("--intent", "intent_id", required=True, help="Exact current conflict intent.")

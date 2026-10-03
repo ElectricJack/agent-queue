@@ -40,6 +40,15 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["recover-parent-head", "op", "--head", "a" * 40],
+         "integration_recover_parent_head",
+         {"operation_id": "op", "head_sha": "a" * 40, "dry_run": True}),
+        (["recover-parent-head", "op", "--head", "a" * 40, "--apply", "--episode", "episode",
+          "--generation", "2", "--stage", "12", "--fence", "19", "--reason", "reconcile"],
+         "integration_recover_parent_head",
+         {"operation_id": "op", "head_sha": "a" * 40, "dry_run": False,
+          "expected_episode_id": "episode", "expected_generation": 2, "expected_stage": 12,
+          "expected_fence_token": 19, "reason": "reconcile"}),
         (["recover-preserved-repair", "op", "--intent", "intent", "--candidate", "a" * 40],
          "integration_recover_preserved_repair",
          {"operation_id": "op", "intent_id": "intent", "candidate_sha": "a" * 40, "dry_run": True}),

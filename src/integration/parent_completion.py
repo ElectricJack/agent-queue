@@ -589,11 +589,36 @@ class ParentCompletion:
             key=lambda row: (row["created_at"], row["id"]),
         )
         head_sha = episode["pre_collection_checkpoint_sha"]
+        from src.integration.parent_repair_heads import extensions_on
+
+        try:
+            extensions = await extensions_on(conn, operation, checkpoint)
+        except ValueError:
+            extensions = []
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_proof"})
+
+        def extend_head(head):
+            while True:
+                matching = [edge for edge in extensions if edge["before_sha"] == head]
+                if not matching:
+                    return head
+                if len(matching) != 1:
+                    blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
+                    return head
+                edge = matching[0]
+                extensions.remove(edge)
+                head = edge["after_sha"]
+
         for row in code_chain:
+            if row["before_sha"] != head_sha:
+                head_sha = extend_head(head_sha)
             if row["before_sha"] != head_sha or not self._trusted_code_receipt(row):
                 blockers.append({"task_id": row["source_task_id"], "reason": "receipt_chain"})
                 break
             head_sha = row["after_sha"]
+        head_sha = extend_head(head_sha)
+        if extensions:
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
         from src.integration.failed_verification_recovery import FAILED_AGGREGATE_META_KEY
 
         failed_aggregate = await conn.scalar(select(task_metadata.c.value).where(

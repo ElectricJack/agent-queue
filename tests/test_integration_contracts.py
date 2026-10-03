@@ -298,6 +298,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
+        "integration_recover_parent_head",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
