@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -101,6 +102,47 @@ async def _dispose_pg_pool():
     yield
     if _PG_POOL is not None:
         await _PG_POOL.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logging():
+    """Undo the process-global logging configuration a test performs.
+
+    ``setup_logging()`` reconfigures the *root* logger — level, handlers,
+    filters — and every other test in the worker shares that one object.
+    Leaving it at ``INFO`` makes every ``logging.getLogger(__name__)``
+    record in the process reach pytest's ``caplog`` handler, so a test that
+    asserts on captured messages starts seeing unrelated loggers' output and
+    its outcome depends on shard order. That is not hypothetical:
+    ``tests/test_logging_config.py`` called ``setup_logging(level="DEBUG")``
+    and never restored, and on CI the ``src.database`` "database url=" INFO
+    line leaked into ``TestSchedulerBlockerLogging``'s assertions on whichever
+    worker ran both.
+
+    Snapshot the root logger around every test. Handlers the test installed
+    are removed and any file handler is closed (otherwise a per-test
+    RotatingFileHandler leaks a descriptor for the rest of the run), and
+    pytest's own capture handler — already attached when this fixture
+    starts — is among those restored.
+    """
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = root.handlers[:]
+    saved_filters = root.filters[:]
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+        for log_filter in root.filters[:]:
+            root.removeFilter(log_filter)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        for log_filter in saved_filters:
+            root.addFilter(log_filter)
+        root.setLevel(saved_level)
 
 
 @pytest.fixture(autouse=True)
