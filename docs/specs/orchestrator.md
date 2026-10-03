@@ -996,6 +996,32 @@ Allowed state: IN_PROGRESS only.  Any other state returns an error string.
 6. Call `_notify_stuck_chain(task)`.
 7. Return `None`.
 
+An unproven integration handoff retains the claim and workspace. If the writer
+subsequently dies, `integration release-owner` may prove its exact termination,
+preserve its work and release those resources. This does not authorize generic
+recovery of `productive_death`, nor does a route change amend an incident snapshot.
+
+For an ordinary hierarchy/train producer in `BLOCKED/session_not_live`, an
+operator may complete that intentional handoff with `aq task resume` **after** an
+operator-backed owner-release audit and a subsequent explicit route override.
+Resume rechecks the exact stopped pool worker, current released branch fence,
+canonical branch origin/checkpoint, and all existing recovery budgets, project
+limits, dependencies, gates, holds and resource/question guards. Live or retired
+integration-operation delegates remain under their operation's authority. An
+existing recovery hold is not implicitly cleared. For an audited supervisor
+recovery hold, use `aq task recover --decision retry --expected-hold-at <decided_at>`
+with the current incident id and a reason to explicitly release that exact hold
+through the same proof checks. Human/manual holds cannot use this handoff path.
+The transaction records the release audit and route override, consumes one worker
+retry and one supervisor recovery, and retains the preserved Git ref/SHA for
+successor preparation. The successor verifies that ref and canonical lineage
+before resetting its workspace; divergence or missing proof refuses preparation.
+No counter, gate or origin is reset.
+
+Incident `retry_allowed` and its next action reflect the execution-end and routing
+guards as well as the attention reason and remaining budgets. Provider liveness
+is always freshly confirmed when executing a recovery decision.
+
 ---
 
 ## 16. Shutdown

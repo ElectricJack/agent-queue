@@ -573,6 +573,233 @@ async def test_an_in_flight_task_whose_writer_stopped_goes_back_to_ready(env):
     assert (await env.db.get_session("s11")).claim_phase is None
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "continue-preserved-tip",
+        "held-incident",
+        "ref-moved",
+        "non-slot",
+        "published-descendant",
+        "canonical-diverged",
+    ],
+)
+async def test_failed_operator_stop_release_reroute_resume_preserves_successor_git(
+    env, tmp_path, scenario
+):
+    """K07: failed stop, productive death, release-owner, override, then guarded Resume."""
+    from types import SimpleNamespace
+
+    from src.database.tables import (
+        task_branch_origins,
+        task_integration_checkpoints,
+        task_session_attempts,
+    )
+    from src.git.manager import GitError
+    from src.models import AgentProfile
+    from src.sessions.provider import SessionHandle
+
+    base_sha = git(env.base, "rev-parse", "main")
+    tip = env.branch("aq/producer", extra=1)
+    await env.task("producer", TaskStatus.IN_PROGRESS)
+    await env.db.create_profile(AgentProfile(id="worker", name="Worker"))
+    await env.db.create_profile(AgentProfile(id="codex-worker", name="Codex"))
+    now = time.time()
+    await env.db.update_task(
+        "producer",
+        repo_id="r",
+        branch_name="aq/producer",
+        profile_id="worker",
+        route_source="legacy",
+        created_at=now - 600,
+    )
+    slot = await env.slot("slot", "aq/producer", locked_by_task_id="producer")
+    await env.session(
+        "writer",
+        work_dir=slot,
+        task_id="producer",
+        state="running",
+        desired_state="running",
+        claim_phase="active",
+        last_claim_epoch=0,
+    )
+    await env.owner("owner", "aq/producer", "producer", session_id="writer", workspace_id="ws-slot")
+    async with env.db.immediate() as conn:
+        await conn.execute(update(projects).values(hierarchical_integration_mode="train"))
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin",
+                task_id="producer",
+                repository_id="r",
+                branch_name="aq/producer",
+                base_sha=base_sha,
+                creation_generation=0,
+                reserved=True,
+                materialized=True,
+                created_at=now - 600,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="producer",
+                repository_id="r",
+                branch="aq/producer",
+                checkpoint_sha=base_sha,
+                updated_at=now,
+            )
+        )
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id="attempt",
+                task_id="producer",
+                session_id="writer",
+                project_id="p",
+                profile_id="worker",
+                name="n-writer",
+                lifecycle="pool",
+                harness="claude",
+                provider="fake",
+                state="running",
+                work_dir=str(slot),
+                started_at=now - 500,
+                session_started_at=1,
+            )
+        )
+    provider, _, orch, handler, _ = await _pool_daemon(env, tmp_path, slot)
+
+    async def confirm_stopped(row):
+        return await provider.confirm_stopped(
+            SessionHandle(row["name"], row["provider"], row["instance_token"])
+        )
+
+    orch.development_integration = SimpleNamespace(confirm_stopped=confirm_stopped)
+    orch.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
+    refused = await handler.execute("stop_task", {"task_id": "producer"})
+    assert "handoff is unproven" in refused["error"]
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
+    await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    await env.db.update_session(
+        "writer",
+        state="stopped",
+        desired_state="stopped",
+        ended_at=time.time(),
+        end_reason="productive_death",
+    )
+    await env.db.transition_task(
+        "producer", TaskStatus.BLOCKED, force=True, context="session_not_live"
+    )
+    await env.db.set_task_meta("producer", "needs_attention", "session_not_live")
+    await env.db.queue_task_recovery_notifications()
+    released = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    assert released["outcome"] == "preserved_and_released", released
+    assert remote_sha(env.origin, "aq/preserved/owner") == tip
+    await env.db.update_task(
+        "producer",
+        profile_id="codex-worker",
+        intelligence_class="standard-high",
+        route_source="override",
+        provider_intent="pinned",
+        route={
+            "profile_id": "codex-worker",
+            "intelligence_class": "standard-high",
+            "override": {
+                "by": "local operator",
+                "at": time.time(),
+                "reason": "Continue the preserved producer on Codex",
+            },
+        },
+    )
+    if scenario == "held-incident":
+        from dataclasses import asdict
+        from src.api.auth import RequestScope
+
+        await env.db.create_profile(AgentProfile(id="supervisor", name="Supervisor"))
+        await env.session("supervisor", work_dir=tmp_path, state="running", desired_state="running")
+        await env.db.update_session("supervisor", profile_id="supervisor", lifecycle="named")
+        scope = asdict(
+            RequestScope(kind="session", session_id="supervisor", project_id="p", elevated=True)
+        )
+        current = await env.db.get_task_meta("producer", "supervisor_recovery_incident")
+        args = {
+            "task_id": "producer",
+            "incident_id": current["id"],
+            "decision": "hold",
+            "reason": "Hold the failed recovery pending an audited handoff",
+            "_scope": scope,
+        }
+        assert "error" not in await handler.execute("task_recover", args)
+        held = await env.db.get_task_meta("producer", "supervisor_recovery_incident")
+        assert "error" in await handler.execute("resume_task", {"task_id": "producer"})
+        resumed = await handler.execute(
+            "task_recover",
+            {
+                **args,
+                "decision": "retry",
+                "expected_hold_at": held["decided_at"],
+                "reason": "Explicitly release the supervisor hold and continue preserved work",
+            },
+        )
+    else:
+        resumed = await handler.execute("resume_task", {"task_id": "producer"})
+    assert resumed.get("status") == "READY", resumed
+    task = await env.db.get_task("producer")
+    project = await env.db.get_project("p")
+    origin, fence, _ = await orch._hierarchy_origin_and_fence(task, project)
+    expected_tip = tip
+    if scenario == "non-slot":
+        async with env.db.immediate() as conn:
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == "ws-slot")
+                .values(
+                    slot_index=None,
+                    base_workspace_id=None,
+                )
+            )
+    elif scenario in {"published-descendant", "canonical-diverged"}:
+        start = tip if scenario == "published-descendant" else base_sha
+        git(env.base, "checkout", "-b", "aq/updated", start)
+        (env.base / "new-publication.txt").write_text("published update\n")
+        git(env.base, "add", "new-publication.txt")
+        git(env.base, "commit", "-m", "published update")
+        expected_tip = git(env.base, "rev-parse", "HEAD")
+        git(env.base, "push", "--force", "origin", "HEAD:refs/heads/aq/producer")
+        git(env.base, "checkout", "main")
+    if scenario == "ref-moved":
+        git(env.base, "push", "--force", "origin", f"{base_sha}:refs/heads/aq/preserved/owner")
+        with pytest.raises(GitError, match="preserved ref changed"):
+            await orch._prepare_exact_origin_workspace(
+                task,
+                project,
+                SimpleNamespace(workspace=await env.db.get_workspace("ws-slot"), kind=None),
+                origin,
+                fence,
+            )
+        assert git(slot, "rev-parse", "HEAD") == tip
+    elif scenario == "canonical-diverged":
+        with pytest.raises(GitError, match="canonical branch diverged"):
+            await orch._prepare_exact_origin_workspace(
+                task,
+                project,
+                SimpleNamespace(workspace=await env.db.get_workspace("ws-slot"), kind=None),
+                origin,
+                fence,
+            )
+        assert git(slot, "rev-parse", "HEAD") == tip
+    else:
+        await orch._prepare_exact_origin_workspace(
+            task,
+            project,
+            SimpleNamespace(workspace=await env.db.get_workspace("ws-slot"), kind=None),
+            origin,
+            fence,
+        )
+        assert git(slot, "rev-parse", "HEAD") == expected_tip
+        assert git(slot, "rev-parse", "--abbrev-ref", "HEAD") == "aq/producer"
+        if scenario != "published-descendant":
+            assert remote_sha(env.origin, "aq/producer") != tip  # No implicit publication.
+
+
 @pytest.mark.parametrize(("state", "role"), [("attached", "collector"), ("reserved", "worker")])
 async def test_rows_outside_the_recoverable_states_are_refused(env, state, role):
     await env.owner("o12", "aq/t12", "t12", state=state, role=role)
