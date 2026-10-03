@@ -541,6 +541,12 @@ class TestShippedDialogRulesMatchTheirScreens:
             ),
             ("claude", "mcp-trust", " New MCP server found in .mcp.json: foo\n"),
             ("claude", "rate-limit", " You are approaching your usage limit\n"),
+            # 2026-10-03: an expired Claude login quarantined nothing, so the
+            # pool reported two idle workers and relaunched into the same
+            # "Login expired · Please run /login" pane.
+            ("claude", "login-required", " Login expired · Please run /login\n"),
+            ("claude", "login-required", " OAuth token has expired · Please run /login\n"),
+            ("claude", "login-required", " Invalid API key · Please run /login\n"),
             (
                 "codex",
                 "trust-directory",

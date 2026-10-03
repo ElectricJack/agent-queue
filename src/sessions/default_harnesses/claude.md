@@ -103,6 +103,14 @@ vault watcher; no restart, no release.
       ],
       "quarantine": true,
       "signal": "usage"
+    },
+    {
+      "name": "login-required",
+      "pattern": "Login expired|Invalid API key|OAuth token has expired|Please run /login",
+      "is_regex": true,
+      "keys": [],
+      "quarantine": true,
+      "signal": "auth"
     }
   ],
   "input_prompts": [
@@ -202,6 +210,16 @@ line. Empty this list to make the provider leave the text alone instead.
 **Dialogs share one budget** (`sessions.dialog_budget_seconds`, default 8 s)
 across the whole table, not 8 s each. Nine per-dialog budgets is how the
 Gas City runtime blew its start deadline.
+
+**`login-required` quarantines instead of typing.** Claude's expired-login
+banner (`Login expired · Please run /login`) and its siblings leave nothing to
+answer: `/login` is interactive, AQ never enters a credential, and there is no
+human at the pane. `signal: auth` makes the death strong evidence that the
+`claude` provider is not signed in, which is what stops the pool from reporting
+idle workers and relaunching into the same dead login (provider failover D3).
+An expired OAuth token *leaves the credential file on disk*, so
+`claude auth status` — not the file — is what decides; see
+`probe_login` in `src/install/logins.py`.
 
 **`input_prompts` is observation-only.** AQ checks these signatures only on
 an unclaimed pool worker whose pane has stayed unchanged past the claim-loop

@@ -269,7 +269,7 @@ upgrade.
 | Hooks | yes, via `--settings` | yes, by discovery + `--dangerously-bypass-hook-trust` | no |
 | Transcript reader | yes | yes | no |
 | Permission flag | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
-| Quarantining dialog | rate limit | login required | login required |
+| Quarantining dialog | rate limit, login required | login required | login required |
 
 Each shipped file's `## Notes` section carries the measurement behind every row
 above — which CLI version it was verified against, which byte sequence the
