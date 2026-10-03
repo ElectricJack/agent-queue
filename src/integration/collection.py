@@ -91,6 +91,14 @@ class CollectionService:
             return "waiting"
         target = BranchKey(repository_id=parent.repo_id, branch=parent.branch_name)
         owner = await hierarchy.ownership.get_owner(target)
+        if owner is not None and owner["owner_role"] == "worker":
+            from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+            await SuspendedParentRecovery(self.db, hierarchy).run(
+                task_id, dry_run=False, automatic=True,
+                reason="collection reconciliation after producer detachment",
+            )
+            owner = await hierarchy.ownership.get_owner(target)
         if owner is not None and owner["owner_role"] in {"repair", "repair_delegate"}:
             await self.return_repaired_branch(hierarchy, parent, checkpoint, target, owner)
             owner = await hierarchy.ownership.get_owner(target)
