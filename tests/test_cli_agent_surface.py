@@ -628,6 +628,185 @@ class TestStructuredHandoffCLI:
         ]
 
 
+@pytest.fixture
+def pool_handoff_api(tmp_path, monkeypatch):
+    """Keep the real CLI transport, bearer middleware, scope and command fences."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies
+    from src.api.auth import RequestScope
+    from src.api.execute import router
+    from src.api.middleware import TokenAuthMiddleware
+    from src.cli.client import CLIClient
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig
+    from src.models import AgentProfile, Project, SessionRecord, Task
+
+    session = SessionRecord(
+        id="pool-session", project_id="agent-queue", task_id="held-task",
+        profile_id="worker", harness="codex", provider="openai", name="pool",
+        lifecycle="pool", work_dir="", epoch="e1", instance_token="instance-1",
+        started_at=1, state="running", last_claim_epoch=7,
+    )
+    task = Task(
+        id="held-task", project_id="agent-queue", title="Held", description="", claim_epoch=7,
+    )
+    db = MagicMock()
+    db.get_session = AsyncMock(return_value=session)
+    db.get_task = AsyncMock(return_value=task)
+    db.get_project = AsyncMock(return_value=Project(id="agent-queue", name="Agent Queue"))
+    db.get_profile = AsyncMock(return_value=AgentProfile(
+        id="worker", name="Worker", aq_commands=["task_handoff"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    db.count_task_subtasks = AsyncMock(return_value={task.id: (0, 0)})
+    db.list_jobs = AsyncMock(return_value=[])
+    db.list_agent_waits = AsyncMock(return_value=[])
+    db.get_gates_for_task = AsyncMock(return_value=[])
+    db.add_task_handoff = AsyncMock(return_value=("handoff-1", True))
+    bus = AsyncMock()
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.security.capability_enforcement = "enforce"
+    handler = CommandHandler(
+        orchestrator=SimpleNamespace(db=db, bus=bus, plugin_registry=None), config=config,
+    )
+    scope = RequestScope(
+        kind="session", session_id=session.id, project_id=session.project_id, task_id=None,
+    )
+    token_store = SimpleNamespace(validate=AsyncMock(return_value=scope))
+    monkeypatch.setattr(dependencies, "_token_store", token_store)
+    monkeypatch.setattr(dependencies, "_command_handler", handler)
+    monkeypatch.setattr(dependencies, "_require_session_token", True)
+    app = FastAPI()
+    app.include_router(router)
+    app.add_middleware(TokenAuthMiddleware)
+    app.dependency_overrides[dependencies.get_command_handler] = lambda: handler
+
+    def client_factory(_api_url=None):
+        client = CLIClient(base_url="http://aq.test")
+
+        async def connect():
+            client._http = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url=client._base_url,
+                headers={"Authorization": f"Bearer {client._token}"},
+            )
+
+        client.connect = connect
+        return client
+
+    monkeypatch.setattr("src.cli.agent_surface._get_client", client_factory)
+    monkeypatch.setenv("AQ_API_TOKEN", "aqs_pool-test")
+    monkeypatch.setenv("AQ_SESSION_ID", session.id)
+    monkeypatch.setenv("AQ_PROJECT_ID", session.project_id)
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    claim = tmp_path / ".aq" / "claim.json"
+    claim.parent.mkdir()
+    claim.write_text(json.dumps({
+        "task_id": task.id, "session_id": session.id, "claim_epoch": task.claim_epoch,
+    }))
+    return SimpleNamespace(db=db, bus=bus, token_store=token_store, client=client_factory, claim=claim)
+
+
+@pytest.mark.parametrize("explicit_task", [False, True])
+def test_pool_handoff_cli_records_checkpoint_through_scoped_api(runner, pool_handoff_api, explicit_task):
+    from src.cli.app import cli
+
+    evidence = "aq test tests/test_handoffs.py: passed"
+    args = [
+        "--json", "handoff", "--auto", "--goal", "Finish the fix",
+        "--next-step", "Publish", "--constraint", "Keep session authorization",
+        "--evidence", evidence,
+    ]
+    if explicit_task:
+        args += ["--task-id", "held-task"]
+    result = runner.invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["restart_requested"] is False
+    pool_handoff_api.token_store.validate.assert_awaited_once_with("aqs_pool-test")
+    stored = pool_handoff_api.db.add_task_handoff.await_args
+    assert stored.args == ("held-task",)
+    assert stored.kwargs["claim_epoch"] == 7
+    assert stored.kwargs["session_id"] == "pool-session"
+    note = json.loads(stored.kwargs["content"])
+    assert note["agent"]["goal"] == "Finish the fix"
+    assert note["agent"]["next_step"] == "Publish"
+    assert note["agent"]["constraints"] == ["Keep session authorization"]
+    assert note["agent"]["evidence"] == [evidence]
+    assert note["facts"]["task_id"] == "held-task"
+    assert note["facts"]["claim_epoch"] == 7
+    assert note["facts"]["session_id"] == "pool-session"
+    assert not any(call.args[0] == "session.restart_requested"
+                   for call in pool_handoff_api.bus.emit.await_args_list)
+
+
+@pytest.mark.parametrize(("extra", "error", "exit_code"), [
+    (["--task-id", "foreign-task"], "does not hold task foreign-task", 1),
+    (["--session-id", "foreign-session"], "session_id mismatch", 4),
+    (["--claim-epoch", "6"], "claim epoch 6 is not current", 1),
+])
+def test_pool_handoff_cli_preserves_identity_and_epoch_fences(
+    runner, pool_handoff_api, extra, error, exit_code,
+):
+    from src.cli.app import cli
+
+    result = runner.invoke(cli, [
+        "--json", "handoff", "--auto", "--goal", "Resume", *extra,
+    ])
+    assert result.exit_code == exit_code, result.output
+    assert error in result.output
+    pool_handoff_api.db.add_task_handoff.assert_not_awaited()
+
+
+def test_pool_handoff_cli_requires_claim_epoch(runner, pool_handoff_api):
+    from src.cli.app import cli
+
+    pool_handoff_api.claim.unlink()
+    result = runner.invoke(cli, [
+        "--json", "handoff", "--auto", "--goal", "Resume",
+    ])
+    assert result.exit_code == 1, result.output
+    assert "claim_epoch is required for pool sessions" in result.output
+    pool_handoff_api.db.add_task_handoff.assert_not_awaited()
+
+
+def test_pool_handoff_cli_preserves_legacy_restart_request(runner, pool_handoff_api):
+    from src.cli.app import cli
+
+    result = runner.invoke(cli, ["--json", "handoff", "Partial fix", "Run the area checks"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["restart_requested"] is True
+    stored = pool_handoff_api.db.add_task_handoff.await_args
+    assert stored.args == ("held-task",)
+    note = json.loads(stored.kwargs["content"])
+    assert note["agent"]["subject"] == "Partial fix"
+    assert note["agent"]["detail"] == "Run the area checks"
+    assert any(call.args[0] == "session.restart_requested"
+               for call in pool_handoff_api.bus.emit.await_args_list)
+
+
+def test_pool_handoff_api_rejects_foreign_project(pool_handoff_api):
+    from src.cli.app import _run
+    from src.cli.exceptions import ScopeDeniedError
+
+    async def submit():
+        async with pool_handoff_api.client() as client:
+            await client.execute("task_handoff", {
+                "auto": True, "task_id": "held-task", "project_id": "foreign-project",
+                "claim_epoch": 7, "goal": "Resume",
+            })
+
+    with pytest.raises(ScopeDeniedError, match="project_id mismatch"):
+        _run(submit())
+    pool_handoff_api.db.add_task_handoff.assert_not_awaited()
+
+
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 @pytest.mark.parametrize("source", ["resume", "compact"])
 def test_compaction_hook_reprime_bypasses_startup_suppression(runner, monkeypatch, harness, source):

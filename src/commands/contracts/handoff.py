@@ -27,6 +27,8 @@ from src.handoffs import HANDOFF_BYTES, LIST_FIELDS, TEXT_FIELDS
 
 class TaskHandoffArgs(CommandArgs):
     task_id: str | None = None
+    # Session-scoped API requests inject this after checking the token's project.
+    project_id: str | None = None
     session_id: str | None = None
     claim_epoch: int | None = Field(default=None, ge=0)
     auto: bool = False

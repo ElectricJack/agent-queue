@@ -411,6 +411,11 @@ class SurfaceCommandsMixin:
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
             task_id = scope.get("task_id")
+        if not task_id and scope.get("session_id"):
+            # Pool tokens have no fixed task: resolve the daemon-held claim,
+            # then apply the same ownership and epoch fence as explicit IDs.
+            held_session = await self.db.get_session(scope["session_id"])
+            task_id = held_session.task_id if held_session else None
         if not task_id:
             return {
                 "error": (
