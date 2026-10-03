@@ -460,6 +460,289 @@ class TestCreateSlot:
         assert Path(slot.workspace_path).is_dir()
 
 
+class TestOperatorHandoffCheckpoint:
+    async def _checkpoint(self, mgr, base_ws, kind, *, dirty=False):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask())
+        path = Path(slot.workspace_path)
+        if dirty:
+            (path / "staged.txt").write_text("saved stage\n")
+            _git(["add", "staged.txt"], path)
+            (path / "staged.txt").write_text("saved unstaged\n")
+            (path / "binary.bin").write_bytes(b"\x00saved\xff")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+        _git(["reset", "--hard"], path)
+        _git(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], path)
+        return slot, path, saved
+
+    def _preserved_commit(self, path, head, *, filename="preserved.txt", content="operator work\n"):
+        _git(["switch", "--detach", head], path)
+        (path / filename).write_text(content)
+        _git(["add", filename], path)
+        _git(["commit", "-m", "operator preserved work"], path)
+        _git(["push", "origin", "HEAD:refs/heads/aq/preserved/owner"], path)
+        return _git(["rev-parse", "HEAD"], path)
+
+    async def _restore(self, mgr, slot, sha, **kwargs):
+        return await mgr.reset_slot_for_task(
+            slot, FakeTask(), base_branch=sha, target_branch="aq/tsk-1",
+            operator_handoff=True, **kwargs,
+        )
+
+    @pytest.mark.parametrize("dirty", [False, True])
+    async def test_old_checkpoint_keeps_preserved_commit_and_saved_dirty_layers(
+        self, mgr, base_ws, kind, dirty
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=dirty)
+        sha = self._preserved_commit(path, saved["head"])
+        assert await self._restore(mgr, slot, sha) == "aq/tsk-1"
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert (path / "preserved.txt").read_text() == "operator work\n"
+        if dirty:
+            assert _git(["show", ":staged.txt"], path) == "saved stage"
+            assert (path / "staged.txt").read_text() == "saved unstaged\n"
+            assert (path / "binary.bin").read_bytes() == b"\x00saved\xff"
+            assert "preserved.txt" not in _git(["diff", "HEAD", "--name-only"], path)
+        else:
+            assert _git(["status", "--porcelain"], path) == ""
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+        assert _git(["rev-parse", saved["ref"]], path) == saved["commit"]
+
+    async def test_newer_saved_head_and_dirty_work_survive_older_handoff(
+        self, mgr, base_ws, kind
+    ):
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        sha = self._preserved_commit(path, saved["head"])
+        _git(["switch", "-C", "aq/tsk-1", sha], path)
+        (path / "newer.txt").write_text("later committed work\n")
+        _git(["add", "newer.txt"], path)
+        _git(["commit", "-m", "later"], path)
+        newer = _git(["rev-parse", "HEAD"], path)
+        (path / "newer.txt").write_text("later staged work\n")
+        _git(["add", "newer.txt"], path)
+        (path / "newer.txt").write_text("later unstaged work\n")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        _git(["reset", "--hard"], path)
+        _git(["switch", "--detach", sha], path)
+
+        await self._restore(mgr, slot, sha)
+
+        assert _git(["rev-parse", "HEAD"], path) == newer
+        assert _git(["show", ":newer.txt"], path) == "later staged work"
+        assert (path / "newer.txt").read_text() == "later unstaged work\n"
+
+    async def test_newer_local_branch_commit_is_retained(self, mgr, base_ws, kind):
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        (path / "later.txt").write_text("local committed progress\n")
+        _git(["add", "later.txt"], path)
+        _git(["commit", "-m", "local progress"], path)
+        newer = _git(["rev-parse", "HEAD"], path)
+        _git(["switch", "--detach", saved["head"]], path)
+
+        await self._restore(mgr, slot, saved["head"])
+
+        assert _git(["rev-parse", "HEAD"], path) == newer
+        assert (path / "later.txt").read_text() == "local committed progress\n"
+        assert (path / "staged.txt").read_text() == "saved unstaged\n"
+
+    async def test_checkpoint_changes_already_committed_by_handoff_are_coalesced(
+        self, mgr, base_ws, kind
+    ):
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        (path / "README.md").write_text("saved edit\n")
+        _git(["add", "README.md"], path)
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        _git(["reset", "--hard"], path)
+        sha = self._preserved_commit(
+            path, saved["head"], filename="README.md", content="saved edit\n"
+        )
+        await self._restore(mgr, slot, sha)
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert (path / "README.md").read_text() == "saved edit\n"
+        assert _git(["status", "--porcelain"], path) == ""
+
+    @pytest.mark.parametrize("corruption", ["ref", "index_tree"])
+    async def test_ambiguous_checkpoint_identity_is_refused(
+        self, mgr, base_ws, kind, corruption
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        sha = self._preserved_commit(path, saved["head"])
+        if corruption == "ref":
+            _git(["update-ref", saved["ref"], sha], path)
+        else:
+            saved = saved | {"index_tree": _git(["rev-parse", "HEAD^{tree}"], path)}
+            await mgr.db.set_task_meta("tsk-1", CHECKPOINT_META, saved)
+        with pytest.raises(GitError, match="checkpoint (ref changed|identity is ambiguous)"):
+            await self._restore(mgr, slot, sha)
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert _git(["status", "--porcelain"], path) == ""
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+        assert _git(["for-each-ref", "refs/aq/task-restores"], path) == ""
+
+    async def test_live_branch_holder_is_never_detached(
+        self, mgr, base_ws, kind, monkeypatch
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        _, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        sha = self._preserved_commit(path, saved["head"])
+        _git(["switch", "aq/tsk-1"], path)
+        (path / "live.txt").write_text("live worker progress\n")
+        destination = await mgr.create_slot(base_ws, kind, 1)
+        monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(return_value=[
+            SimpleNamespace(work_dir=str(path)),
+        ]))
+        with pytest.raises(GitError, match="already used by worktree"):
+            await self._restore(mgr, destination, sha)
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-1"
+        assert (path / "live.txt").read_text() == "live worker progress\n"
+        assert _git(["status", "--porcelain"], destination.workspace_path) == ""
+
+    async def test_unknown_ancestry_refuses_before_reset(
+        self, mgr, base_ws, kind, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        sha = self._preserved_commit(path, saved["head"])
+        monkeypatch.setattr(mgr.git, "ais_ancestor", AsyncMock(return_value=None))
+        with pytest.raises(GitError, match="unproved.*unchanged"):
+            await self._restore(mgr, slot, sha)
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert _git(["branch", "--show-current"], path) == ""
+        assert _git(["status", "--porcelain"], path) == ""
+
+    @pytest.mark.parametrize("unknown", ["status", "branch_tip"])
+    async def test_unknown_destination_proof_refuses_before_reset(
+        self, mgr, base_ws, kind, monkeypatch, unknown
+    ):
+        from unittest.mock import AsyncMock
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        sha = self._preserved_commit(path, saved["head"])
+        if unknown == "status":
+            monkeypatch.setattr(mgr.git, "aget_dirty_paths", AsyncMock(return_value=None))
+        else:
+            run = mgr.git._arun
+
+            async def unreadable_tip(args, **kwargs):
+                if args[0] == "for-each-ref":
+                    raise GitError("branch tip read failed")
+                return await run(args, **kwargs)
+
+            monkeypatch.setattr(mgr.git, "_arun", unreadable_tip)
+        with pytest.raises(GitError):
+            await self._restore(mgr, slot, sha)
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert _git(["branch", "--show-current"], path) == ""
+        assert _git(["status", "--porcelain"], path) == ""
+
+    async def test_sibling_fetch_cannot_replace_the_checkpoint_identity_proof(
+        self, mgr, base_ws, kind, monkeypatch
+    ):
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        sha = self._preserved_commit(path, saved["head"])
+        run = mgr.git._arun
+
+        async def racing_fetch(args, **kwargs):
+            result = await run(args, **kwargs)
+            if args[0] == "fetch" and "--no-write-fetch-head" in args:
+                await run(["fetch", "origin", "main"], cwd=str(path))
+            return result
+
+        monkeypatch.setattr(mgr.git, "_arun", racing_fetch)
+        await self._restore(mgr, slot, sha)
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert (path / "staged.txt").read_text() == "saved unstaged\n"
+        assert _git(["for-each-ref", "refs/aq/task-restores"], path) == ""
+
+    @pytest.mark.parametrize("layer", ["index", "worktree"])
+    async def test_snapshot_content_conflict_refuses_before_reset(
+        self, mgr, base_ws, kind, layer
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        (path / "README.md").write_text("checkpoint edit\n")
+        if layer == "index":
+            _git(["add", "README.md"], path)
+            (path / "README.md").write_text("init\n")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+        _git(["reset", "--hard"], path)
+        sha = self._preserved_commit(path, saved["head"], filename="README.md", content="operator edit\n")
+        index = _git(["write-tree"], path)
+        sentinel = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+
+        with pytest.raises(GitError, match="content conflicts.*unchanged"):
+            await self._restore(mgr, slot, sha)
+
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert _git(["write-tree"], path) == index
+        assert (path / "README.md").read_text() == "operator edit\n"
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == sentinel
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+    @pytest.mark.parametrize("diverged", ["checkpoint", "local_branch"])
+    async def test_divergent_history_is_refused(self, mgr, base_ws, kind, diverged):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        (path / "local.txt").write_text("local line\n")
+        _git(["add", "local.txt"], path)
+        _git(["commit", "-m", "local line"], path)
+        local = _git(["rev-parse", "HEAD"], path)
+        if diverged == "checkpoint":
+            await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        sha = self._preserved_commit(path, saved["head"])
+        index = _git(["write-tree"], path)
+
+        with pytest.raises(GitError, match="diverged.*unchanged"):
+            await self._restore(mgr, slot, sha)
+
+        assert _git(["rev-parse", "HEAD"], path) == sha
+        assert _git(["rev-parse", "refs/heads/aq/tsk-1"], path) == local
+        assert _git(["write-tree"], path) == index
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+
+    @pytest.mark.parametrize("dirty", ["staged", "unstaged", "untracked", "untracked_hidden"])
+    async def test_newer_dirty_destination_is_unchanged(self, mgr, base_ws, kind, dirty):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        sha = self._preserved_commit(path, saved["head"])
+        filename = "new.txt" if dirty.startswith("untracked") else "README.md"
+        (path / filename).write_text("newer dirty work\n")
+        if dirty == "staged":
+            _git(["add", filename], path)
+        elif dirty == "untracked_hidden":
+            _git(["config", "status.showUntrackedFiles", "no"], path)
+        index = _git(["write-tree"], path)
+        status = _git(["status", "--porcelain"], path)
+        # Refusal is independent of best-effort salvage policy.
+        mgr.config.salvage_dirty = False
+
+        with pytest.raises(GitError, match="destination is dirty.*unchanged"):
+            await self._restore(mgr, slot, sha)
+
+        assert (path / filename).read_text() == "newer dirty work\n"
+        assert _git(["write-tree"], path) == index
+        assert _git(["status", "--porcelain"], path) == status
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+
 # ─────────────────────────────── §3.2 reset ──────────────────────────────
 
 

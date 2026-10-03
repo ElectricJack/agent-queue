@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyStore, mergeTiles } from "../layoutStore";
 import { enteredBounds, enteredFrame, toFlowElements } from "../flowNodes";
+import { EPIC_DELIVERY } from "../../../../testUtils/epicDelivery";
 
 const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
@@ -229,6 +230,39 @@ describe("toFlowElements", () => {
     const second = toFlowElements(
       mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, first.cache);
     const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
+  });
+
+  it("carries an epic's delivery projection to cards and containers, null without one", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("e", "container", 0, 0, { delivery: EPIC_DELIVERY.missingReceipt }),
+        n("c", "collapsed", 1, 4, { delivery: EPIC_DELIVERY.strandedReservation }),
+        n("z", "card", 2, 4),
+      ],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const byId = Object.fromEntries(nodes.map((x) => [x.id, x]));
+    expect((byId.e!.data as { node: { delivery: { label: string } } }).node.delivery.label)
+      .toBe("Integration blocked - final fix not collected");
+    expect((byId.c!.data as { delivery: { label: string } }).delivery.label)
+      .toBe("Verification blocked - branch handoff required");
+    expect((byId.z!.data as { delivery: unknown }).delivery).toBeNull();
+  });
+
+  it("rebuilds a card when only its delivery changes", () => {
+    const tiles = {
+      nodes: [n("a", "collapsed", 0, 0, { delivery: EPIC_DELIVERY.queuedVerifier })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    const same = toFlowElements(wire(tiles), ctx, first.cache);
+    const changed = { ...tiles, nodes: [n("a", "collapsed", 0, 0, { delivery: EPIC_DELIVERY.activeIntegration })] };
+    const second = toFlowElements(wire(changed), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(same, "a")).toBe(byId(first, "a"));
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 

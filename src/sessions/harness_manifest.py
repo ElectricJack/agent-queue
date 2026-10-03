@@ -68,6 +68,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "3f4ab3f3928b7ff3444f8db6650dbed92879dadf755a2a710218fa5d64f0bd7e",  # merged main + composer_clear_keys
             "1c2bb92d61957c2c936073c0355acf013321406c3735f7da42317ad05187fd4b",  # bold-rapids.2 2026-09-20 (dialog signal)
             "09d2a4cfb2351e8e34325d8cdfa30a6b9a33b9acc4d71a8b7783f27315b775e2",  # quick-stone 2026-09-22 (input prompts)
+            "717e47aa1017c2dc242088530aebf800688b24d4e6957dd85d119c7e0e7160bb",  # bright-ridge-85 2026-10-03 (login-required dialog)
         }
     ),
     "codex.md": frozenset(

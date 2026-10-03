@@ -8,6 +8,7 @@ This module adds no command surface and does not activate the reconciler.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from src.integration.subjects import (
 )
 
 Row = Mapping[str, Any]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -221,6 +223,11 @@ class DatabaseObservationReader:
                 if subject.writer.task_id:
                     writer_ids.add(subject.writer.task_id)
                 writer_ids.update(
+                    row["verifier_task_id"]
+                    for row in operations
+                    if row.get("verifier_task_id")
+                )
+                writer_ids.update(
                     row["repair_task_id"]
                     for row in rows["integration_source_ci"]
                     if row.get("repair_task_id") and row["task_id"] == subject.task_id
@@ -268,7 +275,13 @@ class DatabaseObservationReader:
                     t.gates.c.project_id == subject.project_id,
                     t.gates.c.id == subject.schedule.gate_id,
                 )
-                return ObservationRows(subject, project[0], repository[0], rows)
+                return await self.augment_on(
+                    conn, ObservationRows(subject, project[0], repository[0], rows)
+                )
+
+    async def augment_on(self, conn, snapshot: ObservationRows) -> ObservationRows:
+        """Extend a snapshot inside the same read-only repeatable-read transaction."""
+        return snapshot
 
 
 def _latest(rows, time_key="created_at") -> Row | None:
@@ -283,7 +296,12 @@ def _operation(snapshot: ObservationRows) -> Row | None:
     episodes = {
         row["id"]
         for row in snapshot.all("integration_parent_episodes")
-        if row["generation"] == snapshot.subject.generation
+        if (
+            row["id"] == snapshot.subject.parent_episode_id
+            if snapshot.subject.parent_episode_id
+            else row["generation"] == snapshot.subject.generation
+        )
+        and row["parent_task_id"] == snapshot.subject.task_id
     }
     return _latest(
         row
@@ -374,7 +392,11 @@ def _members(snapshot: ObservationRows) -> tuple[list[MemberFacts], dict[str, st
             if row["child_task_id"] == task_id
             and any(
                 episode["id"] == row["parent_episode_id"]
-                and episode["generation"] == subject.generation
+                and (
+                    episode["id"] == subject.parent_episode_id
+                    if subject.parent_episode_id
+                    else episode["generation"] == subject.generation
+                )
                 for episode in snapshot.all("integration_parent_episodes")
             )
         ]
@@ -433,6 +455,13 @@ def _ci(
                 and row.get("parent_head_sha") == identity.sha
             )
         if exact:
+            if (
+                snapshot.subject.parent_episode_id
+                and task_id == snapshot.subject.task_id
+                and (operation := _operation(snapshot)) is not None
+                and row.get("operation_id") != operation["id"]
+            ):
+                continue
             matching.append(row)
     row = _latest(matching, "observed_at")
     if candidate:
@@ -551,7 +580,12 @@ def _writer(
         ),
         None,
     )
-    task_id = subject.writer.task_id or (stage.get("repair_task_id") if stage else None)
+    verifier_id = (
+        operation.get("verifier_task_id")
+        if operation and subject.kind is SubjectKind.PARENT_EPISODE
+        else None
+    )
+    task_id = subject.writer.task_id or verifier_id or (stage.get("repair_task_id") if stage else None)
     if task_id is None and subject.kind is SubjectKind.SOURCE:
         source_ci = next(
             (
@@ -814,6 +848,7 @@ class IntegrationObserver:
         try:
             facts = await self.observe_subject(subject.id, include_remote=args.include_remote)
         except Exception:
+            logger.debug("Subject snapshot unavailable", exc_info=True)
             return PrimitiveOutcome.unknown(Primitive.OBSERVE_SUBJECT, "snapshot_unavailable")
         if facts is None:
             return PrimitiveOutcome(primitive=Primitive.OBSERVE_SUBJECT, outcome="not_found")
@@ -871,6 +906,7 @@ class IntegrationObserver:
                     if remote.ref != ref:
                         raise ValueError("remote answered a different ref")
                 except Exception:
+                    logger.debug("Subject remote head unavailable", exc_info=True)
                     remote = RemoteHead(ref=ref, state="unknown")
             remote_heads.append(remote)
             if remote.state == "unknown":
@@ -880,6 +916,21 @@ class IntegrationObserver:
         ci = []
         if target:
             ci.append(_ci(snapshot, target, subject.task_id, now, candidate=candidate is not None))
+        # Before construction there is no candidate: members relate to the
+        # publication target's observed tip (main for a root batch), not to
+        # an absent head. An unread tip still leaves ancestry unknown.
+        relative_to = (
+            target.sha
+            if target
+            else next(
+                (
+                    head.sha
+                    for head in remote_heads
+                    if head.ref == (subject.target_ref or default_ref)
+                ),
+                None,
+            )
+        )
         observed_members = []
         for member in members:
             state = CIState.NONE
@@ -896,13 +947,13 @@ class IntegrationObserver:
                 if not any(item.head_sha == evidence.head_sha for item in ci):
                     ci.append(evidence)
             ancestry = "unknown"
-            if include_remote and self.git and target and member.head_sha:
+            if include_remote and self.git and relative_to and member.head_sha:
                 try:
                     contained = await self.git.is_ancestor(
-                        snapshot.repository, member.head_sha, target.sha
+                        snapshot.repository, member.head_sha, relative_to
                     )
                     ahead = await self.git.is_ancestor(
-                        snapshot.repository, target.sha, member.head_sha
+                        snapshot.repository, relative_to, member.head_sha
                     )
                     if contained is True:
                         ancestry = "contained"
@@ -911,21 +962,28 @@ class IntegrationObserver:
                     elif contained is False and ahead is False:
                         ancestry = "diverged"
                 except Exception:
-                    pass
+                    logger.debug("Subject ancestry unavailable", exc_info=True)
             if ancestry == "unknown" and member.head_sha:
                 unknown.append("ancestry_unknown:" + member.task_id)
             observed_members.append(member.model_copy(update={"ci": state, "ancestry": ancestry}))
-        holds = _task_holds(snapshot, {member.task_id for member in members} | {subject.task_id})
+        # An unsealed root's frontier is admission input: a paused or rejected
+        # source stays out of the seal and keeps its branch, while the rest of
+        # the train advances. Sealed members and a subject's own task bind it.
+        bound = [] if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id else members
+        holds = _task_holds(snapshot, {member.task_id for member in bound} | {subject.task_id})
         holds += [
             HoldFacts(
                 kind="review_rejected", task_id=member.task_id, reason="exact_head_review_rejected"
             )
-            for member in members
+            for member in bound
             if member.review == "rejected"
         ]
         gate = None
         if subject.schedule.gate_id:
-            row = next(iter(snapshot.all("gates")), None)
+            row = next(
+                (row for row in snapshot.all("gates") if row["id"] == subject.schedule.gate_id),
+                None,
+            )
             gate = (
                 GateFacts(gate_id=subject.schedule.gate_id, status="missing")
                 if row is None
@@ -1003,6 +1061,7 @@ class IntegrationObserver:
                     await self.session_probe(session) if self.session_probe else None
                 )
             except Exception:
+                logger.debug("Subject writer liveness unavailable", exc_info=True)
                 liveness[session["id"]] = None
         writer, budget = _writer(
             snapshot, unknown, target.ref if target else subject.target_ref, liveness
@@ -1035,16 +1094,38 @@ class IntegrationObserver:
                 None,
             )
             published = next((row.sha for row in remote_heads if row.ref == target.ref), None)
-            if owner and stage and published and published != stage["starting_sha"]:
+            # A batch builder can publish a partial candidate after the stage
+            # starts, before its repair writer claims. Only an advance beyond
+            # the builder's last journalled write can be the writer's push.
+            builder_write = _latest(
+                row
+                for row in snapshot.all("integration_candidate_ref_mutations")
+                if row["batch_id"] == subject.batch_id
+                and row["repository_id"] == subject.repository_id
+                and row["revision"] == subject.generation
+                and _ref(row["target_branch"]) == target.ref
+                and row["purpose"] in {"candidate_partial", "candidate_final", "repair_handoff"}
+                and (
+                    row["state"] == "applied"
+                    or row["state"] == "reserved" and row.get("prewrite_at") is not None
+                )
+            )
+            starting_sha = (
+                builder_write["desired_sha"]
+                if builder_write
+                else stage["starting_sha"] if stage else None
+            )
+            if owner and stage and published and starting_sha and published != starting_sha:
                 try:
                     advanced = await self.git.is_ancestor(
-                        snapshot.repository, stage["starting_sha"], published
+                        snapshot.repository, starting_sha, published
                     )
                 except Exception:
+                    logger.debug("Subject writer push ancestry unavailable", exc_info=True)
                     advanced = None
                 if advanced is True:
-                    # The fenced live writer owns the ref and its frozen start
-                    # is an ancestor. We know a push happened, not its timestamp.
+                    # The fenced live writer owns the ref and has advanced it
+                    # beyond construction. The push timestamp remains unknown.
                     writer = writer.model_copy(update={"status": WriterStatus.WORKING})
                 elif advanced is None:
                     unknown.append("writer_push_ancestry_unknown:" + writer.task_id)

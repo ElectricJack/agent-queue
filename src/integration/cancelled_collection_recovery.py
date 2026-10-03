@@ -85,6 +85,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.models import BranchKey, Fence
 from src.integration.promotion import PromotionError
 from src.models import TaskStatus
@@ -141,6 +142,7 @@ class CancelledCollectionRecovery:
         diagnosis, _facts = await self._diagnose(task_id)
         return diagnosis
 
+    @parent_engine_guard()
     async def run(
         self,
         task_id: str,

@@ -15,6 +15,7 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.models import BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 
@@ -77,6 +78,7 @@ class CollectionService:
             except Exception:
                 logger.warning("Child collection failed for %s", task_id, exc_info=True)
 
+    @parent_engine_guard()
     async def collect_parent(self, task_id, now):
         """Queue *task_id*'s next approved child now instead of on the next tick."""
         hierarchy = self.hierarchy_service_factory()
@@ -84,6 +86,7 @@ class CollectionService:
             return None
         return await self.queue_next(hierarchy, task_id, now)
 
+    @parent_engine_guard()
     async def queue_next(self, hierarchy, task_id, now):
         parent = await self.db.get_task(task_id)
         checkpoint = await self.db.get_integration_checkpoint(task_id)
@@ -91,6 +94,14 @@ class CollectionService:
             return "waiting"
         target = BranchKey(repository_id=parent.repo_id, branch=parent.branch_name)
         owner = await hierarchy.ownership.get_owner(target)
+        if owner is not None and owner["owner_role"] == "worker":
+            from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+            await SuspendedParentRecovery(self.db, hierarchy).run(
+                task_id, dry_run=False, automatic=True,
+                reason="collection reconciliation after producer detachment",
+            )
+            owner = await hierarchy.ownership.get_owner(target)
         if owner is not None and owner["owner_role"] in {"repair", "repair_delegate"}:
             await self.return_repaired_branch(hierarchy, parent, checkpoint, target, owner)
             owner = await hierarchy.ownership.get_owner(target)
@@ -195,6 +206,7 @@ class CollectionService:
                         .where(
                             integration_promotion_intents.c.repository_id == parent.repo_id,
                             integration_promotion_intents.c.target_branch == parent.branch_name,
+                            integration_promotion_intents.c.state != "superseded",
                             (integration_promotion_intents.c.state != "committed")
                             | (
                                 (integration_promotion_intents.c.source_task_id == child.id)
@@ -262,7 +274,7 @@ class CollectionService:
             pending = (await conn.execute(select(integration_promotion_intents.c.id).where(
                 integration_promotion_intents.c.repository_id == parent.repo_id,
                 integration_promotion_intents.c.target_branch == parent.branch_name,
-                integration_promotion_intents.c.state != "committed",
+                integration_promotion_intents.c.state.not_in(("committed", "superseded")),
             ).limit(1))).first()
             if pending is not None:
                 return

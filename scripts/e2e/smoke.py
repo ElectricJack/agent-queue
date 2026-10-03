@@ -2138,15 +2138,20 @@ def _s16_outage(state: dict) -> dict:
         f"prova {down['state']} ({down['reason_code']}): {down['reason']} — after "
         f"{len(prova_launches)} launch(es); remediation: {down['remediation']}"
     )
+    # Both prova pools (std-high and solo-high, max_active 1 each) launch at
+    # once, so a launch the scheduler started before the trip can die on the
+    # dialog after the trip is observed (D4).  The bound is the spec's two
+    # launches in total, not the count seen at the trip; any launch decided
+    # after it would exceed that bound.
     def suppressed():
         current = login_deaths(PROVA, since=t0)
-        check(len(current) == len(prova_launches),
+        check(len(current) <= 2,
               f"launches continued against unavailable prova: {len(prova_launches)} -> {len(current)}")
 
     observe_scheduler_cycles(suppressed)
     after = login_deaths(PROVA, since=t0)
     check(
-        len(after) == len(prova_launches),
+        len(after) <= 2,
         f"launches continued against unavailable prova: {len(prova_launches)} -> {len(after)}",
     )
     note(f"no further prova launches across two completed cycles ({len(after)} total)")

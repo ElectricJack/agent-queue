@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation, useParams } from "react-router-dom";
 import { useListNav } from "../shell/hotkeys/useListNav";
 import { PROJECT_TABS, TASK_TABS, isTaskTab, projectNavigation, workspaceHref } from "../shell/projectNavigation";
 import ProjectHeader from "./project/ProjectLayout";
-import { TaskWorkspaceProvider } from "./command-center/TaskWorkspace";
+import { TaskWorkspaceProvider, useTaskWorkspace } from "./command-center/TaskWorkspace";
 import TaskToolbar from "./command-center/TaskToolbar";
 
 function tabClass(active: boolean): string {
@@ -15,14 +15,19 @@ function tabClass(active: boolean): string {
 
 /** The same workspace serves all projects and the selected project's resources. */
 export default function CommandCenter() {
+  return <TaskWorkspaceProvider><CommandCenterViews /></TaskWorkspaceProvider>;
+}
+
+function CommandCenterViews() {
   const { projectId } = useParams();
   const location = useLocation();
   const { tab } = projectNavigation(location.pathname);
   const showTasks = isTaskTab(tab);
-  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS] : TASK_TABS;
+  const { knowledgeAvailable } = useTaskWorkspace();
+  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS.filter((item) =>
+    (item.tab !== "knowledge" && item.tab !== "records") || knowledgeAvailable)] : TASK_TABS;
   const tabRef = useListNav<HTMLElement>({ axis: "horizontal" });
   return (
-    <TaskWorkspaceProvider>
       <div className="flex h-full min-h-0 flex-col">
         {projectId ? <ProjectHeader key={`header:${projectId}`} /> : (
           <header className="shrink-0 px-4 py-3">
@@ -48,6 +53,5 @@ export default function CommandCenter() {
           <Outlet />
         </div>
       </div>
-    </TaskWorkspaceProvider>
   );
 }

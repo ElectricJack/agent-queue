@@ -16,6 +16,8 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import insert, select, update
 
+from src.integration.engine import root_engine_guard
+
 from src.database.tables import (
     integration_batches,
     integration_attestation_publications,
@@ -227,6 +229,7 @@ class IntegrationAttestationService:
             return None
         return proof
 
+    @root_engine_guard("candidate", outcome="stale_subject")
     async def handle_candidate_ci(self, row: dict[str, Any], _now: float) -> dict[str, Any]:
         """Observe a pending candidate, then publish its exact attestation."""
         try:

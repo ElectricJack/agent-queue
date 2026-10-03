@@ -42,6 +42,7 @@ aq wait register --kind task --ref other-task --timeout 7200 --idempotency-key r
 aq wait register --kind message --ref thread-id --after-seq 42 --idempotency-key reply
 aq wait register --kind timer --due-at 1800000060 --timeout 120 --idempotency-key reminder
 aq wait show WAIT_ID --json
+aq wait show WAIT_ID --consume --json
 aq wait list --json
 aq wait cancel WAIT_ID
 ```
@@ -125,9 +126,38 @@ Completion, expiry and cancellation reset the stall counters and grant one
 normal lease interval to consume the result. The durable `wait_resumed_at`
 timestamp also advances the task-lifecycle age backstop; terminal output does
 not extend that age baseline. Result nudges and the next prime point to
-`aq wait show WAIT_ID --json`. Busy sessions queue the result; absent task
+`aq wait show WAIT_ID --consume --json`. Busy sessions queue the result; absent task
 sessions receive it on their next legitimate launch. Named supervisors use
 their existing wake path. A manual pause never automatically resumes.
+
+Read a result once with `--consume` to consume only its queued completion
+notification. A plain `show` remains a diagnostic read. Consumption requires the
+current live owner and, for pool workers, the claim epoch from `.aq/claim.json`.
+It retains the result for replay, preserves resolution/delivery timestamps, and
+leaves unrelated feedback pending. An active wait is never consumed. A new holder
+can consume an earlier terminal result for the same task without renewing its
+old exemption. A failed outbox insertion is repaired transactionally; an
+unavailable delivery store returns `wait.result_pending` for a later retry.
+
+`next_step` explains how to handle active, failed, missing, cancelled and expired
+results. On expiry, inspect the producer once, report or handle the timeout, and
+make an explicit decision about the still-running work. Expiry neither cancels a
+producer nor proves success. A satisfied wait may contain a failed task or job;
+inspect its actual outcome before proceeding. Do not blindly re-register or
+submit a replacement. Prime includes up to five recent wait pointers in a 6 KiB
+budget, even after delivery or when messages are disabled. Existing resume and
+compaction hooks recover that history without a per-prompt inbox hook.
+
+For CI managed by AQ integration, wait for the owning task's settlement rather
+than repeatedly reading checks. Timers describe delays, not CI results. When
+managed job admission is disabled, use foreground `aq test` with its normal
+resource controls. Do not emulate notifications with background shell loops.
+
+If close refuses with `messages.pending_before_close`, handle every mailbox
+named in the refusal using `--inject --json`, then reconsider the evidence and
+retry with the same claim. Plain inbox/status reads leave delivery pending.
+After an accepted close, follow its next-claim result and stop on a drain or
+exhausted session; do not keep polling the closed task.
 
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
@@ -186,6 +216,35 @@ evidence falls back to recent terminal activity.
 
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
+
+## Turn-count evidence (2026-10-01)
+
+The operator's rolling 24-hour audit found 118 sleep commands, 267 process/output
+polls and 78 inbox reads. These heuristic categories overlap; they do not measure
+avoidable token charges. The corrected usage audit deduplicates Claude API
+message IDs and is the source for billing-related comparisons.
+
+Deterministic PostgreSQL scenarios model a producer completing after ten minutes,
+with the daemon reconciling every 30 seconds. They count actual worker commands:
+
+| Scenario | Illustrative submit/register + 20 status polls + result read | Durable worker commands |
+|---|---:|---:|
+| Managed validation returning exit 1 | 22 | 2 (`job_submit --wait`, `wait_get --consume`) |
+| Review/task settlement returning failure | 22 | 2 (`wait_register`, `wait_get --consume`) |
+| Reply on a message thread | 22 | 2, followed by handling the retained message body |
+| Planned timer | 22 | 2 |
+
+`tests/test_jobs_waits.py::test_managed_validation_uses_two_worker_calls_and_detects_failure_on_same_tick`
+and `tests/test_agent_wait_commands.py::test_supported_conditions_need_no_worker_monitoring_turns`
+assert no worker monitoring calls during the wait, resolution on the first
+completion scan, preserved failure evidence and consumption of only the result
+notification. Detailed job evidence or message bodies may require an additional
+read. The daemon's existing scan/delivery interval is unchanged; the scenarios
+do not claim zero wall-clock latency or measured paid-harness token savings.
+Outbox failure/replay and repeated delivery after consumption are covered by the
+same focused area tests. Installation retains the existing opt-in job policy and
+write-if-absent skill behavior; prime guidance updates with daemon code, while
+operators inspect `skills.installed_drift` for installed copies.
 
 ## Opt-in live harness check
 

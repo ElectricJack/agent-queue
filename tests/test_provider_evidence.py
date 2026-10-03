@@ -1,13 +1,15 @@
 """Provider availability collectors and the service around the reducer.
 
 ``docs/specs/provider-failover.md`` D2 (evidence sources), D4 (recovery and
-the canary), D5 (the auth probe), D6 (override), D7 (state that survives a
-restart, the transition log, ``provider.state_changed``) and D19's state
+the canary), D5 and D5a (the auth probe), D6 (override), D7 (state that
+survives a restart, the transition log, ``provider.state_changed``) and D19's state
 half (one idempotent message per change of half).  Real PostgreSQL, a fake
 clock and an injected auth probe -- no CLI, no LLM.
 """
 
 from __future__ import annotations
+
+import subprocess
 
 import pytest
 
@@ -15,12 +17,15 @@ from src.config import AppConfig
 from src.database import Database
 from src.models import AgentProfile, Project, SessionRecord
 from src.providers.availability import (
+    AUTH_PROBE,
     AVAILABLE,
     DEGRADED,
     DISABLED,
     EXHAUSTED,
     LAUNCH_FAILURE,
     LAUNCH_SUCCESS,
+    PROBE_AUTHENTICATED,
+    PROBE_NOT_AUTHENTICATED,
     RECOVERING,
     STARTUP_DIALOG,
     UNAUTHENTICATED,
@@ -33,6 +38,10 @@ from src.sessions.provider import SessionDiedDuringStartup
 from tests.db_fixtures import lease_dsn
 
 T0 = 1_789_958_640.0
+
+#: The real D5 probe, captured at import time: the autouse conftest fixture
+#: replaces the class attribute for every other test in the tree.
+REAL_LOGIN_PROBE = ProviderAvailabilityService._login_probe
 
 
 class Clock:
@@ -565,6 +574,116 @@ async def test_recheck_runs_the_probe_now(env):
     result = await env.service.recheck("codex")
     assert result["probe"] == "not_authenticated"
     assert env.service.row("codex").last_probe_at == T0
+
+
+def _claude_with_an_expired_login(tmp_path, monkeypatch, *, signed_in: bool, answer: str = ""):
+    """A home whose ``claude`` answers ``auth status``, over a stale credential.
+
+    *answer* is what the CLI says when the exit status is non-zero: empty for
+    the ordinary denial, and the words of a build that has no such subcommand.
+    """
+    credentials = tmp_path / ".claude" / ".credentials.json"
+    credentials.parent.mkdir(parents=True, exist_ok=True)
+    credentials.write_text('{"claudeAiOauth": {"accessToken": "sk-not-real"}}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    import src.install.providers as providers_module
+    import src.providers.availability_service as service_module
+
+    def where(name):
+        return "/opt/bin/claude"
+
+    def auth_status(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0 if signed_in else 1, "", answer)
+
+    monkeypatch.setattr(providers_module, "user_bin_aware_which", lambda: where)
+    monkeypatch.setattr(service_module.subprocess, "run", auth_status)
+
+
+async def test_a_present_but_expired_login_is_auth_needed_and_never_relaunched(env, tmp_path, monkeypatch):
+    """The 2026-10-03 report, end to end: the file is there, the login is not.
+
+    Readiness used to answer ``authenticated`` from the credential file, so the
+    ``claude`` provider stayed launchable, the pool kept reporting idle workers
+    and every relaunch died on the same ``Login expired`` pane.
+    """
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=False)
+
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+
+    assert (signal, detail) == (
+        PROBE_NOT_AUTHENTICATED,
+        {"stale_credential_store": "Claude Code credential file"},
+    )
+
+    # Rule (c): one probe is a suspect, two probes ≥ 60 s apart trip on their own.
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.row("claude").reason_code == "probe_not_authenticated"
+    env.clock.tick(61)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    row = env.service.row("claude")
+    assert (row.state, row.reason_code) == (UNAUTHENTICATED, "probe_not_authenticated")
+    # Nothing launches into a login that has to be fixed by a human.
+    assert env.service.suppresses("claude")
+    assert env.service.admit_launch("claude")[0] is False
+    assert "claude auth login" in env.service.remediation("claude", UNAUTHENTICATED)
+
+
+async def test_a_build_without_the_status_subcommand_does_not_suppress_claude(
+    env, tmp_path, monkeypatch
+):
+    """The 2026-10-03 follow-up: the same store, a CLI that cannot be asked.
+
+    An installed build from before ``claude auth status`` existed complains
+    about the command and exits non-zero — the same shape as the denial above.
+    Read as a denial it would suppress a provider whose login is fine and stop
+    every launch into it; D5a says only an *answer* may do that.
+    """
+    _claude_with_an_expired_login(
+        tmp_path,
+        monkeypatch,
+        signed_in=False,
+        answer="error: unknown command 'status'",
+    )
+
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+
+    assert (signal, detail) == (
+        PROBE_AUTHENTICATED,
+        {"method": "provider-login", "source": "Claude Code credential file"},
+    )
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert not env.service.suppresses("claude")
+    assert env.service.admit_launch("claude")[0] is True
+
+
+async def test_the_same_store_recovers_once_the_human_confirms_a_fresh_login(env, tmp_path, monkeypatch):
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=False)
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    env.clock.tick(61)
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.effective_state("claude") == UNAUTHENTICATED
+
+    # The human ran `claude auth login`.  The credential file did not change;
+    # the answer from the CLI did.
+    _claude_with_an_expired_login(tmp_path, monkeypatch, signed_in=True)
+    signal, detail = await REAL_LOGIN_PROBE(env.service, "claude", 10)
+    assert (signal, detail) == (
+        PROBE_AUTHENTICATED,
+        {"method": "provider-login", "source": "claude auth status"},
+    )
+    await env.service.record("claude", AUTH_PROBE, signal, detail=detail)
+    assert env.service.row("claude").state == DEGRADED
+
+    # Probation admits one canary; its success completes the recovery.
+    assert env.service.admit_launch("claude") == (True, None)
+    await env.service.record("claude", LAUNCH_SUCCESS, project_id="p1")
+    assert env.service.effective_state("claude") == AVAILABLE
+    assert env.service.admit_launch("claude") == (True, None)
 
 
 async def test_the_background_probe_runs_on_its_interval_while_launchable(env):

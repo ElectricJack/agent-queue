@@ -61,9 +61,9 @@ def _schema(sync) -> dict:
         for row in sync.execute(
             text(
                 "SELECT tgname, relname FROM pg_trigger JOIN pg_class c ON c.oid = tgrelid "
-                "WHERE NOT tgisinternal AND relname = ANY(:tables)"
+                "WHERE NOT tgisinternal AND relname = ANY(:tables) AND tgname = ANY(:triggers)"
             ),
-            {"tables": list(TABLES)},
+            {"tables": list(TABLES), "triggers": [name for name, _table in TRIGGERS]},
         )
     }
     return shape
@@ -173,7 +173,8 @@ async def test_upgrade_adds_subjects_to_a_deployed_install_and_replays():
         async with engine.begin() as conn:
             await conn.execute(text("DROP TABLE integration_subject_journal"))
             await conn.execute(text("DROP TABLE integration_subjects"))
-        await _alembic(engine, "upgrade", REVISION)
+        # Full live-metadata comparison includes later additive subject revisions.
+        await _alembic(engine, "upgrade", "head")
         async with engine.connect() as conn:
             await conn.run_sync(_assert_current)
         await _assert_constraints_bind(engine)
@@ -194,7 +195,7 @@ async def test_upgrade_adds_subjects_to_a_deployed_install_and_replays():
                 ).scalars()
             )
         assert (shape["tables"], shape["triggers"], functions) == (set(), set(), set())
-        await _alembic(engine, "upgrade", REVISION)
+        await _alembic(engine, "upgrade", "head")
         async with engine.connect() as conn:
             await conn.run_sync(_assert_current)
 

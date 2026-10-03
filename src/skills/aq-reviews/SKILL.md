@@ -229,9 +229,16 @@ record it so, and never claim coverage you did not observe.
    aq review dispatch --review-id <id> --revision <n> --class deep-high --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
    ```
 
-4. Wait for the reviewer task to end (`aq task show <task-id>`). A failed or
-   cancelled reviewer is an incomplete review. Check attribution, then read the
-   findings and the verdict:
+4. Register one durable task wait and end the turn:
+
+   ```bash
+   aq wait register --kind task --ref <task-id> --timeout 7200 --idempotency-key review-round-N
+   ```
+
+   Resume with `aq wait show <wait-id> --consume --json`. Handle an expired
+   wait explicitly; do not repeatedly read unchanged status or blindly register
+   again. A failed or cancelled reviewer is an incomplete review. Check
+   attribution, then read the findings and the verdict:
 
    ```bash
    aq review show --review-id <id> --revision <n> --comments

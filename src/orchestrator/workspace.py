@@ -631,6 +631,7 @@ class WorkspaceMixin:
         origin = await self.db.get_task_branch_origin_for_promotion(subject_id, repository_id)
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
+        canonical_base_sha = origin["base_sha"]
         prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
         if prerequisite_head is not None:
             # This does not mutate the reserved origin.  A delivery receipt is
@@ -685,6 +686,16 @@ class WorkspaceMixin:
             if not checkpoint.get("episode_id"):
                 raise ValueError("verifier target has no active parent episode")
             origin = dict(origin) | {"base_sha": checkpoint["checkpoint_sha"]}
+        elif role == "worker":
+            progress = await self.db.get_task_meta(task.id, "supervisor_recovery_checkpoint")
+            if progress:
+                if (
+                    progress["repository_id"] != repository_id
+                    or progress["branch"] != branch
+                    or progress["base_sha"] != canonical_base_sha
+                ):
+                    raise ValueError("operator handoff checkpoint no longer matches the canonical origin")
+                origin = dict(origin) | {"operator_handoff": progress}
         return (
             origin,
             Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
@@ -764,6 +775,10 @@ class WorkspaceMixin:
         async with BranchOwnership(self.db).mutation_exclusion(
             fence, expected_role=role
         ):
+            if ws.is_slot and origin.get("operator_handoff"):
+                base_sha = await self._operator_handoff_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             if ws.is_slot:
                 if role == "repair":
                     base_sha = await self._hierarchy_repair_start(
@@ -776,6 +791,7 @@ class WorkspaceMixin:
                     resume_branch=None,
                     target_branch=branch,
                     kind=attachment.kind,
+                    operator_handoff=bool(origin.get("operator_handoff")),
                 )
                 return fence.target.branch
 
@@ -792,6 +808,10 @@ class WorkspaceMixin:
 
             if not await self.git.avalidate_checkout(workspace):
                 raise GitError(f"workspace is not a valid Git checkout: {workspace}")
+            if origin.get("operator_handoff"):
+                base_sha = await self._operator_handoff_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self._ensure_control_files_excluded(workspace)
             if await self.git.ahas_uncommitted_changes(workspace):
                 await self.git.aforce_clean_workspace(workspace)
@@ -810,6 +830,28 @@ class WorkspaceMixin:
                     f"exact origin checkout resolved {actual_head or 'no HEAD'}, expected {base_sha}"
                 )
         return fence.target.branch
+
+    async def _operator_handoff_start(self, workspace, origin, fence, *, repository_url):
+        """Use preserved progress or its published descendant, refusing divergence."""
+        from src.git.manager import RemoteRefState
+
+        progress = origin["operator_handoff"]
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        preserved = await self.git.als_remote_ref(workspace, progress["ref"])
+        if preserved.state is not RemoteRefState.PRESENT or preserved.oid != progress["sha"]:
+            raise GitError("operator handoff preserved ref changed or is unavailable")
+        sha = progress["sha"]
+        if await self.git.ais_ancestor(workspace, origin["base_sha"], sha, strict=True) is not True:
+            raise GitError("operator handoff progress does not descend from the canonical origin")
+        branch = fence.target.branch.removeprefix("refs/heads/")
+        head = await self.git._arun(
+            ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], cwd=workspace
+        )
+        if await self.git.ais_ancestor(workspace, sha, head, strict=True) is True:
+            return head
+        if await self.git.ais_ancestor(workspace, head, sha, strict=True) is True:
+            return sha
+        raise GitError("operator handoff progress and canonical branch diverged")
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.

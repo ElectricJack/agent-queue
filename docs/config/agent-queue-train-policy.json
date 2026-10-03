@@ -41,10 +41,10 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-parent-integration",
-        "artifact_sha256": "sha256:d561465f0ec8ef33931d65720bb413736c47f646512a5d9fc54a0cb4b70a161a",
+        "artifact_sha256": "sha256:1d9c44b083f599b1c2eb9c51c23e8ffaa368b3594a70cf3230356ba165010a8d",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3",
-        "source_digest": "sha256:1de9265e7bba73272a2777fb17e042bd81014e5cc3c7e4214a6a5471eab5d200",
+        "contract_fingerprint": "sha256:3e4cad60a27bfb8064b6897a85b865fe667f93fd9710ca9242c444b3b47322fb",
+        "source_digest": "sha256:a0538be7bb8c1e0d1eb426a71b2e586fd4dce8787783d686587ff9ad0491ec3d",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,
         "version": 1

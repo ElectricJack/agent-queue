@@ -6,6 +6,7 @@
  */
 export const loadWorkspaceGraph = () => import("./pages/command-center/Graph");
 export const loadWorkspaceTasks = () => import("./pages/command-center/Tasks");
+export const loadRecords = () => import("./pages/records/RecordsRoute");
 
 export function preloadWorkspaceViews(): void {
   void loadWorkspaceGraph();

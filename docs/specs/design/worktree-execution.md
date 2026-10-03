@@ -145,6 +145,19 @@ A slot is reused across tasks; per assignment it is reset to a pristine per-task
 5. Re-run `worktree_setup` only if `setup_hash` changed.
 6. Update the sentinel; record `work_dir` (slot path) and `branch` on the task (work-state contract); emit `worktree.reset`.
 
+An audited operator handoff supplies a proved continuation commit under the existing
+canonical branch owner fence. A saved manual-pause checkpoint must not override that
+commit with an older HEAD. Before resetting, prove the checkpoint's repository, branch
+and snapshot identity, and compare its HEAD, the handoff commit and the local branch tip.
+Keep the newest only when those heads are related by ancestry; divergent or unknown
+history refuses preparation. Reconcile the saved index and worktree snapshots separately
+against that head with their original HEAD as merge base. Conflicts refuse preparation,
+leaving the checkout, index and saved checkpoint unchanged. A dirty destination slot also
+refuses rather than replacing newer edits with a snapshot or relying on salvage. Successful
+restoration retains the original checkpoint metadata/ref until execution starts; ordinary
+pause restoration keeps its existing changed-branch refusal. All handoff proof and owner
+fencing checks still run before this reconciliation.
+
 Branch naming is fixed at `aq/<task_id>` — no title slug, so the branch is derivable from the task id alone (crash recovery, `aq task branch`, reaper matching by `aq/*` prefix).
 
 ### 3.3 While running

@@ -365,7 +365,7 @@ jobs:
         timeout-minutes: 11
         env:
           AQ_E2E_TIMINGS_DIR: ${{ runner.temp }}/e2e-timings
-        run: pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}' -m integration -s --durations=0 --junitxml=e2e-results.xml
+        run: pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}-' -m integration -s --durations=0 --junitxml=e2e-results.xml
 
       - name: Upload scenario results and timings
         if: always()

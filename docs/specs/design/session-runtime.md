@@ -163,6 +163,7 @@ exit classifier:
 
 | Evidence | Verdict |
 |---|---|
+| Pool session with persisted `desired_state=stopped` | Normal drain, even with an open task; never quarantine the pool for this requested exit |
 | Rate-limit text in the final pane capture | Task → PAUSED (`rate_limit`) with provider cooldown; session `sleep_reason=rate_limit` |
 | Rapid crash (death within `restart_window` of start) | Restart with backoff, `--resume <session_key>` when the harness supports it; after `max_restarts` inside `restart_window` → quarantine |
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
@@ -170,6 +171,12 @@ exit classifier:
 
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
+
+After observing a dead pool process and capturing its final output, the reconciler
+rereads the session before classifying it. An operator kill can persist stop intent
+while those probes await; an earlier live-session snapshot must not turn that requested
+stop into a rapid crash. A session already stopped or removed, or replaced by another
+instance during the probes, is not classified from that stale observation.
 
 ### 4.2 Named sessions
 
@@ -270,6 +277,60 @@ blocking limit messages and, on a match, stops the process and applies the exit 
 `rate_limit` verdict instead (provider-failover D13, `src/sessions/usage_limit_screen.py`;
 `provider_failover.mode: enforce` only).
 
+**A composer AQ may not touch.** A nudge the composer guard defers is not a failed
+attempt, so it spends no rung and no backoff — unless the refusal says *no person is
+typing*. The refusal carries a structured `NudgeReason` (`src/sessions/provider.py`) rather
+than prose to be parsed:
+
+| Reason | Producer's evidence | Ladder |
+|---|---|---|
+| `draft` | the composer was read and holds text | holds — a person is writing |
+| `terminal_busy` | copy mode, an attached client, or no known input line | holds |
+| `recent_input` | keys were accepted within the quiet window | holds |
+| `stale_frame` | OpenCode's box at its exact idle geometry holds text on the rows *beside* the cursor, where typed input cannot be | escalates |
+| `unreadable` | tmux refused the read, the pane moved between the two reads, or AQ's own pending injection could not be identified or cleared | escalates |
+
+A refusal of either escalating kind is then put to evidence **independent of the
+composer**, and the answer is three-valued (`StalledDeferral`, `_deferral_verdict`):
+
+| Verdict | Evidence | What the ladder does |
+|---|---|---|
+| `hold` | a person is at the composer, or the harness's own record shows the conversation moving within the lease | nothing spent, nothing announced — as before |
+| `report` | no record exists to ask, or the one named cannot be resolved or stat'ed | nothing spent; **announced** — a WARNING and `task.stalled` with `evidence="unverified"`, quoting how long the pane has shown the same thing |
+| `escalate` | that record is older than the lease (`harness_progress`: the reader-resolved transcript's mtime) | the rung is spent with nothing typed: `task.stalled` carries `deferred_reason`, no `task.nudged` follows, and the existing backoff → restart/quarantine (or pool termination) path runs |
+
+**Unknown is not stalled, and it is not silent either.** `hold`-worthy evidence is the
+progress record: a person typing into a composer writes nothing there. When there *is* no
+such record — `opencode` has no reader and no session identity (neither opencode harness
+declares `session_id_flag`, so `session_key` is null and there is nothing to scope a lookup
+to), or the file cannot be resolved or stat'ed — that is unknown, and unknown must never
+release a claim. Such a stall is **announced** instead: a WARNING naming session, task,
+idle time and reason, plus `task.stalled` with `evidence="unverified"`, rate-limited to
+one announcement per `_STALL_REPORT_INTERVAL_SECONDS` (900 s) per holder instance. That
+announcement is the part that was actually missing — `vivid-quest-44.3` produced **zero**
+`task.stalled` events while holding its task through 116 identical refusals over 78
+minutes.
+
+**Nothing about the terminal can upgrade that answer.** A pane that has stopped moving is
+what an agent *between two writes* looks like as much as what a wedged TUI looks like — one
+long tool leaves the composer untouched for minutes — so the screen is read
+(`peek` on the pane tail, hashed: the whole screen, never the composer box, because the
+composer is what the refusal already described) and **quoted, never spent**. Digests are
+keyed by `(session id, instance token)`, so a relaunched session inherits nothing from its
+predecessor's observations; the clock is the time the screen last *changed*, not the time it
+was last sampled, and a failed read leaves the previous reading untouched rather than
+re-stamping it. Both caches are pruned by age.
+
+Closing this last gap for `opencode` needs **scoped, per-session** activity evidence for a
+harness AQ cannot read — report R7's missing OpenCode session identity, since neither
+opencode harness declares `session_id_flag` and there is therefore nothing to scope a store
+lookup to. Until that exists, a wedged OpenCode holder is reported to a person every
+`_STALL_REPORT_INTERVAL_SECONDS` (900 s) rather than terminated on a reading of a terminal.
+
+Named/supervisor sessions, durable waits and instance-token fencing are unchanged: they are
+filtered before the ladder, and every rung still addresses the session by its exact
+instance.
+
 `stuck_timeout_seconds` (config `agents.stuck_timeout_seconds`) stays as the final backstop
 above the ladder, applied by the reconciler rather than `asyncio.wait_for`.
 
@@ -302,6 +363,27 @@ ours (Codex has no `--session-id`), the reader also reports it via
 `discover_session_key`, and the watcher writes it onto the row: that is the only place the
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
+
+Claude content UUIDs identify transcript events, while `message.id` identifies an API
+call. Usage accounting keys the provider, transcript conversation and API call separately
+from displayed content. Missing API IDs fall back to the event UUID. A durable per-call
+record retains the maximum observed value of each counter (uncached input, output, cache
+reads and cache writes); later partial/final observations append only positive increases
+to the ledger. Lower, missing or repeated counters cannot recharge a call. The progress
+record and ledger delta commit together, so retries, concurrent watchers and replay across
+AQ session incarnations are idempotent. Attribution stays with the first recorded usage.
+Accounting failures leave the byte checkpoint retryable. On adoption, consumed Claude
+records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
+or deleting the original rows. Historical inflation requires a separate evidenced
+correction; it is never repaired implicitly during ingest.
+
+Historical reconciliation is read-only and uses a frozen transcript/ledger window.
+Only unambiguous UUID matches with exact counter agreement and complete call coverage
+qualify for a proposed compensating adjustment. Reports retain original row IDs and
+hashes, deterministic correction IDs, signed category deltas and their inverse. Applying
+any adjustment requires a separate command with idempotency and evidence preconditions;
+the reporting tool has no apply mode. Token volumes do not imply subscription quota
+percentages.
 
 Codex rollout date folders and filenames use local time, while `session_meta` timestamps
 use UTC. Keyless discovery searches the UTC launch date and adjacent dates, then accepts

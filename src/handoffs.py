@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import unicodedata
 from typing import Any
@@ -16,7 +17,10 @@ HANDOFF_BYTES = 8 * 1024
 RESULT_BYTES = 6 * 1024
 POINTER_BYTES = 2 * 1024
 WAKE_BYTES = HANDOFF_BYTES + RESULT_BYTES + POINTER_BYTES
-LIST_FIELDS = ("completed", "files", "decisions", "do_not_repeat", "uncertainties")
+logger = logging.getLogger(__name__)
+LIST_FIELDS = (
+    "completed", "files", "decisions", "do_not_repeat", "uncertainties", "constraints", "evidence"
+)
 TEXT_FIELDS = ("subject", "detail", "goal", "next_step", "waiting_for")
 
 
@@ -60,8 +64,8 @@ async def collect_facts(
 ) -> dict:
     """Read only current daemon-owned identity and the authorized checkout.
 
-    No paths/job ids from the note are used to look up anything. JOB/WAIT
-    annotations remain empty until those authoritative stores exist.
+    No paths/job ids from the note are used to look up anything. Continuation
+    stores are scoped to the current task and claim; failed reads stay unknown.
     """
     from src.git.manager import GitManager
 
@@ -74,8 +78,12 @@ async def collect_facts(
         "head": None,
         "dirty_paths": [],
         "dirty_path_count": None,
-        "job_ids": [],
-        "wait_ids": [],
+        "job_ids": None,
+        "wait_ids": None,
+        "jobs": None,
+        "waits": None,
+        "open_gates": None,
+        "continuation_reads": {},
         "subtasks": None,
     }
     if work_dir:
@@ -89,6 +97,44 @@ async def collect_facts(
     counts = await db.count_task_subtasks([task.id])
     total, settled = counts.get(task.id, (0, 0))
     facts["subtasks"] = {"total": total, "settled": settled}
+    from src.sessions.context import read_context
+
+    facts["context"] = await read_context(session)
+    reads = (
+        ("jobs", "list_jobs", {"project_id": task.project_id, "task_id": task.id,
+                               "active": True, "limit": 100}),
+        ("waits", "list_agent_waits", {"project_id": task.project_id, "owner_kind": "task",
+                                     "owner_id": task.id, "limit": 100, "continuation": True}),
+        ("open_gates", "get_gates_for_task", {"task_id": task.id}),
+    )
+    for key, method, kwargs in reads:
+        read = getattr(db, method, None)
+        if not callable(read):
+            facts["continuation_reads"][key] = "unknown: store unavailable"
+            continue
+        try:
+            rows = await read(**kwargs)
+            if key == "jobs":
+                facts[key] = [{k: row.get(k) for k in ("id", "state")} for row in rows]
+                facts["job_ids"] = [row["id"] for row in rows]
+            elif key == "waits":
+                fields = ("id", "state", "kind", "deadline_at", "result_ref")
+                facts[key] = [
+                    {k: row.get(k) for k in fields} for row in rows
+                    if row["claim_epoch"] == task.claim_epoch
+                ]
+                facts["wait_ids"] = [row["id"] for row in facts[key]]
+            else:
+                fields = ("id", "gate_type", "status", "await_id")
+                facts[key] = [
+                    {k: row.get(k) for k in fields} for row in rows if row["status"] == "open"
+                ]
+            facts["continuation_reads"][key] = (
+                "at least 100; retrieve full list before continuing" if len(rows) >= 100 else "ok"
+            )
+        except Exception:
+            logger.warning("handoff %s read failed", key, exc_info=True)
+            facts["continuation_reads"][key] = "unknown: read failed; verify before continuing"
     return facts
 
 
@@ -138,6 +184,8 @@ def render_note(row: dict, payload: dict, current: dict) -> str:
     # Continuation/uncertainties survive optional prose trimming. Each retained
     # block gets a pointer when its escaped presentation exceeds the space.
     ordered = (
+        "constraints",
+        "evidence",
         "next_step",
         "uncertainties",
         "waiting_for",
@@ -156,9 +204,20 @@ def render_note(row: dict, payload: dict, current: dict) -> str:
         text = "\n".join(value) if isinstance(value, list) else value
         block = "\n\n" + _quoted(key.replace("_", " "), display_data(text))
         # Reserve a small labelled excerpt for the other continuation fields.
-        reserve = 128 * sum(k in ("next_step", "uncertainties") for k in present[index + 1 :])
+        reserve = 256 * sum(
+            k in ("constraints", "evidence", "next_step", "uncertainties")
+            for k in present[index + 1 :]
+        )
         allowance = max(0, remaining - reserve)
         if len(block.encode("utf-8")) > allowance:
+            if key in {"constraints", "evidence"}:
+                block = (
+                    f"\n\n**{key}:** read the full stored note with `aq task show "
+                    f"{current['task_id']}` before continuing; exact text retained there."
+                )
+                blocks.append(block)
+                remaining -= len(block.encode("utf-8"))
+                continue
             suffix = " … [trimmed; see full note]"
             if allowance < 128:
                 continue
@@ -178,6 +237,17 @@ def render_facts(facts: dict, *, saved: dict | None = None) -> str:
         body += "\nChanged since handoff: " + (", ".join(changed) or "none")
     count = facts.get("dirty_path_count")
     body += f"\nDirty paths: {count if count is not None else 'unknown'} (at most 20 shown)."
+    for key, command in (("jobs", "aq job list"), ("waits", "aq wait list"),
+                         ("open_gates", f"aq task show {facts['task_id']}")):
+        rows = facts.get(key)
+        status = facts.get("continuation_reads", {}).get(key, "unknown")
+        summary = "; ".join(
+            f"{row['id']} ({row.get('state', row.get('status', 'unknown'))})"
+            for row in (rows or [])[:5]
+        )
+        body += f"\n{key}: {summary or ('none' if rows == [] else 'unknown')}; {status}."
+        body += f" Read current full state: `{command}`; preserve IDs and gates."
+    body += "\nUse `aq wait show ID --json` / `aq job result ID --json` before repeating work."
     for path in facts.get("dirty_paths", []):
         line = "\n> " + display_data(path)
         if len((body + line).encode("utf-8")) > POINTER_BYTES - 100:

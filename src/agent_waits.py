@@ -7,6 +7,7 @@ state; a bus notification is never evidence that a condition was satisfied.
 from __future__ import annotations
 
 import math
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -18,6 +19,49 @@ MAX_DIGEST_BYTES = 4096
 WAIT_KINDS = ("job", "task", "message", "timer")
 WAIT_STATES = ("active", "satisfied", "expired", "cancelled")
 TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED", "BLOCKED")
+
+
+def wait_next_step(row: dict[str, Any], *, consumed: bool = False) -> str:
+    """Actionable guidance shared by submission, recovery and result reads."""
+    pointer = f"aq wait show {shlex.quote(row['id'])} --consume --json"
+    if row["state"] == "active":
+        if row["owner_kind"] == "supervisor":
+            return "Subscription registered. Continue working; its result will be queued."
+        return (
+            f"End this turn. Resume from the result pointer with {pointer}. "
+            "The claim, workspace and seat remain held. Do not poll or sleep."
+        )
+    match = row["match"]
+    if row["kind"] == "job":
+        command = "show" if row["state"] == "expired" else "result"
+        inspect = f"aq job {command} {shlex.quote(match['job_id'])} --json"
+    elif row["kind"] == "task":
+        inspect = f"aq task show {shlex.quote(match['task_id'])} --json"
+    elif row["kind"] == "message":
+        message_id = (row.get("digest") or {}).get("message_id")
+        inspect = (
+            f"aq message status {shlex.quote(message_id)} --json"
+            if message_id else "the recipient and thread cursor"
+        )
+    else:
+        inspect = "the timer due instant and the current claim"
+    if row["state"] == "expired":
+        return (
+            f"Deadline expired. Inspect {inspect} once and report or handle the timeout. "
+            "The producer was not cancelled. Do not infer success, blindly re-register, "
+            "or submit replacement work."
+        )
+    if row["state"] == "cancelled":
+        return (
+            "Wait cancelled. Check your current claim before acting; cancellation does "
+            "not cancel the producer or authorize resuming a paused task."
+        )
+    if (row.get("digest") or {}).get("reason") == "source_unavailable":
+        return f"Source unavailable. Inspect {inspect} once; this result is not success."
+    guidance = f"Result available. Inspect {inspect} and handle the actual outcome."
+    if not consumed:
+        guidance += f" Use {pointer} to consume this notification; other feedback remains pending."
+    return guidance
 
 
 class AgentWaitRecord(BaseModel):

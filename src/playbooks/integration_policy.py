@@ -240,7 +240,7 @@ class IntegrationPolicy(V2Base):
 
     @model_validator(mode="after")
     def _bounded(self) -> IntegrationPolicy:
-        for table in self.tables.values():
+        for kind, table in self.tables.items():
             for action in table.actions.values():
                 if (
                     action.primitive == Primitive.WAIT
@@ -251,13 +251,13 @@ class IntegrationPolicy(V2Base):
                     if (route.ceiling_seconds or route.seconds or 0) > self.max_wait_seconds:
                         raise ValueError("outcome wait/backoff exceeds max_wait_seconds")
                 values = [node for value in action.inputs.values() for node in walk_value(value)]
-                _check_reads(values)
+                _check_reads(values, kind)
             for case in table.cases:
-                _check_reads(condition_values(case.when))
+                _check_reads(condition_values(case.when), kind)
         return self
 
 
-def _check_reads(values: list[Any]) -> None:
+def _check_reads(values: list[Any], kind: SubjectKind) -> None:
     for value in values:
         if value.type.endswith("_ref") and not isinstance(value, BindingRef):
             raise ValueError("policy expressions read only s and subject bindings")
@@ -266,7 +266,11 @@ def _check_reads(values: list[Any]) -> None:
                 raise ValueError(f"unknown policy binding {value.binding!r}")
             # Check the typed observation/subject paths, including nullable
             # nested objects. Runtime validation still checks resolved args.
-            root = IntegrationPolicyFacts if value.binding == "s" else Subject
+            from src.integration.parent_adapters import ParentPolicyFacts
+
+            facts_model = (ParentPolicyFacts if kind is SubjectKind.PARENT_EPISODE
+                           else IntegrationPolicyFacts)
+            root = facts_model if value.binding == "s" else Subject
             derived = {
                 "ci_state",
                 "conflict_count",
@@ -277,6 +281,7 @@ def _check_reads(values: list[Any]) -> None:
                 "merge_members",
                 "tested_head",
                 "next_writer_ordinal",
+                "conflict_member",
             }
             if value.binding == "s" and value.path in derived:
                 continue
@@ -367,6 +372,12 @@ class CompiledIntegrationPolicy:
         binding["next_writer_ordinal"] = facts.budget.ordinal + 1 if facts.budget else 1
         binding["tested_head"] = (
             facts.tested_head.model_dump(mode="json") if facts.tested_head else None
+        )
+        # Lists are not addressable by path; a table that ejects or scopes a
+        # writer names the earliest conflicting member in manifest order.
+        conflicted = {conflict.member_task_id for conflict in facts.conflicts}
+        binding["conflict_member"] = next(
+            (member.task_id for member in facts.members if member.task_id in conflicted), None
         )
         binding["merge_members"] = [
             {"task_id": member.task_id, "head_sha": member.head_sha, "base_sha": member.base_sha}

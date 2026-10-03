@@ -9,6 +9,7 @@ vi.mock("@xyflow/react", () => ({
 
 import { TaskCard } from "../TaskNode";
 import type { TaskNodeData } from "../types";
+import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
 afterEach(cleanup);
 
@@ -101,5 +102,58 @@ describe("phase header", () => {
   it("omits the header for a non-phase task", () => {
     render(<TaskCard data={card("READY")} />);
     expect(screen.queryByText(/^Phase /)).not.toBeInTheDocument();
+  });
+});
+
+describe("epic cards", () => {
+  const epic = (status: string, delivery: TaskNodeData["delivery"]) =>
+    card(status, { descendantCount: 5, completedCount: 5, childCount: 5 }, { delivery });
+
+  it("separates implementation progress from a blocked delivery", () => {
+    render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.missingReceipt)} />);
+    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    expect(screen.getByText("Integration blocked - final fix not collected")).toBeInTheDocument();
+    expect(screen.getByText("Delivery blocked")).toBeInTheDocument();
+    expect(screen.queryByText("PAUSED")).not.toBeInTheDocument();
+    expect(screen.queryByText(/descendants completed/)).not.toBeInTheDocument();
+  });
+
+  it("explains the stored status of an integration hold in the status tooltip", () => {
+    render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.strandedReservation)} />);
+    expect(screen.getByText("Delivery blocked").closest("[title]")).toHaveAttribute(
+      "title",
+      "Delivery blocked · task status PAUSED (held by integration, not paused by anyone)",
+    );
+  });
+
+  it("reads Paused only for an operator hold", () => {
+    render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.manualPause)} />);
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("Paused by operator")).toBeInTheDocument();
+  });
+
+  it("pulses only with evidence of active work", () => {
+    const { container, unmount } = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.activeIntegration)} />);
+    expect(container.querySelector(".animate-pulse")).not.toBeNull();
+    unmount();
+    const queued = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.queuedVerifier)} />);
+    expect(queued.container.querySelector(".animate-pulse")).toBeNull();
+    expect(screen.getByText("Verification queued - waiting for a worker")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["approvalHold", "Awaiting approval"],
+    ["delivered", "Delivered"],
+    ["staleEvidence", "Verification status stale"],
+    ["unavailable", "Delivery evidence unavailable"],
+  ] as const)("%s shows its delivery label", (name, label) => {
+    render(<TaskCard data={epic("COMPLETED", EPIC_DELIVERY[name])} />);
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the plain card for a node without a delivery projection", () => {
+    render(<TaskCard data={card("PAUSED")} />);
+    expect(screen.getByText("PAUSED")).toBeInTheDocument();
+    expect(screen.getByText("3/4 descendants completed")).toBeInTheDocument();
   });
 });
