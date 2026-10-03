@@ -27,7 +27,6 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, StaleFence
@@ -152,6 +151,13 @@ class SuspendedParentRecovery:
         )
         if gate is not None:
             return refuse(f"open gate {gate} requires its own decision")
+        # Resolved per call, like ``_cmd_integration_reopen_collection`` does:
+        # a module-level binding would capture whatever
+        # ``cancelled_collection_recovery.CancelledCollectionRecovery`` names at
+        # *our* import time, so a test that substitutes the recovery class while
+        # this module loads would leave the substitute bound here for good.
+        from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
+
         if (
             await CancelledCollectionRecovery._live_holder_on(conn, task_id)
             or await conn.scalar(

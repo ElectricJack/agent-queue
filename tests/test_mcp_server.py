@@ -675,6 +675,10 @@ class TestDriftDetection:
             # Trusted daemon observations take a server-created typed object,
             # and DEFAULT_EXCLUDED_COMMANDS keeps them off the agent surface.
             "observe_integration_source_ci",
+            # Internal parent-visit dispatch: the process-bound engine
+            # exclusion is the authority, so it is excluded from MCP rather
+            # than given a caller-supplied schema.
+            "integration_parent_action",
             # Dev/e2e credential minter (src/commands/session_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS) and
             # elevated/local-only on HTTP, so it carries a codegen-only

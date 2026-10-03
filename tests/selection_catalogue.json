@@ -1371,7 +1371,7 @@
       ]
     }
   },
-  "digest": "sha256:781db917ad7c8e030d39a5edf19cee83f78ee51fee125a2c3b0f40b5657f1115",
+  "digest": "sha256:3b0036a1b1c31c06bed6f98f6f7e7bcd0b721d611fdbef9ed7ce4f8ca43d22af",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3104,8 +3104,17 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.middleware",
         "src.cli.app",
-        "src.cli.exceptions"
+        "src.cli.client",
+        "src.cli.exceptions",
+        "src.commands.handler",
+        "src.config",
+        "src.models"
       ],
       "markers": [
         "parametrize"
