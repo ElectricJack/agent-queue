@@ -7711,6 +7711,54 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
     "additionalProperties": False,
 }
 
+# The parent reconciler's per-visit dispatch.  Excluded from MCP
+# (DEFAULT_EXCLUDED_COMMANDS): authority is the process-bound visit exclusion,
+# never the payload.  A fallback schema keeps it out of the LLM tool list while
+# the generated CLI command can name the subject, its expected version and the
+# discriminated primitive request; each primitive's own arguments stay validated
+# by ``PRIMITIVE_ARGS`` inside the adapters, so ``request`` carries the
+# discriminator here and its siblings open.
+_FALLBACK_INPUT_SCHEMAS["integration_parent_action"] = {
+    "type": "object",
+    "properties": {
+        "subject_id": {"type": "string", "minLength": 1},
+        "expected_version": {"type": "integer", "minimum": 0},
+        "request": {
+            "type": "object",
+            "properties": {
+                "primitive": {
+                    "type": "string",
+                    "enum": [
+                        "integration_observe_subject",
+                        "integration_seal",
+                        "git_materialize_ref",
+                        "git_merge_members",
+                        "git_preserve",
+                        "git_publish",
+                        "git_ancestry",
+                        "ci_request",
+                        "ci_observe",
+                        "ci_attest",
+                        "writer_file",
+                        "writer_lease",
+                        "writer_stop_proof",
+                        "record_receipt",
+                        "record_attempt",
+                        "record_decision",
+                        "wait",
+                        "gate",
+                        "eject",
+                        "cleanup",
+                    ],
+                },
+            },
+            "required": ["primitive"],
+        },
+    },
+    "required": ["subject_id", "expected_version", "request"],
+    "additionalProperties": False,
+}
+
 
 _JOB_INPUT_SCHEMAS: dict[str, dict] = {
     # Managed jobs: typed public contracts and finite preset commands.

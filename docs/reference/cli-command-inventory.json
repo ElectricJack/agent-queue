@@ -12141,13 +12141,19 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [],
+        "required": [
+          "--subject-id",
+          "--expected-version",
+          "--request"
+        ],
         "optional": [
           "--json",
           "--brief",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--request"
+        ],
         "nullable": []
       }
     },
