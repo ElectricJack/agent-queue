@@ -7,8 +7,55 @@ markdown files stored under ``{data_dir}/notes/{project_id}/``.
 from __future__ import annotations
 
 import os
+import asyncio
+import hashlib
+from functools import wraps
 
 from src.plugins.base import InternalPlugin, PluginContext
+
+
+def _ownership_guard(operation):
+    """Keep legacy side effects and cutover mutually exclusive per path."""
+    def decorate(fn):
+        @wraps(fn)
+        async def guarded(self, args):
+            from src.knowledge.imports.compatibility import migrated_result
+
+            project_id, title = args.get("project_id"), args.get("title")
+            if not project_id or not title:
+                return await fn(self, args)
+            notes_dir = self._get_notes_dir(project_id)
+            path = None if operation == "write" else self._resolve_note_path(notes_dir, title)
+            if path is None:
+                slug = self._git.slugify(title[:-3] if title.lower().endswith(".md") else title)
+                if not slug:
+                    return await fn(self, args)
+                path = os.path.join(notes_dir, f"{slug}.md")
+            async with self._db.note_ownership(project_id, path) as mapping:
+                if mapping:
+                    if operation == "read":
+                        result = await self._ctx.execute_command("knowledge_show", {
+                            "identity": f"record:{mapping['record_id']}", "project_id": project_id,
+                        })
+                        if result.get("success"):
+                            try:
+                                from pathlib import Path
+
+                                raw = await asyncio.to_thread(Path(path).read_bytes)
+                                diverged = hashlib.sha256(raw).hexdigest() != mapping[
+                                    "latest_source_sha256"
+                                ]
+                            except OSError:
+                                diverged = True
+                            result = {**result, "content": result["snapshot"]["body"],
+                                      "source_diverged": diverged,
+                                      "deprecation": {"code": "memory.migrated",
+                                                      "canonical_command": "knowledge_show"}}
+                        return result
+                    return migrated_result(mapping)
+                return await fn(self, args)
+        return guarded
+    return decorate
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +390,23 @@ class NotesPlugin(InternalPlugin):
             if not fname.endswith(".md"):
                 continue
             fpath = os.path.join(notes_dir, fname)
+            async with self._db.note_ownership(project.id, fpath) as mapping:
+                if mapping:
+                    canonical = await self._ctx.execute_command("knowledge_show", {
+                        "identity": f"record:{mapping['record_id']}", "project_id": project.id,
+                    })
+                    if canonical.get("success"):
+                        notes.append({
+                            "name": fname, "title": canonical["snapshot"]["title"], "path": fpath,
+                            "size_bytes": len(canonical["snapshot"]["body"].encode()),
+                            "record_id": canonical["record_id"],
+                            "revision_id": canonical["revision_id"],
+                            "deprecation": {"code": "memory.migrated",
+                                            "canonical_command": "knowledge_list"},
+                        })
+                    # Unavailable/redacted canonical records never fall back to
+                    # the original file's content-derived title.
+                    continue
             stat = os.stat(fpath)
             title = fname[:-3].replace("-", " ").title()
             try:
@@ -363,6 +427,7 @@ class NotesPlugin(InternalPlugin):
             )
         return {"project_id": args["project_id"], "notes": notes}
 
+    @_ownership_guard("write")
     async def cmd_write_note(self, args: dict) -> dict:
         project = await self._db.get_project(args["project_id"])
         if not project:
@@ -399,6 +464,7 @@ class NotesPlugin(InternalPlugin):
         await self._trigger_note_profile_revision(args["project_id"], f"{slug}.md", args["content"])
         return result
 
+    @_ownership_guard("read")
     async def cmd_read_note(self, args: dict) -> dict:
         project = await self._db.get_project(args["project_id"])
         if not project:
@@ -417,6 +483,7 @@ class NotesPlugin(InternalPlugin):
             "size_bytes": stat.st_size,
         }
 
+    @_ownership_guard("append")
     async def cmd_append_note(self, args: dict) -> dict:
         project = await self._db.get_project(args["project_id"])
         if not project:
@@ -469,6 +536,7 @@ class NotesPlugin(InternalPlugin):
         )
         return result
 
+    @_ownership_guard("delete")
     async def cmd_delete_note(self, args: dict) -> dict:
         project = await self._db.get_project(args["project_id"])
         if not project:
@@ -489,6 +557,7 @@ class NotesPlugin(InternalPlugin):
         )
         return {"deleted": fpath, "title": args["title"]}
 
+    @_ownership_guard("promote")
     async def cmd_promote_note(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if not project_id:
@@ -601,7 +670,7 @@ class NotesPlugin(InternalPlugin):
 
         return {
             "specs": _list_md_files(specs_path),
-            "notes": _list_md_files(notes_path),
+            "notes": (await self.cmd_list_notes({"project_id": args["project_id"]})).get("notes", []),
             "specs_path": specs_path,
             "notes_path": notes_path,
             "project_id": args["project_id"],
