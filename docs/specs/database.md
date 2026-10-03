@@ -18,6 +18,13 @@ tags: [spec, database]
 
 All database interaction is async. The `Database` object is constructed with a **PostgreSQL DSN** — anything else is a hard error, not a fall-through to a file — then explicitly initialized with `initialize()` before use. `initialize()` runs the Alembic chain, which returns immediately when the database is already stamped at this checkout's head.
 
+The one-way legacy SQLite importer excludes the durable record and knowledge tables
+introduced by PostgreSQL revision `a00000000055`; legacy SQLite files never contained
+them. Import requires an empty target apart from Alembic bookkeeping and the immutable
+`record_installation` identity seed created with the schema. That installation identity
+is preserved. Any other target data, including record scopes or knowledge, refuses import.
+Task record backfill and knowledge import remain separate, explicit operations.
+
 The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
 ---
