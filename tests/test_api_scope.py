@@ -56,6 +56,9 @@ EXPECTED_AGENT_COMMANDS = {
     "knowledge_proposal_show",
     "knowledge_list",
     "knowledge_show",
+    # K08: citations and observed delivery bind to the caller's own execution.
+    "knowledge_cite",
+    "knowledge_context_deliver",
     "knowledge_update",
     "knowledge_history",
     "knowledge_diff",

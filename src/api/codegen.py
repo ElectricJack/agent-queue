@@ -203,6 +203,8 @@ _KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
     "knowledge_create",
     "knowledge_list",
     "knowledge_show",
+    "knowledge_cite",
+    "knowledge_context_deliver",
     "knowledge_update",
     "knowledge_history",
     "knowledge_diff",
@@ -228,6 +230,14 @@ _KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
 )
 
 _ERROR_STATUS_BY_CODE: dict[str, int] = {
+    "context.disabled": 409,
+    "context.execution_unavailable": 409,
+    "context.execution_changed": 409,
+    "context.invalidated": 409,
+    "context.expired": 410,
+    "context.required_over_budget": 422,
+    "context.over_budget": 422,
+    "context.digest_mismatch": 409,
     "record.not_found": 404,
     "record.forbidden": 403,
     "knowledge.cross_project_forbidden": 403,

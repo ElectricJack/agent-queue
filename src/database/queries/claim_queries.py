@@ -396,11 +396,17 @@ class ClaimQueryMixin:
         options_hash=None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
+        excluded_task_ids: set[str] | None = None,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
 
         Development callers supply a request-scoped ``allowed_task_ids`` set
         from async git admission; SQL performs only structural selection.
+        *excluded_task_ids* withholds specific rows a caller has just decided
+        against from a fresh observation outside SQL -- the claim path's
+        source-CI delivery gate (``src/integration/source_delivery.py``).  It
+        is a request-scoped decision like the allow set, never a persisted
+        one: whoever computes it re-proves it on the next attempt.
 
         *hierarchy_mode* is the caller's already-read project row, reduced to
         the two constants the hierarchy predicates need (see
@@ -475,6 +481,8 @@ class ClaimQueryMixin:
             )
             if allowed_task_ids is not None:
                 stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
+            if excluded_task_ids:
+                stmt = stmt.where(tasks.c.id.not_in(excluded_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
             stmt = apply_label_filters(stmt, exclude_hold=True)

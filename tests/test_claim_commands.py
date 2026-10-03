@@ -9,12 +9,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import update
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import (
     integration_repair_stages,
+    projects,
     task_branch_origins,
     task_integration_checkpoints,
     task_metadata,
@@ -1405,6 +1407,114 @@ class TestClaim:
 def elevated(handler):
     handler._current_scope = None
     return handler
+
+
+class TestSourceRepairDeliveryGate:
+    """A queued source-CI repair is withheld only by a proof taken now.
+
+    Delivery truth is request-scoped (``src/integration/source_delivery.py``),
+    so nothing about this gate is persisted: the same queued delegate is
+    claimable again the moment a fresh proof stops saying ``contained``, and a
+    gate that cannot reach git withholds nothing at all.
+    """
+
+    @staticmethod
+    def _train_project(db):
+        async def enable():
+            async with db.immediate() as conn:
+                await conn.execute(
+                    update(projects).where(projects.c.id == PROJECT_ID).values(
+                        hierarchical_integration_mode="train",
+                        hierarchical_integration_desired_mode="train",
+                        integration_repository_id="repo",
+                    )
+                )
+
+        return enable()
+
+    async def test_excluded_task_ids_withholds_one_frontier_row(self, db, tmp_path):
+        await mktask(db, "first", profile_id="worker")
+        await mktask(db, "second", profile_id="worker")
+        await pool_session(db, tmp_path)
+        async with db.immediate() as conn:
+            assert await db.select_ready_for_profile(
+                conn, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
+                excluded_task_ids={"first"},
+            ) == "second"
+            assert await db.select_ready_for_profile(
+                conn, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
+                excluded_task_ids={"first", "second"},
+            ) is None
+            assert await db.select_ready_for_profile(
+                conn, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
+            ) == "first"
+
+    async def test_a_delivered_source_repair_is_not_leased(self, handler, db, tmp_path):
+        await mktask(db, "repair", profile_id="worker")
+        await pool_session(db, tmp_path)
+        await self._train_project(db)
+        handler._delivered_source_repairs = AsyncMock(return_value={"repair": object()})
+        scoped(handler, "s1")
+        # A named claim names the reason rather than reporting a conflict.
+        named = await handler._cmd_task_claim({"task_id": "repair"})
+        assert named["result"] == "no_ready_work"
+        assert named["reason"] == "source_ci_repair_already_delivered"
+        result = await handler._cmd_task_claim({"next": True})
+        assert result["result"] == "no_ready_work"
+        assert result["reason"] == "source_ci_repair_already_delivered"
+        assert (await db.get_task("repair")).status is TaskStatus.READY
+        assert (await db.get_session("s1")).task_id is None
+        # Nothing withheld is an ordinary empty frontier again.
+        handler._delivered_source_repairs = AsyncMock(return_value={})
+        again = await handler._cmd_task_claim({"next": True})
+        assert again["result"] == "no_ready_work" and "reason" not in again
+
+    async def test_the_gate_fails_open_when_git_cannot_be_asked(self, handler, db, tmp_path):
+        await mktask(db, "repair", profile_id="worker")
+        await pool_session(db, tmp_path)
+        await self._train_project(db)
+        db.set_delivery_observer(None)
+        assert await handler._delivered_source_repairs(PROJECT_ID) == {}
+        db.set_delivery_observer(
+            SimpleNamespace(observe=AsyncMock(side_effect=OSError("no route to host")))
+        )
+        assert await handler._delivered_source_repairs(PROJECT_ID) == {}
+
+    async def test_the_gate_observes_before_the_claim_transaction_opens(
+        self, handler, db, tmp_path
+    ):
+        """No git I/O and no lock across it, like every other observer consumer."""
+        from contextlib import asynccontextmanager
+
+        await mktask(db, "repair", profile_id="worker")
+        await pool_session(db, tmp_path)
+        await self._train_project(db)
+        open_transactions = 0
+        observed = []
+        original = db.immediate
+
+        @asynccontextmanager
+        async def tracking_immediate(*args, **kw):
+            nonlocal open_transactions
+            open_transactions += 1
+            try:
+                async with original(*args, **kw) as conn:
+                    yield conn
+            finally:
+                open_transactions -= 1
+
+        async def gate(project_id):
+            observed.append(open_transactions)
+            return {}
+
+        db.immediate = tracking_immediate
+        handler._delivered_source_repairs = gate
+        try:
+            scoped(handler, "s1")
+            await handler._cmd_task_claim({"next": True})
+        finally:
+            db.immediate = original
+        assert observed == [0], "the gate ran while a claim transaction was open"
 
 
 class TestContainerClaims:

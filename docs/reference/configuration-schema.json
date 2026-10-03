@@ -795,10 +795,26 @@
       "default": {
         "authority_review_required": true,
         "consolidation": {
-          "enabled": false
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
         },
         "context": {
-          "enabled": false
+          "bundle_ttl_seconds": 300,
+          "discovery_max_items": 8,
+          "discovery_max_tokens": 1000,
+          "enabled": false,
+          "input_max_tokens": 32768,
+          "max_bytes": 16384,
+          "max_tokens": 4096,
+          "output_reserve_tokens": 4096,
+          "supervisor_global_scope": false,
+          "supervisor_project_ids": [],
+          "supervisor_query": "",
+          "wrapper_reserve_tokens": 256
         },
         "enabled": false,
         "enabled_projects": [],
@@ -806,7 +822,12 @@
           "enabled": false
         },
         "extraction": {
-          "enabled": false
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
         },
         "global_enabled": false,
         "import_apply": {
@@ -830,12 +851,40 @@
         "consolidation": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
           },
           "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
             "enabled": {
               "default": false,
               "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
             }
           },
           "type": "object"
@@ -843,12 +892,70 @@
         "context": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "bundle_ttl_seconds": 300,
+            "discovery_max_items": 8,
+            "discovery_max_tokens": 1000,
+            "enabled": false,
+            "input_max_tokens": 32768,
+            "max_bytes": 16384,
+            "max_tokens": 4096,
+            "output_reserve_tokens": 4096,
+            "supervisor_global_scope": false,
+            "supervisor_project_ids": [],
+            "supervisor_query": "",
+            "wrapper_reserve_tokens": 256
           },
           "properties": {
+            "bundle_ttl_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "discovery_max_items": {
+              "default": 8,
+              "type": "integer"
+            },
+            "discovery_max_tokens": {
+              "default": 1000,
+              "type": "integer"
+            },
             "enabled": {
               "default": false,
               "type": "boolean"
+            },
+            "input_max_tokens": {
+              "default": 32768,
+              "type": "integer"
+            },
+            "max_bytes": {
+              "default": 16384,
+              "type": "integer"
+            },
+            "max_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "output_reserve_tokens": {
+              "default": 4096,
+              "type": "integer"
+            },
+            "supervisor_global_scope": {
+              "default": false,
+              "type": "boolean"
+            },
+            "supervisor_project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "supervisor_query": {
+              "default": "",
+              "type": "string"
+            },
+            "wrapper_reserve_tokens": {
+              "default": 256,
+              "type": "integer"
             }
           },
           "type": "object"
@@ -880,12 +987,40 @@
         "extraction": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
           },
           "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
             "enabled": {
               "default": false,
               "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
             }
           },
           "type": "object"

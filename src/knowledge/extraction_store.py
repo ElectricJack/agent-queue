@@ -173,7 +173,7 @@ class ExtractionStore:
             )
         )
 
-    async def claim_due_on(self, *, scope_keys, conn, limit=MAX_CLAIMS):
+    async def claim_due_on(self, *, scope_keys, conn, limit=MAX_CLAIMS, versions_by_scope=None):
         """Claim at most two jobs, with one live lease per explicitly selected scope.
 
         Expired paid operations without saved output are quarantined, retaining
@@ -181,7 +181,7 @@ class ExtractionStore:
         """
         now = self.clock()
         claimed = []
-        for scope in sorted(set(scope_keys)):
+        for scope in dict.fromkeys(scope_keys):
             if len(claimed) >= max(0, min(limit, MAX_CLAIMS)):
                 break
             locked = await conn.scalar(
@@ -212,6 +212,9 @@ class ExtractionStore:
                     and row["result_artifact_id"] is None
                 ):
                     await self._unknown_on(row, reservation, conn=conn)
+                    await self.provider_result_on(
+                        scope_key=scope, feature=reservation["feature"], failed=True, conn=conn
+                    )
             row = (
                 (
                     await conn.execute(
@@ -220,6 +223,8 @@ class ExtractionStore:
                             self.jobs.c.scope_key == scope,
                             self.jobs.c.state.in_(("pending", "retry", "leased")),
                             self.jobs.c.available_at <= now,
+                            self.jobs.c.extractor_version.in_(versions_by_scope[scope])
+                            if versions_by_scope is not None else True,
                         )
                         .order_by(self.jobs.c.available_at, self.jobs.c.job_id)
                         .limit(1)
@@ -384,6 +389,24 @@ class ExtractionStore:
                 set_=dict(limit_microusd=limit_microusd, token_limit=token_limit),
             )
         )
+
+    async def provider_result_on(self, *, scope_key, feature, failed, conn):
+        """Persist consecutive failures across restarts and UTC day rollover."""
+        # One call in flight per scope serializes this across both features.
+        key = dict(scope_key=scope_key, feature=feature, period_start=utc_day(self.clock()))
+        await conn.execute(pg_insert(self.budgets).values(**key).on_conflict_do_nothing())
+        history = (await conn.execute(select(self.budgets).where(
+            self.budgets.c.scope_key == scope_key, self.budgets.c.feature == feature,
+        ).order_by(self.budgets.c.period_start.desc()).with_for_update())).mappings().all()
+        previous = max((row["consecutive_failures"] for row in history), default=0)
+        count = previous + 1 if failed else 0
+        await conn.execute(update(self.budgets).where(
+            self.budgets.c.scope_key == scope_key, self.budgets.c.feature == feature,
+        ).values(consecutive_failures=count))
+        if count >= 5:
+            await conn.execute(update(self.budgets).where(
+                *(self.budgets.c[name] == value for name, value in key.items())
+            ).values(circuit_open=True))
 
     async def reserve_on(
         self,
