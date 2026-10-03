@@ -307,6 +307,22 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_claim": "task",
     "memory_save": "memory",
     "memory_search": "memory",
+    "knowledge_create": "knowledge",
+    "knowledge_list": "knowledge",
+    "knowledge_show": "knowledge",
+    "knowledge_update": "knowledge",
+    "knowledge_history": "knowledge",
+    "knowledge_diff": "knowledge",
+    "knowledge_retire": "knowledge",
+    "knowledge_restore": "knowledge",
+    "knowledge_export": "knowledge",
+    "record_show": "record",
+    "record_search": "record",
+    "record_capabilities": "record",
+    "record_repair": "record",
+    "link_create": "record",
+    "link_list": "record",
+    "link_remove": "record",
     # session — operator surface (session-runtime spec §3, §5)
     "session_list": "system",
     "session_show": "system",
@@ -7573,10 +7589,13 @@ _ALL_TOOL_DEFINITIONS.extend([
         },
     },
     {
-        "name": "wait_get", "description": "Read a durable wait and its bounded result pointer.",
+        "name": "wait_get",
+        "description": "Read a durable wait, optionally consuming its result notification.",
         "input_schema": {
             "type": "object", "additionalProperties": False, "required": ["wait_id"],
             "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "consume": {"type": "boolean", "default": False},
+                           "claim_epoch": {"type": "integer", "minimum": 0},
                            "project_id": {"type": "string"}, "task_id": {"type": "string"},
                            "session_id": {"type": "string"}},
         },
@@ -7941,6 +7960,333 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
                 "properties": {"promotion_id": {"type": "string"}, "reason": {"type": "string"}},
                 "required": ["promotion_id", "reason"],
+                "type": "object",
+            },
+        },
+    ]
+)
+
+# Knowledge records (K03) — worker-safe command surface.
+_CATEGORY_ENUM = [
+    "fact", "decision", "policy", "procedure", "incident", "reference", "note",
+]
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "knowledge_create",
+            "description": (
+                "Create one active, unverified knowledge finding in the project scope. "
+                "Idempotent by idempotency_key; a replay returns the original receipt."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "body": {"type": "string"},
+                    "category": {"enum": _CATEGORY_ENUM, "type": "string"},
+                    "summary": {"type": "string", "maxLength": 4096},
+                    "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "maxItems": 100,
+                    },
+                    "metadata": {"type": "object"},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                },
+                "required": ["project_id", "title", "body", "category", "idempotency_key"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_list",
+            "description": "List authorized knowledge metadata with a page cursor.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "category": {"enum": _CATEGORY_ENUM, "type": "string"},
+                    "include_retired": {"default": False, "type": "boolean"},
+                    "include_disputed": {"default": False, "type": "boolean"},
+                    "limit": {"default": 25, "type": "integer", "minimum": 1, "maximum": 100},
+                    "cursor": {"type": "string"},
+                },
+                "required": ["project_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_show",
+            "description": (
+                "Read an authorized knowledge snapshot at an exact revision "
+                "(defaults to the current revision)."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_update",
+            "description": (
+                "Revise editable knowledge fields with a concurrency token "
+                "(if_revision). Idempotent by idempotency_key."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "if_revision": {"type": "string"},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "body": {"type": "string"},
+                    "category": {"enum": _CATEGORY_ENUM, "type": "string"},
+                    "summary": {"type": "string", "maxLength": 4096},
+                    "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "maxItems": 100,
+                    },
+                    "metadata": {"type": "object"},
+                    "change_reason": {"type": "string", "maxLength": 4096},
+                    "valid_from": {"type": "string"},
+                    "valid_until": {"type": "string"},
+                    "recheck_at": {"type": "string"},
+                    "summary_of_revision": {"type": "string"},
+                },
+                "required": ["project_id", "identity", "idempotency_key"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_history",
+            "description": "Read the revision history of a knowledge record.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "before_sequence": {"type": "integer", "minimum": 1},
+                    "limit": {"default": 25, "type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_diff",
+            "description": "Diff two exact, readable revisions of a knowledge record.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "from_revision": {"type": "string"},
+                    "to_revision": {"type": "string"},
+                },
+                "required": ["project_id", "identity", "from_revision", "to_revision"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_retire",
+            "description": (
+                "Retire a knowledge finding with an optional successor. "
+                "Supervisor-only. Idempotent by idempotency_key."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "if_revision": {"type": "string"},
+                    "successor_record_id": {"type": "string"},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                },
+                "required": [
+                    "project_id", "identity", "reason", "idempotency_key",
+                ],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_restore",
+            "description": (
+                "Restore a knowledge finding to a retained revision. "
+                "Supervisor-only. Idempotent by idempotency_key."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "if_revision": {"type": "string"},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                },
+                "required": [
+                    "project_id", "identity", "revision_id", "reason", "idempotency_key",
+                ],
+                "type": "object",
+            },
+        },
+        {
+            "name": "record_show",
+            "description": (
+                "Read a record by identity, pinned to a revision when knowledge."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "record_search",
+            "description": "Search authorized records with a bounded query and page cursor.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "query": {"type": "string", "maxLength": 512},
+                    "category": {"enum": _CATEGORY_ENUM, "type": "string"},
+                    "include_retired": {"default": False, "type": "boolean"},
+                    "include_disputed": {"default": False, "type": "boolean"},
+                    "limit": {"default": 25, "type": "integer", "minimum": 1, "maximum": 100},
+                    "cursor": {"type": "string"},
+                },
+                "required": ["project_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "knowledge_export",
+            "description": (
+                "Export an authorized knowledge revision as Markdown bytes; "
+                "no daemon destination path."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "record_repair",
+            "description": (
+                "Local operator only: dry-run task mapping backfill or selected "
+                "outbox replay before explicit apply."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "operation": {"type": "string", "enum": [
+                        "backfill-task-mappings", "replay-outbox",
+                    ]},
+                    "dry_run": {"type": "boolean", "default": True},
+                    "event_id": {"type": "string"},
+                    "max_batches": {"type": "integer", "minimum": 1, "maximum": 20, "default": 2},
+                },
+                "required": ["operation"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "record_capabilities",
+            "description": "Describe what this caller may do with records in the project.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string"},
+                },
+                "type": "object",
+            },
+        },
+        {
+            "name": "link_create",
+            "description": (
+                "Add, update, or remove typed record links in one batch. "
+                "Idempotent by idempotency_key."
+            ),
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "operations": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "minItems": 1,
+                        "maxItems": 100,
+                    },
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "if_revision": {"type": "string"},
+                    "if_link_token": {"type": "string"},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                },
+                "required": [
+                    "project_id", "identity", "operations", "idempotency_key",
+                ],
+                "type": "object",
+            },
+        },
+        {
+            "name": "link_list",
+            "description": "List the typed links on a record.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "revision_id": {"type": "string"},
+                },
+                "required": ["project_id", "identity"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "link_remove",
+            "description": "Remove one typed record link. Idempotent by idempotency_key.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string", "minLength": 1},
+                    "identity": {"type": "string", "minLength": 4},
+                    "link_id": {"type": "string"},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "if_revision": {"type": "string"},
+                    "if_link_token": {"type": "string"},
+                    "claim_epoch": {"type": "integer", "minimum": 0},
+                },
+                "required": [
+                    "project_id", "identity", "link_id", "idempotency_key",
+                ],
                 "type": "object",
             },
         },

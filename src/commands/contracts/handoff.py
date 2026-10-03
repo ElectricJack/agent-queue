@@ -41,6 +41,8 @@ class TaskHandoffArgs(CommandArgs):
     decisions: list[str] = Field(default_factory=list, max_length=20)
     do_not_repeat: list[str] = Field(default_factory=list, max_length=20)
     uncertainties: list[str] = Field(default_factory=list, max_length=20)
+    constraints: list[str] = Field(default_factory=list, max_length=20)
+    evidence: list[str] = Field(default_factory=list, max_length=20)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")

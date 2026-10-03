@@ -54,6 +54,7 @@ class KindRule(_Strict):
     max_class: str | None = None
     lane: str | None = None
     narrow: bool = False
+    prefer_harnesses: tuple[str, ...] = ()
 
 
 class OriginRule(_Strict):
@@ -63,6 +64,7 @@ class OriginRule(_Strict):
     max_class: str | None = None
     lane: str | None = None
     narrow: bool | None = None
+    prefer_harnesses: tuple[str, ...] | None = None
 
 
 class Lane(_Strict):

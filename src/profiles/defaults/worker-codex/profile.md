@@ -22,6 +22,8 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
+## Template maintenance
+
 This file is a **template**, not a profile. Nothing is routed to it and it is
 never synced to `agent_profiles`. The workers that actually run are derived
 from it — one `<class>-codex` rung per intelligence class with an `openai`
@@ -65,6 +67,7 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "knowledge_export",
     "create_task",
     "formula_list",
     "formula_show",

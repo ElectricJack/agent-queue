@@ -536,7 +536,8 @@ class Orchestrator(
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
         self.agent_questions = AgentQuestionService(
-            self.db, self.bus, self.session_providers, config
+            self.db, self.bus, self.session_providers, config,
+            harness_registry=self.harness_registry,
         )
         from src.escalations import SupervisorDeliveryWatchdog
 
@@ -603,6 +604,7 @@ class Orchestrator(
         self.playbook_manager = None
         self.integration_scheduler = None
         self.integration_outbox = None
+        self.record_outbox = None
         self.integration_service = None
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
@@ -1954,6 +1956,21 @@ class Orchestrator(
         )
         self.integration_service.start()
 
+        # Record intents have their own bounded lifecycle and concurrency.
+        # No scheduling cascade, integration lease, or optional plugin owns
+        # their progress. Live config controls pause delivery without dropping
+        # committed intents; disabled startup performs no record database work.
+        from src.records.export import RecordExporter
+        from src.records.outbox import RecordOutbox
+
+        record_exporter = RecordExporter(
+            self.db, lambda: self.config.knowledge, lambda: self.config.vault_root
+        )
+        self.record_outbox = RecordOutbox(
+            self.db, lambda: self.config.knowledge, exporter=record_exporter
+        )
+        self.record_outbox.start()
+
         # Register override file watcher handlers (memory-scoping spec §5).
         # Detects changes to per-project agent-type override files so they
         # can be re-indexed into agent context.  The handler callback is
@@ -2062,16 +2079,15 @@ class Orchestrator(
             discovered = await self.plugin_registry.discover_plugins()
             if discovered:
                 logger.info("Discovered %d plugins: %s", len(discovered), discovered)
-            # Feature pause (feature-pauses.md M1): when the memory
-            # subsystem is paused the aq-memory plugin is simply not loaded.
-            # The registry is told *what* to skip; it never mutates the
-            # plugin's DB status, so re-enabling is a config flip + restart.
-            skip_plugins: frozenset[str] = (
-                frozenset() if self.config.memory.enabled else frozenset({"aq-memory", "memory"})
-            )
+            # Knowledge rollout keeps the legacy writer excluded even when
+            # the memory master is enabled. K07 owns its adapter handshake;
+            # skipping preserves installed data and the plugin's DB status.
+            from src.knowledge.legacy import LEGACY_MEMORY_PLUGINS
+
+            skip_plugins = LEGACY_MEMORY_PLUGINS
             if skip_plugins:
                 logger.info(
-                    "Memory subsystem PAUSED (memory.enabled=false) — aq-memory plugin "
+                    "Legacy memory writer excluded pending adapter handshake — aq-memory plugin "
                     "not loaded; L1/L2 prompt tiers empty; reflection off; data "
                     "preserved. See docs/specs/design/feature-pauses.md"
                 )
@@ -2748,6 +2764,8 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        if self.record_outbox:
+            await self.record_outbox.stop()
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None

@@ -163,6 +163,7 @@ exit classifier:
 
 | Evidence | Verdict |
 |---|---|
+| Pool session with persisted `desired_state=stopped` | Normal drain, even with an open task; never quarantine the pool for this requested exit |
 | Rate-limit text in the final pane capture | Task → PAUSED (`rate_limit`) with provider cooldown; session `sleep_reason=rate_limit` |
 | Rapid crash (death within `restart_window` of start) | Restart with backoff, `--resume <session_key>` when the harness supports it; after `max_restarts` inside `restart_window` → quarantine |
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
@@ -170,6 +171,12 @@ exit classifier:
 
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
+
+After observing a dead pool process and capturing its final output, the reconciler
+rereads the session before classifying it. An operator kill can persist stop intent
+while those probes await; an earlier live-session snapshot must not turn that requested
+stop into a rapid crash. A session already stopped or removed, or replaced by another
+instance during the probes, is not classified from that stale observation.
 
 ### 4.2 Named sessions
 
@@ -302,6 +309,27 @@ ours (Codex has no `--session-id`), the reader also reports it via
 `discover_session_key`, and the watcher writes it onto the row: that is the only place the
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
+
+Claude content UUIDs identify transcript events, while `message.id` identifies an API
+call. Usage accounting keys the provider, transcript conversation and API call separately
+from displayed content. Missing API IDs fall back to the event UUID. A durable per-call
+record retains the maximum observed value of each counter (uncached input, output, cache
+reads and cache writes); later partial/final observations append only positive increases
+to the ledger. Lower, missing or repeated counters cannot recharge a call. The progress
+record and ledger delta commit together, so retries, concurrent watchers and replay across
+AQ session incarnations are idempotent. Attribution stays with the first recorded usage.
+Accounting failures leave the byte checkpoint retryable. On adoption, consumed Claude
+records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
+or deleting the original rows. Historical inflation requires a separate evidenced
+correction; it is never repaired implicitly during ingest.
+
+Historical reconciliation is read-only and uses a frozen transcript/ledger window.
+Only unambiguous UUID matches with exact counter agreement and complete call coverage
+qualify for a proposed compensating adjustment. Reports retain original row IDs and
+hashes, deterministic correction IDs, signed category deltas and their inverse. Applying
+any adjustment requires a separate command with idempotency and evidence preconditions;
+the reporting tool has no apply mode. Token volumes do not imply subscription quota
+percentages.
 
 Codex rollout date folders and filenames use local time, while `session_meta` timestamps
 use UTC. Keyless discovery searches the UTC launch date and adjacent dates, then accepts

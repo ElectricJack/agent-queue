@@ -202,6 +202,31 @@ whose `claim_epoch` no longer matches (task reassigned, claim expired) gets
 `stale_claim` back from any of these — read the correct one from
 `.aq/claim.json` and stop, rather than retrying blindly.
 
+## Wait for completion without monitoring turns
+
+For supported validation, submit the producer and wait together:
+
+```bash
+aq test --aq-detach --aq-wait --aq-idempotency-key validation TEST_ARGS
+aq wait register --kind task --ref <producer-task> --timeout 7200 --idempotency-key settlement
+aq wait show <wait-id> --consume --json
+```
+
+Register once and end the turn. The durable wait retains the current claim,
+workspace and seat; the daemon queues completion, failure or bounded timeout.
+`--consume` reads the result and consumes only its notification, so it does not
+leave a redundant nudge or close blocker. Plain reads remain diagnostic. Handle
+the actual outcome; expiry never cancels a producer or proves success. Inspect
+the producer once on timeout and decide what to do instead of blindly
+re-registering or submitting replacement work. Managed admission is opt-in;
+if disabled, use ordinary foreground `aq test` with the existing resource caps.
+
+For `messages.pending_before_close`, handle every mailbox named by the refusal
+with `--inject --json`, reconsider affected evidence, then retry. A plain inbox
+read does not consume pending delivery. After an accepted close, obey the
+next-claim result rather than polling the closed task. Do not use background
+shell loops for jobs, messages, CI or task settlement.
+
 ## Reopen + provide input (rejection loop)
 
 If a reviewer or human rejects the work, they call `reopen_with_feedback`

@@ -118,6 +118,8 @@ def test_registry_has_categories(registry):
         "agent",
         "supervisor",
         "memory",
+        "knowledge",
+        "record",
         "notes",
         "system",
         "task",

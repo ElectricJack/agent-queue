@@ -105,6 +105,35 @@ aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-int
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
 
+`reopen-collection` also recovers a suspended producer whose close detached its
+workspace but left a `worker` reservation on the parent branch. The dry run
+reports `kind: suspended_worker`, the current episode, operation, published head
+and owner fence. Applying consumes the confirmed detach proof and transfers
+ownership to that same operation's collector at the next fence. Collection
+reconciliation retries this handoff automatically after restart. It refuses
+live holders, operator holds, open gates, repair/verifier work and unresolved
+external writes; it preserves the checkpoint, generation, operation and receipts.
+
+For the `keen-ridge-24.1` incident, the operator deploys the recovery code, then runs:
+
+```bash
+aq --json integration reopen-collection keen-ridge-24.1
+aq --json integration reopen-collection keen-ridge-24.1 --apply --head REPORTED_HEAD --reason 'Recover confirmed detached producer into current collector'
+aq --json task show keen-ridge-24.1
+aq --json task show keen-ridge-24.1.1
+aq --json system delivery-receipts --source-task-id keen-ridge-24.1.1 --repository-id REPOSITORY_ID --target-branch aq/keen-ridge-24.1
+```
+
+Use the reported head and repository ID, checking episode
+`fca39cce-5c3a-45e9-b677-7460d9f82477` and operation
+`a143948f-0250-4631-806d-26450e850732` are still current. If the automatic pass
+already recovered ownership, `nothing_to_reopen` is expected. Wait for ordinary
+collection to create a receipt for reviewed head
+`35742ce6f77ab633ba8f269c26c8b6a17db9660e`, targeting `aq/keen-ridge-24.1` with
+that current `parent_operation_id` and `parent_episode_id`. The queued delivery
+alone is not receipt evidence. Refusals require resolving the reported blocker,
+then repeating the dry run; they never authorize database edits or bypassing CI.
+
 Always take `GENERATION` and, for a history waiver, `BLOCKER_DIGEST` from a
 fresh `aq integration status` result. A stale result is returned as stale; the
 CLI never rereads and retries a mutation against a newer generation.
@@ -427,6 +456,11 @@ for projects using legacy delivery. `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
 `blocked-task-escalation` must defer integration-owned tasks to operation-level
 recovery instead of generic task recovery or replacement repair budgets.
+Failed delegates of active, escalated or human-required repair operations keep
+inspectable recovery incidents with their stage attempts and deadlines, but do
+not send `Task recovery: <delegate>` supervisor messages. Failure-event replays
+and the recovery scan also archive older delegate notices without redelivery.
+Integration parents and ordinary tasks keep their existing notifications.
 
 When replacing project integration playbooks with shared system activations,
 first disable/drain affected projects and verify there is no active operation.
@@ -620,6 +654,23 @@ at least one such receipt the outcome is `delivered`; otherwise it stays
 `working` with no receipts. A receipt for an older head or generation is never
 counted, and the projection only reads; it never writes or rewrites receipts.
 
+### Epic delivery in the dashboard
+
+Epic cards and the task detail views show implementation progress
+(`5/5 tasks complete`) apart from delivery. The delivery badge comes from a
+read-only projection (`src/integration/epic_delivery.py`, design:
+[epic delivery status](../superpowers/specs/2026-10-02-epic-delivery-status-design.md))
+built on collection readiness, claim eligibility, live operations, branch
+reservations and root receipts. *Integrating* and *Verifying* need a live
+session with recent activity. *Delivered* needs a receipt binding the epic's
+current head. *Paused* means an operator hold. A managed parent that integration
+keeps `PAUSED` shows its delivery state instead, for example
+`Integration blocked - final fix not collected` or
+`Verification blocked - branch handoff required`. The badge names the blocker,
+who has to act and when progress last happened. `get_task` returns the same
+answer as `delivery_status`. Pause, resume and the integration controls still
+act on the stored status.
+
 ### Candidate-member conflict repair
 
 Batch formation inspects added Alembic migrations at the exact reviewed heads.
@@ -687,7 +738,9 @@ batch ancestry and rejects unsealed side branches before accepting the aggregate
 Continuous repair stages retain finite time/attempt budgets. At exhaustion AQ
 stops and proves the exact old writer, retains its checkout/index/dirty work,
 fences and releases its pool claim, and files a fresh operation-bound stage.
-Incomplete handoffs are retried by the reconciler. Old counters and history stay
+Incomplete handoffs are retried by the reconciler, except for a delegate an
+operator paused with `aq task pause`: it stays paused, even through an explicit
+dispatch, until `aq task resume`. Old counters and history stay
 visible. Periodic sweeps continue after the settling window is cleared, so a
 released batch does not need another review event to schedule the next batch.
 
@@ -797,6 +850,19 @@ collector receives a fresh fence and the checkpoint advances generation. The
 old failed verifier and repair budgets remain evidence. Redrive the child and
 let a fresh verifier check the resulting exact head. Human rollout gates remain
 binding; the old red aggregate is never certified by recovery.
+For a legacy failure with an empty commit list, exactly one immutable
+`task.integration_ready` outbox event must bind that verifier to the same parent,
+episode, repository, branch and head before the failure. The dry run reports
+the original subject in `delegates[].failure_subject`; apply includes that
+binding and failed completion id in its audit event. The original completion
+stays unchanged. Missing, contradictory or ambiguous evidence is refused.
+A verifier session still attached to the branch must first be settled through
+`aq session show SESSION_ID`, `aq session kill SESSION_ID` if still running,
+and `aq integration release-owner --task-id VERIFIER_TASK_ID --dry-run`.
+Apply owner recovery only after it proves the writer stopped and preserves its
+work; then repeat the collection dry run. Worker tokens cannot perform those
+operator steps. See the [failed aggregate recovery design](../superpowers/specs/2026-10-02-failed-aggregate-recovery-design.md)
+for the calm-grove-25 handoff.
 
 If `redrive-child` instead says the parent has no live collection operation,
 `cancel-preserving` cancelled the parent's whole collection; `aq integration

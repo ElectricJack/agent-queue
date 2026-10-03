@@ -623,6 +623,9 @@ def integration_reopen_collection(
     A settled failed aggregate verifier requires a completed additional child
     fix. Recovery preserves its failed completion, advances the checkpoint
     generation and creates a fresh verifier after collecting the fix.
+    A suspended producer with a confirmed detached workspace is transferred to
+    its existing collector operation after checking holders, holds, gates and
+    unresolved writes. Collection reconciliation performs the same recovery.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")

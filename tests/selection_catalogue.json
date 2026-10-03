@@ -102,6 +102,7 @@
         "tests/test_cli_formatters.py",
         "tests/test_cli_global_options.py",
         "tests/test_cli_inventory.py",
+        "tests/test_cli_knowledge.py",
         "tests/test_cli_logs.py",
         "tests/test_cli_menus.py",
         "tests/test_cli_module_entry.py",
@@ -329,6 +330,7 @@
         "tests/test_batch_ci_repair_adoption.py",
         "tests/test_batch_ci_repair_rebuild.py",
         "tests/test_epic_branch.py",
+        "tests/test_epic_delivery.py",
         "tests/test_epic_dependencies.py",
         "tests/test_epic_pr.py",
         "tests/test_epic_pr_review_evidence.py",
@@ -596,6 +598,31 @@
         "tests/test_tier_provider_defaults.py"
       ]
     },
+    "knowledge-inventory": {
+      "description": "Offline knowledge inventory: exact legacy artifacts, file/vector reconciliation, explicit scope aliases, confined read-only scans and deterministic sealed manifests.",
+      "modules": [
+        "tests/test_knowledge_inventory.py"
+      ]
+    },
+    "knowledge-records": {
+      "description": "Durable record identities, knowledge schema and immutable revision integrity.",
+      "modules": [
+        "tests/test_api_knowledge.py",
+        "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_commands.py",
+        "tests/test_knowledge_inventory.py",
+        "tests/test_knowledge_migrations.py",
+        "tests/test_knowledge_service.py",
+        "tests/test_record_backfill.py",
+        "tests/test_record_contracts.py",
+        "tests/test_record_doctor.py",
+        "tests/test_record_exports.py",
+        "tests/test_record_links.py",
+        "tests/test_record_outbox.py",
+        "tests/test_record_queries.py",
+        "tests/test_record_schema.py"
+      ]
+    },
     "level-editor": {
       "description": "The level editor: voxel grid, page, layer and level models and the brush system.",
       "modules": [
@@ -688,7 +715,8 @@
         "tests/test_metrics_host.py",
         "tests/test_metrics_perf.py",
         "tests/test_metrics_relay.py",
-        "tests/test_metrics_sampler.py"
+        "tests/test_metrics_sampler.py",
+        "tests/test_metrics_token_efficiency.py"
       ]
     },
     "migrations": {
@@ -1321,7 +1349,7 @@
       ]
     }
   },
-  "digest": "sha256:f733480ec3eef91e42834a0895018353d431f4d2f77d10cea99f953565df0175",
+  "digest": "sha256:710737612e03b3e83717c8d6b258d8d9e7f90393d643dc41f95e852f33719170",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1958,6 +1986,8 @@
         "src.models",
         "src.sessions",
         "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
         "src.sessions.native_questions",
         "src.sessions.provider",
         "src.sessions.questions"
@@ -2171,6 +2201,7 @@
         "src.commands.contracts",
         "src.commands.principal",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.doctor",
         "src.doctor.models",
@@ -2178,6 +2209,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator.core",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.sessions",
@@ -2341,6 +2373,7 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.epic_delivery",
         "src.models",
         "src.task_graph.layout.driver"
       ],
@@ -2348,6 +2381,22 @@
         "parametrize"
       ],
       "summary": "Layout endpoints (spatial-layout design §5)."
+    },
+    "tests/test_api_knowledge.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.codegen",
+        "src.api.dependencies"
+      ],
+      "markers": [
+        "parametrize",
+        "usefixtures"
+      ],
+      "summary": "Typed HTTP surface for the K03 knowledge/record commands."
     },
     "tests/test_api_messages.py": {
       "areas": [
@@ -3193,8 +3242,21 @@
         "src.cli.auto_commands",
         "src.cli.inventory"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Maintained inventory and plugin-extension startup guards for ``aq``."
+    },
+    "tests/test_cli_knowledge.py": {
+      "areas": [
+        "cli-framework"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "CLI surface tests for the 14 K03 knowledge_* and record_* auto-generated commands."
     },
     "tests/test_cli_logs.py": {
       "areas": [
@@ -4194,9 +4256,11 @@
         "src.config",
         "src.config_editor",
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
         "src.routing.sources",
+        "src.sessions.transcripts.base",
         "src.tools"
       ],
       "markers": [
@@ -4554,8 +4618,10 @@
       "default_arm": true,
       "imports": [
         "src.api.scope",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
+        "src.prompt_builder",
         "src.vault"
       ],
       "markers": [],
@@ -5041,6 +5107,7 @@
         "src.doctor.profile_checks",
         "src.doctor.project_checks",
         "src.doctor.provider_checks",
+        "src.doctor.record_checks",
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.routing_checks",
@@ -5384,6 +5451,23 @@
       ],
       "markers": [],
       "summary": "Epic branch names are legible slugs, reserved once per repository."
+    },
+    "tests/test_epic_delivery.py": {
+      "areas": [
+        "epic-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.models.task",
+        "src.commands.handler",
+        "src.database.tables",
+        "src.integration.epic_delivery",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Epic implementation progress kept apart from delivery (noble-nexus-42)."
     },
     "tests/test_epic_dependencies.py": {
       "areas": [
@@ -6272,8 +6356,11 @@
         "src.api.scope",
         "src.commands.contracts",
         "src.commands.contracts.handoff",
+        "src.config",
         "src.handoffs",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context",
+        "src.sessions.transcripts.base"
       ],
       "markers": [
         "parametrize"
@@ -7035,6 +7122,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
         "src.config",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
@@ -7048,7 +7136,9 @@
         "src.integration.models",
         "src.integration.promotion",
         "src.integration.root_pull_requests",
+        "src.integration.suspended_parent_recovery",
         "src.models",
+        "src.orchestrator.workspace_attachments",
         "src.sessions.reconciler"
       ],
       "markers": [
@@ -7659,6 +7749,7 @@
         "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
@@ -7678,7 +7769,10 @@
         "src.orchestrator.workspace",
         "src.prime.sections",
         "src.profiles.capabilities",
-        "src.scheduler"
+        "src.scheduler",
+        "src.sessions.fake",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
       ],
       "markers": [
         "parametrize"
@@ -8246,18 +8340,101 @@
         "src.commands.contracts.job",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.handoffs",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context"
       ],
       "markers": [
         "parametrize"
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
+    },
+    "tests/test_knowledge_authorization.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.plugins.registry",
+        "src.profiles.capabilities",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Core access remains fail closed with legacy capability enforcement disabled."
+    },
+    "tests/test_knowledge_commands.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config"
+      ],
+      "markers": [
+        "usefixtures"
+      ],
+      "summary": "End-to-end command execution for the K03 knowledge/record surface."
+    },
+    "tests/test_knowledge_inventory.py": {
+      "areas": [
+        "knowledge-inventory",
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.knowledge.imports.inventory",
+        "src.knowledge.imports.legacy_memory",
+        "src.knowledge.imports.manifest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
+    },
+    "tests/test_knowledge_migrations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Real disposable PostgreSQL upgrades, helper reinstall and safe rollback."
+    },
+    "tests/test_knowledge_service.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL races, canonical bytes, atomic receipts and lexical retrieval."
     },
     "tests/test_known_tools.py": {
       "areas": [
@@ -8817,6 +8994,21 @@
       ],
       "summary": "The metrics sampler: one row per tick, honest roll-ups, real retention."
     },
+    "tests/test_metrics_token_efficiency.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.metrics.token_efficiency",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Read-only token-efficiency report: corrected accounting, attribution, halts, export."
+    },
     "tests/test_mid_chain_rebase.py": {
       "areas": [
         "git-manager"
@@ -9015,7 +9207,8 @@
       "imports": [
         "src.database.engine",
         "src.database.schema_key",
-        "src.database.tables"
+        "src.database.tables",
+        "src.records.schema"
       ],
       "markers": [
         "integration",
@@ -10561,7 +10754,9 @@
         "src.prime",
         "src.prime.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry"
       ],
       "markers": [
         "asyncio",
@@ -11371,6 +11566,144 @@
       ],
       "summary": "Tests for rebase-before-merge conflict resolution."
     },
+    "tests/test_record_backfill.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.records.backfill",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Operator-only mapping repair has independent durable source cursors."
+    },
+    "tests/test_record_contracts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.contracts.models",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pure contract-shape tests for the K03 knowledge/record command set."
+    },
+    "tests/test_record_doctor.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.doctor.runner",
+        "src.knowledge.service",
+        "src.models",
+        "src.records.export",
+        "src.records.outbox",
+        "src.records.service"
+      ],
+      "markers": [],
+      "summary": "Read-only diagnostics remain useful without optional memory plugins."
+    },
+    "tests/test_record_exports.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.knowledge",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records",
+        "src.records.export",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Confined files, exact recovery bytes, stale events and authorization."
+    },
+    "tests/test_record_links.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Informational links have their own ownership, history and concurrency fences."
+    },
+    "tests/test_record_outbox.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.commands.contracts.records",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.records.models",
+        "src.records.outbox"
+      ],
+      "markers": [],
+      "summary": "Record commits and isolated at-least-once delivery survive lost workers."
+    },
+    "tests/test_record_queries.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.queries.record_queries",
+        "src.database.tables",
+        "src.models",
+        "src.records.identity"
+      ],
+      "markers": [],
+      "summary": "Deterministic aliases and exact revision reads survive execution lifecycle."
+    },
+    "tests/test_record_schema.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.records.schema"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Prove the storage contract with direct writes and commit-time checks."
+    },
     "tests/test_reference_stub_enricher.py": {
       "areas": [
         "vault"
@@ -12078,8 +12411,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.routing.context",
         "src.routing.planner",
-        "src.routing.policy"
+        "src.routing.policy",
+        "src.routing.replay"
       ],
       "markers": [
         "parametrize"
@@ -12104,9 +12439,13 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
         "src.playbooks.invocation",
+        "src.providers",
+        "src.providers.availability",
+        "src.routing.planner",
         "src.routing.sources",
         "src.sessions.harness_parser"
       ],
@@ -12665,6 +13004,7 @@
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
+        "src.config",
         "src.intelligence_classes",
         "src.models",
         "src.sessions",
@@ -14072,6 +14412,7 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -14129,10 +14470,12 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
-        "src.sessions.transcripts.codex"
+        "src.sessions.transcripts.codex",
+        "src.sessions.transcripts.reconciliation"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Transcript reader tests (S3, Task B1)."
     },

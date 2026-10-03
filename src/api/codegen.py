@@ -195,6 +195,52 @@ ERROR_STATUS: dict[tuple[str, str], int] = {
     },
 }
 
+#: Worker-safe knowledge/record commands (plan §7, K03).  Their stable error
+#: codes share one HTTP status regardless of the specific verb: a missing
+#: record is always 404, a conflict always 409, a missing precondition always
+#: 428, and so on — so the mapping is per code, not per command.
+_KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
+    "knowledge_create",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    "knowledge_retire",
+    "knowledge_restore",
+    "knowledge_export",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "record_repair",
+    "link_create",
+    "link_list",
+    "link_remove",
+)
+
+_ERROR_STATUS_BY_CODE: dict[str, int] = {
+    "record.not_found": 404,
+    "record.forbidden": 403,
+    "record.revision_conflict": 409,
+    "record.idempotency_conflict": 409,
+    "record.export_diverged": 409,
+    "knowledge.disabled": 409,
+    "record.revision_unavailable": 410,
+    "record.revision_redacted": 410,
+    "record.precondition_required": 428,
+    "record.retryable": 503,
+    "record.hash_divergence": 503,
+    "record.integrity_conflict": 409,
+}
+
+ERROR_STATUS.update(
+    {
+        (command, code): status
+        for command in _KNOWLEDGE_RECORD_COMMANDS
+        for code, status in _ERROR_STATUS_BY_CODE.items()
+    }
+)
+
 
 def _category_to_api_path(cat_name: str) -> str:
     """Derive API path segment from category name.

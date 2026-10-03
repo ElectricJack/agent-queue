@@ -640,13 +640,55 @@ class MonitoringConfig:
 
 
 @dataclass
+class KnowledgeFeatureConfig:
+    """An independently activated knowledge feature; deployment never enables it."""
+
+    enabled: bool = False
+
+
+@dataclass
+class KnowledgeConfig:
+    """Core records are independent of memory and require explicit pilot activation."""
+
+    enabled: bool = False
+    enabled_projects: list[str] = field(default_factory=list)
+    global_enabled: bool = False
+    writes_enabled: bool = False
+    ui_enabled: bool = False
+    legacy_memory_mode: str = "disabled"
+    context: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    semantic: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    extraction: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    consolidation: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    export: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        for name in ("enabled", "global_enabled", "writes_enabled", "ui_enabled"):
+            if type(getattr(self, name)) is not bool:
+                errors.append(ConfigError("knowledge", name, "must be a boolean"))
+        if (not isinstance(self.enabled_projects, list) or any(
+            not isinstance(project, str) or not project or project == "*"
+            for project in self.enabled_projects
+        )):
+            errors.append(ConfigError("knowledge", "enabled_projects", "must be explicit project IDs"))
+        if self.legacy_memory_mode not in {"disabled", "read_only", "compatibility"}:
+            errors.append(ConfigError("knowledge", "legacy_memory_mode", "unsupported legacy mode"))
+        for name in ("context", "semantic", "extraction", "consolidation", "export"):
+            feature = getattr(self, name)
+            if not isinstance(feature, KnowledgeFeatureConfig) or type(feature.enabled) is not bool:
+                errors.append(ConfigError("knowledge", f"{name}.enabled", "must be a boolean"))
+        return errors
+
+
+@dataclass
 class MemoryConfig:
     """Configuration for the semantic memory subsystem (memsearch).
 
     Paused by default during the framework overhaul — see
-    docs/specs/design/feature-pauses.md.  Set ``enabled: true`` in the YAML
-    config (restart required) to bring the subsystem back.  See
-    notes/memsearch-integration.md for full documentation.
+    docs/specs/design/feature-pauses.md. This master switch is independent of
+    knowledge storage and its feature controls. Enabling it does not admit a
+    legacy authoritative writer without a versioned adapter handshake.
     """
 
     enabled: bool = False
@@ -1495,6 +1537,11 @@ class SessionsConfig:
     #: Maximum historical usage entries an uncheckpointed watcher may see
     #: before treating the batch as restart replay rather than fresh work.
     transcript_startup_replay_limit: int = 100
+    #: Native compaction at future worker launches only; 0 inherits harness defaults.
+    worker_context_compact_tokens: int = 160000
+    worker_context_checkpoint_tokens: int = 120000
+    #: Tool-turn cadence when fresh context measurements are unavailable, not a token estimate.
+    worker_context_unknown_checkpoint_turns: int = 40
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
@@ -1509,8 +1556,16 @@ class SessionsConfig:
     #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
     #: every other provider.
     fake_script_file: str = ""
+    #: Per-worker Claude plugin overrides, keyed by ``name@marketplace``.  A
+    #: non-empty map is merged as ``enabledPlugins`` into the rendered
+    #: ``.aq/hooks/claude.json`` of worker-lifecycle (``task``/``pool``)
+    #: sessions only; the empty default leaves the file byte-identical.
+    worker_claude_plugin_overrides: dict[str, bool] = field(default_factory=dict)
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
+    _PLUGIN_ID_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1565,6 +1620,48 @@ class SessionsConfig:
         ):
             if getattr(self, name) <= 0:
                 errors.append(ConfigError("sessions", name, "must be > 0"))
+        compact = self.worker_context_compact_tokens
+        checkpoint = self.worker_context_checkpoint_tokens
+        if compact != 0 and not 100000 <= compact <= 1000000:
+            errors.append(ConfigError(
+                "sessions", "worker_context_compact_tokens", "must be 0 or 100000..1000000"
+            ))
+        if checkpoint < 0 or (compact > 0 and checkpoint > compact):
+            errors.append(ConfigError(
+                "sessions", "worker_context_checkpoint_tokens",
+                "must be >= 0 and <= an enabled compact window",
+            ))
+        if self.worker_context_unknown_checkpoint_turns <= 0:
+            errors.append(ConfigError(
+                "sessions", "worker_context_unknown_checkpoint_turns", "must be > 0"
+            ))
+        if not isinstance(self.worker_claude_plugin_overrides, dict):
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "worker_claude_plugin_overrides",
+                    "must be a mapping of plugin id (name@marketplace) to bool",
+                )
+            )
+        else:
+            for plugin_id, enabled in self.worker_claude_plugin_overrides.items():
+                if not isinstance(plugin_id, str) or not self._PLUGIN_ID_RE.fullmatch(plugin_id):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id!r}",
+                            "plugin id must look like name@marketplace "
+                            "(e.g. fast-jev-compaction@fast-jev-compaction)",
+                        )
+                    )
+                elif not isinstance(enabled, bool):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id}",
+                            f"must be a bool, got {type(enabled).__name__}",
+                        )
+                    )
         return errors
 
 
@@ -3474,6 +3571,7 @@ class AppConfig:
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     playbooks: PlaybooksConfig = field(default_factory=PlaybooksConfig)
     mcp_server: McpServerConfig = field(default_factory=McpServerConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
@@ -3697,6 +3795,7 @@ class AppConfig:
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
+        errors.extend(self.knowledge.validate())
         errors.extend(self.mcp_server.validate())
         # -- Framework-overhaul substrate sections --------------------------
         errors.extend(self.playbooks.validate())
@@ -3902,6 +4001,10 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    # Read per use through lambda getters (``orchestrator.core`` knowledge
+    # reads and ``records`` outbox/export), so an edit bites on the next
+    # access without a restart.
+    "knowledge",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -4345,6 +4448,15 @@ def _test_interpreters(raw: object) -> object:
     return raw
 
 
+def _worker_plugin_overrides(raw: object) -> object:
+    """``sessions.worker_claude_plugin_overrides``; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
+
+
 def _dataclass_kwargs(cls: type, section: object) -> dict:
     """:func:`_present_kwargs` with the spec read off the dataclass itself.
 
@@ -4720,6 +4832,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             max_verification_retries=at.get("max_verification_retries", 2),
         )
 
+    if "knowledge" in raw:
+        values = _dataclass_kwargs(KnowledgeConfig, raw["knowledge"])
+        for name in ("context", "semantic", "extraction", "consolidation", "export"):
+            if name in values:
+                values[name] = KnowledgeFeatureConfig(
+                    **_dataclass_kwargs(KnowledgeFeatureConfig, values[name])
+                )
+        config.knowledge = KnowledgeConfig(**values)
+
     if "memory" in raw:
         # Every field is read off ``MemoryConfig`` itself, so a partial
         # ``memory:`` section (an api-key override, say) keeps the dataclass
@@ -4777,11 +4898,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
                     "transcript_startup_replay_limit": int,
+                    "worker_context_compact_tokens": int,
+                    "worker_context_checkpoint_tokens": int,
+                    "worker_context_unknown_checkpoint_turns": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
                     "fake_script_file": str,
+                    "worker_claude_plugin_overrides": _worker_plugin_overrides,
                 },
             )
         )
