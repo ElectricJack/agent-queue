@@ -372,6 +372,24 @@ def test_a_chat_reply_over_budget_becomes_two_posts_with_an_ellipsis_and_the_lin
     assert posts[-1].endswith(f"{ELLIPSIS} <{ORIGIN}/focus/conversations/conv-1>")
 
 
+@pytest.mark.parametrize("reply", ["x" * 5000, "short " * 300 + "x" * 2500])
+def test_a_chat_reply_with_an_unbroken_token_stays_within_each_post_budget(reply):
+    link = link_line(ORIGIN, conversation_path("conv-1"))
+    posts = split_posts(reply, CHAT_REPLY, link=link)
+    assert len(posts) == CHAT_REPLY.posts
+    assert all(0 < len(post) <= CHAT_REPLY.chars for post in posts)
+    assert posts[-1].endswith(f"{ELLIPSIS} {link}")
+
+
+def test_a_chat_reply_that_fits_in_two_posts_keeps_the_final_dashboard_pointer():
+    link = link_line(ORIGIN, conversation_path("conv-1"))
+    posts = split_posts("word " * 400, CHAT_REPLY, link=link)
+    assert len(posts) == CHAT_REPLY.posts
+    assert all(len(post) <= CHAT_REPLY.chars for post in posts)
+    assert posts[-1].endswith(f"{ELLIPSIS} {link}")
+    assert " ".join(posts).removesuffix(f" {ELLIPSIS} {link}") == " ".join(["word"] * 400)
+
+
 def test_a_chat_reply_that_needs_no_split_carries_no_ellipsis():
     posts = split_posts("word " * 100, CHAT_REPLY, link="")
     assert len(posts) == 1
@@ -510,10 +528,7 @@ def test_the_digest_link_joins_the_resolver_origin_and_the_inbox_path():
 
 def test_the_digest_keeps_its_counts_when_the_highlights_do_not_fit():
     post = digest_text(
-        tuple(
-            work_fact(f"c{index}", task_id=f"t{index}", detail="x" * 300)
-            for index in range(9)
-        )
+        tuple(work_fact(f"c{index}", task_id=f"t{index}", detail="x" * 300) for index in range(9))
     )
     assert "9 completed" in post
     assert "active" in post

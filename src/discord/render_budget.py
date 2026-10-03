@@ -220,26 +220,29 @@ def split_posts(text: str, budget: PostBudget, *, link: str = "") -> list[str]:
     The last one carries ``…`` and the conversation link, so a split reply
     always says where the rest of the answer is.
     """
-    words = (text or "").split()
-    if not words:
+    remaining = " ".join((text or "").split())
+    if not remaining:
         return [link] if link else []
-    if len(" ".join(words)) <= budget.chars:
-        return [" ".join(words)]
+    if len(remaining) <= budget.chars:
+        return [remaining]
     tail = " ".join(part for part in (ELLIPSIS, link) if part)
-    room = max(budget.chars - len(tail) - 1, 1)
+    if len(tail) > budget.chars:
+        raise ValueError("conversation link exceeds the post budget")
     posts: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= room or not current:
-            current = candidate
-            continue
-        if len(posts) + 1 == budget.posts:
-            current = f"{current} {tail}".strip()
+    for index in range(budget.posts):
+        last = index == budget.posts - 1 or len(remaining) <= budget.chars
+        room = max(budget.chars - len(tail) - 1, 0) if last else budget.chars
+        boundary = min(len(remaining), room)
+        if boundary < len(remaining):
+            separator = remaining.rfind(" ", 0, boundary + 1)
+            if separator > 0:
+                boundary = separator
+        chunk = remaining[:boundary].rstrip()
+        if last:
+            posts.append(" ".join(part for part in (chunk, tail) if part))
             break
-        posts.append(current)
-        current = word
-    posts.append(current)
+        posts.append(chunk)
+        remaining = remaining[boundary:].lstrip()
     return posts
 
 
