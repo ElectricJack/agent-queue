@@ -1751,6 +1751,7 @@ class Orchestrator(
             daemon_functional_preflight,
         )
         from src.integration.main_promotion import RootPromotionService
+        from src.integration.models import integration_max_wait_seconds
         from src.integration.outbox import IntegrationOutbox
         from src.integration.promotion import PromotionService
         from src.integration.protection import (
@@ -1764,16 +1765,27 @@ class Orchestrator(
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
         ) -> bool:
+            # Paused playbooks are no evidence that nothing subscribes: the
+            # event stays retryable until they return or max_wait expires.
             if self.playbook_manager is None:
                 return False
+            # The runtime raises NoIntegrationEventConsumer only with proof;
+            # the outbox sinks the reviewed unsubscribed types on it.
             return await self.playbook_manager.accept_integration_event(
-                event_type, payload, event_id
+                event_type, payload, event_id, prove_no_consumer=True
+            )
+
+        async def project_max_wait(project_id: str) -> float:
+            project = await self.db.get_project(project_id)
+            return integration_max_wait_seconds(
+                None if project is None else project.hierarchical_integration_policy
             )
 
         self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             before_dispatch=self.integration_scheduler.maintain_lease,
+            project_max_wait=project_max_wait,
         )
         github_clients = {}
 
