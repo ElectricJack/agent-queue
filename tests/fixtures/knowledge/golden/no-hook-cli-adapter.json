@@ -1,0 +1,60 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-no-hook-cli-adapter",
+    "claim_epoch": 1,
+    "owner_id": "attempt-no-hook-cli-adapter",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-no-hook-cli-adapter",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-no-hook-cli-adapter:cli-plain:claude"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "provider_labels_allowed": [
+      "claude"
+    ]
+  },
+  "fixture_id": "no-hook-cli-adapter",
+  "input_hashes": {
+    "delivery_rules": "d72775b57dde17f2bdfc9cde76ddbc0d5e6e1ff4ee96c7735abdec2de81b243f",
+    "expected": "6d8d2927a9e27b0ddd08c60bedb258fcddf8e82489677bfa5702eb96268f0466",
+    "labels": "24d9557530b7bd7e93851ae8e4c169706a359e947ecd347e7bd45addde21058d",
+    "records": "0b934484aae3f8732ed625780075aa906b6b8957964cd3dc340d47c4433ec1ef"
+  },
+  "labels": {
+    "adapters": [
+      "claude"
+    ],
+    "harnesses": [
+      "claude"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    }
+  ],
+  "scenario": "A harness with no hook remains supported through explicit startup/claim guidance",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-queue.local/schemas/knowledge-fixture-manifest-v1.json",
+  "title": "AQ knowledge fixture manifest (v1)",
+  "description": "The single manifest shape the provider-neutral offline fixture runner (scripts/evaluate-knowledge.py) consumes.  One file per fixture scenario; golden fixtures live in the same directory as this schema.  A manifest pins identities, budget, expected selection, expected omissions, delivery rules and the leakage oracle so a deterministic runner can reproduce the same report on every adapter without a network/provider call.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "scenario",
+    "synthetic",
+    "source_class",
+    "input_hashes",
+    "records",
+    "expected",
+    "delivery_rules",
+    "labels"
+  ],  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Must equal src.knowledge.evaluation_helpers.KNOWLEDGE_FIXTURE_SCHEMA_VERSION."
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_]{1,63}[a-z0-9]$",
+      "description": "Globally unique, stable identity of this fixture.  Case-sensitive lowercase."
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "description": "One of the scenario rows from plan section 13, or a named extension.  A synthetic fixture may test semantics; it does not satisfy a later real-incident quality gate by itself."
+    },
+    "synthetic": {
+      "const": true,
+      "description": "True: this fixture is synthetic (or an authorized sanitized reproduction of a real incident).  False is refused by the runner, because the plan says real-incident quality gates are a later explicitly budgeted operation."
+    },
+    "source_class": {
+      "enum": ["synthetic", "authorized_sanitized"],
+      "description": "synthetic: invented for the fixture. authorized_sanitized: a sanitized reproduction of an operator-authorized incident; still labelled synthetic because the original is not possessed or certified by this runner."
+    },
+    "input_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "minProperties": 4,
+      "required": ["records", "expected", "labels", "delivery_rules"],
+      "description": "SHA-256 of every top-level manifest section the fixture depends on.  Keys 'records', 'expected', 'labels' and 'delivery_rules' are REQUIRED and must each equal the SHA-256 hex of the canonical JSON (sorted keys, compact separators, ASCII) of that section.  Additional keys are allowed for external references (e.g. 'harness_adapter_label') whose name must be in this map.  A mismatched hash is a runner failure."
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_id", "revision_id", "kind", "excerpts"],
+        "properties": {
+          "record_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "revision_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "kind": {
+            "enum": ["procedure", "evidence", "guidance", "context", "diagnostic", "note"],
+            "description": "Label the record kind.  Adapters must not re-label without the fixture declaring a kind change."
+          },
+          "excerpts": {
+            "type": "object",
+            "patternProperties": { "^[A-Za-z0-9_-]{1,64}$": { "type": "string" } },
+            "additionalProperties": false,
+            "minProperties": 1,
+            "description": "Named excerpt bodies keyed by an excerpt label.  The selector reads exactly one excerpt per identity (the one it picks); other labels are allowed for the fixture to express multiple candidate texts."
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_identities",
+        "omitted_reasons"
+      ],
+      "properties": {
+        "allowed_identities": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^@]+@[^@]+:[a-z_]+$" },
+          "uniqueItems": true,
+          "description": "Identities (record_id + @ + revision_id + : + kind) that the golden selection MUST select, in the canonical order the fixture expects."
+        },
+        "omitted_reasons": {
+          "type": "object",
+          "patternProperties": { "^[^@]+@[^@]+:[a-z_]+$": { "type": "string" } },
+          "additionalProperties": false,
+          "description": "For each identity that MUST be omitted, the exact omission_reason string the runner is expected to record: 'forbidden-identity', 'retired', 'not-current-eligible', 'budget-exceeded', 'context.required_over_budget', 'stale-claim'."
+        },
+        "required_budget_diagnostic": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the fixture is the 'required content alone exceeds budget' scenario and the runner MUST emit the context.required_over_budget diagnostic."
+        },
+        "forbidden_records": {
+          "type": "object",
+          "patternProperties": {
+            "^[^@]+@[^@]+:[a-z_]+$": {
+              "type": "object",
+              "additionalProperties": false,
+              "anyOf": [
+                {
+                  "required": ["title"],
+                  "properties": { "title": { "type": "string", "minLength": 1 } }
+                },
+                {
+                  "required": ["body"],
+                  "properties": { "body": { "type": "string", "minLength": 1 } }
+                },
+                {
+                  "required": ["snippet"],
+                  "properties": { "snippet": { "type": "string", "minLength": 1 } }
+                }
+              ]
+            }
+          },
+          "description": "Every forbidden identity with the strings the leakage oracle must NOT find in the rendered bundle.  A finding is a runner failure."
+        },
+        "provider_labels_allowed": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "Provider/harness labels the rendered bundle is allowed to contain (e.g. ['worker'] — a role label, not a provider).  Empty or absent means no provider label (claude/codex/gemini/opencode/gpt/llama/mistral/deepseek) may appear."
+        },
+        "duplicate_delivery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attempts"],
+          "properties": {
+            "attempts": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["bundle_id", "transport", "transport_key", "expected_new"],
+                "properties": {
+                  "bundle_id": { "type": "string" },
+                  "transport": { "type": "string" },
+                  "transport_key": { "type": "string" },
+                  "expected_new": { "type": "boolean" },
+                  "final_state": {
+                    "enum": ["prepared", "delivered", "failed", "unknown"],
+                    "default": "delivered"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "delivery_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_epoch", "owner_kind", "owner_id", "prepared_at"],
+      "properties": {
+        "claim_epoch": { "type": "integer", "minimum": 0 },
+        "owner_kind": { "enum": ["task_attempt", "supervisor_session"] },
+        "owner_id": { "type": "string", "minLength": 1 },
+        "prepared_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$",
+          "description": "Frozen ISO-8601 timestamp the bundle claims; the runner is forbidden from using datetime.now()."
+        },
+        "bundle_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "role": {
+          "enum": ["worker", "supervisor"],
+          "description": "Fixture-level role label.  A golden fixture may specify one role per bundle; cross-role parity is tested by two manifests with different roles but the same expected selection."
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harnesses", "adapters"],
+      "properties": {
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "enum": ["claude", "codex", "gemini", "opencode", "local"]
+          },
+          "uniqueItems": true,
+          "description": "The harness identities this fixture is expected to be valid for.  A cross-adapter fixture includes all of them.  A harness-specific fixture (e.g. 'no-hook') lists one."
+        },
+        "adapters": {
+          "type": "array",
+          "items": {
+            "enum": ["claude", "codex", "gemini", "opencode", "local"]
+          },
+          "uniqueItems": true,
+          "description": "The adapter identities the selection is expected to be parity-checked across.  Empty = no adapter parity assertion; non-empty = runner asserts cross-adapter parity on these labels."
+        }
+      }
+    },
+    "role": {
+      "enum": ["worker", "supervisor"],
+      "description": "The role this fixture asserts; required when the expected section references role-scoped selection.  Optional for fixtures that do not depend on role."
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tokens", "max_bytes"],
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 1 },
+        "max_bytes": { "type": "integer", "minimum": 1 },
+        "token_unit": {
+          "enum": ["upper_bound_bytes:utf8", "exact:whitespace"],
+          "default": "upper_bound_bytes:utf8"
+        },
+        "reserved_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+        "reserved_bytes": { "type": "integer", "minimum": 0, "default": 0 }
+      },
+      "description": "Fixture-level budget.  Defaults when absent: 4096 tokens / 16384 bytes UTF-8 upper bound, no reserved allowance (plan section 9: the 4096-token/16384-byte total knowledge allowance is the discovery default)."
+    },
+    "stale_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_forbidden_identity", "claim_epoch", "stale_epoch"],
+      "properties": {
+        "expected_forbidden_identity": {
+          "type": "string",
+          "pattern": "^[^@]+@[^@]+:[a-z_]+$",
+          "description": "The identity this claim previously held, which MUST NOT be selectable at the current claim_epoch."
+        },
+        "claim_epoch": { "type": "integer", "minimum": 1 },
+        "stale_epoch": { "type": "integer", "minimum": 0 }
+      },
+      "description": "Stale-revision scenario: a claim from an earlier epoch must be rejected; its prior identity is forbidden for this bundle.  Optional."
+    }
+  }
+}

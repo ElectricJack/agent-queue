@@ -1,0 +1,78 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-duplicate-delivery-event",
+    "claim_epoch": 1,
+    "owner_id": "attempt-duplicate-delivery-event",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-duplicate-delivery-event",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "hook",
+          "transport_key": "bundle-duplicate-delivery-event:hook"
+        },
+        {
+          "bundle_id": "bundle-duplicate-delivery-event",
+          "expected_new": false,
+          "final_state": "delivered",
+          "transport": "hook",
+          "transport_key": "bundle-duplicate-delivery-event:hook"
+        },
+        {
+          "bundle_id": "bundle-duplicate-delivery-event",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli",
+          "transport_key": "bundle-duplicate-delivery-event:cli"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "provider_labels_allowed": []
+  },
+  "fixture_id": "duplicate-delivery-event",
+  "input_hashes": {
+    "delivery_rules": "fc023d2f0d65939e6c4546bd5c40147b704458cb464791d1337bfdf8e76d1584",
+    "expected": "5e9e272d4177f8c47d113c9e211f6338b78af9ce42e18e56b164543e06e48490",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "0b934484aae3f8732ed625780075aa906b6b8957964cd3dc340d47c4433ec1ef"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    }
+  ],
+  "scenario": "One proposal per source/output key, durable retry or explicit ambiguity quarantine",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

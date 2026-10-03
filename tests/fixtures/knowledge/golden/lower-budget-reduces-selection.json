@@ -1,0 +1,71 @@
+{
+  "budget": {
+    "max_bytes": 400,
+    "max_tokens": 200,
+    "reserved_bytes": 0,
+    "reserved_tokens": 0,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-lower-budget-reduces-selection",
+    "claim_epoch": 1,
+    "owner_id": "attempt-lower-budget-reduces-selection",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence"
+    ],
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-guidance-long@rev-0005:guidance": "budget-exceeded"
+    },
+    "provider_labels_allowed": [],
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "lower-budget-reduces-selection",
+  "input_hashes": {
+    "delivery_rules": "56038af70882e972774c159ab0242b2469c9fff85dfddef574dd4bc23552bd4b",
+    "expected": "6fc77838390ef2eb5b037ae34b32c0f58f67bc3e702b47184c8ede1d7b9a1739",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "6dbb459f8d831108066966c0fcc77e2a9c883d7dde2bf923e85578d2e2c4c3e6"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Long guidance body: padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. "
+      },
+      "kind": "guidance",
+      "record_id": "rec-guidance-long",
+      "revision_id": "rev-0005"
+    },
+    {
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    }
+  ],
+  "scenario": "Lower budget reduces selection; drop whole knowledge items, record omissions",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

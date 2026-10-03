@@ -1,0 +1,69 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-stale-claim-recycled-slot",
+    "claim_epoch": 2,
+    "owner_id": "attempt-stale-claim-recycled-slot",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence",
+      "rec-guidance-small@rev-0001:guidance"
+    ],
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-procedure-deploy@rev-0007:procedure": "stale-claim"
+    },
+    "provider_labels_allowed": []
+  },
+  "fixture_id": "stale-claim-recycled-slot",
+  "input_hashes": {
+    "delivery_rules": "468b36d21a46217ed93a5a41cc209a8a2affb986317c65d6b524c7b65333bc83",
+    "expected": "8b59e5b0266bd0b90838b3fab1fde39f75c820f167ece9227cc25892ac81f538",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "f58f5935c9cb4dc06df039b32bfbfd045208af628452e0332d924fe150fe7077"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    },
+    {
+      "excerpts": {
+        "body": "Small guidance: check the rail lease before restart."
+      },
+      "kind": "guidance",
+      "record_id": "rec-guidance-small",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Reauthorize exact references, lower budget reduces selection, stale claim cannot receive prior context",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "stale_claim": {
+    "claim_epoch": 2,
+    "expected_forbidden_identity": "rec-procedure-deploy@rev-0007:procedure",
+    "stale_epoch": 1
+  },
+  "synthetic": true
+}

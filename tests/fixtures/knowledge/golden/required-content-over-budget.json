@@ -1,0 +1,61 @@
+{
+  "budget": {
+    "max_bytes": 64,
+    "max_tokens": 32,
+    "reserved_bytes": 320,
+    "reserved_tokens": 160,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-required-content-over-budget",
+    "claim_epoch": 1,
+    "owner_id": "attempt-required-content-over-budget",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [],
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-guidance-long@rev-0005:guidance": "context.required_over_budget"
+    },
+    "provider_labels_allowed": [],
+    "required_budget_diagnostic": true
+  },
+  "fixture_id": "required-content-over-budget",
+  "input_hashes": {
+    "delivery_rules": "1e76217f7c5debb3338a0e2aa568f95d890455468b1a284d93e4373e9f2ceef4",
+    "expected": "a7d89944b6b6b7136b3cb1b12b7d64ec5b2070bf80b97457c9f30d994bd7f405",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "538c939f8f1192fcfc6e173a2a513f3e515c682ad4ad8a50d63b22e53bb103a0"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Long guidance body: padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. "
+      },
+      "kind": "guidance",
+      "record_id": "rec-guidance-long",
+      "revision_id": "rev-0005"
+    }
+  ],
+  "scenario": "If required non-knowledge content alone exceeds the input budget, typed context.required_over_budget diagnostic",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

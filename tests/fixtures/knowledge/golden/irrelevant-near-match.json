@@ -1,0 +1,53 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-irrelevant-near-match",
+    "claim_epoch": 1,
+    "owner_id": "attempt-irrelevant-near-match",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [],
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-procedure-nearmatch@rev-0001:procedure": "not-current-eligible"
+    },
+    "provider_labels_allowed": []
+  },
+  "fixture_id": "irrelevant-near-match",
+  "input_hashes": {
+    "delivery_rules": "2b837d325f315db512236ba413b7dd0f14c3d8ad61752eae20e7b9a991ef8f31",
+    "expected": "e47388c1c18b519935fe30c8f5288392f94a1cc54f25569bfbe3c851ba563156",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "e659296a5fa40c9435c4251f535a0ff07132b1b1e82776ab50da43523f0650ca"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Deploy to the production rail: run the health gate, then release."
+      },
+      "kind": "procedure",
+      "record_id": "rec-procedure-nearmatch",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Empty or relevant small bundle, no minimum filler, no new task or paid call",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

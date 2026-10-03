@@ -1,0 +1,76 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-edited-retired-redacted-history",
+    "claim_epoch": 1,
+    "owner_id": "attempt-edited-retired-redacted-history",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence",
+      "rec-summary-prior@rev-0001:context"
+    ],
+    "forbidden_records": {
+      "rec-history-redacted@rev-0004:evidence": {
+        "body": "redacted by operator at rev-0004"
+      }
+    },
+    "omitted_reasons": {
+      "rec-history-redacted@rev-0004:evidence": "redacted-typed-unavailable"
+    },
+    "provider_labels_allowed": []
+  },
+  "fixture_id": "edited-retired-redacted-history",
+  "input_hashes": {
+    "delivery_rules": "85fce6bfc6ecb822664ab0f3929211a9b8e38b0be7617d7a3b92d57679c412eb",
+    "expected": "6b9d8d2d8929698d5457be347fbe3d17926033b0af1562446cf45ccef9da0514",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "ea19c8470c12019a6dddb26757857a68c2f1b0f3b0d0bee6c6534c7b5085c3ee"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    },
+    {
+      "excerpts": {
+        "body": "[redacted by operator at rev-0004]"
+      },
+      "kind": "evidence",
+      "record_id": "rec-history-redacted",
+      "revision_id": "rev-0004"
+    },
+    {
+      "excerpts": {
+        "body": "A prior agent summary said the deploy failed at step three."
+      },
+      "kind": "context",
+      "record_id": "rec-summary-prior",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Exact old bytes/links until redaction; redacted is typed unavailable, never current fallback",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

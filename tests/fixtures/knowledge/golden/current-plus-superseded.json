@@ -1,0 +1,72 @@
+{
+  "delivery_rules": {
+    "bundle_id": "bundle-current-plus-superseded",
+    "claim_epoch": 1,
+    "owner_id": "attempt-current-plus-superseded",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-procedure-deploy@rev-0007:procedure"
+    ],
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-procedure-deploy@rev-0006:procedure": "retired",
+      "rec-procedure-nearmatch@rev-0001:procedure": "not-current-eligible"
+    },
+    "provider_labels_allowed": []
+  },
+  "fixture_id": "current-plus-superseded",
+  "input_hashes": {
+    "delivery_rules": "3c6295e189d790085f444094d3e99469d47458fb4dfd9349599eab507649d977",
+    "expected": "eed6f532ed1a117c72321d933b015dea69dbd76c844a8968eac419c164e9f046",
+    "labels": "3daeab447418c1a068f9cb6da9adb4a5976baf6fcb3f4c799a07edbe2164d9b9",
+    "records": "4e48d4c46f4d12b323e28427b81aba6640749f63fa5a79fcf162e5148c0efa58"
+  },
+  "labels": {
+    "adapters": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ],
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "records": [
+    {
+      "excerpts": {
+        "body": "Deploy to the staging rail: run the health gate, then freeze the schema and release."
+      },
+      "kind": "procedure",
+      "record_id": "rec-procedure-deploy",
+      "revision_id": "rev-0007"
+    },
+    {
+      "excerpts": {
+        "body": "Deploy to the staging rail: skip the health gate when in a hurry."
+      },
+      "kind": "procedure",
+      "record_id": "rec-procedure-deploy",
+      "revision_id": "rev-0006"
+    },
+    {
+      "excerpts": {
+        "body": "Deploy to the production rail: run the health gate, then release."
+      },
+      "kind": "procedure",
+      "record_id": "rec-procedure-nearmatch",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Select current eligible procedure, preserve exact revision, warn for explicit retired read",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}
