@@ -105,6 +105,35 @@ aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-int
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
 
+`reopen-collection` also recovers a suspended producer whose close detached its
+workspace but left a `worker` reservation on the parent branch. The dry run
+reports `kind: suspended_worker`, the current episode, operation, published head
+and owner fence. Applying consumes the confirmed detach proof and transfers
+ownership to that same operation's collector at the next fence. Collection
+reconciliation retries this handoff automatically after restart. It refuses
+live holders, operator holds, open gates, repair/verifier work and unresolved
+external writes; it preserves the checkpoint, generation, operation and receipts.
+
+For the `keen-ridge-24.1` incident, the operator deploys the recovery code, then runs:
+
+```bash
+aq --json integration reopen-collection keen-ridge-24.1
+aq --json integration reopen-collection keen-ridge-24.1 --apply --head REPORTED_HEAD --reason 'Recover confirmed detached producer into current collector'
+aq --json task show keen-ridge-24.1
+aq --json task show keen-ridge-24.1.1
+aq --json system delivery-receipts --source-task-id keen-ridge-24.1.1 --repository-id REPOSITORY_ID --target-branch aq/keen-ridge-24.1
+```
+
+Use the reported head and repository ID, checking episode
+`fca39cce-5c3a-45e9-b677-7460d9f82477` and operation
+`a143948f-0250-4631-806d-26450e850732` are still current. If the automatic pass
+already recovered ownership, `nothing_to_reopen` is expected. Wait for ordinary
+collection to create a receipt for reviewed head
+`35742ce6f77ab633ba8f269c26c8b6a17db9660e`, targeting `aq/keen-ridge-24.1` with
+that current `parent_operation_id` and `parent_episode_id`. The queued delivery
+alone is not receipt evidence. Refusals require resolving the reported blocker,
+then repeating the dry run; they never authorize database edits or bypassing CI.
+
 Always take `GENERATION` and, for a history waiver, `BLOCKER_DIGEST` from a
 fresh `aq integration status` result. A stale result is returned as stale; the
 CLI never rereads and retries a mutation against a newer generation.
