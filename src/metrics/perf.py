@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from src.metrics.histogram import new_hist, new_sum, observe
+from src.metrics.loop_watchdog import LoopWatchdog
 
 logger = logging.getLogger(__name__)
 
@@ -258,10 +259,15 @@ class LoopLagProbe:
         self._sleep = sleep
         self._clock = clock
         self._task: asyncio.Task | None = None
+        self._watchdog: LoopWatchdog | None = None
         registry.probe_interval_ms = self.interval_ms
 
     def start(self) -> None:
         if self._task is None:
+            if self.registry.enabled:
+                self._watchdog = LoopWatchdog(threading.get_ident())
+                self._watchdog.touch(self.interval_ms / 1000.0)
+                self._watchdog.start()
             self._task = asyncio.create_task(self.run(), name="aq-loop-lag-probe")
 
     async def stop(self) -> None:
@@ -270,11 +276,16 @@ class LoopLagProbe:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        watchdog, self._watchdog = self._watchdog, None
+        if watchdog is not None:
+            await asyncio.to_thread(watchdog.stop)
 
     async def run(self) -> None:
         interval = self.interval_ms / 1000.0
         while True:
             expected = self._clock() + interval
+            if self._watchdog is not None:
+                self._watchdog.touch(interval)
             await self._sleep(interval)
             drift_ms = max(0.0, (self._clock() - expected) * 1000.0)
             self.registry.observe_loop_drift(drift_ms)
