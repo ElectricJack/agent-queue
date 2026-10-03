@@ -56,6 +56,7 @@ vi.mock("../../pages/command-center/Graph", () => ({ default: () => <h1>Command 
 vi.mock("../../pages/command-center/Tasks", () => ({ default: () => <h1>Command Center tasks</h1> }));
 vi.mock("../../pages/command-center/TaskWorkspace", () => ({
   TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useTaskWorkspace: () => ({ knowledgeAvailable: false }),
 }));
 vi.mock("../../pages/command-center/TaskToolbar", () => ({ default: () => null }));
 vi.mock("../../pages/agents/AgentWorkspace", () => ({ default: () => <h1>Agent flock</h1> }));

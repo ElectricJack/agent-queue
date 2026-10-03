@@ -14,18 +14,15 @@ from typing import Mapping
 # Env var session-runtime sets once the bootstrap argv prompt has already
 # delivered the prime body to the agent (design §5.4). When set and a hook
 # mode is requested, the hook body is suppressed so priming doesn't happen
-# twice. Post-compaction SessionStart events *do* re-prime — session-runtime
-# clears this variable's effect there by design (compaction is exactly when
-# re-priming pays for itself). This module only reads the env var; setting
-# and clearing it is session-runtime's responsibility.
+# twice. Compact/resume SessionStart events bypass the marker in the CLI:
+# compaction is exactly when restoring the continuation state pays for itself.
 STARTUP_PROMPT_DELIVERED_ENV = "AQ_STARTUP_PROMPT_DELIVERED"
 
 
 def wrap(body: str, harness: str) -> str:
     """Wrap *body* in the hook envelope for *harness*.
 
-    ``"claude"`` -> the Claude Code ``SessionStart`` hook JSON envelope
-    (design §5.4):
+    ``"claude"`` / ``"codex"`` -> the ``SessionStart`` hook JSON envelope:
     ``{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": body}}``.
 
     Harnesses without a structured hook output format fall back to plain
@@ -34,7 +31,7 @@ def wrap(body: str, harness: str) -> str:
     §5.5: "harnesses without structured hook output -> plain text").
     """
     normalized = (harness or "").strip().lower()
-    if normalized == "claude":
+    if normalized in {"claude", "codex"}:
         return json.dumps(
             {
                 "hookSpecificOutput": {
@@ -46,7 +43,7 @@ def wrap(body: str, harness: str) -> str:
     return body
 
 
-def suppressed(env: Mapping[str, str], hook_mode: bool) -> bool:
+def suppressed(env: Mapping[str, str], hook_mode: bool, source: str | None = None) -> bool:
     """Return True when the hook body should be suppressed (design §5.4).
 
     Suppression fires when ``AQ_STARTUP_PROMPT_DELIVERED=1`` **and** a hook
@@ -54,7 +51,10 @@ def suppressed(env: Mapping[str, str], hook_mode: bool) -> bool:
     agent at ``.aq/prompt.md``, and double delivery would waste the exact
     tokens this design saves.
     """
-    return bool(hook_mode) and env.get(STARTUP_PROMPT_DELIVERED_ENV) == "1"
+    return (
+        bool(hook_mode) and source not in {"resume", "compact"}
+        and env.get(STARTUP_PROMPT_DELIVERED_ENV) == "1"
+    )
 
 
 # ---------------------------------------------------------------------------

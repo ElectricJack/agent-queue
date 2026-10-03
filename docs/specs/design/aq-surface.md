@@ -143,7 +143,7 @@ from `register_auto_commands` all continue to work (§9).
 
 ### 4.0 Global option grammar
 
-`--json`, `--brief` and `--api-url` are **global**: they may appear at any position and
+`--json`, `--brief`, `--save-output PATH` and `--api-url` are **global**: they may appear at any position and
 mean the same thing everywhere — before the group, between a group and its subcommand, or
 trailing after the leaf command and its arguments. All of these are equivalent:
 
@@ -169,6 +169,24 @@ Two exclusions, both about not stealing a flag from someone else:
   `aq logs --json`, `aq system config get --json` keep their local meaning.
 
 Everything after a `--` separator is Click's end-of-options boundary and is never consumed.
+
+`--save-output PATH` is opt-in for commands routed through `emit()`. Save the complete,
+unprojected versioned envelope as UTF-8 JSON in a new private file (0600), never overwrite
+evidence, and print a receipt with its absolute path, byte count, SHA-256 and data shape.
+The receipt uses the normal JSON envelope under `--json`; `--brief` and legacy mode
+do not reduce the saved evidence. File errors fail visibly and retain the received
+command result with `automatic_retry=false`; a presentation error must not invite
+replaying a successful mutation. Failure, warning, gate,
+claim/next-claim control results and instruction-bearing payloads remain visible in full
+after saving; receipts alone must never obscure a required action. Hook envelopes and
+commands that bypass `emit()` keep their existing presentation. This is a local output
+choice, not a daemon mutation, general tool filter, transcript rewrite or plugin switch.
+
+Worker prime keeps profile Role/Rules, project instructions, task/claim identity,
+context provenance, messages, continuation constraints and human/delivery gates intact.
+AQ-owned workflow prose is compact and links to applicable skills and authoritative
+project references on demand. Pool prime has one pool completion command instead of
+also prescribing task-session drain acknowledgement. No custom profile text is trimmed.
 
 ### 4.1 Versioned JSON envelope
 
@@ -224,6 +242,15 @@ human-only because they own multi-step process/migration progress and interactiv
 with global `--json` they fail before any side effect with one `usage_error` envelope. CLI
 groups supplied by third-party `aq.plugins` entry points are an extension boundary rather than
 core-owned wrappers, so their structured-output behavior remains defined by that plugin.
+
+Daemon startup polls `/health` for a bounded 120 seconds using a monotonic clock;
+HTTP 200 and degraded HTTP 503 count as started. An exited child fails immediately.
+Timeout diagnostics read at most the last 64 KiB of the log and print at most the
+requested line count. After diagnostics, startup rechecks health and child liveness
+before terminating its own launched instance. Child-handle polling and signaling
+must not target a reused PID, and cleanup removes `daemon.pid` only while it still
+names that child. A daemon that becomes healthy during diagnostics proceeds through
+the usual post-start readiness checks.
 
 ### 4.2 `--brief` lite projections
 
@@ -405,6 +432,11 @@ decisions, do-not-repeat, and uncertainties (8 KiB combined UTF-8 agent text;
 note; optional task/claim retry keys prevent duplicate rows. Empty auto hooks
 preserve the existing note. Prime section 6 quotes a bounded projection separately
 from current daemon facts. See [handoff and wake budgets](../../guides/wake-context-compaction.md).
+
+Authenticated handoffs accept the project identity injected by the API scope
+check. A pool session with no fixed task in its token resolves an omitted task
+from its current daemon-held claim. Project/session scope and task ownership
+checks still apply, and pool writes require the current claim epoch.
 
 - `--auto` (wired to `PreCompact`): **note only, never a restart** — Gas City's `gc-flp1`
   lesson: restarting on every compaction loops forever.

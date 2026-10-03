@@ -39,9 +39,12 @@ from .overrides import apply_override, load_override
 class PrimeRenderer:
     """Assembles a :class:`PrimeDocument` for one task (design §2)."""
 
-    def __init__(self, db: Any, config: Any) -> None:
+    def __init__(self, db: Any, config: Any, *, harness_registry: Any = None) -> None:
         self.db = db
         self.config = config
+        #: Resolves a session's harness id to the CLI it runs, for the
+        #: CLI-specific tool-guidance addendum.  ``None`` matches by id only.
+        self.harness_registry = harness_registry
 
     async def render_for_task(
         self,
@@ -116,6 +119,9 @@ class PrimeRenderer:
         allow_subtask_updates = await _sections.profile_allows_command(
             self.db, effective_profile_id, _sections.SUBTASK_UPDATE_COMMAND
         )
+        from src.sessions.context import read_context
+
+        observation = await read_context(sess)
 
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
@@ -153,7 +159,9 @@ class PrimeRenderer:
             _sections.build_tool_guidance_section(
                 getattr(sess, "harness", None)
                 if getattr(sess, "state", None) in live_states
-                else None
+                else None,
+                registry=self.harness_registry,
+                config=self.config, session=sess, observation=observation,
             ),
             _sections.build_completion_protocol_section(
                 task_id,

@@ -298,14 +298,22 @@ class OpenCodeQuestionStore:
             busy.add(session_id)
 
 
-#: Harnesses whose native question dialogs AQ can observe.
+#: CLIs whose native question dialogs AQ can observe.
 NATIVE_HARNESSES = frozenset({OpenCodeQuestionStore.harness})
 
 
 def resolve_native_question_source(
-    harness: str, data_dir: Path | None = None
+    harness: str, data_dir: Path | None = None, *, registry=None
 ) -> OpenCodeQuestionStore | None:
-    """The structured question store for *harness*, or ``None`` if it has none."""
-    if harness == OpenCodeQuestionStore.harness:
+    """The structured question store for *harness*, or ``None`` if it has none.
+
+    The store belongs to the CLI, not to one harness file: with *registry*, a
+    harness such as ``opencode-zen`` that runs the ``opencode`` executable
+    against another backend shares the same store
+    (:func:`~src.sessions.harness_registry.runs_cli`).
+    """
+    from src.sessions.harness_registry import runs_cli
+
+    if runs_cli(OpenCodeQuestionStore.harness, harness, registry):
         return OpenCodeQuestionStore(data_dir)
     return None

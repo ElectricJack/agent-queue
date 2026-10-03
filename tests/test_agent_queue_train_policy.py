@@ -93,3 +93,21 @@ def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
         )
         if diagnostic.severity in {"error", "question"}
     ]
+
+
+def test_agent_queue_runbook_quotes_the_reviewed_route_hashes() -> None:
+    """The operator runbook must quote the digests this policy pins.
+
+    Recompiling a reviewed bundle moves the artifact hash, and the policy
+    snapshot follows it; the activate commands in the runbook have to follow
+    too, or an operator following the runbook is refused against a route the
+    policy already names.
+    """
+    runbook = (ROOT / "docs/config/agent-queue-train-policy.md").read_text(encoding="utf-8")
+    policy = json.loads(POLICY.read_text())
+    for boundary in ("parent", "root"):
+        snapshot = policy[boundary]["route"]["artifact"]
+        assert (
+            f"--playbook-id {snapshot['playbook_id']} --artifact-sha256 "
+            f"{snapshot['artifact_sha256']} --enabled"
+        ) in runbook

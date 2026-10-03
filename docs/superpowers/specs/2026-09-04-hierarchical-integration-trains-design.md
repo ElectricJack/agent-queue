@@ -230,6 +230,18 @@ transfer without treating expiry as liveness evidence. A pool writer whose slot 
 unpushed fails its proof exactly like a task session whose stop is unconfirmed: ownership stays
 fenced and the branch keeps its writer.
 
+After producer suspension, collection reconciliation consumes that detached worker reservation
+into the current episode's collector. This also recovers a restart between suspension, writer
+detachment and collector transfer. It requires the recorded confirmed workspace handoff, an
+unassigned PAUSED parent awaiting children, matching current task/origin/checkpoint/repository,
+episode and active operation, and no task holder, locked workspace, operator hold, open gate,
+verifier, repair writer or unresolved external write. Under the project and row locks it rechecks
+the complete identity and transfers through the existing ownership CAS to a fresh collector
+fence. Replays retain that fence and all receipts; they never create another episode or wake a
+producer. `aq integration reopen-collection PARENT` diagnoses this suspended-worker case and
+`--apply --head <reported-head> --reason <audit-reason>` performs the same recovery. A head,
+episode, claim, checkpoint or fence change during observation refuses the transfer.
+
 For each child, the collector:
 
 1. Pins the reviewed source head and current target head.
@@ -319,7 +331,12 @@ compressed `main` history.
 The current generation describes the entire required child set, including unresolved children
 created in earlier generations. Every child branch reservation retains a repository, parent task,
 parent branch, base SHA, and creation generation. Once materialized, that origin is immutable;
-updating the parent's checkpoint never replaces the child's base used for three-way application.
+updating the parent's checkpoint never replaces the child's recorded base or review identity.
+For child-to-parent promotion, when the frozen expected parent tip is an ancestor of the
+reviewed source head, that tip is the effective three-way merge base. This preserves changes
+the child already inherited from the parent without replaying them against the older origin.
+Otherwise promotion continues to use the recorded source base. Ancestry-check errors fail
+closed; the recorded origin, review evidence, and promotion identity remain unchanged.
 Reparenting an unstarted child retires its unused reservation and records a new one, preserving
 the old reservation for audit.
 
@@ -843,6 +860,7 @@ Playbook inputs own:
 - infrastructure retry policy;
 - `on_main_moved` (`rebuild` or `wait`), with shipped default `rebuild`;
 - `on_failed_child` (`block` or `ask`), with shipped default `block`;
+- `max_wait_seconds`, the outbox retry bound, with shipped default one hour;
 - successful and failed branch retention; and
 - integration branch naming and cleanup retry policy.
 
@@ -1049,10 +1067,23 @@ equals the expected old SHA, the push can be retried under current ownership. Ot
 an invariant error requiring reconciliation, never permission to reapply the diff blindly. Do not
 start the next controlled branch mutation while a previous intent remains unresolved.
 
+For child delivery, reconciliation under the current reserved collector fence may supersede
+a reserved or prepared intent after read-back proves the target moved and the prepared commit
+is absent from its ancestry. Retain the old intent and recovery ref, link the next attempt,
+and preserve the reserved receipt identity. Superseded attempts cannot prepare, push or finalize.
+Collection can then queue the child against the new tip. A reservation interrupted before
+preparation instead emits a paced, durable `delivery.ready` continuation with the current fence;
+the parent playbook owns rebuilding and any conflict repair. Repeated scans and restarts dedup
+pending continuations, and ended operations, operator pauses and other branch writers prevent
+either recovery mutation. A reachable prepared commit is finalized, never superseded.
+
 Root promotion uses the same protocol, with the full-CI attestation and candidate revision pinned
 in its intent. Finalize member receipts idempotently before lease release. Outbox events for
-delivery, schedules, deadlines, and stage transitions are retried until acknowledged; consumers
-deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
+delivery, schedules, deadlines, and stage transitions are retried until acknowledged or until the
+project's `max_wait_seconds` expires. Expiry quarantines the event as an explicit failed delivery
+that keeps its frozen destinations and can be replayed. The reviewed event types that no shipped
+playbook consumes are instead marked delivered with an audit reason, and only once the playbook
+runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
 
 ## 12. Events, gates, and operator controls

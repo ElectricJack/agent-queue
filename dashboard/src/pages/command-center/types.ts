@@ -60,6 +60,8 @@ export interface TaskNodeData extends Record<string, unknown> {
   subtasks?: { total: number; settled: number };
   /** Set when this node is a phase container (graph-visibility A1). */
   phase?: { order: number; label: string } | null;
+  /** An epic's delivery, kept apart from its implementation progress. */
+  delivery?: import("@aq/ts-client").EpicDeliveryStatus | null;
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {

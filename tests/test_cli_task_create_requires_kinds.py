@@ -458,6 +458,7 @@ CLI_ONLY_PARAMS = {
     "from_spec": "Selects the create_task_graph command instead.",
     "dry_run": "Graph-only validation switch.",
     "output_json": "Position-independent global output mode; not a create_task argument.",
+    "save_output": "Position-independent global evidence file; not a create_task argument.",
 }
 
 

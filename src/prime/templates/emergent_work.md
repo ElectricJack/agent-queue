@@ -1,45 +1,19 @@
 ## Emergent work
 
-When you discover work while executing the current task that is outside its scope — for
-example, a bug, missing documentation, follow-up, or spec divergence — file it instead of
-silently expanding your own scope. Then keep moving on the task you hold.
+File confirmed out-of-scope findings with
+`aq task create --project "$AQ_PROJECT_ID" --title "..." --description "..." --reason "..."`.
+State the originating task/evidence and why in both reason and description. Give --type
+and optionally --intelligence-class; never pin a profile/provider/model or bypass routing.
+Do not invent speculative epics or list other workers' tasks to deduplicate.
 
-File one task per distinct, confirmed finding; do not create speculative epics. When
-your task *is* to file an epic, file it with its children in one graph whose `parent:`
-block creates it (`--root` places it at the project root), never as a plain task: a
-plain one is claimable before its children are moved under it. Your
-session token cannot read the project's queue (`list_tasks` is off the agent surface), so
-do not try to deduplicate by listing — a worker-filed task lands DEFINED where the
-supervisor sees it, and the project's router routes it. Write the title so that
-judgement is easy: name the symptom and the file, not a generic area.
-
-Use `aq task create --project "$AQ_PROJECT_ID" --title "..." --description "..."
---reason "..."` with a clear title and description grounded in what you found. Give the
-kind with `--type` (`bugfix`, `docs`, `test`, ...) and, only when the work is harder or
-easier than its kind suggests, an `--intelligence-class` hint; never a profile, provider,
-model or pin, which the router alone chooses (`routing.choice_forbidden`). Pass
-`--project` explicitly: without it the CLI first asks the daemon to list projects, which
-your token refuses. The worker filing path creates the `discovered-from` edge back to the
-task you hold; make `--reason` say why the task exists, referencing the current task and
-the finding. Repeat the same why in the first line of the new task's description, so it
-survives for readers who only see the task.
-
-By default the new task is a **child of the task you hold**, so it stays visible with the
-work that exposed it. Pass `--parent <id>` only to choose an authorized alternative parent
-(your task's immediate parent, or a descendant of your task); nothing further up or across
-the tree can be selected. Pass `--root` when review, exit-gate, or other cross-cutting work
-does not belong to this deliverable. The root filing keeps its `discovered-from` edge to the
-task you hold and receives a routing gate; `--parent` and `--root` cannot be combined.
-
-An open child blocks your successful close (`hierarchy.open_children`) — that is intended.
-Resolve it, or record it on your task and ask the supervisor how to proceed; do not re-file,
-abandon, or move it aside merely to make your close pass. If a filing was simply misplaced,
-move it with `aq task reparent --task-id <finding-id> --parent-id <container-id>` (or
-`--root`). You may move only unclaimed tasks you filed, to the same parents you could have
-filed under; a move to root receives the routing gate a root filing gets.
-
-Never make work you file wait on the task you hold or on anything above it: membership
-already relates a child to its parent, and whatever it needs from your task (a plan, a
-spec) exists before you file it. A gating `needs:` or `--depends-on` edge onto your own
-task or its ancestors is refused as `dependency_on_ancestor`; order the new tasks among
-themselves instead.
+A filing is a child of the task you hold, with a discovered-from edge.
+An open child blocks passing close (hierarchy.open_children): resolve it or ask the
+supervisor; never abandon, re-file or move required work merely to make your close pass.
+For a genuinely misplaced unclaimed filing use
+`aq task reparent --task-id <finding-id> --parent-id <container-id>` (or --root).
+Authorized alternatives for --parent <id> are the held task's immediate parent or its
+descendants. --root is for cross-cutting work and receives a routing gate;
+`--parent` and `--root` cannot be combined. Never gate a filing on the held task or an
+ancestor (dependency_on_ancestor); order new tasks among themselves.
+An explicitly requested epic needs a graph with children, not a claimable bare task.
+Worker tokens cannot create graphs; request supervisor routing. See the aq-tasks skill.

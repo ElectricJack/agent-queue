@@ -16,7 +16,7 @@ from sqlalchemy import insert, select, update
 
 from src.commands.contracts.object_loop import (
     ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
-    ObjectScoreRecordArgs, Reservation, Variant,
+    ObjectLoopInputsArgs, ObjectScoreRecordArgs, Reservation, Variant,
 )
 from src.database.tables import (
     doc_review_revisions, doc_reviews, object_loops, tasks,
@@ -123,6 +123,24 @@ async def _review_verdict(conn, state: dict) -> bool:
 
 
 class ObjectLoopCommandsMixin:
+    async def _cmd_object_loop_inputs(self, args: dict) -> dict:
+        from src.commands.principal import current_principal
+        from src.object_loop.inputs import read_inputs
+
+        try:
+            request = ObjectLoopInputsArgs.model_validate(args)
+            principal = current_principal()
+            scope = self._current_scope or {}
+            if (scope.get("kind") == "session" and not scope.get("elevated")):
+                return _error("object_loop_inputs is not available to worker sessions")
+            project = (principal.project_id if principal else None) or scope.get("project_id")
+            if project and project != request.project_id:
+                return _error("object loop inputs are outside the caller project")
+            inputs = await read_inputs(self.db, request.project_id, limit=request.limit)
+        except (ValueError, KeyError, TypeError) as exc:
+            return _error(str(exc))
+        return {"success": True, **inputs}
+
     async def _cmd_object_loop_start(self, args: dict) -> dict:
         try:
             request = ObjectLoopStartArgs.model_validate(args)
@@ -259,6 +277,23 @@ class ObjectLoopCommandsMixin:
             request = ObjectLoopReconcileArgs.model_validate(args)
         except ValidationError as exc:
             return _error(str(exc))
+        # An object formula's bootstrap leaf stays held until the AQ-2 row
+        # (and therefore its finalization hold) is committed. Reconcile also
+        # recovers a crash between that commit and this separate gate release.
+        async with self.db._engine.connect() as conn:
+            registered = (await conn.execute(select(object_loops.c.object_id).where(
+                object_loops.c.object_id == request.object_id,
+                object_loops.c.project_id == request.project_id,
+            ))).first()
+        if registered:
+            for gate in await self.db.list_gates(
+                project_id=request.project_id, gate_type="event",
+                await_id=f"object:{request.object_id}:started",
+            ):
+                if gate["status"] == "open":
+                    await self.db.resolve_gate(
+                        gate["id"], resolved_by="object_loop", resolution="finalization hold committed",
+                    )
         gate_to_release = None
         stopped_outcome = None
         async with self.db.immediate() as conn:
@@ -366,6 +401,17 @@ class ObjectLoopCommandsMixin:
                     conn, row, key, f"Score object {request.object_id} round {state['round_id']}",
                     json.dumps({"object_id": request.object_id, "round_id": state["round_id"],
                                 "wave": state["wave"], "exhausted_failures": failures,
+                                "project_id": row.project_id,
+                                "expected_version": row.version + 1,
+                                "loop_state": state,
+                                "handoff": (
+                                    "Independently validate immutable candidate/capture bundles "
+                                    "from the configured artifact adapter. Before closing, use "
+                                    "aq task set HELD_TASK --note with object-score:1 followed "
+                                    "by a newline and a complete JSON ObjectScoreRecordArgs "
+                                    "packet. Use this expected_version and your held task as "
+                                    "score_task_id. Do not call loop mutators or publish assets."
+                                ),
                                 "mandatory_views": state["mandatory_views"],
                                 "publication": "artifact_only"}, sort_keys=True), "score",
                     approval_gate_id=(state.get("last_approved_checkpoint") or

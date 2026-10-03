@@ -1,0 +1,155 @@
+{
+  "budget": {
+    "max_bytes": 400,
+    "max_tokens": 300,
+    "reserved_bytes": 0,
+    "reserved_tokens": 0,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-lower-budget-reduces-selection",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-lower-budget-reduces-selection",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-lower-budget-reduces-selection:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-lower-budget-reduces-selection",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-lower-budget-reduces-selection",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-lower-budget-reduces-selection:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {
+      "rec-guidance-long@rev-0005:guidance": "budget-exceeded"
+    },
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "lower-budget-reduces-selection",
+  "input_hashes": {
+    "budget": "de0f6eaae2f4171a382a6138114c158c8e3cbc057c07930ad520f80352ef9bd2",
+    "delivery_rules": "28c6fb2b599d456e80b05e47a7b8f417c24812e69425d2df5c3fc2c5b5653dc2",
+    "expected": "f85e8f4541701679bbfb9823eee457d015921ed5971ffcde75e371ead5e1f234",
+    "fixture_id": "9a27ef1b40b28f95ba27f6de52db5e1f90cebd4aadd610aed73345618d09d865",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "39a7a3c607d09a065a294665dc1f268d82519c58c8e20d066af21680e89d78fc",
+    "records": "184dd9bcfeaaaee2841af35a7422713b3fbcd2a41d801caac5a52fc05b8be3e2",
+    "scenario": "1306c6cd4ff5beea02f5edc8b68624d9bd6d2088406725cd8bc437c60cfcaa51",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-lower-budget-reduces-selection",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-lower-budget-reduces-selection",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-lower-budget-reduces-selection:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [
+      {
+        "identity": "rec-guidance-long@rev-0005:guidance",
+        "reason": "budget-exceeded"
+      }
+    ],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-lower-budget-reduces-selection",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-evidence-log-retained@rev-0002:evidence] synthetic-log-evidence; unverified; current\nObserved log line: the rail rejected the schema change at step three.\n",
+    "rendered_sha256": "4ba2bbb9bd0c8b9d8b390a59053597051901d207c70319f48ed41bd4ea4cc9f4",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Observed log line: the rail rejected the schema change at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      }
+    ],
+    "usage": {
+      "bytes": 200,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 200
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Long guidance body: padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. padding token. "
+      },
+      "freshness": "current",
+      "kind": "guidance",
+      "record_id": "rec-guidance-long",
+      "revision_id": "rev-0005"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    }
+  ],
+  "scenario": "Lower budget reduces selection; drop whole knowledge items, record omissions",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

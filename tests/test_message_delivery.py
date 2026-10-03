@@ -1206,7 +1206,7 @@ async def test_wait_result_routes_to_granted_pointer(db, kind, target, activity,
     expected = activity == "idle" or (activity == "sleeping" and kind == "session")
     assert len(manager.nudges) == int(expected)
     if expected:
-        assert manager.nudges[0][3] == f"Handle `aq wait show {wait_id} --json`."
+        assert manager.nudges[0][3] == f"Handle `aq wait show {wait_id} --consume --json`."
         assert (await db.get_message(msg.id)).delivered_at is not None
         await engine.run_delivery_pass()
         assert len(manager.nudges) == 1

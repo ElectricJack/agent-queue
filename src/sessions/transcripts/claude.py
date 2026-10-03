@@ -106,6 +106,7 @@ def _entry_from_line(raw: dict) -> TranscriptEntry | None:
         model=str(model) if model else None,
         model_source="assistant_response" if model else None,
         usage=usage if isinstance(usage, dict) else None,
+        usage_call_id=str(message["id"]) if message.get("id") else None,
         ts=ts,
         turn_complete=line_type == "assistant"
         and message.get("stop_reason") == "end_turn"
@@ -117,6 +118,24 @@ class ClaudeTranscriptReader(TranscriptReader):
     """Reader for the Claude CLI's per-session JSONL files."""
 
     harness: ClassVar[str] = "claude"
+
+    async def read_usage_baselines(self, path: Path, offset: int) -> dict[str, list[str]]:
+        def read() -> dict[str, list[str]]:
+            calls: dict[str, list[str]] = {}
+            with path.open("rb") as stream:
+                for line in stream.read(offset).splitlines():
+                    try:
+                        raw = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(raw, dict):
+                        continue
+                    entry = _entry_from_line(raw)
+                    if entry and entry.type == "assistant" and entry.usage:
+                        calls.setdefault(entry.usage_call_id or entry.uuid, []).append(entry.uuid)
+            return calls
+
+        return await asyncio.to_thread(read)
 
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
         slug = slug_work_dir(work_dir)

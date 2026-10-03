@@ -1,0 +1,137 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-no-hook-cli-adapter",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-no-hook-cli-adapter",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-no-hook-cli-adapter:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-no-hook-cli-adapter",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-no-hook-cli-adapter",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-no-hook-cli-adapter:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "no-hook-cli-adapter",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "39b2586ae23de3efcdacfd9cdbe39ceb90a7aefbf9f9d778556867a541496e18",
+    "expected": "e2da9b3e039bcbc17a40b0ac791a4360e1559c9179239eb05fe9278e29455184",
+    "fixture_id": "0ed1ad1d0dd0d62e443452920a238a2978f934018cec0f4a1f80b54f2032078f",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "0a078f9b1f034031bdc0716a204c87153f4192d978807c4eb23cb08066f6da24",
+    "records": "4398efccefb35272bcd15945f7cdb36abda63235183a7ed8aa22ba2d041a9010",
+    "scenario": "d5244cd8d1d35aa5bbe8dac73c30497ffa9aa37fb7efc74585514ab1fa1017e7",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-no-hook-cli-adapter",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-no-hook-cli-adapter",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-no-hook-cli-adapter:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-no-hook-cli-adapter",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-evidence-log-retained@rev-0002:evidence] synthetic-log-evidence; unverified; current\nObserved log line: the rail rejected the schema change at step three.\n",
+    "rendered_sha256": "4ba2bbb9bd0c8b9d8b390a59053597051901d207c70319f48ed41bd4ea4cc9f4",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Observed log line: the rail rejected the schema change at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      }
+    ],
+    "usage": {
+      "bytes": 264,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 264
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    }
+  ],
+  "scenario": "A harness with no hook remains supported through explicit startup/claim guidance",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

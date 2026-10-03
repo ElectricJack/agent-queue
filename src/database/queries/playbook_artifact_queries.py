@@ -17,6 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from src.database.tables import (
     integration_operation_artifact_pins,
     integration_outbox_artifact_pins,
+    integration_subject_journal,
+    integration_subjects,
     playbook_activations,
     playbook_artifacts,
     playbook_pending_events,
@@ -446,6 +448,8 @@ class PlaybookArtifactQueryMixin:
                 playbook_v2_runs.c.artifact_sha256,
                 integration_outbox_artifact_pins.c.artifact_sha256,
                 integration_operation_artifact_pins.c.artifact_sha256,
+                integration_subjects.c.policy_artifact_sha256,
+                integration_subject_journal.c.policy_artifact_sha256,
             ):
                 found = await conn.execute(select(column).where(column.in_(batch)))
                 referenced.update(sha for sha in found.scalars().all() if sha)
@@ -464,8 +468,9 @@ class PlaybookArtifactQueryMixin:
 
         1. referenced by an activation (``active_artifact_sha256``);
         2. referenced by any retained run (``playbook_v2_runs.artifact_sha256``);
-        3. pinned by a protected pending integration destination or an
-           undelivered outbox destination manifest;
+        3. pinned by a protected pending integration destination, an
+           undelivered outbox destination manifest, an integration subject's
+           policy or an entry of its journal;
         4. among the newest ``min_versions`` artifacts of its own playbook,
            ranked by ``version`` then ``created_at`` so a re-used version
            number cannot make the window ambiguous.
@@ -487,6 +492,8 @@ class PlaybookArtifactQueryMixin:
             )
             pinned_by_outbox = select(integration_outbox_artifact_pins.c.artifact_sha256)
             pinned_by_operation = select(integration_operation_artifact_pins.c.artifact_sha256)
+            pinned_by_subject = select(integration_subjects.c.policy_artifact_sha256)
+            pinned_by_journal = select(integration_subject_journal.c.policy_artifact_sha256)
             candidate_query = (
                 select(
                     playbook_artifacts.c.artifact_sha256,
@@ -503,6 +510,12 @@ class PlaybookArtifactQueryMixin:
                     playbook_artifacts.c.artifact_sha256.not_in(pinned_by_outbox.scalar_subquery()),
                     playbook_artifacts.c.artifact_sha256.not_in(
                         pinned_by_operation.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_subject.scalar_subquery()
+                    ),
+                    playbook_artifacts.c.artifact_sha256.not_in(
+                        pinned_by_journal.scalar_subquery()
                     ),
                 )
                 .order_by(playbook_artifacts.c.created_at)
@@ -557,6 +570,12 @@ class PlaybookArtifactQueryMixin:
                     .exists(),
                     ~select(1)
                     .where(integration_operation_artifact_pins.c.artifact_sha256 == artifact_sha256)
+                    .exists(),
+                    ~select(1)
+                    .where(integration_subjects.c.policy_artifact_sha256 == artifact_sha256)
+                    .exists(),
+                    ~select(1)
+                    .where(integration_subject_journal.c.policy_artifact_sha256 == artifact_sha256)
                     .exists(),
                 )
                 try:

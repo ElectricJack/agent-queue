@@ -360,7 +360,11 @@ class SurfaceCommandsMixin:
         messages_cfg = getattr(self.config, "messages", None)
         mark_messages_delivered = bool(getattr(messages_cfg, "enabled", False))
 
-        renderer = PrimeRenderer(self.db, self.config)
+        renderer = PrimeRenderer(
+            self.db,
+            self.config,
+            harness_registry=getattr(self.orchestrator, "harness_registry", None),
+        )
         try:
             doc = await renderer.render_for_task(
                 task_id,
@@ -407,6 +411,11 @@ class SurfaceCommandsMixin:
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
             task_id = scope.get("task_id")
+        if not task_id and scope.get("session_id"):
+            # Pool tokens have no fixed task: resolve the daemon-held claim,
+            # then apply the same ownership and epoch fence as explicit IDs.
+            held_session = await self.db.get_session(scope["session_id"])
+            task_id = held_session.task_id if held_session else None
         if not task_id:
             return {
                 "error": (
@@ -427,15 +436,6 @@ class SurfaceCommandsMixin:
 
         auto = validated.auto
         note = agent_note(validated.model_dump())
-        if auto and not meaningful(note):
-            return {
-                "success": True,
-                "handoff_id": None,
-                "restart_requested": False,
-                "created": False,
-                "noop": True,
-            }
-
         # A bearer session's identity always comes from daemon scope.
         session_id = scope.get("session_id") or validated.session_id
         session = await self.db.get_session(session_id) if session_id else None
