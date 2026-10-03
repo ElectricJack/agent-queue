@@ -5084,6 +5084,48 @@ integration_subject_journal = Table(
     Index("idx_integration_subject_journal_artifact", "policy_artifact_sha256"),
 )
 
+# One receipt per legacy integration table an operator retired with
+# ``aq db retire`` (rev-agile-ridge §5.3, §6 phase 4): the backup it ran under,
+# the column shape and the row count and digest that proved its archive
+# complete.  ``integration_retired_rows`` keeps every row verbatim, so old
+# approvals, receipts and journals stay auditable after their table is gone.
+# Triggers refuse UPDATE and DELETE on both.
+integration_table_retirements = Table(
+    "integration_table_retirements",
+    metadata,
+    Column("table_name", Text, primary_key=True),
+    Column("family", Text, nullable=False),
+    Column("row_count", BigInteger, nullable=False),
+    Column("rows_digest", Text, nullable=False),
+    Column("columns", JSONB, nullable=False),
+    Column("backup_path", Text, nullable=False),
+    Column("backup_sha256", Text, nullable=False),
+    Column("schema_revision", Text, nullable=False),
+    Column("retired_by", Text, nullable=False),
+    Column("retired_at", Float, nullable=False),
+    CheckConstraint("row_count >= 0", name="ck_integration_table_retirements_count"),
+    CheckConstraint(
+        "rows_digest ~ '^sha256:[0-9a-f]{64}$'", name="ck_integration_table_retirements_digest"
+    ),
+    CheckConstraint(
+        "backup_sha256 ~ '^[0-9a-f]{64}$'", name="ck_integration_table_retirements_backup"
+    ),
+)
+
+integration_retired_rows = Table(
+    "integration_retired_rows",
+    metadata,
+    Column(
+        "table_name",
+        Text,
+        ForeignKey("integration_table_retirements.table_name", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("ordinal", BigInteger, primary_key=True),
+    Column("row_data", JSONB, nullable=False),
+    CheckConstraint("ordinal >= 1", name="ck_integration_retired_rows_ordinal"),
+)
+
 
 # Immutable recommendations; execution/CI evidence is appended separately.
 test_selections = Table(

@@ -9,6 +9,11 @@ the duration of the upgrade — and nothing else in the CLI ever does.
 ``aq db current`` is the read-only companion.  It answers "is my schema
 behind?" without touching anything, which is the question a worker who just
 hit ``schema behind code; ask the operator to upgrade`` actually has.
+
+``aq db retire`` reports what still uses each legacy integration table family
+and, with ``--apply``, is the only path that drops one: no migration does
+(:mod:`src.integration.table_retirement`).  ``aq db restore-retired`` replays
+a retired table from its archive.
 """
 
 from __future__ import annotations
@@ -137,6 +142,181 @@ def db_upgrade(yes: bool) -> None:
     with process_scope(OPERATOR):
         asyncio.run(_main())
     console.print(f"[green]schema at head[/] ({', '.join(_head_revisions())})")
+
+
+def _refuse_worker(command: str) -> None:
+    from src.database.migration_guard import WORKER, current_scope
+
+    if current_scope() == WORKER:
+        console.print(
+            f"[red]Refused:[/] this is a worker session (AQ_DB_SCOPE=worker). `aq db {command}` "
+            "changes the production database; only the operator runs it, outside a worktree slot."
+        )
+        raise SystemExit(2)
+
+
+def _operator() -> str:
+    import getpass
+
+    return f"operator:{getpass.getuser()}"
+
+
+@db_group.command("retire")
+@click.argument("family_names", metavar="[FAMILY]...", nargs=-1)
+@click.option(
+    "--apply",
+    "apply_",
+    is_flag=True,
+    default=False,
+    help="Archive and drop FAMILY's tables (operator only). Without it, report only.",
+)
+@click.option(
+    "--backup",
+    type=click.Path(dir_okay=False),
+    help="A `pg_dump --format=custom` of this database from the last 24 hours.",
+)
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+def db_retire(family_names: tuple[str, ...], apply_: bool, backup: str | None, yes: bool) -> None:
+    """Report, or retire, families of legacy integration tables.
+
+    Without --apply this is read-only: for every family (or each FAMILY), each
+    table's rows, the source files that still name it and the foreign keys
+    that reach it from outside the named families.  A family is ready when
+    nothing names or references any of its tables.
+
+    With --apply, at least one FAMILY and --backup are required.  In one
+    transaction the command locks the tables, re-checks readiness, copies every
+    row into integration_retired_rows, records a receipt whose count and digest
+    the archive reproduces, then drops the tables.  Any blocker refuses the
+    whole set and changes nothing.  Families that reference each other are
+    named together.  Readiness reads this checkout's source, so restart the
+    daemon onto the code that removed the family first.
+    """
+    from src.integration import table_retirement as retirement
+
+    try:
+        families = [retirement.family(name) for name in dict.fromkeys(family_names)]
+    except KeyError as exc:
+        names = ", ".join(f.name for f in retirement.FAMILIES)
+        raise click.BadParameter(
+            f"unknown family {exc.args[0]!r}; one of {names}", param_hint="FAMILY"
+        ) from None
+    named = bool(families)
+    families = families or list(retirement.FAMILIES)
+
+    if apply_:
+        if not named or backup is None:
+            raise click.UsageError("--apply needs FAMILY and --backup")
+        _refuse_worker("retire --apply")
+        try:
+            evidence = retirement.verify_backup(backup)
+        except retirement.RetirementRefused as exc:
+            console.print(f"[red]Refused:[/] {exc}")
+            raise SystemExit(1) from None
+
+    async def _report() -> int:
+        from rich.table import Table
+
+        engine, url = _make_engine(_load_config())
+        try:
+            async with engine.connect() as conn:
+                alongside = families if named else ()
+                reports = [
+                    await retirement.family_readiness(conn, f, alongside=alongside)
+                    for f in families
+                ]
+        finally:
+            await engine.dispose()
+        console.print(f"database: [cyan]{_display_url(url)}[/]")
+        table = Table("family", "table", "state", "rows", "source files", "outside FKs")
+        blocked = 0
+        for report in reports:
+            for row in report:
+                state = "retired" if row.retired else ("present" if row.present else "absent")
+                blocked += bool(row.blockers)
+                table.add_row(
+                    row.family,
+                    row.table,
+                    state,
+                    str(row.rows),
+                    str(len(row.code_references)),
+                    ", ".join(row.referenced_by) or "-",
+                )
+        console.print(table)
+        console.print(
+            f"[yellow]{blocked} table(s) still in use[/]" if blocked else "[green]ready[/]"
+        )
+        return 1 if blocked else 0
+
+    async def _apply() -> int:
+        engine, _url = _make_engine(_load_config())
+        try:
+            async with engine.begin() as conn:
+                receipts = await retirement.retire_families(
+                    conn, families, backup=evidence, retired_by=_operator()
+                )
+        except retirement.RetirementRefused as exc:
+            console.print("[red]Refused; nothing changed:[/]")
+            for reason in exc.reasons:
+                console.print(f"  - {reason}")
+            return 1
+        finally:
+            await engine.dispose()
+        for receipt in receipts:
+            console.print(
+                f"retired [cyan]{receipt['table_name']}[/]: {receipt['row_count']} row(s) "
+                f"archived, {receipt['rows_digest']}"
+            )
+        if not receipts:
+            console.print("nothing to retire: every named table is already gone")
+        return 0
+
+    if not apply_:
+        raise SystemExit(asyncio.run(_report()))
+    tables = [table for retiring in families for table in retiring.tables]
+    console.print(
+        f"About to archive and drop {len(tables)} table(s) of "
+        f"[cyan]{', '.join(f.name for f in families)}[/] in "
+        f"[cyan]{_display_url(_load_config().database.url)}[/], backup {evidence.path}."
+    )
+    if not yes and not click.confirm("Continue?", default=False):
+        raise SystemExit(1)
+    raise SystemExit(asyncio.run(_apply()))
+
+
+@db_group.command("restore-retired")
+@click.argument("table_name", metavar="TABLE")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+def db_restore_retired(table_name: str, yes: bool) -> None:
+    """Replay a retired table from its archive and check its receipt (operator only).
+
+    An absent table is recreated with its recorded columns only; a present one
+    must be empty.  The restored rows must reproduce the receipt's count and
+    digest or nothing is written.
+    """
+    from src.integration import table_retirement as retirement
+
+    _refuse_worker("restore-retired")
+    if not yes and not click.confirm(f"Restore {table_name} from its archive?", default=False):
+        raise SystemExit(1)
+
+    async def _main() -> int:
+        engine, _url = _make_engine(_load_config())
+        try:
+            async with engine.begin() as conn:
+                result = await retirement.restore_retired_table(conn, table_name)
+        except retirement.RetirementRefused as exc:
+            console.print(f"[red]Refused; nothing changed:[/] {exc}")
+            return 1
+        finally:
+            await engine.dispose()
+        console.print(
+            f"restored [cyan]{result['table']}[/]: {result['rows']} row(s), "
+            f"{result['rows_digest']} matches its receipt"
+        )
+        return 0
+
+    raise SystemExit(asyncio.run(_main()))
 
 
 @db_group.command("import-sqlite")

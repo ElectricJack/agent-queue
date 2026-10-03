@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 510,
+    "leaf_commands": 512,
     "registration": {
       "generated": 333,
-      "handwritten": 177
+      "handwritten": 179
     },
     "ownership": {
-      "core": 471,
+      "core": 473,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 509
+      "supported": 511
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 333,
-      "registration": 163
+      "registration": 165
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 450
+      "untested": 452
     }
   },
   "commands": [
@@ -1505,6 +1505,71 @@
           "sqlite_path"
         ],
         "optional": [
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq db restore-retired",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_restore_retired",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "table_name"
+        ],
+        "optional": [
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq db retire",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_retire",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "family_names",
+          "--apply",
+          "--backup",
           "--yes",
           "--json",
           "--brief",

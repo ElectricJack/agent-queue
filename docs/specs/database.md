@@ -2214,6 +2214,44 @@ DELETE. Added in revision `a00000000057`.
 | `payload` | JSONB | NOT NULL, default `{}` | Arguments, details and evidence |
 | `recorded_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `integration_table_retirements`
+
+One receipt per legacy integration table the operator retired with
+`aq db retire --apply` (rev-agile-ridge §5.3, §6 phase 4;
+`src/integration/table_retirement.py`). No migration drops a legacy table: the
+command checks the family's readiness and a fresh `pg_dump --format=custom`
+backup, archives every row in `integration_retired_rows`, writes this receipt
+and only then drops the table, all in one transaction. Trigger
+`integration_table_retirements_append_only` refuses UPDATE and DELETE. Added in
+revision `a00000000064`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `table_name` | TEXT | PRIMARY KEY | Retired table |
+| `family` | TEXT | NOT NULL | Retirement family (`FAMILIES` in the module) |
+| `row_count` | BIGINT | NOT NULL, `>= 0` | Rows archived |
+| `rows_digest` | TEXT | NOT NULL, `sha256:` + 64 hex | Order-independent digest of the rows as JSONB; the archive and any restore must reproduce it |
+| `columns` | JSONB | NOT NULL | Column names, types and NOT NULL, for a bare restore |
+| `backup_path` | TEXT | NOT NULL | The backup the retirement ran under |
+| `backup_sha256` | TEXT | NOT NULL, 64 hex | That backup's SHA-256 |
+| `schema_revision` | TEXT | NOT NULL | Alembic revision at retirement |
+| `retired_by` | TEXT | NOT NULL | `operator:<user>` |
+| `retired_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_retired_rows`
+
+Every row of a retired table, verbatim as `to_jsonb`, so old approvals,
+receipts and journals stay auditable after the table is gone and
+`aq db restore-retired` can replay them. Trigger
+`integration_retired_rows_append_only` refuses UPDATE and DELETE. Added in
+revision `a00000000064`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `table_name` | TEXT | PRIMARY KEY (with `ordinal`), FK `integration_table_retirements` RESTRICT | Retired table |
+| `ordinal` | BIGINT | PRIMARY KEY (with `table_name`), `>= 1` | Position in the digest's order |
+| `row_data` | JSONB | NOT NULL | The row |
+
 ### Table: `integration_review_evidence`
 
 Immutable record that a reviewer approved (or rejected) an exact
