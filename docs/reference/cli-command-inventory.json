@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 478,
+    "leaf_commands": 479,
     "registration": {
-      "generated": 304,
+      "generated": 305,
       "handwritten": 174
     },
     "ownership": {
-      "core": 439,
+      "core": 440,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 477
+      "supported": 478
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 304,
+      "dispatch": 305,
       "registration": 160
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 418
+      "untested": 419
     }
   },
   "commands": [
@@ -3984,6 +3984,7 @@
           "--engine"
         ],
         "optional": [
+          "--parent-task-id",
           "--expected-subject",
           "--reason",
           "--evidence",
@@ -12027,6 +12028,7 @@
           "--engine"
         ],
         "optional": [
+          "--parent-task-id",
           "--expected-versions",
           "--reason",
           "--evidence",
@@ -12039,7 +12041,9 @@
           "--expected-versions",
           "--evidence"
         ],
-        "nullable": []
+        "nullable": [
+          "--parent-task-id"
+        ]
       }
     },
     {
@@ -12113,6 +12117,37 @@
         "structured": [
           "--arguments"
         ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-parent-action",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_parent_action",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
         "nullable": []
       }
     },

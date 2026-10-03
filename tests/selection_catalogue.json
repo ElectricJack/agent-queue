@@ -531,7 +531,8 @@
         "tests/test_integration_published_repair_handoff.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py"
+        "tests/test_integration_workspace_handoff.py",
+        "tests/test_integration_writers.py"
       ]
     },
     "integration-promotion": {
@@ -570,7 +571,10 @@
         "tests/test_integration_mode.py",
         "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_parent_reconciler.py",
+        "tests/test_integration_parent_subjects.py",
         "tests/test_integration_reconciler.py",
+        "tests/test_integration_records_and_gates.py",
         "tests/test_integration_resume_metadata.py",
         "tests/test_integration_root_adapters.py",
         "tests/test_integration_root_scenarios.py",
@@ -731,6 +735,7 @@
         "tests/test_migration_json_columns.py",
         "tests/test_migration_metadata.py",
         "tests/test_migration_parent_collection.py",
+        "tests/test_migration_parent_subjects.py",
         "tests/test_migration_playbook_blocked_lifecycle.py",
         "tests/test_migration_playbook_v2.py",
         "tests/test_migration_postgres_upgrade_head.py",
@@ -1335,7 +1340,7 @@
       ]
     }
   },
-  "digest": "sha256:50db312308b9b4c6fc1acfcb7959f25ef24b122893f8bfeac64c91a30c069b40",
+  "digest": "sha256:5c7f2ebc03645277e7ee0c5ae1c2b609055be4a90fb644549eebc081ce26448c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7612,6 +7617,56 @@
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
     },
+    "tests/test_integration_parent_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.gate_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.integration.child_delivery",
+        "src.integration.collection",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.parent_adapters",
+        "src.integration.parent_engine",
+        "src.integration.parent_runtime",
+        "src.integration.parent_subjects",
+        "src.integration.repair",
+        "src.integration.subjects",
+        "src.integration.writers",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
+    },
+    "tests/test_integration_parent_subjects.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.failed_verification_recovery",
+        "src.integration.parent_subjects",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Parent subjects retain exact lineage through failures, lost events and reopen."
+    },
     "tests/test_integration_pr_delivery.py": {
       "areas": [
         "integration-promotion"
@@ -7717,6 +7772,23 @@
         "parametrize"
       ],
       "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
+    },
+    "tests/test_integration_records_and_gates.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.gates",
+        "src.integration.records",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact identity, human decisions and replay safety of primitives 14–19."
     },
     "tests/test_integration_repair.py": {
       "areas": [
@@ -8166,6 +8238,26 @@
         "parametrize"
       ],
       "summary": "Server-side stop and checkout-detachment proofs for owner handoff."
+    },
+    "tests/test_integration_writers.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.owner_recovery",
+        "src.integration.ownership",
+        "src.integration.subjects",
+        "src.integration.writers",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Subject writers: replay, expiry, unknown stops and real-Git preservation."
     },
     "tests/test_intelligence_class_deletion.py": {
       "areas": [
@@ -9326,6 +9418,20 @@
         "migration"
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
+    },
+    "tests/test_migration_parent_subjects.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Additive episode binding migration on disposable PostgreSQL."
     },
     "tests/test_migration_playbook_blocked_lifecycle.py": {
       "areas": [

@@ -365,7 +365,10 @@ areas:
       - tests/test_integration_outbox.py
       - tests/test_integration_contracts.py
       - tests/test_integration_subjects.py
+      - tests/test_integration_records_and_gates.py
       - tests/test_integration_observe.py
+      - tests/test_integration_parent_subjects.py
+      - tests/test_integration_parent_reconciler.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
@@ -381,6 +384,7 @@ areas:
   - id: integration-ownership
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
+      - tests/test_integration_writers.py
       - tests/test_integration_ownership.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py

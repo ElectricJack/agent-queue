@@ -1,7 +1,7 @@
 ---
 playbook_id: agent-queue-parent-integration
-artifact_sha256: sha256:d561465f0ec8ef33931d65720bb413736c47f646512a5d9fc54a0cb4b70a161a
-source_sha256: sha256:1de9265e7bba73272a2777fb17e042bd81014e5cc3c7e4214a6a5471eab5d200
+artifact_sha256: sha256:35ac00bcd2141638c2e08cb25eba2f0a18757da46d22be4f4adbbce0fd779f50
+source_sha256: sha256:03becdc66d6f31f19642ff1450451699551c892afc08ee469d390327eab40a91
 contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
 questions_resolved: 0
 capabilities_granted:
@@ -37,3 +37,11 @@ CI repair `clear-quest-21` refreshed the record and timeout command fingerprints
 for the new `supervisor_recovery` action. Reviewed rules, steps, transitions,
 capability grants and source text are unchanged; no-progress incidents remain
 owned by the command service.
+
+Phase 2 adds an inactive parent decision table over the existing primitives.
+It selects receipt-driven collection and intent read-back, the existing failed
+verification recovery, shared verifier filing/lease and exact CI verification.
+Failed children, conflicts, old repair dossiers and expired writer budgets use
+explicit no-default gates. Import remains write-if-absent and no activation or
+engine transfer is authorized by this bundle. Operator rollout review binds the
+new digest before cutover.

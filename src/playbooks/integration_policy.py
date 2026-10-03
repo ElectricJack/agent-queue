@@ -240,7 +240,7 @@ class IntegrationPolicy(V2Base):
 
     @model_validator(mode="after")
     def _bounded(self) -> IntegrationPolicy:
-        for table in self.tables.values():
+        for kind, table in self.tables.items():
             for action in table.actions.values():
                 if (
                     action.primitive == Primitive.WAIT
@@ -251,13 +251,13 @@ class IntegrationPolicy(V2Base):
                     if (route.ceiling_seconds or route.seconds or 0) > self.max_wait_seconds:
                         raise ValueError("outcome wait/backoff exceeds max_wait_seconds")
                 values = [node for value in action.inputs.values() for node in walk_value(value)]
-                _check_reads(values)
+                _check_reads(values, kind)
             for case in table.cases:
-                _check_reads(condition_values(case.when))
+                _check_reads(condition_values(case.when), kind)
         return self
 
 
-def _check_reads(values: list[Any]) -> None:
+def _check_reads(values: list[Any], kind: SubjectKind) -> None:
     for value in values:
         if value.type.endswith("_ref") and not isinstance(value, BindingRef):
             raise ValueError("policy expressions read only s and subject bindings")
@@ -266,7 +266,11 @@ def _check_reads(values: list[Any]) -> None:
                 raise ValueError(f"unknown policy binding {value.binding!r}")
             # Check the typed observation/subject paths, including nullable
             # nested objects. Runtime validation still checks resolved args.
-            root = IntegrationPolicyFacts if value.binding == "s" else Subject
+            from src.integration.parent_adapters import ParentPolicyFacts
+
+            facts_model = (ParentPolicyFacts if kind is SubjectKind.PARENT_EPISODE
+                           else IntegrationPolicyFacts)
+            root = facts_model if value.binding == "s" else Subject
             derived = {
                 "ci_state",
                 "conflict_count",

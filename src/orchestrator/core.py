@@ -1925,7 +1925,10 @@ class Orchestrator(
             "task.completed", self.development_integration.on_task_completed,
         )
         from src.integration.root_runtime import root_runtime_for
+        from src.integration.parent_runtime import parent_runtime_for
 
+        self.parent_owner_recovery = owner_recovery
+        self.parent_subject_runtime = parent_runtime_for(self, parent_ci)
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
@@ -1955,6 +1958,7 @@ class Orchestrator(
                 self.db, promotion=self.root_promotion_service
             ).tick,
             subject_runtime=root_runtime_for(self),
+            parent_subject_runtime=self.parent_subject_runtime,
         )
         self.integration_service.start()
 

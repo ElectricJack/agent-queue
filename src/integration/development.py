@@ -64,6 +64,7 @@ from src.integration.delivery_truth import (
     load_delivery_requests, settlement_fields,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.parent_engine import parent_engine_guard
 from src.integration.publishable_artifact import (
     EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY, has_publishable_artifact,
 )
@@ -3383,6 +3384,7 @@ class DevelopmentIntegration:
             result["evidence"] = {"protection": reading.as_dict()}
         return result
 
+    @parent_engine_guard("operation", outcome="blocked")
     async def cancel_preserving(self, operation_id, *, reason):
         from src.database.tables import integration_batches
         from src.database.tables import integration_branch_owners as owners

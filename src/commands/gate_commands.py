@@ -210,6 +210,35 @@ class GateCommandsMixin:
                 ),
             }
 
+        if str(gate.get("await_id") or "").startswith("integration-subject:"):
+            # The human identity is server-owned. A generic resolve or an
+            # agent-supplied resolved_by cannot create an integration approval.
+            from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+            from src.integration.gates import GatePrimitives
+            from src.integration.subjects import Subject
+
+            principal = current_principal() or TRUSTED_LOCAL
+            if principal.kind is not PrincipalKind.LOCAL:
+                return {"success": False, "error": "a verified human operator is required"}
+            subject_id = gate["await_id"].removeprefix("integration-subject:")
+            row = await self.db.get_integration_subject(subject_id)
+            if row is None:
+                return {"success": False, "error": "integration subject is missing"}
+            result = await GatePrimitives(self.db).answer(
+                Subject.from_row(row),
+                str(gate_id),
+                choice=str(args.get("resolution") or ""),
+                answered_by="human:local-operator",
+                verified_human=True,
+            )
+            return {
+                "success": not result.is_unknown,
+                "gate_id": str(gate_id),
+                "outcome": result.outcome,
+                "reason": result.reason,
+                "unblocked_task_ids": [],
+            }
+
         # Shared helper on the orchestrator: resolves the gate, emits
         # ``gate.resolved`` + audit row, and — critically — calls
         # ``_emit_blocked_flips`` so ``task.unblocked`` fires on the bus.

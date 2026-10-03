@@ -37,6 +37,9 @@ from src.database.tables import (
     task_session_attempts,
     tasks,
 )
+from src.integration.parent_engine import (
+    active_parent_scope, legacy_parent_allowed_on, parent_engine_guard,
+)
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.playbooks.artifact_ref import ArtifactRef
@@ -251,6 +254,8 @@ class ParentCompletion:
 
     async def mark_ready_on(self, conn, task_id: str) -> dict[str, Any]:
         """Project readiness into checkpoint state and one durable event."""
+        if not await legacy_parent_allowed_on(conn, self.db, task_id):
+            return {"outcome": "waiting", "task_id": task_id}
         parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
         if parent["status"] != "PAUSED":
             return {"outcome": "waiting", "task_id": task_id}
@@ -262,6 +267,11 @@ class ParentCompletion:
             operation=operation,
         )
         if readiness["outcome"] != "ready":
+            return readiness
+        if active_parent_scope(self.db, task_id) and operation.get("verifier_task_id") is None:
+            # A receipt committed by an active port may call this lifecycle
+            # hook. Filing belongs to the table's next visit. Only the explicit
+            # link step after writer_file may project a linked verifier here.
             return readiness
         policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         attempts = (
@@ -905,6 +915,7 @@ class ParentCompletion:
             await self.mark_ready_on(conn, parent["id"])
             return receipt | {"revision": revision}
 
+    @parent_engine_guard(outcome="stale_generation")
     async def verify_parent(
         self, task_id: str, generation: int, head_sha: str, evidence_ids: list[str]
     ) -> dict[str, Any]:
@@ -1041,6 +1052,7 @@ class ParentCompletion:
                 "verification_id": verification_id,
             }
 
+    @parent_engine_guard()
     async def wake_verifier(self, task_id: str, fence) -> dict[str, Any]:
         """Wake only the exact transferred verifier on the collected head."""
         from src.database.queries.task_queries import _INTEGRATION_WAKE_TOKEN
@@ -1111,6 +1123,7 @@ class ParentCompletion:
         await self.db._notify_ready(transition.ready)
         return readiness | {"outcome": "woken", "owner_id": expected_owner}
 
+    @parent_engine_guard()
     async def complete_parent(
         self, task_id: str, generation: int, head_sha: str,
         *, accepted_close: dict | None = None,
