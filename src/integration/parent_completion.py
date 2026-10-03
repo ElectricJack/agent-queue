@@ -112,7 +112,7 @@ def binding_diagnosis(
             "Trusted integration check evidence is recorded by the daemon's "
             "parent CI producer and the parent-integration playbook, never by a "
             "worker's own test run. Read the parent blockers with "
-            "`aq integration status --project <project_id>`; re-drive the sweep "
+            "`aq integration status <project_id>`; re-drive the sweep "
             "with `aq integration flush <project_id>`. When it records "
             "`task.integration_verified` for this generation and head, close "
             "again -- do not re-run the local suite."
@@ -1083,7 +1083,7 @@ class ParentCompletion:
                 "Trusted check evidence for this generation and head already records "
                 f"{', '.join(sorted(conclusions))}: the aggregate did not pass its required "
                 "checks, so the repair ladder owns the next step. Read its active stage "
-                "with `aq integration status --project <project_id>`; a new aggregate needs "
+                "with `aq integration status <project_id>`; a new aggregate needs "
                 "a new CI run, not a re-run of the local suite."
             )
             return detail

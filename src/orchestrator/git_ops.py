@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -158,32 +159,35 @@ class GitOpsMixin:
                     str(completion.get("verified_generation")),
                     str(completion.get("verified_sha")),
                     str(completion.get("verification_id")),
+                    json.dumps({key: completion.get(key) for key in (
+                        "required_producer_id", "required_check_version",
+                        "required_check_names", "recorded_evidence_ids",
+                        "recorded_conclusions", "recorded_classifications", "next_owner",
+                    )}, sort_keys=True),
                 ]
             ).encode()
         ).hexdigest()[:16]
         recorded = await self.db.get_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY)
         previous = recorded if isinstance(recorded, dict) else {}
         repeated = bool(previous) and previous.get("fingerprint") == fingerprint
-        refusals = int(previous.get("refusals") or 0) + 1
-        await self.db.set_task_meta(
-            ctx.task.id,
-            TRUSTED_EVIDENCE_WAIT_KEY,
-            {
-                "fingerprint": fingerprint,
-                "reason": reason,
-                "parent_task_id": parent_id,
-                "generation": generation,
-                "head_sha": head,
-                "required_producer_id": completion.get("required_producer_id"),
-                "required_check_version": completion.get("required_check_version"),
-                "required_check_names": completion.get("required_check_names"),
-                "recorded_evidence_ids": completion.get("recorded_evidence_ids") or [],
-                "recorded_conclusions": completion.get("recorded_conclusions") or [],
-                "next_owner": completion.get("next_owner"),
-                "refusals": refusals,
-                "project_id": ctx.task.project_id,
-            },
-        )
+        refusals = int(previous.get("refusals") or 0) + 1 if repeated else 1
+        wait_state = {
+            "fingerprint": fingerprint,
+            "reason": reason,
+            "parent_task_id": parent_id,
+            "generation": generation,
+            "head_sha": head,
+            "required_producer_id": completion.get("required_producer_id"),
+            "required_check_version": completion.get("required_check_version"),
+            "required_check_names": completion.get("required_check_names"),
+            "recorded_evidence_ids": completion.get("recorded_evidence_ids") or [],
+            "recorded_conclusions": completion.get("recorded_conclusions") or [],
+            "next_owner": completion.get("next_owner"),
+            "refusals": refusals,
+            "project_id": ctx.task.project_id,
+            "attention_emitted": repeated and bool(previous.get("attention_emitted")),
+        }
+        await self.db.set_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY, wait_state)
         checks = ", ".join(completion.get("required_check_names") or []) or "the required checks"
         recorded_ids = completion.get("recorded_evidence_ids") or []
         subject = (
@@ -209,24 +213,27 @@ class GitOpsMixin:
         if repeated:
             ctx.verification_escalated = True
             flag = f"awaiting_trusted_verification:{reason}"
-            try:
-                await self.db.set_task_meta(ctx.task.id, "needs_attention", flag)
-                await self.bus.emit(
-                    "task.needs_attention",
-                    {
-                        "task_id": ctx.task.id,
-                        "project_id": ctx.task.project_id,
-                        "title": ctx.task.title,
-                        "reason": flag,
-                    },
-                )
-            except Exception:
-                # Flagging is best-effort; the refusal itself is the contract.
-                logger.warning(
-                    "Task %s: could not flag the trusted-evidence wait for attention",
-                    ctx.task.id,
-                    exc_info=True,
-                )
+            if not wait_state["attention_emitted"]:
+                try:
+                    await self.db.set_task_meta(ctx.task.id, "needs_attention", flag)
+                    await self.bus.emit(
+                        "task.needs_attention",
+                        {
+                            "task_id": ctx.task.id,
+                            "project_id": ctx.task.project_id,
+                            "title": ctx.task.title,
+                            "reason": flag,
+                        },
+                    )
+                    wait_state["attention_emitted"] = True
+                    await self.db.set_task_meta(ctx.task.id, TRUSTED_EVIDENCE_WAIT_KEY, wait_state)
+                except Exception:
+                    # Flagging is best-effort; the refusal itself is the contract.
+                    logger.warning(
+                        "Task %s: could not flag the trusted-evidence wait for attention",
+                        ctx.task.id,
+                        exc_info=True,
+                    )
             message += (
                 f"\nRefusal {refusals} on the same subject and the same absent evidence, "
                 f"so the wait is stalled rather than pending: the task has been flagged "

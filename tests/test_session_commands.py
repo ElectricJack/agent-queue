@@ -36,7 +36,6 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.ownership import BranchBusy, BranchOwnership
-from src.orchestrator.git_ops import TRUSTED_EVIDENCE_WAIT_KEY
 from src.models import (
     Agent,
     AgentProfile,
@@ -50,6 +49,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.orchestrator.git_ops import TRUSTED_EVIDENCE_WAIT_KEY
 from src.scheduler import AssignAction
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
@@ -3313,6 +3313,7 @@ class TestEndToEndOnFakeProvider:
         assert await db.get_task_meta(verifier_id, TRUSTED_EVIDENCE_WAIT_KEY) == {
             **recorded,
             "refusals": 2,
+            "attention_emitted": True,
         }
         assert await db.get_task_meta(verifier_id, "needs_attention") == (
             "awaiting_trusted_verification:verification_not_recorded"
@@ -3323,6 +3324,12 @@ class TestEndToEndOnFakeProvider:
             if event == "task.needs_attention" and payload.get("task_id") == verifier_id
         ]
         assert len(attention) == 1
+        third = await real_handler.execute("task_close", dict(close_args))
+        assert third["escalated"] is True
+        assert len([
+            payload for event, payload in real_orch.bus.events
+            if event == "task.needs_attention" and payload.get("task_id") == verifier_id
+        ]) == 1
         assert (await db.get_task(verifier_id)).status is TaskStatus.IN_PROGRESS
         assert await db.get_task_completion(verifier_id) is None
 
@@ -3346,6 +3353,13 @@ class TestEndToEndOnFakeProvider:
                     observed_at=2.0,
                 )
             )
+        changed = await real_handler.execute("task_close", dict(close_args))
+        assert changed["result"] == "verification_failed"
+        assert changed["escalated"] is False
+        assert "Next owner: parent_integration_playbook" in changed["issues"][0]
+        changed_wait = await db.get_task_meta(verifier_id, TRUSTED_EVIDENCE_WAIT_KEY)
+        assert changed_wait["fingerprint"] != recorded["fingerprint"]
+        assert changed_wait["refusals"] == 1
         verified = await completion.verify_parent("t1", 0, head, ["aggregate-trusted-check"])
         assert verified["outcome"] == "verified"
 
