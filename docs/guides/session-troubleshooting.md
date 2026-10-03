@@ -530,6 +530,48 @@ aq doctor --check pools.preparing_stuck
 
 See [worker pools](worker-pools.md) for what the sizing is trying to do.
 
+## A session that will not leave after its task closed
+
+**Symptom.** A session sits at `state=running, desired_state=stopped`, holds no
+task, and keeps its pool slot and worktree long after the task it worked on
+closed. On 2026-10-03 two OpenCode verifiers sat in that state for 18 and 26
+minutes — one after a passing close whose next claim answered
+`drain_requested`, one after a failing close — until a supervisor ran
+`aq session kill`.
+
+**What AQ does.** The worker protocol tells an agent to leave when its task is
+closed or its claim budget is spent, and a harness that honours it exits. The
+idle-stop step enforces the same intent for one that does not
+([`_step_idle_stop_intent`](../../src/sessions/reconciler.py)): a session that
+holds no open task, is inside no claim and is blocked on no agent question is
+stopped with the fenced stop `aq session kill` uses once
+`sessions.idle_stop_grace_seconds` (60 s) has passed, and a pool worker goes
+through `_terminate_pool_session`, so the slot, the claim and the worktree come
+back the way a manual kill returns them.
+
+The grace cannot be measured from `sessions.last_activity`. tmux's
+`window_activity` advances on *any* pane output, so an OpenCode TUI painting
+its final summary keeps the stamp fresh indefinitely — which is also why such a
+worker counts as idle *supply* and the abandoned-claim-loop recycle never sees
+it. The grace therefore runs from the first tick the reconciler observed the
+finished shape, keyed by the session's instance token. A daemon restart costs at
+most one more grace, so the check below is the durable backstop.
+
+**Diagnose.**
+
+```bash
+aq doctor --check sessions.stop_intent_pending
+aq session list
+```
+
+The check lists every live session carrying a stop intent and nothing else to
+do, aged past `sessions.stop_intent_report_seconds` (10 min), with the clock it
+used: `attempt` is when the session last released a task, read from its own
+`task_session_attempts` row; `activity` is the pane's own stamp, which is all a
+session that never held a task has. It is read-only. `aq session kill <id>`
+returns the slot immediately; setting `sessions.idle_stop_grace_seconds: 0`
+disables the automatic stop and leaves the decision to you.
+
 ## Pausing, draining and stopping — which one do you want?
 
 These are four different actions and they are not interchangeable.
