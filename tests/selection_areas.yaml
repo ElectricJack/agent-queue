@@ -268,6 +268,7 @@ areas:
       - tests/test_notifications.py
       - tests/test_discord_adapter.py
       - tests/test_remote_links.py
+      - tests/test_dashboard_links.py
   - id: discord
     description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle."
     match:

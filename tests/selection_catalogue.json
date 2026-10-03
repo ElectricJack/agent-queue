@@ -252,6 +252,7 @@
         "tests/test_discord_housekeeping.py",
         "tests/test_discord_inbound_router.py",
         "tests/test_discord_intake_diagnostics.py",
+        "tests/test_discord_render_budgets.py",
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
         "tests/test_rate_guard.py",
@@ -729,6 +730,7 @@
     "messaging-adapters": {
       "description": "Messaging and notifications abstraction: the messaging port and adapter factory, the Discord adapter, booting with no adapter, event-driven notifications and remote-safe links.",
       "modules": [
+        "tests/test_dashboard_links.py",
         "tests/test_discord_adapter.py",
         "tests/test_messaging_adapter.py",
         "tests/test_messaging_port.py",
@@ -1389,7 +1391,7 @@
       ]
     }
   },
-  "digest": "sha256:a5fe05dd56b83a0ef3551399f627ef52df0a67f9e822d7da8ef807ace315ed97",
+  "digest": "sha256:07c4aae31615ea9188d2598a624f5de52c10fd9f2fa626bda8ecd757e87eb4b0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4416,6 +4418,24 @@
       "markers": [],
       "summary": "Ratchet: persistent dashboard feature state lives on the server, not in the browser."
     },
+    "tests/test_dashboard_links.py": {
+      "areas": [
+        "messaging-adapters"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.dashboard_paths",
+        "src.digest",
+        "src.digest.facts",
+        "src.discord.render_budget",
+        "src.escalations",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
+    },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
         "metrics"
@@ -4932,7 +4952,8 @@
       "imports": [
         "src.digest",
         "src.digest.eligibility",
-        "src.digest.facts"
+        "src.digest.facts",
+        "src.discord.render_budget"
       ],
       "markers": [
         "parametrize"
@@ -5135,6 +5156,25 @@
       ],
       "markers": [],
       "summary": "Hour-window counts of ignored inbound Discord messages, by reason code."
+    },
+    "tests/test_discord_render_budgets.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations.limits",
+        "src.dashboard_paths",
+        "src.digest",
+        "src.digest.facts",
+        "src.discord.render_budget",
+        "src.escalations",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Every row of the §3.2 size budget, pinned by the renderer that spends it."
     },
     "tests/test_discord_settings.py": {
       "areas": [

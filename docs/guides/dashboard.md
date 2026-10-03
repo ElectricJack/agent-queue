@@ -107,6 +107,31 @@ aq doctor --check dashboard.remote_link
 
 The daemon re-resolves the link at most every five minutes (thirty seconds after a failure), and at once when `dashboard.server` is edited; `public_url` needs no restart. A post that has already been sent keeps the link it was rendered with.
 
+#### Which page a post links
+
+The origin is only half of it. The path comes from
+[src/dashboard_paths.py](../../src/dashboard_paths.py), which holds the whole
+scheme: a task links `/focus/tasks/:id`, an incident links
+`/focus/escalations/:id`, a review `/focus/reviews/:id`, the digest the
+needs-you inbox `/focus/inbox`. Focus routes are phone-first and redirect to a
+desktop page where one exists. A link is how the reader *acts* on a post, so no
+post links a `/settings/` page: that asks a phone to configure the machine that
+sent it.
+
+Two rules hold across every producer, and
+`tests/test_dashboard_links.py` pins them:
+
+* **at most one link per post**, always the last line, bare and wrapped in
+  `<…>` so Discord renders no preview card. The two rows that carry none are
+  the collapsed escalation root and the replies inside an incident's thread,
+  where the page is already linked above them;
+* **the link is never cut.** If the envelope does not fit the post's budget, the
+  text gives way first, because a link truncated mid-path points somewhere
+  else.
+
+Without an origin the last line is the resolver's notice naming the
+configuration gap, never a guess.
+
 #### Supported remote setup: an authenticated tailnet proxy you run
 
 Keep the dashboard server on `127.0.0.1` and put an HTTPS reverse proxy that you operate in front of it, reachable only over your tailnet:
