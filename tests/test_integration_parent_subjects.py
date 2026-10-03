@@ -386,3 +386,74 @@ def test_bridge_rejects_mismatched_parent_identity(changed):
         parent_subject_from_rows(
             parent, checkpoint, episode, operation, policy=PIN, now=1000, max_wait_seconds=300
         )
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_parent_repair_head_recovery_refuses_reconciler_owned_parent(db, tmp_path, dry_run):
+    from src.database.tables import integration_repair_stages, task_integration_checkpoints
+    from sqlalchemy import select
+    from tests.test_integration_parent_completion import _parent_repair_case
+
+    recovery, _, request, _, _, _ = await _parent_repair_case(db, tmp_path)
+    subject, _ = await bridge(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.integration_subjects)
+            .where(t.integration_subjects.c.id == subject.id)
+            .values(engine="reconciler")
+        )
+        before = dict(
+            (
+                await conn.execute(
+                    select(task_integration_checkpoints).where(
+                        task_integration_checkpoints.c.task_id == "parent"
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        stage_before = dict(
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == request.operation_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    request.dry_run = dry_run
+    result = await recovery.run(request, principal="operator:test")
+    assert result["outcome"] == "blocked", result
+    assert "reconciler" in result["reason"]
+    async with db.immediate() as conn:
+        assert (
+            dict(
+                (
+                    await conn.execute(
+                        select(task_integration_checkpoints).where(
+                            task_integration_checkpoints.c.task_id == "parent"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            == before
+        )
+        assert (
+            dict(
+                (
+                    await conn.execute(
+                        select(integration_repair_stages).where(
+                            integration_repair_stages.c.operation_id == request.operation_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            == stage_before
+        )

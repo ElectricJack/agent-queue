@@ -91,6 +91,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
+        "integration_recover_parent_head",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -359,6 +360,47 @@ class IntegrationRebindRepairValue(CommandValue):
     session_id: str | None = None
     reason: str | None = None
     next_step: str | None = None
+
+
+class IntegrationRecoverParentHeadArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    head_sha: str
+    dry_run: bool = True
+    expected_episode_id: str | None = None
+    expected_generation: int | None = Field(default=None, ge=0)
+    expected_stage: int | None = Field(default=None, ge=0)
+    expected_fence_token: int | None = Field(default=None, ge=1)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_exact_recovery(self) -> IntegrationRecoverParentHeadArgs:
+        if not is_valid_git_oid(self.head_sha):
+            raise ValueError("head_sha must be a full commit id")
+        if not self.dry_run and (
+            not self.expected_episode_id or self.expected_generation is None
+            or self.expected_stage is None or self.expected_fence_token is None
+            or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires the previewed episode, generation, stage, fence and reason")
+        return self
+
+
+class IntegrationRecoverParentHeadValue(CommandValue):
+    operation_id: str | None = None
+    head_sha: str | None = None
+    episode_id: str | None = None
+    generation: int | None = None
+    stage: int | None = None
+    fence_token: int | None = None
+    receipt_head_sha: str | None = None
+    repair_task_id: str | None = None
+    completion_id: str | None = None
+    attempts: int | None = None
+    deadline_at: float | None = None
+    stage_state: str | None = None
+    operation_state: str | None = None
+    apply_command: str | None = None
+    reason: str | None = None
 
 
 class IntegrationRecoverPreservedRepairArgs(CommandArgs):
@@ -1514,6 +1556,15 @@ INTEGRATION_RECOVER_PRESERVED_REPAIR = _operational_contract(
     successes=frozenset({"would_recover", "recovered", "already_recovered"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRecoverPreservedRepairValue,
+)
+
+INTEGRATION_RECOVER_PARENT_HEAD = _operational_contract(
+    "integration_recover_parent_head",
+    IntegrationRecoverParentHeadArgs,
+    PRESERVED_REPAIR_OUTCOMES,
+    successes=frozenset({"would_recover", "recovered", "already_recovered"}),
+    side_effect=SideEffectClass.UPDATE,
+    result_model=IntegrationRecoverParentHeadValue,
 )
 
 REBIND_DETACHED_REPAIR_OUTCOMES = (
@@ -3094,6 +3145,15 @@ async def _recover_preserved_repair_adapter(
     )
 
 
+async def _recover_parent_head_adapter(
+    args: IntegrationRecoverParentHeadArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_recover_parent_head", args, ctx,
+        IntegrationRecoverParentHeadValue, set(PRESERVED_REPAIR_OUTCOMES),
+    )
+
+
 async def _rebind_detached_repair_adapter(
     args: IntegrationRebindDetachedRepairArgs, ctx: CommandContext | None
 ):
@@ -3263,6 +3323,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
         (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
         (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
+        (INTEGRATION_RECOVER_PARENT_HEAD, _recover_parent_head_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),

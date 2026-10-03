@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-160 commands are registered.
+161 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -115,6 +115,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
+| [`integration_recover_parent_head`](integration_recover_parent_head.md) | Integration Recover Parent Head | Authenticated hierarchical integration operational control. |
 | [`integration_recover_preserved_repair`](integration_recover_preserved_repair.md) | Integration Recover Preserved Repair | Authenticated hierarchical integration operational control. |
 | [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) | Recover unwritten conflict resolution | Supersede a malformed reservation only after an operator proves no remote write occurred. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |

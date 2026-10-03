@@ -1461,6 +1461,30 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_recover_parent_head(self, args: dict) -> dict:
+        """Reconcile a completed post-collection repair with its immutable receipts."""
+        from src.commands.contracts.integration import IntegrationRecoverParentHeadArgs
+        from src.integration.parent_repair_heads import ParentHeadRecovery
+        from src.integration.promotion import PromotionError
+
+        try:
+            request = IntegrationRecoverParentHeadArgs.model_validate(args)
+        except ValueError as exc:
+            return _failure("blocked", str(exc))
+        principal, refusal = await self._integration_operator_for_operation(request.operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await ParentHeadRecovery(self._integration_promotion_service()).run(
+                request, principal=principal,
+            )
+        except (PromotionError, GitError, ValueError, HierarchyError) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_recover", "recovered", "already_recovered"},
+            **result,
+        }
+
     async def _cmd_integration_recover_preserved_repair(self, args: dict) -> dict:
         """Consume an audited completed candidate without renewing repair authority."""
         from pydantic import ValidationError

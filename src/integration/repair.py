@@ -3626,6 +3626,34 @@ class RepairService:
             dossier = self._dossier_with_repair_commits(
                 stage["dossier"], previous_sha, head_sha, commit_proof
             )
+            if commit_proof is not None and previous_sha != head_sha:
+                from src.integration.parent_repair_heads import (
+                    EXTENSIONS, advance_checkpoint_on, extension,
+                )
+
+                owner = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                    integration_branch_owners.c.ref == checkpoint["branch"],
+                ).with_for_update())).mappings().one_or_none()
+                scope = None
+                if owner is not None and owner["session_id"] is not None:
+                    scope = await self.db.get_repair_filing_scope(
+                        owner["owner_id"], session_id=owner["session_id"], conn=conn,
+                    )
+                pending_receipt = await conn.scalar(select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.operation_key == operation_id,
+                    integration_promotion_intents.c.state.in_(["conflict", "resolution_reserved"]),
+                ).limit(1))
+                if scope is not None and scope["active"] and pending_receipt is None:
+                    if scope["operation_id"] != operation_id or scope["stage"] != stage["ordinal"]:
+                        raise ValueError("repair head authoring fence belongs to another stage")
+                    edge = extension(operation, checkpoint, stage, commit_proof, {
+                        "task_id": owner["owner_id"], "session_id": scope["session_id"],
+                        "instance_token": scope["instance_token"],
+                        "workspace_id": scope["workspace_id"], "fence_token": scope["fence_token"],
+                    })
+                    dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
+                    await advance_checkpoint_on(conn, checkpoint, head_sha, observed_at)
             dossier["receipts"] = await self._current_receipts_on(conn, operation)
             await conn.execute(
                 update(integration_repair_stages)
