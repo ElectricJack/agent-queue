@@ -150,6 +150,7 @@ def register_extraction_schema(metadata):
         Column("reserved_tokens", BigInteger, nullable=False, server_default="0"),
         Column("spent_tokens", BigInteger, nullable=False, server_default="0"),
         Column("circuit_open", Boolean, nullable=False, server_default=false()),
+        Column("consecutive_failures", Integer, nullable=False, server_default="0"),
         PrimaryKeyConstraint(
             "scope_key", "feature", "period_start", name="pk_knowledge_feature_budgets"
         ),
@@ -163,6 +164,9 @@ def register_extraction_schema(metadata):
             "limit_microusd >= 0 AND reserved_microusd >= 0 AND spent_microusd >= 0 "
             "AND token_limit >= 0 AND reserved_tokens >= 0 AND spent_tokens >= 0",
             name="ck_knowledge_feature_budgets_counters",
+        ),
+        CheckConstraint(
+            "consecutive_failures >= 0", name="ck_knowledge_feature_budgets_failures"
         ),
         CheckConstraint(
             "period_start = date_trunc('day', period_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'",

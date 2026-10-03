@@ -230,6 +230,11 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # SQLite file predates every record revision, so it has no index state;
         # the derived index is rebuilt by reindexing authorized records.
         "record_index_state",
+        "knowledge_extraction_jobs",
+        "knowledge_extraction_inputs",
+        "knowledge_capture_checkpoints",
+        "knowledge_feature_budgets",
+        "knowledge_budget_reservations",
 
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",

@@ -665,6 +665,25 @@ class WorkspaceServiceImpl:
         return None
 
 
+@runtime_checkable
+class KnowledgeExtractionService(Protocol):
+    """Loaded plugin port registered as ``knowledge_extraction``.
+
+    ``estimate`` is local and reserves an upper bound in integer microUSD and
+    tokens. ``generate`` accepts core-authorized retained inputs and returns
+    only proposed content plus actual usage. It owns no store, watcher or
+    guidance writer. Unknown paid outcomes are quarantined by core.
+    """
+
+    provider_id: str
+    provider_version: str
+    available: bool
+
+    def estimate(self, request: Any) -> dict: ...
+
+    async def generate(self, request: Any) -> dict: ...
+
+
 class ConfigServiceImpl:
     """Wraps ``AppConfig`` behind the :class:`ConfigService` protocol."""
 

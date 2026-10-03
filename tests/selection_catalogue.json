@@ -632,11 +632,13 @@
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
         "tests/test_knowledge_budget.py",
+        "tests/test_knowledge_capture.py",
         "tests/test_knowledge_citations.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
         "tests/test_knowledge_context.py",
         "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_extraction.py",
         "tests/test_knowledge_extraction_store.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
@@ -1391,7 +1393,7 @@
       ]
     }
   },
-  "digest": "sha256:e441bd33db1bcc743d89d673b548a16d52417d9e45f5f5cd014d354c216b5ed9",
+  "digest": "sha256:9717b030390d120dc0631e817671688e5370ce1f8afafe7c453d917b5028c28f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8825,6 +8827,21 @@
       ],
       "summary": "Hard aggregate caps include required text, tools, wrappers and output."
     },
+    "tests/test_knowledge_capture.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.knowledge.capture",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact retained capture, lost-wake reconciliation, rollback and role separation."
+    },
     "tests/test_knowledge_citations.py": {
       "areas": [
         "knowledge-records"
@@ -8911,6 +8928,31 @@
         "parametrize"
       ],
       "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
+    },
+    "tests/test_knowledge_extraction.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.registry",
+        "src.commands.knowledge_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.event_bus",
+        "src.knowledge.extraction",
+        "src.knowledge.extraction_diagnostics",
+        "src.knowledge.generation_port",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Crash/replay, ambiguous charges, scope policy, independent budgets and proposal safety."
     },
     "tests/test_knowledge_extraction_store.py": {
       "areas": [

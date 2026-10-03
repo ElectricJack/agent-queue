@@ -639,6 +639,10 @@ from .knowledge_diff_response_changes_item import KnowledgeDiffResponseChangesIt
 from .knowledge_export_request import KnowledgeExportRequest
 from .knowledge_export_response import KnowledgeExportResponse
 from .knowledge_export_response_422 import KnowledgeExportResponse422
+from .knowledge_generation_status_request import KnowledgeGenerationStatusRequest
+from .knowledge_generation_status_response_422 import KnowledgeGenerationStatusResponse422
+from .knowledge_generation_tick_request import KnowledgeGenerationTickRequest
+from .knowledge_generation_tick_response_422 import KnowledgeGenerationTickResponse422
 from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
 from .knowledge_history_response_422 import KnowledgeHistoryResponse422
@@ -2375,6 +2379,10 @@ __all__ = (
     "KnowledgeExportRequest",
     "KnowledgeExportResponse",
     "KnowledgeExportResponse422",
+    "KnowledgeGenerationStatusRequest",
+    "KnowledgeGenerationStatusResponse422",
+    "KnowledgeGenerationTickRequest",
+    "KnowledgeGenerationTickResponse422",
     "KnowledgeHistoryRequest",
     "KnowledgeHistoryResponse",
     "KnowledgeHistoryResponse422",

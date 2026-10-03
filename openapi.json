@@ -6905,6 +6905,96 @@
         }
       }
     },
+    "/api/knowledge/generation-status": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Inspect independent generation budgets, circuits and ambiguous calls without provider access.",
+        "description": "Inspect independent generation budgets, circuits and ambiguous calls without provider access.",
+        "operationId": "knowledge_generation_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeGenerationStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/generation-tick": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Reconcile retained inputs and run bounded, explicitly enabled proposal generation.",
+        "description": "Reconcile retained inputs and run bounded, explicitly enabled proposal generation.",
+        "operationId": "knowledge_generation_tick",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeGenerationTickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/history": {
       "post": {
         "tags": [
@@ -38304,6 +38394,16 @@
         "additionalProperties": true,
         "type": "object",
         "title": "KnowledgeExportResponse"
+      },
+      "KnowledgeGenerationStatusRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "KnowledgeGenerationStatusRequest"
+      },
+      "KnowledgeGenerationTickRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "KnowledgeGenerationTickRequest"
       },
       "KnowledgeHistoryRequest": {
         "properties": {

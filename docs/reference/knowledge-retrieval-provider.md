@@ -117,7 +117,7 @@ the reserved name holds one instance: core never races or ranks two providers.
 
 `record_index_state(provider_id, record_id, revision_id, sequence,
 chunk_manifest_sha256, indexed_at, redacted_at)` (migration
-`a00000000061`) is the rebuildable checkpoint of one provider's index of an exact
+`a00000000065`) is the rebuildable checkpoint of one provider's index of an exact
 revision. `DerivedIndexReceipts` exposes:
 
 - `hydrate_index_payload(record_id=..., revision_id=..., principal=...,

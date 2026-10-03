@@ -795,7 +795,12 @@
       "default": {
         "authority_review_required": true,
         "consolidation": {
-          "enabled": false
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
         },
         "context": {
           "bundle_ttl_seconds": 300,
@@ -817,7 +822,12 @@
           "enabled": false
         },
         "extraction": {
-          "enabled": false
+          "allowed_providers": [],
+          "daily_microusd": 0,
+          "daily_tokens": 0,
+          "enabled": false,
+          "policy_version": "1",
+          "provider_id": ""
         },
         "global_enabled": false,
         "import_apply": {
@@ -841,12 +851,40 @@
         "consolidation": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
           },
           "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
             "enabled": {
               "default": false,
               "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
             }
           },
           "type": "object"
@@ -949,12 +987,40 @@
         "extraction": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allowed_providers": [],
+            "daily_microusd": 0,
+            "daily_tokens": 0,
+            "enabled": false,
+            "policy_version": "1",
+            "provider_id": ""
           },
           "properties": {
+            "allowed_providers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "daily_microusd": {
+              "default": 0,
+              "type": "integer"
+            },
+            "daily_tokens": {
+              "default": 0,
+              "type": "integer"
+            },
             "enabled": {
               "default": false,
               "type": "boolean"
+            },
+            "policy_version": {
+              "default": "1",
+              "type": "string"
+            },
+            "provider_id": {
+              "default": "",
+              "type": "string"
             }
           },
           "type": "object"

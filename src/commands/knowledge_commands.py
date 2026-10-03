@@ -28,6 +28,56 @@ def _knowledge_scope(args):
 
 
 class KnowledgeCommandsMixin:
+    def _generation_services(self):
+        from src.knowledge.capture import KnowledgeCapture
+        from src.knowledge.extraction import ExtractionProviderRegistry, ExtractionWorker
+
+        cached = getattr(self, "_knowledge_generation_services", None)
+        if cached is None:
+            def lookup(name):
+                registry = getattr(getattr(self, "orchestrator", None), "plugin_registry", None)
+                return registry.get_service(name) if registry else None
+
+            capture = KnowledgeCapture(self.db, lambda: self.config)
+            worker = ExtractionWorker(self.db, lambda: self.config,
+                                      registry=ExtractionProviderRegistry(lookup))
+            cached = (capture, worker)
+            self._knowledge_generation_services = cached
+        return cached
+
+    async def _cmd_knowledge_generation_tick(self, args):
+        from src.commands.principal import PrincipalKind
+
+        principal = current_principal()
+        if principal is None or not (
+            principal.kind == PrincipalKind.LOCAL or
+            principal.kind == PrincipalKind.SERVICE and principal.service_name == "knowledge-generation"
+        ):
+            return _error("record.forbidden", "Generation tick requires the daemon service or local operator")
+        capture, worker = self._generation_services()
+        try:
+            captured = 0
+            projects = list(dict.fromkeys(self.config.knowledge.enabled_projects))
+            offset = getattr(self, "_knowledge_generation_cursor", 0) % max(1, len(projects))
+            selected = (projects[offset:] + projects[:offset])[:2]
+            self._knowledge_generation_cursor = offset + len(selected)
+            for project in selected:
+                captured += await capture.reconcile(project)
+                captured += await capture.reconcile_consolidation(project)
+            states = await worker.tick()
+            return dict(success=True, captured=captured, states=states)
+        except RecordError as exc:
+            return exc.result()
+
+    async def _cmd_knowledge_generation_status(self, args):
+        from src.commands.principal import PrincipalKind
+        from src.knowledge.extraction_diagnostics import generation_status
+
+        principal = current_principal()
+        if principal is None or principal.kind != PrincipalKind.LOCAL:
+            return _error("record.forbidden", "Generation diagnostics require the local operator")
+        return await generation_status(self.db)
+
     def _knowledge_context_service(self):
         from src.knowledge.context import ContextService
 

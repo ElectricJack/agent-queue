@@ -8356,6 +8356,17 @@ for _name, _args, _effect, _description in PROTECTION_COMMANDS:
         "name": _name, "description": _description, "input_schema": _args.model_json_schema(),
     })
 
+from src.commands.contracts.knowledge_generation import (  # noqa: E402
+    GENERATION_COMMANDS,
+    CommandArgs as _GenerationArgs,
+)
+
+for _name, _effect, _description in GENERATION_COMMANDS:
+    _TOOL_CATEGORIES[_name] = "knowledge"
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description, "input_schema": _GenerationArgs.model_json_schema(),
+    })
+
 for _definition in _ALL_TOOL_DEFINITIONS:
     if _definition["name"].startswith(("knowledge_", "record_", "link_")):
         _schema = _definition["input_schema"]
