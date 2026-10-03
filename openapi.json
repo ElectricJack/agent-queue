@@ -6863,14 +6863,14 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written.",
-        "description": "Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written.",
+        "summary": "Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection.",
+        "description": "Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection.",
         "operationId": "knowledge_import",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/KnowledgeImportRequest"
+                "$ref": "#/components/schemas/KnowledgeImportArgs"
               }
             }
           },
@@ -36723,6 +36723,52 @@
         ],
         "title": "IntelligenceClassReference"
       },
+      "InventoryRootSpec": {
+        "properties": {
+          "root_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Root Id"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Path"
+          },
+          "source_scope": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Source Scope"
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind",
+            "default": "memory"
+          },
+          "relative_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Paths"
+          }
+        },
+        "type": "object",
+        "required": [
+          "root_id",
+          "path",
+          "source_scope"
+        ],
+        "title": "InventoryRootSpec",
+        "description": "One scan root: an absolute path with a stable, path-free identity."
+      },
       "JobErrorResponse": {
         "properties": {
           "success": {
@@ -38015,13 +38061,25 @@
         "type": "object",
         "title": "KnowledgeHistoryResponse"
       },
-      "KnowledgeImportRequest": {
+      "KnowledgeImportArgs": {
         "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "dry-run",
+              "apply",
+              "resume",
+              "cancel"
+            ],
+            "title": "Operation",
+            "default": "dry-run"
+          },
           "roots": {
-            "items": {},
+            "items": {
+              "$ref": "#/components/schemas/InventoryRootSpec"
+            },
             "type": "array",
-            "title": "Roots",
-            "description": ""
+            "title": "Roots"
           },
           "vector_export": {
             "anyOf": [
@@ -38032,46 +38090,165 @@
                 "type": "null"
               }
             ],
-            "title": "Vector Export",
-            "description": ""
+            "title": "Vector Export"
           },
           "scope_aliases": {
             "anyOf": [
               {
-                "additionalProperties": true,
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "type": "object"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Scope Aliases",
-            "description": ""
+            "title": "Scope Aliases"
           },
           "source_installation_id": {
-            "type": "string",
-            "title": "Source Installation Id",
-            "description": ""
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Installation Id"
           },
           "snapshot_id": {
-            "type": "string",
-            "title": "Snapshot Id",
-            "description": ""
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
           },
           "snapshot_timestamp": {
-            "type": "string",
-            "title": "Snapshot Timestamp",
-            "description": ""
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Timestamp"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "default": false
+          },
+          "manifest_content_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Content Base64"
+          },
+          "manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Sha256"
+          },
+          "selected_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Item Ids"
+          },
+          "expected_revisions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Expected Revisions"
+          },
+          "expected_source_hashes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Expected Source Hashes"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "backup_receipt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Receipt"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "required": [
-          "roots",
-          "source_installation_id",
-          "snapshot_id",
-          "snapshot_timestamp"
-        ],
-        "title": "KnowledgeImportRequest"
+        "title": "KnowledgeImportArgs"
       },
       "KnowledgeImportResponse": {
         "properties": {
@@ -38130,75 +38307,155 @@
             "title": "Revision Id"
           },
           "source_installation_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Source Installation Id"
           },
           "snapshot_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Snapshot Id"
           },
           "snapshot_timestamp": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Snapshot Timestamp"
           },
           "manifest_sha256": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Manifest Sha256"
           },
           "manifest_content_base64": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Manifest Content Base64"
           },
           "vector_observation": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Vector Observation"
           },
           "counts": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Counts"
           },
           "items": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Items"
           },
           "mappings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Mappings"
           },
           "identities": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Identities"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
           }
         },
         "additionalProperties": true,
         "type": "object",
-        "required": [
-          "source_installation_id",
-          "snapshot_id",
-          "snapshot_timestamp",
-          "manifest_sha256",
-          "manifest_content_base64",
-          "vector_observation",
-          "counts",
-          "items",
-          "mappings",
-          "identities"
-        ],
         "title": "KnowledgeImportResponse",
-        "description": "Read-only reconciliation and the canonical bytes bound by its seal."
+        "description": "Stable envelope for inventory and durable apply/resume projections."
       },
       "KnowledgeLifecycleResponse": {
         "properties": {

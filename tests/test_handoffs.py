@@ -208,6 +208,48 @@ def test_context_guidance_uses_explicit_metric_and_unknown_fallback():
     assert "not a token estimate" in unknown and "160000-token" in unknown
 
 
+@pytest.mark.parametrize("harness", ["opencode", "opencode-zen", "gemini"])
+def test_context_guidance_names_no_metric_it_cannot_read(harness):
+    """R7: an unmeasurable harness must not be told to watch a token threshold.
+
+    AQ has no transcript reader for these harnesses (``resolve_reader`` returns
+    ``None``) and applies no derived compact setting to them, so both numbers
+    name a control AQ does not have on a model whose own window may be a
+    fraction of either. The remaining trigger has to be actionable instead.
+    """
+    from types import SimpleNamespace
+
+    from src.config import AppConfig
+    from src.sessions.context import context_guidance, measures_context
+
+    config = AppConfig()
+    assert measures_context("claude") and measures_context("codex")
+    assert not measures_context(harness)
+    body = context_guidance(config, SimpleNamespace(harness=harness))
+    assert "120000" not in body and "160000" not in body
+    assert f"{harness} reports no context metric AQ can read" in body
+    assert "no native compact limit" in body
+    assert "after each completed change" in body
+    assert "before any step you expect to fill the remaining context" in body
+    assert "40 tool turns" in body and "not a token estimate" in body
+    # The note is the record AQ relies on, not the only record anywhere: a
+    # provider may keep its own transcript.
+    assert "explicit continuation record AQ can rely on" in body
+    assert "the only record" not in body
+
+
+def test_context_guidance_never_echoes_a_reading_for_an_unmeasurable_harness():
+    from types import SimpleNamespace
+
+    from src.config import AppConfig
+    from src.sessions.context import context_guidance
+
+    body = context_guidance(
+        AppConfig(), SimpleNamespace(harness="opencode"), {"input_tokens": 130000}
+    )
+    assert "130000" not in body and "tokens" not in body
+
+
 async def test_context_reads_the_exact_pinned_transcript_without_rewriting_it(tmp_path):
     from types import SimpleNamespace
     from src.sessions.context import read_context

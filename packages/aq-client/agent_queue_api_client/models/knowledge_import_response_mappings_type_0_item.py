@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="KnowledgeImportRequestScopeAliasesType0")
+T = TypeVar("T", bound="KnowledgeImportResponseMappingsType0Item")
 
 
 @_attrs_define
-class KnowledgeImportRequestScopeAliasesType0:
+class KnowledgeImportResponseMappingsType0Item:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class KnowledgeImportRequestScopeAliasesType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        knowledge_import_request_scope_aliases_type_0 = cls()
+        knowledge_import_response_mappings_type_0_item = cls()
 
-        knowledge_import_request_scope_aliases_type_0.additional_properties = d
-        return knowledge_import_request_scope_aliases_type_0
+        knowledge_import_response_mappings_type_0_item.additional_properties = d
+        return knowledge_import_response_mappings_type_0_item
 
     @property
     def additional_keys(self) -> list[str]:

@@ -72,7 +72,7 @@ END $$
 """,
     r"""
 CREATE OR REPLACE FUNCTION knowledge_snapshot_valid_v1(doc jsonb) RETURNS boolean
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, public AS $$
 DECLARE item jsonb; key text; ids text[]; ident text;
 BEGIN
     IF jsonb_typeof(doc) IS DISTINCT FROM 'object' OR NOT doc ?& ARRAY[

@@ -1084,3 +1084,26 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
     for rule in ("AGENTS.md/CLAUDE.md", "directory instructions", "SKILL.md", "catalogue",
                  "Profile Role/Rules", "--save-output PATH", "evidence paths"):
         assert rule in guidance
+
+
+@pytest.mark.parametrize("harness, readable", [("claude", True), ("codex", True),
+                                               ("opencode", False), ("gemini", False)])
+def test_primed_context_guidance_tracks_what_the_harness_reports(harness, readable):
+    """The prime prompt must not promise a reading the harness never emits."""
+    from types import SimpleNamespace
+
+    from src.config import AppConfig
+    from src.prime.sections import build_tool_guidance_section
+
+    config = AppConfig()
+    session = SimpleNamespace(harness=harness)
+    unmeasured = build_tool_guidance_section(
+        harness, config=config, session=session).body
+    assert ("120000 measured input tokens" in unmeasured) is readable
+    assert ("160000-token native compact setting" in unmeasured) is readable
+    assert ("no context metric AQ can read" in unmeasured) is not readable
+    if readable:
+        measured = build_tool_guidance_section(
+            harness, config=config, session=session,
+            observation={"input_tokens": 130000}).body
+        assert "Latest measured request input: 130000 tokens." in measured

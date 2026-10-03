@@ -16,6 +16,26 @@ from src.sessions.transcripts.base import parse_iso_ts
 CONTEXT_TAIL_BYTES = 256 * 1024
 CONTEXT_MAX_AGE_SECONDS = 300
 
+#: Harnesses whose transcripts AQ reads for a context metric
+#: (:func:`src.sessions.transcripts.resolve_reader`, consumed by
+#: :func:`context_from_tail`) — the same two whose worker launches receive a
+#: derived native compact setting (``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in
+#: ``src/sessions/spec.py``, ``model_auto_compact_token_limit`` via
+#: :func:`codex_compact_override`).  Every other harness, including an
+#: operator's ``opencode``, ``opencode-zen`` and the shipped ``gemini``, has
+#: neither: guidance must not name a threshold AQ cannot read, nor a setting it
+#: does not apply, to a model whose own window may be a fraction of it.
+MEASURED_HARNESSES = frozenset({"claude", "codex"})
+
+
+def measures_context(harness) -> bool:
+    """Whether AQ can read *harness*'s context metric at all.
+
+    False means a measured threshold is permanently unavailable for that
+    harness, which is a different statement from "no fresh reading right now".
+    """
+    return str(harness or "") in MEASURED_HARNESSES
+
 
 def compact_tokens(config) -> int:
     return getattr(getattr(config, "sessions", None), "worker_context_compact_tokens", 0)
@@ -108,37 +128,75 @@ async def read_context(session, *, base_dir: Path | None = None, now: float | No
     return await asyncio.to_thread(read)
 
 
+def unmeasured_harness_head(harness: str, cadence: int) -> tuple[str, str]:
+    """Threshold and compaction sentences for a harness AQ cannot measure.
+
+    No token number is named: the metric does not exist for this harness, so a
+    threshold would be an unreachable instruction rather than a weak one. The
+    cadence stays the fallback signal, and the actionable trigger is a boundary
+    the worker can actually see — a finished change, or a step it expects to
+    compact.
+    """
+    return (
+        (
+            f"{harness} reports no context metric AQ can read, so no measured threshold "
+            f"applies here; do not infer one from spend. "
+            f"AQ also applies no native compact limit to this harness; its own context "
+            f"window and compaction do that. Checkpoint after each completed change and "
+            f"before any step you expect to fill the remaining context, so a "
+            f"provider-initiated compaction never costs finished work; otherwise "
+            f"checkpoint at logical boundaries and at most every {cadence} tool turns. "
+            f"This cadence is not a token estimate. "
+        ),
+        (
+            "AQ sees no compaction signal for this harness, so the note you save is the "
+            "explicit continuation record AQ can rely on: write it before the "
+            "compaction, not after. "
+        ),
+    )
+
+
 def context_guidance(config, session=None, observation: dict | None = None) -> str:
     settings = getattr(config, "sessions", None)
     checkpoint = getattr(settings, "worker_context_checkpoint_tokens", 120000)
     cadence = getattr(settings, "worker_context_unknown_checkpoint_turns", 40)
-    reading = (observation or {}).get("input_tokens")
-    measured = (
-        f"Latest measured request input: {reading} tokens."
-        if reading is not None else "Current context metric is unknown; do not infer it from spend."
-    )
-    trigger = (
-        f"Save a continuation checkpoint at {checkpoint} measured input tokens. "
-        if checkpoint else "Measured checkpoint threshold is disabled. "
-    )
-    limit = compact_tokens(config)
-    trigger += (
-        f"Future worker launches use a {limit}-token native compact setting. "
-        if limit else "Native compact setting inherits harness defaults. "
-    )
-    if reading is not None and checkpoint and reading >= checkpoint:
-        trigger += "The checkpoint threshold is reached: save the note before more work. "
     harness = getattr(session, "harness", None)
-    native = (
-        f"{harness} supports native /compact; allow its automatic compaction to run. "
-        if harness in {"claude", "codex"} else
-        "Use only the current harness's supported compaction mechanism. "
-    )
+    reading = (observation or {}).get("input_tokens")
+    if harness and not measures_context(harness):
+        # A reading cannot exist for a harness AQ cannot read; ignore one if a
+        # caller supplies it rather than echoing back a number AQ cannot stand
+        # behind.
+        measured, native = unmeasured_harness_head(str(harness), cadence)
+    else:
+        measured = (
+            f"Latest measured request input: {reading} tokens."
+            if reading is not None
+            else "Current context metric is unknown; do not infer it from spend."
+        )
+        trigger = (
+            f"Save a continuation checkpoint at {checkpoint} measured input tokens. "
+            if checkpoint else "Measured checkpoint threshold is disabled. "
+        )
+        limit = compact_tokens(config)
+        trigger += (
+            f"Future worker launches use a {limit}-token native compact setting. "
+            if limit else "Native compact setting inherits harness defaults. "
+        )
+        if reading is not None and checkpoint and reading >= checkpoint:
+            trigger += "The checkpoint threshold is reached: save the note before more work. "
+        measured += "\n" + trigger
+        measured += (
+            f"When metrics are unknown, checkpoint at logical boundaries and at most every "
+            f"{cadence} tool turns. This cadence is not a token estimate. "
+        )
+        native = (
+            f"{harness} supports native /compact; allow its automatic compaction to run. "
+            if harness in MEASURED_HARNESSES else
+            "Use only the current harness's supported compaction mechanism. "
+        )
     return (
-        "Worker context checkpoints:\n" + measured + "\n" + trigger
-        + f"When metrics are unknown, checkpoint at logical boundaries and at most every "
-        f"{cadence} tool turns. This cadence is not a token estimate. "
-        "Use `aq handoff --auto --goal ... --next-step ... --constraint ... --evidence ...` "
+        "Worker context checkpoints:\n" + measured
+        + "Use `aq handoff --auto --goal ... --next-step ... --constraint ... --evidence ...` "
         "with exact checks, pending waits, evidence paths and approaches not to repeat. "
         + native
         + "Compaction keeps the task, claim and workspace. After compaction, run `aq prime` "

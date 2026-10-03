@@ -5657,15 +5657,26 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--roots",
-          "--source-installation-id",
-          "--snapshot-id",
-          "--snapshot-timestamp"
-        ],
+        "required": [],
         "optional": [
+          "--operation",
+          "--roots",
           "--vector-export",
           "--scope-aliases",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--global-scope",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id",
+          "--limit",
           "--json",
           "--brief",
           "--save-output",
@@ -5673,10 +5684,22 @@
         ],
         "structured": [
           "--roots",
-          "--scope-aliases"
+          "--scope-aliases",
+          "--selected-item-ids",
+          "--expected-revisions",
+          "--expected-source-hashes"
         ],
         "nullable": [
-          "--vector-export"
+          "--vector-export",
+          "--source-installation-id",
+          "--snapshot-id",
+          "--snapshot-timestamp",
+          "--project-id",
+          "--manifest-content-base64",
+          "--manifest-sha256",
+          "--idempotency-key",
+          "--backup-receipt",
+          "--run-id"
         ]
       }
     },

@@ -1,18 +1,15 @@
-"""Operator-only, read-only legacy import inventory dry-run (K06).
+"""Operator-only legacy inventory and explicit resumable import contracts.
 
-``knowledge_import`` runs the offline scanner against operator-supplied roots,
-seals the manifest, verifies the seal and returns the hash-pinned
-reconciliation report (counts, items, legacy mappings, identities) in memory.
-It never writes a row to ``record_import_runs``, ``record_legacy_mappings``
-or ``record_import_items`` — those belong to K07's apply path. The feature is
-doubly gated: the local operator AND ``knowledge.import_inventory.enabled``.
+Dry-run is the default. Apply pins an explicitly selected sealed manifest,
+backup receipt and idempotency key before bounded transactions; resume and
+cancel use that durable run. Inventory and apply have separate default-off flags.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.commands.contracts.models import (
     CommandArgs,
@@ -42,17 +39,46 @@ class InventoryRootSpec(BaseModel):
 
 
 class KnowledgeImportArgs(CommandArgs):
-    roots: list[InventoryRootSpec] = Field(min_length=1)
+    operation: Literal["dry-run", "apply", "resume", "cancel"] = "dry-run"
+    roots: list[InventoryRootSpec] = Field(default_factory=list)
     vector_export: str | None = None
     scope_aliases: dict[str, list[str]] | None = None
-    source_installation_id: str = Field(min_length=1)
-    snapshot_id: str = Field(min_length=1)
-    snapshot_timestamp: str = Field(min_length=1)
+    source_installation_id: str | None = None
+    snapshot_id: str | None = None
+    snapshot_timestamp: str | None = None
+    project_id: str | None = None
+    global_scope: bool = False
+    manifest_content_base64: str | None = None
+    manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    selected_item_ids: list[str] = Field(default_factory=list)
+    expected_revisions: dict[str, str] = Field(default_factory=dict)
+    expected_source_hashes: dict[str, str] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    backup_receipt: str | None = Field(default=None, min_length=1)
+    run_id: str | None = None
+    limit: int = Field(default=100, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def selection(self):
+        if self.operation == "dry-run":
+            if not self.roots or not all((self.source_installation_id, self.snapshot_id,
+                                          self.snapshot_timestamp)):
+                raise ValueError("Dry-run requires roots and snapshot identity")
+        else:
+            if bool(self.project_id) == self.global_scope or not self.manifest_sha256:
+                raise ValueError("Choose one scope and pin the manifest hash")
+            if self.operation == "apply":
+                if not all((self.manifest_content_base64, self.selected_item_ids,
+                            self.idempotency_key, self.backup_receipt)):
+                    raise ValueError("Apply requires manifest, explicit selection, key and backup")
+            elif not self.run_id:
+                raise ValueError("Resume/cancel requires run_id")
+        return self
 
 
 class KnowledgeImportValue(CommandValue):
     success: bool | None = None
-    outcome: Literal["read", "rejected"] | None = None
+    outcome: Literal["read", "rejected", "applied", "replayed"] | None = None
     error_code: str | None = None
     error: str | None = None
     source_installation_id: str | None = None
@@ -65,6 +91,9 @@ class KnowledgeImportValue(CommandValue):
     items: list[dict[str, Any]] | None = None
     mappings: list[dict[str, Any]] | None = None
     identities: list[dict[str, Any]] | None = None
+    run_id: str | None = None
+    state: str | None = None
+    replay: bool = False
 
 
 def _knowledge_import_invoke(result_model: type[CommandValue]):
@@ -110,7 +139,7 @@ def register_inventory_contracts(registry) -> None:
                     args_model=KnowledgeImportArgs,
                     result_model=KnowledgeImportValue,
                     capability=name,
-                    side_effect=SideEffectClass.READ,
+                    side_effect=SideEffectClass.COMPOSITE,
                     retry_safe=True,
                     idempotency=IdempotencySpec(mode="natural"),
                     outcomes=(
@@ -119,10 +148,10 @@ def register_inventory_contracts(registry) -> None:
                     ),
                 ),
                 presentation=CommandPresentation(
-                    title="Knowledge Import (dry-run)",
+                    title="Knowledge Import",
                     summary=(
                         "Scan, seal and verify a legacy import inventory. "
-                        "Read-only by default; nothing is applied or written."
+                        "Dry-run by default; apply/resume require explicit sealed selection."
                     ),
                     outcome_labels={"completed": "Completed", "rejected": "Rejected"},
                 ),

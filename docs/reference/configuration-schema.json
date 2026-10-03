@@ -809,6 +809,9 @@
           "enabled": false
         },
         "global_enabled": false,
+        "import_apply": {
+          "enabled": false
+        },
         "import_inventory": {
           "enabled": false
         },
@@ -890,6 +893,19 @@
         "global_enabled": {
           "default": false,
           "type": "boolean"
+        },
+        "import_apply": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "import_inventory": {
           "additionalProperties": false,
