@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal
 
 from src.playbooks.definition import PlaybookDefinition, is_executable_path, step_targets
@@ -53,6 +53,7 @@ class DefinitionDiff:
     executable_change: bool
     semantic_change_count: int
     presentation_change_count: int
+    integration_policy: list[FieldChange] = dataclass_field(default_factory=list)
 
 
 def _flat(value: Any, pointer: str = "") -> dict[str, Any]:
@@ -152,6 +153,16 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         if old_contracts.get(name) != target.compiled_against.commands.get(name)
     ]
     exec_count += len(contracts) + sum(change.change != "unchanged" for change in edges)
+    before_policy = base.integration_policy if base else None
+    after_policy = target.integration_policy
+    left = _flat(before_policy.model_dump(mode="json", exclude_none=True)) if before_policy else {}
+    right = _flat(after_policy.model_dump(mode="json", exclude_none=True)) if after_policy else {}
+    policy_changes = [
+        FieldChange(f"/integration_policy{pointer}", left.get(pointer), right.get(pointer), True)
+        for pointer in sorted(set(left) | set(right))
+        if left.get(pointer) != right.get(pointer)
+    ]
+    exec_count += len(policy_changes)
     return DefinitionDiff(
         rules,
         step_changes,
@@ -160,4 +171,5 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         bool(exec_count),
         exec_count + present_count,
         present_count,
+        policy_changes,
     )

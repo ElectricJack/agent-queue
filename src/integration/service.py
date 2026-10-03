@@ -38,6 +38,7 @@ class IntegrationService:
         root_pull_request_handler: DrainHandler | None = None,
         repair_dispatch_handler: DrainHandler | None = None,
         green_promotion_handler: DrainHandler | None = None,
+        subject_runtime: Any = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -66,6 +67,7 @@ class IntegrationService:
         self._root_pull_request_handler = root_pull_request_handler
         self._repair_dispatch_handler = repair_dispatch_handler
         self._green_promotion_handler = green_promotion_handler
+        self._subject_runtime = subject_runtime
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -107,6 +109,8 @@ class IntegrationService:
     async def _reconcile(self) -> None:
         """One bounded page per remote source, preserving CI/deadline ordering."""
         try:
+            if self._subject_runtime is not None:
+                await self._source("root subjects", self._subject_runtime.tick, self._clock())
             accepted = getattr(self._repair, "reconcile_accepted_delegates", None)
             if callable(accepted):
                 await self._source("accepted repair delegates", accepted, self._clock())
@@ -286,6 +290,8 @@ class IntegrationService:
     async def stop(self) -> None:
         task = self._task
         self._stop_event.set()
+        if self._subject_runtime is not None:
+            await self._subject_runtime.stop()
         if self._reconciliation_task is not None:
             self._reconciliation_task.cancel()
             await asyncio.gather(self._reconciliation_task, return_exceptions=True)

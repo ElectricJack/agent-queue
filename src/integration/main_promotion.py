@@ -36,6 +36,8 @@ from src.database.tables import (
     projects,
     task_delivery_receipts,
 )
+from src.integration.engine import root_engine_guard
+
 from src.integration.outbox import enqueue_integration_event
 from src.git.manager import (
     APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS,
@@ -167,6 +169,7 @@ class RootPromotionService:
         self.clock = clock
         self._owned_nonces: dict[str, str] = {}
 
+    @root_engine_guard("batch", result_model=RootPromotionResult)
     async def prepare(self, batch_id: str, revision: int) -> RootPromotionResult:
         identity = self._identity(batch_id, revision)
         intent_id = identity["intent_id"]
@@ -468,12 +471,16 @@ class RootPromotionService:
             )
         return None
 
+    @root_engine_guard("batch", result_model=RootPromotionResult)
     async def promote(self, batch_id: str, revision: int) -> RootPromotionResult:
         prepared = await self.prepare(batch_id, revision)
         if prepared.outcome != "prepared" or prepared.intent_id is None:
             return prepared
         return await self.reconcile(prepared.intent_id)
 
+    @root_engine_guard(
+        "intent", outcome="reconciliation_blocked", result_model=RootPromotionResult, publisher=True
+    )
     async def reconcile(self, intent_id: str) -> RootPromotionResult:
         intent = await self._intent(intent_id)
         if intent is None or intent.get("intent_kind") != "root":
