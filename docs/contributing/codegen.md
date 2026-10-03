@@ -77,8 +77,19 @@ The development publisher does the same when it merges task branches, once
 the project's policy names the command (`--regenerate
 scripts/regenerate-generated.sh`, see
 [development integration](../guides/development-integration.md#conflicts-confined-to-generated-files)),
-so a conflict confined to these files never parks a candidate. To merge the
-way it does locally, define the driver once per clone:
+so a conflict confined to these files never parks a candidate.
+
+The train also regenerates overlapping generated artifacts when constructing
+members, promoting children into a parent, and rebuilding accepted CI repairs
+onto newer main. It uses the exact requested merge base and a scratch tree of
+the merged sources. Generated conflicts take the current side before rebuilding;
+clean text overlaps are rebuilt too, because merged JSON can still be stale.
+Source conflicts, failed generators and writes outside the marked paths retain
+the existing repair path. The resulting commit still requires the boundary's
+normal publication authority and verification.
+
+To merge the way the development publisher does locally, define the driver
+once per clone:
 
 ```bash
 git config merge.aq-generated.driver 'git merge-file --quiet --ours %A %O %B'
