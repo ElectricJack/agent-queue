@@ -13,11 +13,12 @@ from src.install.logins import (
     CLAUDE_CODE_LOGIN,
     CODEX_LOGIN,
     GEMINI_LOGIN,
+    STATUS_TIMEOUT_SECONDS,
     AuthProbe,
     CredentialStore,
     EnvironmentCredential,
     ProviderLogin,
-    STATUS_TIMEOUT_SECONDS,
+    login_instructions,
     login_step,
     login_steps,
     probe_all,
@@ -75,6 +76,10 @@ def _present(*names):
 
 def _never_signed_in(command):
     return _completed(command, code=1)
+
+
+def _completed_ok(command):
+    return _completed(command)
 
 
 # -- the registry mirrors current official documentation --------------------
@@ -365,6 +370,128 @@ def test_a_broken_or_hung_status_command_is_cannot_tell_not_authenticated(tmp_pa
     assert probe.source == "ANTHROPIC_API_KEY"
 
 
+def _expired_login(tmp_path):
+    """A credential store left exactly where a dead OAuth token leaves it."""
+    credentials = tmp_path / ".claude" / ".credentials.json"
+    credentials.parent.mkdir(parents=True)
+    credentials.write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": FAKE_KEY, "expiresAt": 1_700_000_000_000}}),
+        encoding="utf-8",
+    )
+    return credentials
+
+
+def test_a_credential_store_left_by_an_expired_login_is_not_authentication(tmp_path):
+    """The 2026-10-03 report: readiness said authenticated, the CLI said /login.
+
+    An expired OAuth token leaves ``~/.claude/.credentials.json`` behind, so
+    "the file exists" answered the question the probe was actually asked.  It
+    was asked whether the harness works.
+    """
+    credentials = _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert not probe.authenticated
+    assert probe.installed
+    # The store is named because the operator will go looking for it; nothing
+    # in it was read, and the answer still carries no material.
+    assert probe.stale_store == "Claude Code credential file"
+    assert credentials.exists()
+    assert FAKE_KEY not in json.dumps(probe.detail())
+    assert probe.detail()["stale_credential_store"] == "Claude Code credential file"
+
+
+def test_a_fresh_login_is_authenticated_again_on_the_same_store(tmp_path):
+    """Recovery: the file is unchanged, the human's ``/login`` is what counts."""
+    _expired_login(tmp_path)
+
+    def signed_in(command):
+        return _completed(command)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.method == "provider-login"
+    assert probe.source == "claude auth status"
+    assert probe.stale_store is None
+
+
+def test_a_store_is_still_proof_for_a_provider_with_no_status_command(tmp_path):
+    """Gemini documents no non-interactive status command, so nothing can say no."""
+    cache = tmp_path / ".gemini" / "oauth_creds.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text("{}", encoding="utf-8")
+
+    probe = probe_login(GEMINI_LOGIN, environ=_env(tmp_path), which=_present("gemini"))
+
+    assert probe.authenticated
+    assert probe.stale_store is None
+    assert probe.source == "Gemini CLI OAuth cache"
+
+
+def test_an_explicitly_configured_credential_outranks_a_refused_store(tmp_path):
+    """Presence is weak evidence; a credential the operator supplied is not."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path, ANTHROPIC_API_KEY=FAKE_KEY),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.method == "api-key"
+    assert probe.source == "ANTHROPIC_API_KEY"
+    assert probe.stale_store is None
+
+
+def test_a_present_store_survives_a_status_command_that_could_not_tell(tmp_path):
+    """Silence is not a denial -- only an answer is."""
+    _expired_login(tmp_path)
+
+    def hung(command):
+        raise subprocess.TimeoutExpired(cmd=command, timeout=10)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=hung,
+    )
+
+    assert probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+def test_a_refused_store_names_no_credential_and_fails_the_install_step(tmp_path):
+    """The remediation a human gets names the command, never a credential."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+    text = login_instructions(CLAUDE_CODE_LOGIN, probe, interactive=True)
+
+    assert CLAUDE_CODE_LOGIN.login_command in text
+    assert FAKE_KEY not in text
+
+
 def test_probe_all_reports_every_provider_independently(tmp_path):
     (tmp_path / ".codex").mkdir()
     (tmp_path / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
@@ -394,7 +521,19 @@ def test_probe_all_reports_every_provider_independently(tmp_path):
             "Claude Code credential file",
         ),
     )
-    assert probes["codex"].authenticated is True
+    # Codex was told "not signed in" and its auth.json is still on disk. The
+    # file surviving an expired login is the symptom, not the answer.
+    assert probes["codex"] == AuthProbe(
+        "codex",
+        installed=True,
+        authenticated=False,
+        checked=(
+            "codex login status",
+            "OPENAI_API_KEY",
+            "Codex credential file",
+        ),
+        stale_store="Codex credential file",
+    )
     assert probes["gemini"].installed is False
 
 
@@ -449,6 +588,7 @@ def test_an_installed_but_unauthenticated_provider_stops_at_a_human_checkpoint(t
             "Claude Code credential file",
         ],
         "missing_environment": [],
+        "stale_credential_store": None,
     }
     assert "claude auth login" in result.remediation
     assert "rerun `aq install --with provider.claude`" in result.remediation
@@ -506,9 +646,16 @@ def test_the_login_step_is_read_only_and_verifies_by_reprobing(tmp_path):
     assert step.depends_on == ("provider.codex-cli",)
     assert step.verify(_context()) is False
 
+    # The auth cache alone no longer satisfies verification: verify asks the
+    # CLI, so an expired login cannot be verified into existence by a file.
     store.parent.mkdir(parents=True)
     store.write_text("{}", encoding="utf-8")
-    assert step.verify(_context()) is True
+    assert step.verify(_context()) is False
+
+    signed_in = login_step(
+        CODEX_LOGIN, environ=_env(tmp_path), which=_present("codex"), runner=_completed_ok
+    )
+    assert signed_in.verify(_context()) is True
 
 
 # -- registry wiring --------------------------------------------------------
@@ -758,7 +905,7 @@ def test_a_cli_outside_this_process_path_is_still_asked_whether_it_is_signed_in(
 
     ``claude`` lives in ``~/.local/bin``, which the installer's lookup covers but
     this process's PATH may not.  Running the status command by bare name then
-    raised ``FileNotFoundError``, which ``_status_command_says_signed_in`` reads
+    raised ``FileNotFoundError``, which the status probe reads
     as "cannot tell" -- so a harness that was signed in the whole time was
     reported as not authenticated.
     """
