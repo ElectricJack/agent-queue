@@ -69,6 +69,12 @@ class EscalationUpdateArgs(CommandArgs):
     terminal_evidence: dict[str, Any] | None = None
 
 
+class EscalationResolveArgs(CommandArgs):
+    escalation_id: str
+    outcome: str
+    expected_revision: int | None = None
+
+
 class EscalationApplyReplyArgs(CommandArgs):
     escalation_id: str
     reply_id: str
@@ -106,6 +112,11 @@ class EscalationReplyValue(CommandValue):
 
 class EscalationUpdateValue(CommandValue):
     escalation: dict[str, Any]
+
+
+class EscalationResolveValue(CommandValue):
+    escalation: dict[str, Any]
+    resolved: bool
 
 
 class EscalationApplyReplyValue(CommandValue):
@@ -173,6 +184,7 @@ def _contract(
                 "escalation_get": "Read one incident and its authoritative history.",
                 "escalation_reply": "Record authenticated human evidence and notify its supervisor.",
                 "escalation_update": "CAS-update an incident owned by the supervisor.",
+                "escalation_resolve": "Close an answered incident with the outcome a human reads.",
                 "escalation_apply_reply": "Apply verified evidence through its bound guarded service.",
                 "escalation_sweep": "Plan the §5.6 back-fill sweep, and apply it on request.",
             }[name],
@@ -250,6 +262,12 @@ def register_escalation_contracts(registry: ContractRegistry) -> None:
             _outcomes("updated"), SideEffectClass.UPDATE,
             (UpdateClause(subject=EffectSubject.ESCALATION),),
             IdempotencySpec(mode="natural"), True, lambda raw: "updated",
+        ),
+        (
+            "escalation_resolve", EscalationResolveArgs, EscalationResolveValue,
+            _outcomes("resolved"), SideEffectClass.RESOLVE,
+            (ResolveClause(subject=EffectSubject.ESCALATION, target_arg="escalation_id"),),
+            IdempotencySpec(mode="natural"), True, lambda raw: "resolved",
         ),
         (
             "escalation_apply_reply", EscalationApplyReplyArgs, EscalationApplyReplyValue,

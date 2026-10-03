@@ -10,6 +10,8 @@ interesting rules stay testable without a gateway:
   authored text neutralised on the way in;
 * :mod:`src.escalations.state` — the §5.2 state machine: which form the one
   post shows, as a pure function of the incident;
+* :mod:`src.escalations.interactions` — §5.3's choice buttons: what a post
+  offers, and what a press names (never what it says);
 * :mod:`src.escalations.plan` — which deliveries an incident's current state
   implies, as a pure function of durable rows;
 * :mod:`src.escalations.transport` — the narrow port, its honest fault
@@ -60,6 +62,17 @@ from src.escalations.intake import (
     InboundMessage,
     IntakeDecision,
     classify_inbound,
+)
+from src.escalations.interactions import (
+    KIND_CHOICE,
+    KIND_REPLY,
+    MAX_CHOICE_BUTTONS,
+    REPLY_BUTTON_LABEL,
+    ButtonPress,
+    ButtonSpec,
+    choice_buttons,
+    choice_text,
+    parse_custom_id,
 )
 from src.escalations.plan import (
     DeliveryPlan,
@@ -134,15 +147,19 @@ __all__ = [
     "DELIVERY_KINDS",
     "DISPLAY_STATES",
     "KIND_ACK",
+    "KIND_CHOICE",
     "KIND_RELAY",
+    "KIND_REPLY",
     "KIND_RESOLUTION",
     "KIND_ROOT",
     "KIND_STATE",
+    "MAX_CHOICE_BUTTONS",
     "PRIORITY_DIGEST",
     "PRIORITY_FOLLOWUP",
     "PRIORITY_RESOLUTION",
     "PRIORITY_ROOT",
     "PRIORITY_STATE",
+    "REPLY_BUTTON_LABEL",
     "STALE_OBSOLETE_SECONDS",
     "STATE_ANSWERED",
     "STATE_OBSOLETE",
@@ -153,6 +170,8 @@ __all__ = [
     "TARGET_OPEN_ITEMS",
     "AutoDecision",
     "AutoResolveReport",
+    "ButtonPress",
+    "ButtonSpec",
     "DeliveryPlan",
     "EscalationAutoResolver",
     "EscalationDeliveryService",
@@ -179,6 +198,8 @@ __all__ = [
     "TransportRetryable",
     "TransportUnavailable",
     "binding_from_deliveries",
+    "choice_buttons",
+    "choice_text",
     "classify_inbound",
     "display_state",
     "escalation_url",
@@ -186,6 +207,7 @@ __all__ = [
     "is_collapsed",
     "is_stale_due",
     "marker_for",
+    "parse_custom_id",
     "plan_deliveries",
     "plan_replacement",
     "render_ack",

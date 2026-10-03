@@ -251,12 +251,23 @@ operator- or supervisor-scoped; a worker session's token is refused.
 | `aq escalation get` | `escalation_get` | Anyone in scope; the authoritative incident, its immutable message history, deliveries and action receipts |
 | `aq escalation reply` | `escalation_reply` | A dashboard human or a trusted external adapter only — never a supervisor, so supervisor text can never become human evidence |
 | `aq escalation update` | `escalation_update` | The owning supervisor, with `--expected-revision` as the compare-and-set fence |
+| `aq escalation resolve` | `escalation_resolve` | The owning supervisor; closes an *answered* incident with `--outcome`, the one sentence the collapsed channel post shows |
 | `aq escalation apply-reply` | `escalation_apply_reply` | The owning supervisor, applying one verified reply through its bound question, gate or recovery target |
 
 ```bash
 aq escalation list --states '["needs_human"]'
 aq escalation get --escalation-id escalation-abc123
+aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
 ```
+
+`escalation_resolve` is the supervisor's way to close what a human answered,
+whether the answer arrived as a thread reply, a tap on one of the post's choice
+buttons, or an answer on the escalation page. `--expected-revision` is optional
+(omit it to resolve the revision the incident has now), and the command refuses
+an incident nobody has answered — there is no outcome to report — as well as one
+that is already terminal. Every step is a compare-and-set, so a reply that lands
+mid-resolve wins and the command reports `stale_revision` instead of resolving
+over an answer the supervisor never read.
 
 Refusals return `success: false`, a stable `error_code` and an operator-facing
 message. The codes are `invalid_request`, `not_found`, `out_of_scope`,

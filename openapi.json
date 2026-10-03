@@ -4340,6 +4340,48 @@
         }
       }
     },
+    "/api/escalation/resolve": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Close an answered human escalation with the outcome its channel post will show. Owning supervisor only; a newer human reply wins and is reported as a stale revision. Cancelling an unanswered question is escalation_update --state cancelled.",
+        "description": "Close an answered human escalation with the outcome its channel post will show. Owning supervisor only; a newer human reply wins and is reported as a stale revision. Cancelling an unanswered question is escalation_update --state cancelled.",
+        "operationId": "escalation_resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationResolveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/escalation/sweep": {
       "post": {
         "tags": [
@@ -30386,6 +30428,60 @@
           "terminal"
         ],
         "title": "EscalationReplyResponse"
+      },
+      "EscalationResolveRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "description": "What was done, in the words the human will read."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Optional compare-and-set fence. Omit to resolve the revision this incident has now."
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "outcome"
+        ],
+        "title": "EscalationResolveRequest"
+      },
+      "EscalationResolveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "resolved": {
+            "type": "boolean",
+            "title": "Resolved"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolved",
+          "escalation"
+        ],
+        "title": "EscalationResolveResponse"
       },
       "EscalationSweepRequest": {
         "properties": {

@@ -317,6 +317,8 @@ from .escalation_record import EscalationRecord
 from .escalation_record_terminal_evidence_type_0 import EscalationRecordTerminalEvidenceType0
 from .escalation_reply_request import EscalationReplyRequest
 from .escalation_reply_response import EscalationReplyResponse
+from .escalation_resolve_request import EscalationResolveRequest
+from .escalation_resolve_response import EscalationResolveResponse
 from .escalation_sweep_request import EscalationSweepRequest
 from .escalation_sweep_response import EscalationSweepResponse
 from .escalation_sweep_response_plan import EscalationSweepResponsePlan
@@ -2066,6 +2068,8 @@ __all__ = (
     "EscalationRecordTerminalEvidenceType0",
     "EscalationReplyRequest",
     "EscalationReplyResponse",
+    "EscalationResolveRequest",
+    "EscalationResolveResponse",
     "EscalationSweepRequest",
     "EscalationSweepResponse",
     "EscalationSweepResponsePlan",

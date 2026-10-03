@@ -39,6 +39,7 @@ from src.escalations.facts import (
     MentionPolicy,
     TransportBinding,
 )
+from src.escalations.interactions import ButtonSpec, choice_buttons
 from src.escalations.plan import (
     DEFER_SECONDS,
     MAX_ATTEMPTS,
@@ -61,6 +62,8 @@ from src.escalations.render import (
 )
 from src.escalations.state import (
     KIND_STATE,
+    STATE_OPEN,
+    STATE_STALE,
     display_state,
     is_collapsed,
     is_stale_due,
@@ -202,6 +205,24 @@ class EscalationDeliveryService:
 
     def _mentions(self) -> MentionPolicy:
         return MentionPolicy.from_config(self._settings)
+
+    def _buttons(
+        self, facts: EscalationFacts, *, display: str = STATE_OPEN
+    ) -> tuple[ButtonSpec, ...]:
+        """§5.3's buttons for one form of the post, or none.
+
+        Only the ``open`` and ``stale`` forms still want an answer -- the stale
+        reminder is §5.2's "this has been sitting since" on a question that is
+        *still* open -- so both keep the choice row.  ``answered`` and the two
+        collapsed forms drop it, so a post that says the supervisor is acting on
+        it does not still offer the alternatives it is acting between.
+
+        Entirely a §7.1 P1 affordance: with the flag off the post carries no
+        components at all, exactly as it did before the phase.
+        """
+        if not self._stateful or display not in {STATE_OPEN, STATE_STALE}:
+            return ()
+        return choice_buttons(facts.id, tuple(facts.choices))
 
     async def _dashboard(self) -> tuple[str, str]:
         """``(base_url, notice)`` for the payload about to be rendered."""
@@ -695,6 +716,7 @@ class EscalationDeliveryService:
                     dashboard_notice=dashboard_notice,
                     answered_at=answered_at,
                 ),
+                buttons=self._buttons(facts, display=display),
             )
         except TransportMissing as exc:
             # The post this edit was going to rewrite is gone.  A live incident
@@ -819,7 +841,11 @@ class EscalationDeliveryService:
         )
         if root_id is None:
             try:
-                outcome = await self.transport.post_root(channel_id=channel_id, content=content)
+                outcome = await self.transport.post_root(
+                    channel_id=channel_id,
+                    content=content,
+                    buttons=self._buttons(facts),
+                )
             except TransportError as exc:
                 await self._fail(
                     row, report, binding=current, error=self._describe(exc), retryable=True
@@ -1137,10 +1163,14 @@ class EscalationDeliveryService:
                 return
 
         try:
+            # A closed incident carries no buttons: §5.2's collapsed row is the
+            # whole post, and a choice row under "Resolved: …" would invite a
+            # second answer to a question that is closed.
             await self.transport.edit_root(
                 channel_id=str(binding.channel_id or self._channel_id),
                 root_message_id=str(binding.root_message_id),
                 content=self._collapsed_content(facts, dedup_key=f"{dedup_key}:root"),
+                buttons=self._buttons(facts, display=display_state(facts.state)),
             )
         except TransportMissing as exc:
             # The root is gone but the outcome is recorded in the thread and in

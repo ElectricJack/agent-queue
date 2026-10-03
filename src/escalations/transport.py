@@ -20,8 +20,11 @@ Tests use :class:`SinkTransport`; no test may touch a real Discord client.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from src.escalations.interactions import ButtonSpec
 
 
 class TransportError(Exception):
@@ -69,9 +72,17 @@ class ThreadHandle:
 
 
 class EscalationTransport(Protocol):
-    """Everything §7 needs from a chat platform, and nothing else."""
+    """Everything §7 needs from a chat platform, and nothing else.
 
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome: ...
+    ``buttons`` (§5.3) is the post's *current* set, not a delta: an edit
+    carries exactly the buttons it names, so passing none removes them.  That is
+    what lets an answered or collapsed post drop a choice row without a second
+    mechanism for un-attaching one.
+    """
+
+    async def post_root(
+        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
+    ) -> SendOutcome: ...
 
     async def ensure_thread(
         self, *, channel_id: str, root_message_id: str, name: str
@@ -81,7 +92,14 @@ class EscalationTransport(Protocol):
 
     async def post_thread_message(self, *, thread_id: str, content: str) -> SendOutcome: ...
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None: ...
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None: ...
 
     async def edit_message(
         self, *, channel_id: str, thread_id: str | None, message_id: str, content: str
@@ -118,6 +136,9 @@ class SinkMessage:
     content: str
     thread_id: str | None = None
     archived: bool = False
+    #: The §5.3 buttons currently attached, by custom id.  An edit replaces the
+    #: set, so a post that stopped offering choices carries none.
+    buttons: tuple[str, ...] = ()
 
 
 @dataclass
@@ -147,17 +168,30 @@ class SinkTransport:
                 self.faults.pop(index)
                 raise error
 
-    def record(self, where: str, content: str, *, thread_id: str | None = None) -> SinkMessage:
+    def record(
+        self,
+        where: str,
+        content: str,
+        *,
+        thread_id: str | None = None,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> SinkMessage:
         message = SinkMessage(
-            id=self._next_id("msg"), where=where, content=content, thread_id=thread_id
+            id=self._next_id("msg"),
+            where=where,
+            content=content,
+            thread_id=thread_id,
+            buttons=tuple(spec.custom_id for spec in buttons),
         )
         self.messages[message.id] = message
         return message
 
-    async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
+    async def post_root(
+        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
+    ) -> SendOutcome:
         self.calls.append("post_root")
         self._maybe_fail("post_root")
-        message = self.record(channel_id, content)
+        message = self.record(channel_id, content, buttons=buttons)
         return SendOutcome(receipt_id=message.id, channel_id=channel_id, root_message_id=message.id)
 
     async def ensure_thread(
@@ -187,12 +221,20 @@ class SinkTransport:
         message = self.record(thread_id, content, thread_id=thread_id)
         return SendOutcome(receipt_id=message.id, thread_id=thread_id)
 
-    async def edit_root(self, *, channel_id: str, root_message_id: str, content: str) -> None:
+    async def edit_root(
+        self,
+        *,
+        channel_id: str,
+        root_message_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+    ) -> None:
         self.calls.append("edit_root")
         self._maybe_fail("edit_root")
         if root_message_id not in self.messages:
             raise TransportMissing(f"root {root_message_id} is gone")
         self.messages[root_message_id].content = content
+        self.messages[root_message_id].buttons = tuple(spec.custom_id for spec in buttons)
         self.edits.append((root_message_id, content))
 
     async def edit_message(

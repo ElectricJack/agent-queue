@@ -126,6 +126,12 @@ class EscalationUpdateResponse(BaseModel):
     escalation: EscalationRecord
 
 
+class EscalationResolveResponse(BaseModel):
+    success: bool = True
+    resolved: bool
+    escalation: EscalationRecord
+
+
 class EscalationApplyReplyResponse(BaseModel):
     success: bool = True
     applied: bool
@@ -154,6 +160,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "escalation_get": EscalationGetResponse,
     "escalation_reply": EscalationReplyResponse,
     "escalation_update": EscalationUpdateResponse,
+    "escalation_resolve": EscalationResolveResponse,
     "escalation_apply_reply": EscalationApplyReplyResponse,
     "escalation_sweep": EscalationSweepResponse,
 }
