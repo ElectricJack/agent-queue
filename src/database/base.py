@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -99,6 +100,66 @@ class DatabaseBackend(Protocol):
     async def skip_open_task_subtasks(self, task_id: str, note: str) -> int: ...
 
     async def count_task_subtasks(self, task_ids: list[str]) -> dict[str, tuple[int, int]]: ...
+
+    # --- Durable records (caller-owned transactions; core service authorizes) ---
+
+    async def get_record_installation_on(self, *, conn) -> UUID: ...
+    async def ensure_record_scope_on(self, *, project_id: str | None, conn) -> str: ...
+    async def get_record_on(
+        self,
+        *,
+        record_id: UUID | None = None,
+        task_id: str | None = None,
+        knowledge_alias: str | None = None,
+        lock: bool = False,
+        conn,
+    ) -> dict | None: ...
+    async def insert_record_on(self, values: dict, *, conn) -> None: ...
+    async def get_task_record_domain_on(self, task_id: str, *, conn) -> dict | None: ...
+    async def ensure_task_record_on(
+        self, task_id: str, *, actor_id: str, conn, return_inserted: bool = False
+    ) -> dict | tuple[dict, bool]: ...
+    async def begin_record_request_on(
+        self, *, scope_key, actor_key, operation, idempotency_key, request_sha256, conn
+    ) -> dict: ...
+    async def finish_record_request_on(self, receipt: dict, result: dict, *, conn) -> None: ...
+    async def current_record_links_on(self, record_id, *, conn, link_ids=()) -> list[dict]: ...
+    async def project_knowledge_search_on(
+        self, record_id, revision_id, scope_key, snapshot, updated_at, *, conn
+    ) -> None: ...
+    async def insert_knowledge_record_on(self, values: dict, *, conn) -> None: ...
+    async def append_knowledge_revision_on(
+        self,
+        revision: dict,
+        snapshot: dict,
+        *,
+        conn,
+    ) -> None: ...
+    async def advance_knowledge_head_on(
+        self,
+        record_id: UUID,
+        *,
+        expected_revision: UUID,
+        revision_id: UUID,
+        sequence: int,
+        updated_at,
+        conn,
+    ) -> bool: ...
+    async def get_knowledge_revision_on(
+        self,
+        record_id: UUID,
+        *,
+        revision_id: UUID | None = None,
+        conn,
+    ) -> dict | None: ...
+    async def list_knowledge_history_on(
+        self,
+        record_id: UUID,
+        *,
+        before_sequence: int | None = None,
+        limit: int = 25,
+        conn,
+    ) -> list[dict]: ...
 
     # --- Lifecycle ---
 
