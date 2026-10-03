@@ -817,6 +817,19 @@ collector receives a fresh fence and the checkpoint advances generation. The
 old failed verifier and repair budgets remain evidence. Redrive the child and
 let a fresh verifier check the resulting exact head. Human rollout gates remain
 binding; the old red aggregate is never certified by recovery.
+For a legacy failure with an empty commit list, exactly one immutable
+`task.integration_ready` outbox event must bind that verifier to the same parent,
+episode, repository, branch and head before the failure. The dry run reports
+the original subject in `delegates[].failure_subject`; apply includes that
+binding and failed completion id in its audit event. The original completion
+stays unchanged. Missing, contradictory or ambiguous evidence is refused.
+A verifier session still attached to the branch must first be settled through
+`aq session show SESSION_ID`, `aq session kill SESSION_ID` if still running,
+and `aq integration release-owner --task-id VERIFIER_TASK_ID --dry-run`.
+Apply owner recovery only after it proves the writer stopped and preserves its
+work; then repeat the collection dry run. Worker tokens cannot perform those
+operator steps. See the [failed aggregate recovery design](../superpowers/specs/2026-10-02-failed-aggregate-recovery-design.md)
+for the calm-grove-25 handoff.
 
 If `redrive-child` instead says the parent has no live collection operation,
 `cancel-preserving` cancelled the parent's whole collection; `aq integration

@@ -9,6 +9,7 @@ from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
 from src.database.engine import create_postgres_engine, run_schema_setup
 from src.database.schema_key import alembic_head_revisions
 from src.database.tables import metadata
+from src.records.schema import RECORD_TABLE_NAMES
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
@@ -48,8 +49,14 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                 "c" * 40,
             )
             if initial_revision == "a00000000001":
+                # This regression concerns the original integration guards. New
+                # record-domain guards are installed by metadata create_all.
                 assert (
-                    await raw.fetchval("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal")
+                    await raw.fetchval(
+                        "SELECT count(*) FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
+                        "WHERE NOT tgisinternal AND c.relname <> ALL($1::text[])",
+                        list(RECORD_TABLE_NAMES),
+                    )
                     == 0
                 )
                 # Prove the broken baseline permits changing durable evidence.
@@ -57,15 +64,18 @@ async def test_existing_database_receives_guard_repair(initial_revision):
 
             await run_schema_setup(engine)
 
-            assert await raw.fetchval("SELECT version_num FROM alembic_version") == (
-                alembic_head_revisions()[0]
+            assert (
+                await raw.fetchval("SELECT version_num FROM alembic_version")
+                == (alembic_head_revisions()[0])
             )
             installed = {
                 (row["tgname"], row["relname"])
                 for row in await raw.fetch(
                     "SELECT tgname, relname FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
                     "JOIN pg_namespace n ON n.oid=c.relnamespace "
-                    "WHERE NOT tgisinternal AND n.nspname='public'"
+                    "WHERE NOT tgisinternal AND n.nspname='public' "
+                    "AND c.relname <> ALL($1::text[])",
+                    list(RECORD_TABLE_NAMES),
                 )
             }
             assert installed == {(name, table) for name, table, _ in TRIGGERS} | {
@@ -114,7 +124,14 @@ async def test_unstamped_legacy_database_is_refused_without_changing_data():
                 await conn.execute(text("SELECT to_regclass('public.alembic_version')"))
             ).scalar_one() is None
             assert (
-                await conn.execute(text("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal"))
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
+                        "WHERE NOT tgisinternal "
+                        "AND c.relname <> ALL(CAST(:record_tables AS text[]))"
+                    ),
+                    {"record_tables": list(RECORD_TABLE_NAMES)},
+                )
             ).scalar_one() == 0
     finally:
         await engine.dispose()

@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: knowledge-records
+    description: "Durable record identities, knowledge schema and immutable revision integrity."
+    match: [tests/test_record*.py, tests/test_knowledge*.py, tests/test_api_knowledge.py]
   # ---------------------------------------------------------------- tasks
   - id: task-lifecycle
     description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
@@ -582,6 +585,7 @@ areas:
       - tests/test_cli_formatters.py
       - tests/test_cli_global_options.py
       - tests/test_cli_menus.py
+      - tests/test_cli_knowledge.py
       - tests/test_cli_module_entry.py
       - tests/test_cli_module_map.py
       - tests/test_cli_startup_offline.py

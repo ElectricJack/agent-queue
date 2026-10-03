@@ -3394,6 +3394,272 @@ resolvable to a row here.
 | `project_id` | TEXT | nullable | Project the fact is scoped to; NULL for fleet facts |
 | `at` | REAL | NOT NULL | Source timestamp the fact records |
 
+## Durable knowledge & records
+
+An independent domain introduced by revision `a00000000055` (K01 of the
+work-and-knowledge-records plan, 2026-10-01).  Records are content-addressed,
+revisioned units of knowledge; task and project identities inside it are
+deliberate **soft references** so that archive/delete of a task never depends
+on knowledge, and knowledge rows outlive the tasks that produced them.  The
+domain is gated off by `knowledge` config and is inert until its lane ships.
+`record_scopes` is the identity boundary every other table in this section
+keys against: a `global` scope with no project, or a `project:<uuid>` scope
+bound to exactly one project.
+
+### Table: `record_scopes`
+
+The scope ledger.  Every durable-records row that is scoped carries a
+`scope_key` that must resolve here (`ON DELETE RESTRICT`), and the identity
+check constrains each scope to either the single `global` row or a
+`project:`-prefixed row bound to one `project_id`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `scope_key` | TEXT | PRIMARY KEY | Scope identity |
+| `scope_kind` | TEXT | NOT NULL | One of: global, project (`ck_record_scopes_identity`) |
+| `project_id` | TEXT | nullable, FK → projects (RESTRICT) | Bound project; unique per scope (`uq_record_scopes_project`) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Insert time |
+
+### Table: `record_installation`
+
+A singleton marker row recording that the durable-records schema is installed,
+with an installation id used to distinguish installations. The `downgrade` path
+refuses to drop the schema while any other table still holds data.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `singleton` | SMALLINT | PRIMARY KEY | Row marker; fixed to 1 (`ck_record_installation_singleton`) |
+| `installation_id` | UUID | NOT NULL | Per-installation id (`uq_record_installation_id`) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Install time |
+
+### Table: `records`
+
+The identity ledger: one row per durable record.  A record is either a `task`
+record (bound to a task id, no alias) or a `knowledge` record (no task, a
+`kn-<32 hex>` alias).  `task_id` and `knowledge_alias` are NOT foreign keys —
+archive of a task removes the task row but the record row survives.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `record_id` | UUID | PRIMARY KEY | Record identity |
+| `kind` | TEXT | NOT NULL | One of: task, knowledge (`ck_records_domain`) |
+| `scope_key` | TEXT | NOT NULL, FK → record_scopes (RESTRICT) | Owning scope |
+| `task_id` | TEXT | nullable | Soft ref to the producing task (unique, `uq_records_task`) |
+| `knowledge_alias` | TEXT | nullable | `kn-<32 hex>` alias (unique, `uq_records_alias`) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Create time |
+| `created_by` | TEXT | NOT NULL | Actor that created the record |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last touch time |
+
+### Table: `knowledge_records`
+
+The mutable head of a knowledge record: which revision is current, as a
+deferrable head pointer so a revision and its head can be created in one
+transaction.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `record_id` | UUID | PRIMARY KEY, FK → records (RESTRICT) | Owning record |
+| `kind` | TEXT | NOT NULL, DEFAULT 'knowledge' | Always knowledge (`ck_knowledge_records_kind`) |
+| `current_revision_id` | UUID | NOT NULL | Head revision (`fk_knowledge_records_head`) |
+| `current_sequence` | BIGINT | NOT NULL | Head sequence (`ck_knowledge_records_sequence`) |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Head move time |
+
+### Table: `knowledge_revisions`
+
+The append-only history of a knowledge record.  Each row is one content
+revision with a per-record `sequence` and an optional parent, forming a
+content-linked tree.  `content_sha256` is the canonical-hash of the payload.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `revision_id` | UUID | PRIMARY KEY | Revision identity |
+| `record_id` | UUID | NOT NULL, FK → knowledge_records (RESTRICT) | Owning record |
+| `sequence` | BIGINT | NOT NULL | Monotonic per record (`ck_knowledge_revisions_sequence`) |
+| `parent_revision_id` | UUID | nullable | Tree parent (unique with record, `uq_knowledge_revisions_sequence`) |
+| `actor_id` | TEXT | NOT NULL | Actor that authored the revision |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Author time |
+| `change_kind` | TEXT | NOT NULL | Classified edit kind |
+| `content_sha256` | TEXT | NOT NULL | 64-hex canonical content hash (`ck_knowledge_revisions_hash`) |
+| `hash_version` | SMALLINT | NOT NULL | Hash scheme version (fixed to 1, `ck_knowledge_revisions_hash_version`) |
+
+### Table: `knowledge_revision_payloads`
+
+The payload side of a revision: either the snapshot is present and the
+revision is unredacted, or the snapshot has been redacted and a redaction id /
+timestamp record when.  Named boundary checks enforce title / body / category /
+lifecycle / verification / tags / sources / links / metadata shapes.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `revision_id` | UUID | PRIMARY KEY, FK → knowledge_revisions (RESTRICT) | Owning revision |
+| `snapshot` | JSONB | nullable | Content snapshot (`knowledge_snapshot_valid_v1`) |
+| `redacted_at` | TIMESTAMPTZ | nullable | Redaction time (mutually exclusive with snapshot) |
+| `redaction_id` | UUID | nullable | Redaction reference (mutually exclusive with snapshot) |
+
+### Table: `knowledge_search`
+
+The search index, one row per record (the head revision at the time of last
+reindex): title, summary, category, lifecycle, verification, and a GIN-indexed
+`tsvector` used for full-text lookup.  `FK → record_scopes` keeps the row
+within its scope.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `record_id` | UUID | PRIMARY KEY, FK → knowledge_records (RESTRICT) | Indexed record |
+| `revision_id` | UUID | NOT NULL | Head revision the row reflects |
+| `scope_key` | TEXT | NOT NULL, FK → record_scopes (RESTRICT) | Search scope |
+| `title` | TEXT | NOT NULL | Record title |
+| `summary` | TEXT | nullable | Short summary |
+| `category` | TEXT | NOT NULL | fact / decision / policy / procedure / incident / reference / note |
+| `lifecycle` | TEXT | NOT NULL | active / retired |
+| `verification` | TEXT | NOT NULL | unverified / verified / disputed |
+| `valid_until` | TIMESTAMPTZ | nullable | When the fact stops being valid |
+| `recheck_at` | TIMESTAMPTZ | nullable | When the fact should be rechecked |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last reindex time |
+| `search_vector` | TSVECTOR | NOT NULL | GIN-indexed full-text vector (`ix_knowledge_search_vector`) |
+
+### Table: `record_link_heads`
+
+The mutable head of a directed link between records: which version is current.
+Deferrable so a link and its first version land in one transaction.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `link_id` | UUID | PRIMARY KEY | Link identity |
+| `source_record_id` | UUID | NOT NULL, FK → records (RESTRICT) | Source record (unique with link, `uq_record_link_heads_source`) |
+| `owner_scope_key` | TEXT | NOT NULL, FK → record_scopes (RESTRICT) | Scope that owns the link |
+| `current_version` | BIGINT | NOT NULL | Head version (`ck_record_link_heads_version`) |
+
+### Table: `record_link_versions`
+
+The append-only version history of a link.  Each row is one (link, version)
+pair with the target record, an optionally pinned target revision, a typed
+link relationship, and the actor that made the change.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `link_id` | UUID | PRIMARY KEY, FK → record_link_heads (RESTRICT) | Owning link |
+| `version` | BIGINT | PRIMARY KEY | Monotonic per link (`ck_record_link_versions_version`) |
+| `target_record_id` | UUID | NOT NULL, FK → records (RESTRICT) | Target record |
+| `target_revision_id` | UUID | nullable | Pinned revision (if knowledge target) |
+| `link_type` | TEXT | NOT NULL | references / motivated_by / produces / supports / contradicts / supersedes |
+| `removed` | BOOLEAN | NOT NULL, DEFAULT false | Soft-delete marker |
+| `actor_id` | TEXT | NOT NULL | Actor that made the change |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Change time |
+| `metadata` | JSONB | NOT NULL | Free-form link metadata (`record_metadata_valid_v1`) |
+| `source_revision_id` | UUID | nullable | Revision that introduced the link |
+
+### Table: `task_record_link_state`
+
+A per-record counter/token pair used to track link-related state for a record
+produced from a task (sequence and token rotate together).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `record_id` | UUID | PRIMARY KEY, FK → records (RESTRICT) | Owning record |
+| `link_sequence` | BIGINT | NOT NULL | Link counter (`ck_task_record_link_state_sequence`) |
+| `link_token` | UUID | NOT NULL | Opaque token for the current link |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last change time |
+
+### Table: `record_source_artifacts`
+
+Content-addressed source artifacts (blobs) referenced by a scope.  Uniqueness
+is on (scope, content) — re-uploading identical bytes into the same scope is
+idempotent — and the row stays after redaction so provenance survives.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `artifact_id` | UUID | PRIMARY KEY | Artifact identity |
+| `scope_key` | TEXT | NOT NULL, FK → record_scopes (RESTRICT) | Owning scope |
+| `content_sha256` | TEXT | NOT NULL | 64-hex content hash (`ck_record_source_artifacts_hash`) |
+| `byte_size` | BIGINT | NOT NULL | Byte length (`ck_record_source_artifacts_size`) |
+| `media_type` | TEXT | NOT NULL | MIME type of the artifact |
+| `storage_key` | TEXT | NOT NULL | Where the bytes live |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Upload time |
+| `redacted_at` | TIMESTAMPTZ | nullable | When the bytes were redacted |
+
+### Table: `record_requests`
+
+Idempotent request ledger: one row per (scope, actor, operation, idempotency
+key) recording the canonical request hash and the object result. The check
+enforces a key in 1..128 and a JSON-object result.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `scope_key` | TEXT | PRIMARY KEY, FK → record_scopes (RESTRICT) | Owning scope |
+| `actor_key` | TEXT | PRIMARY KEY | Requesting actor |
+| `operation` | TEXT | PRIMARY KEY | Operation name |
+| `idempotency_key` | TEXT | PRIMARY KEY | 1..128 idempotency key (`ck_record_requests_key`) |
+| `request_sha256` | TEXT | NOT NULL | 64-hex canonical request hash |
+| `result` | JSONB | NOT NULL | JSON-object result (`ck_record_requests_result`) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Request time |
+
+### Table: `record_outbox`
+
+The transactional outbox of durable-record events.  `dedup_key` is unique so
+re-sending is idempotent, and the (aggregate, revision) pair is optional so a
+row may reference an aggregate without a specific revision.  A partial index
+keeps the pending queue cheap to scan.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `event_id` | UUID | PRIMARY KEY | Event identity |
+| `scope_key` | TEXT | NOT NULL, FK → record_scopes (RESTRICT) | Owning scope |
+| `aggregate_record_id` | UUID | nullable | Aggregate the event describes |
+| `revision_id` | UUID | nullable | Revision the event describes |
+| `event_type` | TEXT | NOT NULL | Event class |
+| `destination` | TEXT | NOT NULL | Consumer / channel name |
+| `dedup_key` | TEXT | NOT NULL | Idempotency key (unique, `uq_record_outbox_dedup`) |
+| `payload` | JSONB | NOT NULL | Event body (`ck_record_outbox_payload`) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Enqueue time |
+| `available_at` | TIMESTAMPTZ | NOT NULL | Earliest dispatch time |
+| `attempts` | INTEGER | NOT NULL, DEFAULT 0 | Delivery attempts (`ck_record_outbox_attempts`) |
+| `lease_token` | UUID | nullable | Consumer lease |
+| `lease_until` | TIMESTAMPTZ | nullable | Lease expiry (`ck_record_outbox_lease`) |
+| `delivered_at` | TIMESTAMPTZ | nullable | Delivery completion time |
+| `last_error_code` | TEXT | nullable | Last failure reason |
+
+### Table: `record_consumer_receipts`
+
+Per-(consumer, event) receipt proving a specific consumer processed a specific
+outbox event, with a 64-hex digest of the result.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `consumer` | TEXT | PRIMARY KEY | Consumer name |
+| `event_id` | UUID | PRIMARY KEY, FK → record_outbox (RESTRICT) | Event that was received |
+| `processed_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Receipt time |
+| `result_digest` | TEXT | NOT NULL | 64-hex digest of the result |
+
+### Table: `record_export_state`
+
+Per-(record, destination) export state: which revision was exported, at what
+time, and when the export stopped tracking the head (divergence).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `record_id` | UUID | PRIMARY KEY | Exported record |
+| `destination` | TEXT | PRIMARY KEY | Export target |
+| `revision_id` | UUID | NOT NULL | Revision that was exported |
+| `sequence` | BIGINT | NOT NULL | Revision sequence (`ck_record_export_state_sequence`) |
+| `export_sha256` | TEXT | NOT NULL | 64-hex export payload hash |
+| `exported_at` | TIMESTAMPTZ | NOT NULL | Export time |
+| `diverged_at` | TIMESTAMPTZ | nullable | When the record moved ahead of this export |
+
+### Table: `record_backfill_state`
+
+A per-source cursor for the records backfill lane (tasks / archived_tasks),
+tracking how many rows have been scanned and how many records inserted, with
+the invariant `scanned >= inserted >= 0`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `source` | TEXT | PRIMARY KEY | tasks / archived_tasks |
+| `cursor` | TEXT | nullable | Resume position |
+| `scanned` | BIGINT | NOT NULL, DEFAULT 0 | Rows scanned |
+| `inserted` | BIGINT | NOT NULL, DEFAULT 0 | Records inserted |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Cursor update time |
+
 ---
 
 ## 4. Projects
