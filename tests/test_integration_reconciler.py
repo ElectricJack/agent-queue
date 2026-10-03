@@ -321,6 +321,65 @@ async def test_timeout_schedules_retry_and_does_not_starve_page(db, stage):
     assert "s1" in healthy.observations
 
 
+class SlowCommitDB:
+    """The local durable commit, made slower than the remote call budget."""
+
+    def __init__(self, db, delay):
+        self.db = db
+        self.delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    async def update_integration_subject_on(self, *args, **kwargs):
+        await asyncio.sleep(self.delay)
+        return await self.db.update_integration_subject_on(*args, **kwargs)
+
+
+@pytest.mark.parametrize("stage", ["observe", "act"])
+async def test_a_slow_local_commit_is_not_cancelled_by_the_call_budget(db, stage):
+    # CI shard 3 of run 37139685719: the 1.0s remote budget also governed the
+    # local commit, so a slow write rolled back the retry schedule and left the
+    # subject PROGRESSING instead of the WAITING this test asserts elsewhere.
+    clock = Clock()
+    await add_subject(db, clock, "s1")
+    await add_subject(db, clock, "s2")
+
+    async def hung():
+        await asyncio.Event().wait()
+
+    async def observer(subject):
+        if stage == "observe" and subject.id == "s1":
+            await hung()
+        return SubjectFacts(
+            subject_id=subject.id,
+            subject_version=subject.version,
+            kind=subject.kind,
+            phase=subject.phase,
+            observed_at=clock(),
+        )
+
+    async def port(subject, args):
+        if stage == "act" and subject.id == "s1":
+            await hung()
+        return PrimitiveOutcome(primitive=Primitive.SEAL, outcome="sealed")
+
+    harness = make_loop(
+        SlowCommitDB(db, 1.5),
+        clock,
+        observer=observer,
+        port=port,
+        call_timeout_seconds=1.0,
+        bookkeeping_timeout_seconds=10.0,
+    )
+    await harness.loop.tick()
+    first, second = await read_subject(db, "s1"), await read_subject(db, "s2")
+    assert first.state is SubjectState.WAITING
+    assert first.schedule.next_due_at == clock() + 5
+    assert "TimeoutError" in first.schedule.wait_reason
+    assert second.version == 1 and second.schedule.next_due_at == clock()
+
+
 async def test_unknown_refusal_has_bounded_exponential_backoff(db):
     clock = Clock()
     await add_subject(db, clock)
@@ -834,6 +893,12 @@ async def test_adapter_projection_cannot_bypass_identity_or_generation_guards(db
 def test_default_is_shadow_and_invalid_timing_is_rejected():
     loop = IntegrationReconciler(None, None, None, PrimitivePorts())
     assert loop._mode is JournalMode.SHADOW
-    for option in ("page_size", "interval_seconds", "call_timeout_seconds", "backoff_seconds"):
+    for option in (
+        "page_size",
+        "interval_seconds",
+        "call_timeout_seconds",
+        "bookkeeping_timeout_seconds",
+        "backoff_seconds",
+    ):
         with pytest.raises(ValueError):
             IntegrationReconciler(None, None, None, PrimitivePorts(), **{option: 0})
