@@ -33,6 +33,7 @@ from src.database.queries.blocked_state import (
 from src.database.tables import (
     events,
     projects,
+    repos,
     sessions,
     task_completion_records,
     task_metadata,
@@ -1328,16 +1329,25 @@ class DevelopmentIntegration:
                 ).mappings()
             }
             generations = await self._completion_generations(conn, task_ids)
+            requests = await load_delivery_requests(
+                self.db, task_ids, repository_id=repo.id, target_ref=target_ref, conn=conn,
+            )
         for task_id in task_ids:
             row = rows.get(task_id)
             if row is None or row["project_id"] != project_id or row["repo_id"] not in {
                 None, repo.id,
             }:
                 raise ValueError(f"task {task_id} does not belong to the repository project")
-            if row["status"] == "COMPLETED" and task_id not in generations:
+            request = requests[task_id]
+            if request.requires_parent_completion and request.parent_completion is None:
+                raise ValueError(f"{task_id}: current verified parent completion is required")
+            if row["status"] == "COMPLETED" and (
+                not request.completion_id or request.completed_at is None
+            ):
                 raise ValueError(f"{task_id}: completion generation requires provenance migration")
         identities = {
-            task_id: self._adoption_fence(rows[task_id], generations) for task_id in task_ids
+            task_id: self._adoption_fence(rows[task_id], generations, requests)
+            for task_id in task_ids
         }
         manifest = await self._observe_adoption(repo, target_ref, head_sha, identities)
         equivalent = [m["task_id"] for m in manifest if m["acceptance"] != "ancestry"]
@@ -1372,8 +1382,9 @@ class DevelopmentIntegration:
         }
 
     @staticmethod
-    def _adoption_fence(row, generations):
-        return (row["status"], row["branch_name"], row["claim_epoch"], generations.get(row["id"]))
+    def _adoption_fence(row, generations, requests):
+        return (row["status"], row["branch_name"], row["claim_epoch"], generations.get(row["id"]),
+                row["repo_id"], requests.get(row["id"]))
 
     async def _observe_adoption(self, repo, target_ref, head_sha, identities):
         """Name each task's current branch head and whether *head_sha* contains it."""
@@ -1386,13 +1397,19 @@ class DevelopmentIntegration:
                 self.db, identities, repository_id=repo.id, target_ref=target_ref,
             )
             manifest = []
-            for task_id, (_status, branch, _epoch, _generation) in identities.items():
+            for task_id, (_status, branch, _epoch, _generation, _repo_id, observed) in (
+                identities.items()
+            ):
                 source = truth.source_heads.get(
                     "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
                 ) if branch else None
                 request = requests.get(task_id)
+                if request != observed:
+                    raise DevelopmentBusy("a selected completion changed; adopt again")
                 if request and request.completion_id and _status == "COMPLETED":
                     proof = await truth.evaluate(request)
+                    if request.parent_completion is not None and not proof.source_oid:
+                        raise ValueError(f"{task_id}: verified parent source could not be observed")
                     if proof.source_oid:
                         source = proof.source_oid
                 probe = await self.git.ais_ancestor(
@@ -1431,7 +1448,21 @@ class DevelopmentIntegration:
                 .all()
             )
             generations = await self._completion_generations(conn, task_ids)
-            if {row["id"]: self._adoption_fence(row, generations) for row in selected} != (
+            requests = await load_delivery_requests(
+                self.db, task_ids, repository_id=repo.id, target_ref=target_ref, conn=conn,
+            )
+            current_repository = (await conn.execute(select(repos).where(
+                repos.c.id == repo.id,
+            ).with_for_update())).mappings().one_or_none()
+            designated = await conn.scalar(select(projects.c.integration_repository_id).where(
+                projects.c.id == project_id,
+            ).with_for_update())
+            if (designated != repo.id or current_repository is None
+                or current_repository["project_id"] != project_id
+                or current_repository["url"] != repo.url
+                or current_repository["default_branch"] != repo.default_branch):
+                raise DevelopmentBusy("repository or delivery target changed; adopt again")
+            if {row["id"]: self._adoption_fence(row, generations, requests) for row in selected} != (
                 identities
             ):
                 raise DevelopmentBusy(
@@ -1474,12 +1505,7 @@ class DevelopmentIntegration:
                     source = sources[task_id]
                     if not is_valid_git_oid(source):
                         raise ValueError(f"{task_id}: missing exact completion source")
-                    completion_row = (await conn.execute(select(task_completion_records).where(
-                        task_completion_records.c.task_id == task_id,
-                    ).order_by(task_completion_records.c.completed_at.desc(),
-                               task_completion_records.c.id.desc()).limit(1))).mappings().first()
-                    completion = self.db._row_to_task_completion(completion_row) if completion_row else None
-                    generation = recorded.get(task_id) or (completion and completion.id)
+                    generation = recorded.get(task_id) or requests[task_id].completion_id
                     if generation is None:
                         raise ValueError(f"{task_id}: completion generation requires provenance migration")
                     original = CompletedSource(
