@@ -556,3 +556,35 @@ async def test_expired_current_stage_settlement_preserves_expiry_and_replays(cas
 def test_apply_requires_all_preview_fences_and_a_reason():
     with pytest.raises(ValueError, match="apply requires"):
         IntegrationSettleDeliveredBatchArgs(batch_id="batch", dry_run=False)
+
+
+async def test_archived_historical_delegate_settles_with_preserved_provenance(case):
+    assert await case.db.archive_task("old-repair", obsolete_integration_delegate=True)
+    result = await preview(case)
+    assert result["outcome"] == "would_settle", result
+    applied = await case.service.run(apply_request(result), principal="operator:test")
+    assert applied["outcome"] == "settled", applied
+    assert (await row(case, t.archived_tasks))["id"] == "old-repair"
+    assert (await row(case, t.integration_batches))["tested_candidate_sha"] is None
+
+
+@pytest.mark.parametrize("field,value", [("created_by_id", "other-operation"),
+                                        ("status", "IN_PROGRESS"),
+                                        ("branch_name", "other-branch")])
+async def test_archived_delegate_still_requires_terminal_matching_provenance(case, field, value):
+    assert await case.db.archive_task("old-repair", obsolete_integration_delegate=True)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(t.archived_tasks).values(**{field: value}))
+    result = await preview(case)
+    assert result["outcome"] == "blocked", result
+    assert (await row(case, t.integration_batches))["lifecycle"] == "testing"
+
+
+async def test_archived_delegate_change_invalidates_preview(case):
+    assert await case.db.archive_task("old-repair", obsolete_integration_delegate=True)
+    result = await preview(case)
+    assert result["outcome"] == "would_settle", result
+    async with case.db.immediate() as conn:
+        await conn.execute(update(t.archived_tasks).values(updated_at=999))
+    applied = await case.service.run(apply_request(result), principal="operator:test")
+    assert applied["outcome"] == "changed", applied
