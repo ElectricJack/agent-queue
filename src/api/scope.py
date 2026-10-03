@@ -208,6 +208,13 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_flush",
         "integration_eject",
         "integration_transfer_owner",
+        # The consolidated operator surface (integration-train simplification
+        # §5.1).  ``integration_explain`` reads subject journals, so it is
+        # authority-gated like the controls rather than a worker read.
+        "integration_gate_answer",
+        "integration_policy_activate",
+        "integration_hold",
+        "integration_explain",
         "task_deliver",
     }
 )
