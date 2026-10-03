@@ -12,9 +12,10 @@ import copy
 import hashlib
 import random
 from datetime import UTC, datetime
+from dataclasses import replace
 from uuid import UUID, uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database.queries.record_queries import RecordDomainUnavailable
@@ -22,6 +23,8 @@ from src.database.tables import (
     doc_review_revisions,
     doc_reviews,
     knowledge_revisions,
+    knowledge_global_shares,
+    knowledge_authority_grants,
     record_link_heads,
     record_link_versions,
     record_outbox,
@@ -32,7 +35,7 @@ from src.database.tables import (
 )
 from src.knowledge.legacy import check_legacy_writer
 from src.knowledge.models import LINK_TYPES, content_hash, normalize_snapshot, validate_metadata
-from src.records.auth import RecordAccess, authorize_on
+from src.records.auth import GLOBAL_SCOPE, RecordAccess, authorize_on
 from src.records.models import RecordError, RecordIdentity, uuid_value
 
 
@@ -73,6 +76,15 @@ class RecordService:
     async def _access(
         self, conn, principal, operation, project_id, *, write=False, claim_epoch=None
     ):
+        if write:
+            from src.knowledge.redaction import KNOWLEDGE_ERASURE_LOCK
+
+            lock = (
+                "pg_advisory_xact_lock"
+                if operation == "knowledge_redact"
+                else "pg_advisory_xact_lock_shared"
+            )
+            await conn.execute(text(f"SELECT {lock}(:key)"), {"key": KNOWLEDGE_ERASURE_LOCK})
         # Conflicting activation fails closed without blocking task operation.
         if self.config.enabled:
             check_legacy_writer(self.config, project_id, self.active_legacy_scopes())
@@ -108,7 +120,14 @@ class RecordService:
         else:
             key = "record_id" if ident.kind == "record" else "knowledge_alias"
             record = await self.db.get_record_on(**{key: ident.value}, conn=conn)
-        if not record or record["scope_key"] != f"project:{access.project_id}":
+        from src.knowledge.sharing import visible_scope
+
+        if not record or not await conn.scalar(
+            select(records.c.record_id).where(
+                records.c.record_id == record["record_id"],
+                visible_scope(access, records),
+            )
+        ):
             raise RecordError("record.not_found")
         if record["kind"] == "task":
             if not access.task_visible(record["task_id"]):
@@ -137,6 +156,11 @@ class RecordService:
     async def _source_visible(self, source, access, *, conn, writing=False):
         """Recheck retained evidence without following caller URLs or paths."""
         kind = source["kind"]
+        source_scope = access.evidence_scope or access.scope_key
+        if source_scope == "global" and kind != "artifact":
+            raise RecordError(
+                "record.source_unavailable", "Global evidence requires a global artifact"
+            )
         if kind == "task":
             if not access.task_visible(source["task_id"]):
                 raise RecordError("record.not_found")
@@ -187,7 +211,7 @@ class RecordService:
                     await conn.execute(
                         select(record_source_artifacts).where(
                             record_source_artifacts.c.artifact_id == UUID(source["artifact_id"]),
-                            record_source_artifacts.c.scope_key == f"project:{access.project_id}",
+                            record_source_artifacts.c.scope_key == source_scope,
                             record_source_artifacts.c.redacted_at.is_(None),
                         )
                     )
@@ -218,7 +242,9 @@ class RecordService:
             if link["target_revision_id"]:
                 await self._revision(target, link["target_revision_id"], conn=conn)
 
-    async def _safe_snapshot(self, snapshot, access, *, conn):
+    async def _safe_snapshot(self, snapshot, access, *, conn, scope_key=None):
+        if scope_key is not None:
+            access = replace(access, evidence_scope=scope_key)
         value = copy.deepcopy(snapshot)
         value["outgoing_links"] = [
             self._link_snapshot(link)
@@ -264,6 +290,8 @@ class RecordService:
                     value["resolved_revision_id"] = str(revision["revision_id"])
                 except RecordError as exc:
                     value["availability"] = exc.code
+                    if exc.code == "record.revision_redacted":
+                        value["metadata"] = {}
             visible.append(value)
         return visible
 
@@ -297,13 +325,20 @@ class RecordService:
             result["link_token"] = str(state["link_token"])
         else:
             revision = await self._revision(record, revision_id, conn=conn)
+            from src.knowledge.authority import authority_on
+
             result.update(
+                authority=await authority_on(
+                    conn, record, revision, review_required=self.config.authority_review_required
+                ),
                 knowledge_alias=record["knowledge_alias"],
                 revision_id=str(revision["revision_id"]),
                 sequence=revision["sequence"],
                 content_sha256=revision["content_sha256"],
                 hash_version=revision["hash_version"],
-                snapshot=await self._safe_snapshot(revision["snapshot"], access, conn=conn),
+                snapshot=await self._safe_snapshot(
+                    revision["snapshot"], access, conn=conn, scope_key=record["scope_key"]
+                ),
             )
         return result
 
@@ -333,7 +368,9 @@ class RecordService:
     async def _receipt(self, conn, access, operation, key, arguments):
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise RecordError("record.invalid_input", "idempotency_key must have 1–128 characters")
-        scope = await self.db.ensure_record_scope_on(project_id=access.project_id, conn=conn)
+        scope = await self.db.ensure_record_scope_on(
+            project_id=None if access.project_id is GLOBAL_SCOPE else access.project_id, conn=conn
+        )
         try:
             digest = content_hash(arguments)
         except (ValueError, TypeError, UnicodeError) as exc:
@@ -358,10 +395,32 @@ class RecordService:
                 claim_epoch=access.claim_epoch,
             )
             result = receipt["result"]
+            if result.get("proposal_id"):
+                from src.knowledge.proposals import reauthorize_proposal
+
+                await reauthorize_proposal(self, conn, result["proposal_id"], access)
+            if not result.get("record_id"):
+                return receipt, {**result, "outcome": "replayed"}
             record = await self.resolve_on(f"record:{result['record_id']}", access, conn=conn)
-            if record["kind"] == "knowledge":
+            if (
+                record["kind"] == "knowledge"
+                and result.get("revision_id")
+                and not result.get("redaction_id")
+            ):
                 revision = await self._revision(record, result["revision_id"], conn=conn)
                 await self._validate_snapshot_access(revision["snapshot"], access, conn=conn)
+            if "authority" in result:
+                from src.knowledge.authority import authority_on
+
+                result = {
+                    **result,
+                    "authority": await authority_on(
+                        conn,
+                        record,
+                        revision,
+                        review_required=self.config.authority_review_required,
+                    ),
+                }
             return receipt, {**result, "outcome": "replayed"}
         return receipt, None
 
@@ -458,6 +517,10 @@ class RecordService:
                 value = {**self._link_snapshot(previous), "removed": True}
             else:
                 target = await self.resolve_on(op["target"], access, conn=conn)
+                if record["scope_key"] == "global" and target["scope_key"] != "global":
+                    raise RecordError("knowledge.cross_project_forbidden")
+                if op["link_type"] == "supersedes" and record["scope_key"] != target["scope_key"]:
+                    raise RecordError("record.invalid_link")
                 pin = op["target_revision_id"]
                 if target["kind"] == "knowledge" or pin:
                     await self._revision(target, pin, conn=conn)
@@ -582,12 +645,59 @@ class RecordService:
         changes=(),
         force_revision=False,
     ):
+        if current and operation != "knowledge_verify":
+            snapshot = {
+                **snapshot,
+                "verification": "unverified",
+                "last_verified_at": None,
+                "last_verified_by": None,
+            }
         snapshot = normalize_snapshot(snapshot)
         await self._validate_snapshot_access(snapshot, access, conn=conn)
         digest = content_hash(snapshot)
+        from src.database.tables import knowledge_redaction_targets
+
+        if await conn.scalar(
+            select(knowledge_redaction_targets.c.revision_id)
+            .join(
+                knowledge_revisions,
+                knowledge_revisions.c.revision_id == knowledge_redaction_targets.c.revision_id,
+            )
+            .join(records, records.c.record_id == knowledge_revisions.c.record_id)
+            .where(
+                knowledge_redaction_targets.c.content_sha256 == digest,
+                records.c.scope_key == record["scope_key"],
+            )
+            .limit(1)
+        ):
+            raise RecordError("record.revision_redacted")
         if current and digest == current["content_sha256"] and not force_revision:
             return self._knowledge_result(record, current, "unchanged")
+        if record["scope_key"] == "global":
+            from src.knowledge.sharing import validate_share_targets
+
+            recipients = (
+                (
+                    await conn.execute(
+                        select(knowledge_global_shares.c.project_id).where(
+                            knowledge_global_shares.c.record_id == record["record_id"],
+                            knowledge_global_shares.c.revoked_at.is_(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await validate_share_targets(conn, snapshot, recipients)
         now, revision_id = datetime.now(UTC), uuid4()
+        await conn.execute(
+            update(knowledge_authority_grants)
+            .where(
+                knowledge_authority_grants.c.record_id == record["record_id"],
+                knowledge_authority_grants.c.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
         sequence = current["sequence"] + 1 if current else 1
         if current is None:
             await self.db.insert_knowledge_record_on(

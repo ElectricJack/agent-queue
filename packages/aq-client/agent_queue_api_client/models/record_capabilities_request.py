@@ -16,9 +16,11 @@ class RecordCapabilitiesRequest:
     """
     Attributes:
         project_id (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
     project_id: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,11 +30,15 @@ class RecordCapabilitiesRequest:
         else:
             project_id = self.project_id
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
@@ -49,8 +55,11 @@ class RecordCapabilitiesRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         record_capabilities_request = cls(
             project_id=project_id,
+            global_scope=global_scope,
         )
 
         record_capabilities_request.additional_properties = d

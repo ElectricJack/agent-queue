@@ -247,3 +247,38 @@ class TestErrorPaths:
         )
         assert out["success"] is False
         assert out["error_code"] == "knowledge.disabled"
+
+
+async def test_proposal_and_redaction_commands_dispatch_through_handler(handler):
+    from tests.record_helpers import snapshot
+
+    proposed = await handler.execute("knowledge_propose", {
+        "project_id": "p", "snapshot": snapshot(), "idempotency_key": "propose",
+    })
+    assert proposed["success"], proposed
+    shown = await handler.execute("knowledge_proposal_show", {
+        "project_id": "p", "proposal_id": proposed["proposal_id"],
+    })
+    assert shown["snapshot"]["title"] == "Observed incident"
+    accepted = await handler.execute("knowledge_proposal_decide", {
+        "project_id": "p", "proposal_id": proposed["proposal_id"],
+        "proposal_sha256": proposed["proposal_sha256"], "decision": "accept",
+        "reason": "Reviewed", "idempotency_key": "accept",
+    })
+    assert accepted["success"] and accepted["state"] == "accepted", accepted
+    erased = await handler.execute("knowledge_redact", {
+        "project_id": "p", "identity": ident(accepted), "if_revision": accepted["revision_id"],
+        "reason_code": "sensitive", "idempotency_key": "erase", "dry_run": False,
+    })
+    assert erased["success"] and erased["redaction_id"], erased
+    denied = await handler.execute("knowledge_show", {"project_id": "p", "identity": ident(accepted)})
+    assert denied["error_code"] == "record.revision_redacted"
+
+
+async def test_global_scope_is_explicit_and_cannot_be_combined_with_project(handler):
+    handler.config.knowledge.global_enabled = True
+    args = dict(title="Global", body="Public retained assertion", category="note", idempotency_key="global")
+    created = await handler.execute("knowledge_create", {**args, "global_scope": True})
+    assert created["success"], created
+    denied = await handler.execute("knowledge_create", {**args, "global_scope": True, "project_id": "p"})
+    assert not denied["success"]

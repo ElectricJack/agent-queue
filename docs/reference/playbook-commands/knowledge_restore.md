@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:633ce5dad1f2b2f22372bd4baa05cd37cfedc3afe17586cfdd3689500ced9415` |
+| Contract fingerprint | `sha256:43308fcb4353df0b539f4e523773c5769697e49db77270849f4ed3d27c7ebe52` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `revision_id` | `string` | yes | — | — |
 | `reason` | `string` | yes | — | — |
@@ -63,7 +64,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using project_id, identity, revision_id, reason, idempotency_key, if_revision, claim_epoch | — | always |
+| Resolve using project_id, global_scope, identity, revision_id, reason, idempotency_key, if_revision, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

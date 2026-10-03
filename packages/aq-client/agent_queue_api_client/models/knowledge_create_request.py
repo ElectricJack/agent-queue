@@ -19,34 +19,34 @@ T = TypeVar("T", bound="KnowledgeCreateRequest")
 class KnowledgeCreateRequest:
     """
     Attributes:
-        project_id (str):
         title (str):
         body (str):
         category (str):
         idempotency_key (str):
+        project_id (None | str | Unset):
         summary (None | str | Unset):
         tags (list[Any] | None | Unset):
         sources (list[Any] | None | Unset):
         metadata (KnowledgeCreateRequestMetadataType0 | None | Unset):
         claim_epoch (int | None | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     title: str
     body: str
     category: str
     idempotency_key: str
+    project_id: None | str | Unset = UNSET
     summary: None | str | Unset = UNSET
     tags: list[Any] | None | Unset = UNSET
     sources: list[Any] | None | Unset = UNSET
     metadata: KnowledgeCreateRequestMetadataType0 | None | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
-
-        project_id = self.project_id
 
         title = self.title
 
@@ -55,6 +55,12 @@ class KnowledgeCreateRequest:
         category = self.category
 
         idempotency_key = self.idempotency_key
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         summary: None | str | Unset
         if isinstance(self.summary, Unset):
@@ -94,17 +100,20 @@ class KnowledgeCreateRequest:
         else:
             claim_epoch = self.claim_epoch
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "title": title,
                 "body": body,
                 "category": category,
                 "idempotency_key": idempotency_key,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if summary is not UNSET:
             field_dict["summary"] = summary
         if tags is not UNSET:
@@ -115,6 +124,8 @@ class KnowledgeCreateRequest:
             field_dict["metadata"] = metadata
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
@@ -123,8 +134,6 @@ class KnowledgeCreateRequest:
         from ..models.knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
 
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         title = d.pop("title")
 
         body = d.pop("body")
@@ -132,6 +141,15 @@ class KnowledgeCreateRequest:
         category = d.pop("category")
 
         idempotency_key = d.pop("idempotency_key")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_summary(data: object) -> None | str | Unset:
             if data is None:
@@ -202,17 +220,20 @@ class KnowledgeCreateRequest:
 
         claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         knowledge_create_request = cls(
-            project_id=project_id,
             title=title,
             body=body,
             category=category,
             idempotency_key=idempotency_key,
+            project_id=project_id,
             summary=summary,
             tags=tags,
             sources=sources,
             metadata=metadata,
             claim_epoch=claim_epoch,
+            global_scope=global_scope,
         )
 
         knowledge_create_request.additional_properties = d

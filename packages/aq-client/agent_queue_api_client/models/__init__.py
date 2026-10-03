@@ -613,6 +613,11 @@ from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
 from .job_submit_args import JobSubmitArgs
+from .knowledge_authority_grant_request import KnowledgeAuthorityGrantRequest
+from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityGrantRequestReviewType0
+from .knowledge_authority_grant_response_422 import KnowledgeAuthorityGrantResponse422
+from .knowledge_authority_revoke_request import KnowledgeAuthorityRevokeRequest
+from .knowledge_authority_revoke_response_422 import KnowledgeAuthorityRevokeResponse422
 from .knowledge_create_request import KnowledgeCreateRequest
 from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
 from .knowledge_create_response import KnowledgeCreateResponse
@@ -633,10 +638,25 @@ from .knowledge_list_request import KnowledgeListRequest
 from .knowledge_list_response import KnowledgeListResponse
 from .knowledge_list_response_422 import KnowledgeListResponse422
 from .knowledge_list_response_items_item import KnowledgeListResponseItemsItem
+from .knowledge_proposal_decide_request import KnowledgeProposalDecideRequest
+from .knowledge_proposal_decide_response_422 import KnowledgeProposalDecideResponse422
+from .knowledge_proposal_show_request import KnowledgeProposalShowRequest
+from .knowledge_proposal_show_response_422 import KnowledgeProposalShowResponse422
+from .knowledge_propose_request import KnowledgeProposeRequest
+from .knowledge_propose_request_snapshot import KnowledgeProposeRequestSnapshot
+from .knowledge_propose_response_422 import KnowledgeProposeResponse422
+from .knowledge_protection_response import KnowledgeProtectionResponse
+from .knowledge_protection_response_authority_type_0 import KnowledgeProtectionResponseAuthorityType0
+from .knowledge_protection_response_cleanup_state_type_0 import KnowledgeProtectionResponseCleanupStateType0
+from .knowledge_protection_response_snapshot_type_0 import KnowledgeProtectionResponseSnapshotType0
+from .knowledge_redact_request import KnowledgeRedactRequest
+from .knowledge_redact_response_422 import KnowledgeRedactResponse422
 from .knowledge_restore_request import KnowledgeRestoreRequest
 from .knowledge_restore_response_422 import KnowledgeRestoreResponse422
 from .knowledge_retire_request import KnowledgeRetireRequest
 from .knowledge_retire_response_422 import KnowledgeRetireResponse422
+from .knowledge_share_request import KnowledgeShareRequest
+from .knowledge_share_response_422 import KnowledgeShareResponse422
 from .knowledge_show_request import KnowledgeShowRequest
 from .knowledge_show_response import KnowledgeShowResponse
 from .knowledge_show_response_422 import KnowledgeShowResponse422
@@ -645,6 +665,8 @@ from .knowledge_update_request import KnowledgeUpdateRequest
 from .knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
 from .knowledge_update_response import KnowledgeUpdateResponse
 from .knowledge_update_response_422 import KnowledgeUpdateResponse422
+from .knowledge_verify_request import KnowledgeVerifyRequest
+from .knowledge_verify_response_422 import KnowledgeVerifyResponse422
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
@@ -2303,6 +2325,11 @@ __all__ = (
     "JobResultResponse",
     "JobResultResponseResultType0",
     "JobSubmitArgs",
+    "KnowledgeAuthorityGrantRequest",
+    "KnowledgeAuthorityGrantRequestReviewType0",
+    "KnowledgeAuthorityGrantResponse422",
+    "KnowledgeAuthorityRevokeRequest",
+    "KnowledgeAuthorityRevokeResponse422",
     "KnowledgeCreateRequest",
     "KnowledgeCreateRequestMetadataType0",
     "KnowledgeCreateResponse",
@@ -2323,10 +2350,25 @@ __all__ = (
     "KnowledgeListResponse",
     "KnowledgeListResponse422",
     "KnowledgeListResponseItemsItem",
+    "KnowledgeProposalDecideRequest",
+    "KnowledgeProposalDecideResponse422",
+    "KnowledgeProposalShowRequest",
+    "KnowledgeProposalShowResponse422",
+    "KnowledgeProposeRequest",
+    "KnowledgeProposeRequestSnapshot",
+    "KnowledgeProposeResponse422",
+    "KnowledgeProtectionResponse",
+    "KnowledgeProtectionResponseAuthorityType0",
+    "KnowledgeProtectionResponseCleanupStateType0",
+    "KnowledgeProtectionResponseSnapshotType0",
+    "KnowledgeRedactRequest",
+    "KnowledgeRedactResponse422",
     "KnowledgeRestoreRequest",
     "KnowledgeRestoreResponse422",
     "KnowledgeRetireRequest",
     "KnowledgeRetireResponse422",
+    "KnowledgeShareRequest",
+    "KnowledgeShareResponse422",
     "KnowledgeShowRequest",
     "KnowledgeShowResponse",
     "KnowledgeShowResponse422",
@@ -2335,6 +2377,8 @@ __all__ = (
     "KnowledgeUpdateRequestMetadataType0",
     "KnowledgeUpdateResponse",
     "KnowledgeUpdateResponse422",
+    "KnowledgeVerifyRequest",
+    "KnowledgeVerifyResponse422",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",

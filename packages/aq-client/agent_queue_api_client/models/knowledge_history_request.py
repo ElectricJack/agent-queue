@@ -15,22 +15,28 @@ T = TypeVar("T", bound="KnowledgeHistoryRequest")
 class KnowledgeHistoryRequest:
     """
     Attributes:
-        project_id (str):
         identity (str):
+        project_id (None | str | Unset):
         before_sequence (int | None | Unset):
         limit (int | Unset):  Default: 25.
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
     identity: str
+    project_id: None | str | Unset = UNSET
     before_sequence: int | None | Unset = UNSET
     limit: int | Unset = 25
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         identity = self.identity
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         before_sequence: int | None | Unset
         if isinstance(self.before_sequence, Unset):
@@ -40,27 +46,39 @@ class KnowledgeHistoryRequest:
 
         limit = self.limit
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "identity": identity,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if before_sequence is not UNSET:
             field_dict["before_sequence"] = before_sequence
         if limit is not UNSET:
             field_dict["limit"] = limit
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         identity = d.pop("identity")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_before_sequence(data: object) -> int | None | Unset:
             if data is None:
@@ -73,11 +91,14 @@ class KnowledgeHistoryRequest:
 
         limit = d.pop("limit", UNSET)
 
+        global_scope = d.pop("global_scope", UNSET)
+
         knowledge_history_request = cls(
-            project_id=project_id,
             identity=identity,
+            project_id=project_id,
             before_sequence=before_sequence,
             limit=limit,
+            global_scope=global_scope,
         )
 
         knowledge_history_request.additional_properties = d

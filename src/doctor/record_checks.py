@@ -291,10 +291,19 @@ async def _redaction(ctx):
             )
             .where(knowledge_revision_payloads.c.snapshot.is_(None))
         )
+        from src.database.tables import knowledge_redactions
+
+        pending = await conn.scalar(
+            select(func.count())
+            .select_from(knowledge_redactions)
+            .where(
+                knowledge_redactions.c.completed_at.is_(None),
+            )
+        )
     return _result(
         "redaction_cleanup",
-        exports + index,
-        data={"export_checkpoints": exports, "lexical_rows": index},
+        exports + index + pending,
+        data={"export_checkpoints": exports, "lexical_rows": index, "pending_redactions": pending},
     )
 
 
