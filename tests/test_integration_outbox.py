@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -705,6 +706,194 @@ async def test_project_max_wait_bounds_retry_deadlines_independently(db):
 def test_retry_age_budget_must_be_finite_and_positive(max_wait):
     with pytest.raises(ValueError, match="max_wait must be finite and positive"):
         IntegrationOutbox(None, None, max_wait_seconds=max_wait)
+
+
+def _proving(runtime):
+    """The orchestrator adapter's opt-in to explicit no-consumer evidence."""
+
+    async def accept(event_type, payload, event_id):
+        return await runtime.accept_integration_event(
+            event_type, payload, event_id, prove_no_consumer=True
+        )
+
+    return accept
+
+
+async def _set_activation(
+    db, playbook_id, artifact_sha256, *, scope="project", scope_identifier="p",
+    enabled=True, health="ready",
+) -> None:
+    await db.set_playbook_activation(
+        playbook_id=playbook_id,
+        scope=scope,
+        scope_identifier=scope_identifier,
+        artifact_sha256=artifact_sha256,
+        enabled=enabled,
+        activated_by="test",
+        health=health,
+        reasons="[]",
+    )
+
+
+async def _offer(runtime, **kwargs) -> bool:
+    [row] = await _outbox_rows(db=runtime._db)
+    return await runtime.accept_integration_event(
+        row["event_type"], dict(row["payload"]), row["id"], **kwargs
+    )
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_runtime_proves_no_consumer_only_when_asked(db, tmp_path, event_type):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "unrelated-consumer", "integration.custom_notification")
+    _, disabled_sha = await _activate(
+        db, compiled, "disabled-consumer", event_type, source_digit="2"
+    )
+    # An operator-disabled subscriber is a deliberate unsubscribe, and
+    # activations outside the event's project cannot receive it at all.
+    await _set_activation(db, "disabled-consumer", disabled_sha, enabled=False, health="disabled")
+    await _set_activation(
+        db, "other-project-consumer", disabled_sha, scope_identifier="q", health="stale_contract",
+    )
+    await _set_activation(
+        db, "agent-consumer", disabled_sha, scope="agent_type", scope_identifier="worker",
+        health="invalid",
+    )
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await _offer(runtime) is False
+    with pytest.raises(
+        NoIntegrationEventConsumer,
+        match=f"no ready playbook in scope for project p subscribes to {event_type}",
+    ):
+        await _offer(runtime, prove_no_consumer=True)
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["attempts"] == 1
+    assert row["last_error"].startswith("unsubscribed: ")
+    assert row["destination_manifest"] is None
+    assert await _pending_rows(db) == []
+    assert await _artifact_pin_rows(db) == []
+
+
+async def _never_refreshed(db, compiled):
+    return _runtime(db, compiled), "integration.root_delivered"
+
+
+async def _shutting_down(db, compiled):
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    await runtime.shutdown()
+    return runtime, "integration.root_delivered"
+
+
+async def _unready_in_scope_activation(db, compiled):
+    # Its triggers are unknown until it is ready again, so it may subscribe.
+    _, sha = await _activate(db, compiled, "stale-consumer", "integration.custom_notification")
+    await _set_activation(db, "stale-consumer", sha, health="stale_contract")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _unloadable_artifact(db, compiled):
+    _, sha = await _activate(
+        db, compiled, "missing-artifact", "integration.custom_notification", scope="system",
+    )
+    os.remove(ArtifactStore(str(compiled)).path_for(sha))
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _fenced_lifecycle_subscriber(db, compiled):
+    # Lifecycle playbooks serve only through a frozen route; a subscription
+    # that is fenced off is still a subscription, not proof of none.
+    await _activate(db, compiled, "root-train", "integration.root_delivered", scope="system")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _integration_route_event(db, compiled):
+    # Route events depend on a frozen operation route that is unavailable
+    # here (the project is not enabled); that is never an unsubscribe.
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.sealed"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        _never_refreshed,
+        _shutting_down,
+        _unready_in_scope_activation,
+        _unloadable_artifact,
+        _fenced_lifecycle_subscriber,
+        _integration_route_event,
+    ],
+    ids=lambda scenario: scenario.__name__.strip("_"),
+)
+async def test_runtime_withholds_no_consumer_proof_it_cannot_establish(
+    db, tmp_path, scenario,
+):
+    runtime, event_type = await scenario(db, tmp_path / "compiled")
+    await _enqueue(db, event_type=event_type)
+
+    assert await _offer(runtime, prove_no_consumer=True) is False
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] is None
+    assert row["available_at"] == NOW + 1
+    assert row["last_error"] == "no enabled matching playbook durably accepted the event"
+
+
+async def test_runtime_proof_rereads_activations_committed_after_its_refresh(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    # The subscriber commits before the runtime's refresh observes it.
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert not retry["last_error"].startswith("unsubscribed:")
+
+    await runtime.refresh()
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_runtime_proof_for_an_unknown_event_type_stays_bounded_not_sunk(db, tmp_path):
+    await _enqueue(db, event_type="integration.custom_notification")
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, _proving(runtime), max_wait_seconds=3, retry_base_seconds=10, clock=lambda: now[0],
+    )
+
+    assert await outbox.dispatch_due(now[0]) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert retry["last_error"].startswith("NoIntegrationEventConsumer: no ready playbook")
+    now[0] = NOW + 3
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
 
 
 async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_path):
