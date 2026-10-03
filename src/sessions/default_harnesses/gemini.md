@@ -122,6 +122,16 @@ every prompt boundary. Queued messages reach a Gemini session via nudge
 is unaffected because it is explicit (`aq task close` through the
 injected CLI/MCP surface).
 
+**Prepared knowledge context arrives through `aq prime`,** the same way
+every other message reaches this session: the bootstrap prompt names
+`aq prime`, and the selected records ride that document. There is no hook
+to wrap, so `src/knowledge/delivery.py` classifies this harness as the
+startup prompt and leaves the payload byte-identical. A launch that had
+neither a hook nor a prompt argument would get the same bytes written to
+`.aq/knowledge-startup.md` as explicit guidance instead. Nothing about
+this changes gemini's own configuration, and it stays inert until the
+operator enables the knowledge feature for the project.
+
 **No `transcript_paths`.** Gemini writes session data under
 `~/.gemini/tmp/<hash>/` and `~/.config/gemini-cli/` (snap: under the
 snap's `$HOME`), keyed in a way no reader exists for yet. Listing a glob

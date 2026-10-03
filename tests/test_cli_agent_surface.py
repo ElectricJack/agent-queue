@@ -70,6 +70,80 @@ class TestPrimeCLI:
         assert "## Task" in result.output
         assert mock.calls == [("prime", {"task_id": "task-1"})]
 
+    def test_no_bundle_means_no_delivery_receipt(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"prime": {"success": True, "body": "## Task\n\nhello"}})
+        with patch("src.cli.agent_surface._get_client", return_value=mock):
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1"])
+        assert result.exit_code == 0, result.output
+        assert [command for command, _ in mock.calls] == ["prime"]
+
+    def test_prepared_bundle_is_acknowledged_after_the_body_is_written(self, runner,
+                                                                      monkeypatch):
+        from src.cli.app import cli
+
+        monkeypatch.setenv("AQ_SESSION_ID", "sess-1")
+        monkeypatch.setenv("AQ_CLAIM_EPOCH", "3")
+        mock = _mock_client({
+            "prime": {"success": True, "body": "## Task\n\nhello", "context_bundle": {
+                "bundle_id": "bundle-1", "content_sha256": "a" * 64,
+            }},
+            "knowledge_context_deliver": {"success": True, "delivery_id": "d-1"},
+        })
+        with patch("src.cli.agent_surface._get_client", return_value=mock):
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1"])
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            ("prime", {"task_id": "task-1"}),
+            ("knowledge_context_deliver", {
+                "bundle_id": "bundle-1",
+                "transport": "startup_prompt",
+                "idempotency_key": "startup_prompt:bundle-1:startup:sess-1:3",
+                "rendered_sha256": "a" * 64,
+                "state": "delivered",
+                "claim_epoch": 3,
+            }),
+        ]
+
+    def test_hook_mode_acknowledges_the_envelope_transport(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({
+            "prime": {"success": True, "body": "hello", "context_bundle": {
+                "bundle_id": "bundle-1", "content_sha256": "b" * 64,
+            }},
+            "knowledge_context_deliver": {"success": True},
+        })
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            # A task (non-pool) session has no claim fence to send.
+            patch("src.cli.agent_surface.read_claim_epoch", return_value=None),
+        ):
+            result = runner.invoke(cli, ["prime", "--hook-json", "--task-id", "task-1"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["hookSpecificOutput"]["additionalContext"] == "hello"
+        delivery = dict(mock.calls[1][1])
+        assert delivery["transport"] == "hook_envelope"
+        assert delivery["idempotency_key"] == "hook_envelope:bundle-1:startup:no-session"
+        assert "claim_epoch" not in delivery
+
+    def test_an_unrecorded_receipt_is_unknown_not_a_read(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({
+            "prime": {"success": True, "body": "hello", "context_bundle": {
+                "bundle_id": "bundle-1", "content_sha256": "c" * 64,
+            }},
+            "knowledge_context_deliver": RuntimeError("daemon unreachable"),
+        })
+        with patch("src.cli.agent_surface._get_client", return_value=mock):
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1"])
+        # The payload still reached the agent, and both receipt attempts are
+        # visible: nothing here claims the model read anything.
+        assert "hello" in result.output
+        assert [args["state"] for _, args in mock.calls[1:]] == ["delivered", "unknown"]
+
 
 class TestTaskCloseCLI:
     def test_forwards_repeatable_deliverable_unmet_reasons(self, runner):

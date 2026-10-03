@@ -614,9 +614,10 @@
       ]
     },
     "knowledge-evaluation": {
-      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks.",
+      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks, plus the thin harness delivery/resume adapters and the integrated runner replayed against the real context service.",
       "modules": [
-        "tests/test_knowledge_evaluation.py"
+        "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_harness_delivery.py"
       ]
     },
     "knowledge-inventory": {
@@ -637,6 +638,7 @@
         "tests/test_knowledge_compatibility.py",
         "tests/test_knowledge_context.py",
         "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_harness_delivery.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
         "tests/test_knowledge_inventory.py",
@@ -1387,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:0f5b5f7d871f79593fe28565554eea47523bc7a8bdc9aae4dc61bb8304b33763",
+  "digest": "sha256:6952860a879ce969cfc41a0b1aa2e0e06a58c921233d2fa38cb01689c5010ede",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8907,6 +8909,28 @@
         "parametrize"
       ],
       "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
+    },
+    "tests/test_knowledge_harness_delivery.py": {
+      "areas": [
+        "knowledge-evaluation",
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.budget",
+        "src.knowledge.context",
+        "src.knowledge.delivery",
+        "src.records.models",
+        "src.sessions.harness_parser",
+        "src.sessions.spec",
+        "src.sessions.subprocess"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "K09 — thin harness delivery/resume adapters and the integrated fixture runner."
     },
     "tests/test_knowledge_import.py": {
       "areas": [

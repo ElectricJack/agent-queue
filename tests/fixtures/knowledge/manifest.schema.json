@@ -157,12 +157,27 @@
                   "note"
                 ]
               },
+              "lifecycle": {
+                "enum": [
+                  "active",
+                  "retired"
+                ],
+                "type": "string"
+              },
               "record_id": {
                 "pattern": "^[a-z0-9-]+$",
                 "type": "string"
               },
               "revision_id": {
                 "pattern": "^[a-z0-9-]+$",
+                "type": "string"
+              },
+              "verification": {
+                "enum": [
+                  "unverified",
+                  "verified",
+                  "disputed"
+                ],
                 "type": "string"
               }
             },
@@ -541,12 +556,34 @@
               "note"
             ]
           },
+          "lifecycle": {
+            "description": "Optional lifecycle label an integrated observation must report.",
+            "enum": [
+              "active",
+              "retired"
+            ],
+            "type": "string"
+          },
           "record_id": {
             "pattern": "^[a-z0-9-]+$",
             "type": "string"
           },
           "revision_id": {
             "pattern": "^[a-z0-9-]+$",
+            "type": "string"
+          },
+          "revision_sha256": {
+            "description": "Sealed exact revision content hash for an integrated fixture; the oracle compares the adapter's reported hash against this instead of hashing the excerpt it rendered.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "verification": {
+            "description": "Optional verification label an integrated observation must report.",
+            "enum": [
+              "unverified",
+              "verified",
+              "disputed"
+            ],
             "type": "string"
           }
         },
