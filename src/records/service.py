@@ -298,7 +298,9 @@ class RecordService:
     async def show(self, **kwargs):
         return await self._transaction(lambda conn: self.show_on(conn=conn, **kwargs))
 
-    async def show_on(self, identity, *, principal, project_id, revision_id=None, conn):
+    async def show_on(
+        self, identity, *, principal, project_id, revision_id=None, include_edges=False, conn
+    ):
         access = await self._access(conn, principal, "record_show", project_id)
         record = await self.resolve_on(identity, access, conn=conn)
         result = {
@@ -340,7 +342,18 @@ class RecordService:
                     revision["snapshot"], access, conn=conn, scope_key=record["scope_key"]
                 ),
             )
+        if include_edges:
+            from src.records.graph import record_edges_on
+
+            result["edges"] = await record_edges_on(
+                self, record, access, revision_id=result.get("revision_id"), conn=conn
+            )
         return result
+
+    async def search(self, **kwargs):
+        from src.records.search import search_on
+
+        return await self._transaction(lambda conn: search_on(self, conn=conn, **kwargs))
 
     async def list_links(self, **kwargs):
         return await self._transaction(lambda conn: self.list_links_on(conn=conn, **kwargs))

@@ -5,6 +5,8 @@ type Pane = EntryView["pane"];
 const PROJECT_TABS: Record<string, string> = {
   graph: "Graph",
   tasks: "Tasks",
+  knowledge: "Knowledge",
+  records: "All records",
   overview: "Overview",
   sessions: "Sessions",
   workspaces: "Workspaces",

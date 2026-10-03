@@ -55309,6 +55309,59 @@
         "type": "object",
         "title": "RecordCapabilitiesResponse"
       },
+      "RecordEdge": {
+        "properties": {
+          "edge_id": {
+            "type": "string",
+            "title": "Edge Id"
+          },
+          "source_record_id": {
+            "type": "string",
+            "title": "Source Record Id"
+          },
+          "target_record_id": {
+            "type": "string",
+            "title": "Target Record Id"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "informational",
+              "execution"
+            ],
+            "title": "Domain"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "target_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Revision Id"
+          },
+          "availability": {
+            "type": "string",
+            "title": "Availability",
+            "default": "available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "edge_id",
+          "source_record_id",
+          "target_record_id",
+          "domain",
+          "type"
+        ],
+        "title": "RecordEdge"
+      },
       "RecordFileInspectionRequest": {
         "properties": {
           "project_id": {
@@ -55553,17 +55606,23 @@
             "title": "Project Id",
             "description": ""
           },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "",
+            "default": "knowledge"
+          },
           "query": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Query",
-            "description": ""
+            "description": "",
+            "default": ""
           },
           "category": {
             "anyOf": [
@@ -55575,6 +55634,30 @@
               }
             ],
             "title": "Category",
+            "description": ""
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": ""
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
             "description": ""
           },
           "include_retired": {
@@ -55605,36 +55688,6 @@
               }
             ],
             "title": "Cursor",
-            "description": ""
-          },
-          "global_scope": {
-            "type": "boolean",
-            "title": "Global Scope",
-            "description": "",
-            "default": false
-          },
-          "lifecycle": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lifecycle",
-            "description": ""
-          },
-          "verification": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Verification",
             "description": ""
           }
         },
@@ -55719,6 +55772,12 @@
             "title": "Project Id",
             "description": ""
           },
+          "global_scope": {
+            "type": "boolean",
+            "title": "Global Scope",
+            "description": "",
+            "default": false
+          },
           "identity": {
             "type": "string",
             "title": "Identity",
@@ -55736,9 +55795,9 @@
             "title": "Revision Id",
             "description": ""
           },
-          "global_scope": {
+          "include_edges": {
             "type": "boolean",
-            "title": "Global Scope",
+            "title": "Include Edges",
             "description": "",
             "default": false
           }
@@ -55815,6 +55874,14 @@
             "type": "object",
             "title": "Snapshot",
             "default": {}
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/RecordEdge"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
           }
         },
         "additionalProperties": true,

@@ -89,6 +89,7 @@ export function useKnowledgeUpdate(adapter: KnowledgeAdapter) {
       void queryClient.invalidateQueries({ queryKey: knowledgeKeys.details(input.recordId) });
       void queryClient.invalidateQueries({ queryKey: knowledgeKeys.history(input.recordId) });
       void queryClient.invalidateQueries({ queryKey: ["knowledge", "task"] });
+      void queryClient.invalidateQueries({ queryKey: ["records"] });
     },
   });
 }

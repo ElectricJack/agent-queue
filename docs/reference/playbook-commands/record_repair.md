@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:f46f51bdd3de60913b5cdfe6b60ece664a08c4def2dabb2b51e659e5bad0acdf` |
+| Contract fingerprint | `sha256:a01d2da1e53f8b5ae3c3134ceaefc5b6dd5272044e32fedf720c7ce9958f93c2` |
 
 ## Parameters
 
@@ -42,6 +42,7 @@
 | `items` | `object[] \| null` | — |
 | `next_cursor` | `string \| null` | — |
 | `links` | `object[] \| null` | — |
+| `edges` | `object[] \| null` | — |
 | `links_out` | `object[] \| null` | — |
 | `links_in` | `object[] \| null` | — |
 | `changed` | `string[] \| null` | — |
