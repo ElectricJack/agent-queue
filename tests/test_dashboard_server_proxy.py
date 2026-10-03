@@ -9,10 +9,12 @@ fake daemon's events, never with sleeps; every wait is bounded.
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import io
 import json
 import os
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -35,7 +37,7 @@ from tests.dashboard_server_helpers import (
     TERMINAL_PROTOCOL,
     FakeDaemon,
     serve_asgi,
-    unused_port,
+    unreachable_url,
 )
 
 VERSION = "9.9.9-test"
@@ -433,22 +435,34 @@ async def test_daemon_errors_pass_through_unchanged(stack, client, status):
         assert DASHBOARD_SERVER_HEADER not in relayed.headers
 
 
+def test_unreachable_url_reserves_a_port_without_accepting_connections():
+    with unreachable_url() as url:
+        address = (URL(url).host, URL(url).port)
+        with socket.socket() as contender:
+            with pytest.raises(OSError) as occupied:
+                contender.bind(address)
+            assert occupied.value.errno == errno.EADDRINUSE
+        with socket.socket() as client:
+            client.settimeout(GUARD)
+            assert client.connect_ex(address) == errno.ECONNREFUSED
+
+
 async def test_daemon_unreachable_is_503_with_retry_after_and_our_header(client):
-    api_url = f"http://127.0.0.1:{unused_port()}"
-    proxy = DaemonProxy(api_url, version=VERSION)
-    async with serve_asgi(proxy_asgi(proxy)) as url:
-        for path in ("/api/tasks?limit=5", "/health"):
-            async with client.get(f"{url}{path}") as response:
-                assert response.status == 503
-                assert await response.json() == {
-                    "ok": False,
-                    "error": "daemon_unreachable",
-                    "api_url": api_url,
-                }
-                assert response.headers["retry-after"] == "2"
-                assert response.headers["cache-control"] == "no-store"
-                assert response.headers[DASHBOARD_SERVER_HEADER] == VERSION
-        assert await proxy.upstream_ok() is False
+    with unreachable_url() as api_url:
+        proxy = DaemonProxy(api_url, version=VERSION)
+        async with serve_asgi(proxy_asgi(proxy)) as url:
+            for path in ("/api/tasks?limit=5", "/health"):
+                async with client.get(f"{url}{path}") as response:
+                    assert response.status == 503
+                    assert await response.json() == {
+                        "ok": False,
+                        "error": "daemon_unreachable",
+                        "api_url": api_url,
+                    }
+                    assert response.headers["retry-after"] == "2"
+                    assert response.headers["cache-control"] == "no-store"
+                    assert response.headers[DASHBOARD_SERVER_HEADER] == VERSION
+            assert await proxy.upstream_ok() is False
     assert proxy.stats.snapshot()["upstream_failures"]["daemon_unreachable"] == 2
     assert proxy.stats.snapshot()["http"]["count"] == 0
 
@@ -745,12 +759,12 @@ async def test_a_browser_that_vanishes_closes_the_daemon_side_too(stack):
 
 
 async def test_websocket_to_an_unreachable_daemon_is_denied_503():
-    api_url = f"http://127.0.0.1:{unused_port()}"
-    proxy = DaemonProxy(api_url, version=VERSION)
-    async with serve_asgi(proxy_asgi(proxy)) as url:
-        with pytest.raises(InvalidStatus) as denied:
-            async with ws_connect("ws" + url[len("http") :] + "/ws/events?after_seq=0"):
-                pytest.fail("the browser's handshake was accepted")
+    with unreachable_url() as api_url:
+        proxy = DaemonProxy(api_url, version=VERSION)
+        async with serve_asgi(proxy_asgi(proxy)) as url:
+            with pytest.raises(InvalidStatus) as denied:
+                async with ws_connect("ws" + url[len("http") :] + "/ws/events?after_seq=0"):
+                    pytest.fail("the browser's handshake was accepted")
     response = denied.value.response
     assert response.status_code == 503
     assert response.headers[DASHBOARD_SERVER_HEADER] == VERSION

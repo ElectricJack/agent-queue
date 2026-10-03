@@ -299,6 +299,63 @@ async def test_scoped_submit_commands_return_wait_pointer_and_preserve_replay(se
     assert (await setup.db.get_agent_wait(first["wait"]["id"]))["digest"]["outcome"] == "cancelled"
 
 
+async def test_pool_scope_resolves_live_claim_for_submit_and_reads(setup, tmp_path):
+    """Pool scopes carry no fixed task: the session's live claim is the owner."""
+    from dataclasses import replace
+
+    names = ["job_submit", "job_get", "job_list", "job_result", "job_logs", "wait_get"]
+    await setup.db.create_profile(
+        AgentProfile(
+            id="worker-codex", name="Worker", aq_commands=names, harness_tools=[], plugin_tools=[]
+        )
+    )
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    pool = dict(kind="session", session_id="s", session_instance_token="token", project_id="p")
+    args = dict(preset="lint", argv=["src"], idempotency_key="pool", wait=True, claim_epoch=1)
+    first = await handler.execute("job_submit", {**args, "_scope": pool})
+    assert first["success"], first
+    job_id = first["job"]["id"]
+    assert (await setup.db.get_job(job_id))["task_id"] == "owner"
+    replay = await handler.execute("job_submit", {**args, "_scope": pool})
+    assert replay["wait"]["id"] == first["wait"]["id"]
+    got = await handler.execute("job_get", {"job_id": job_id, "_scope": pool})
+    assert got["success"], got
+    listed = await handler.execute("job_list", {"_scope": pool})
+    assert [row["id"] for row in listed["jobs"]] == [job_id]
+    result = await handler.execute("job_result", {"job_id": job_id, "_scope": pool})
+    assert result.get("error") != "not_found", result
+    foreign = await handler.execute(
+        "job_submit", {**args, "idempotency_key": "f", "task_id": "source", "_scope": pool}
+    )
+    assert foreign["error_code"] == "jobs.out_of_scope"
+    stale = await handler.execute(
+        "job_submit", {**args, "idempotency_key": "e", "wait": False, "claim_epoch": 7,
+                       "_scope": pool}
+    )
+    assert stale["error_code"] == "jobs.stale_claim"
+    # Another worker's session, and a replaced instance of this one, see nothing.
+    await setup.db.create_session(replace(setup.session, id="s2", instance_token="t2",
+                                          task_id="source", name="p-wait-2"))
+    other = dict(pool, session_id="s2", session_instance_token="t2")
+    replaced = dict(pool, session_instance_token="old")
+    for scope in (other, replaced):
+        assert (await handler.execute("job_get", {"job_id": job_id, "_scope": scope}))[
+            "error"
+        ] == "not_found"
+        assert (await handler.execute("job_result", {"job_id": job_id, "_scope": scope}))[
+            "success"
+        ] is False
+        assert (await handler.execute("job_list", {"_scope": scope}))["jobs"] == []
+    idle = dict(pool, session_id="s3", session_instance_token="t3")
+    await setup.db.create_session(replace(setup.session, id="s3", instance_token="t3",
+                                          task_id=None, name="p-wait-3"))
+    refused = await handler.execute("job_submit", {**args, "idempotency_key": "i", "_scope": idle})
+    assert refused["error_code"] == "jobs.out_of_scope"
+
+
 def test_public_contracts_transports_and_shipped_grants():
     from pathlib import Path
     from src.api.scope import AGENT_COMMAND_SET

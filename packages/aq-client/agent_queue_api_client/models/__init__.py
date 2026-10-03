@@ -576,6 +576,10 @@ from .grid_position_dto import GridPositionDTO
 from .hierarchy_refusal_response import HierarchyRefusalResponse
 from .histogram import Histogram
 from .host_perf import HostPerf
+from .host_shell_close_response import HostShellCloseResponse
+from .host_shell_info import HostShellInfo
+from .host_shell_list_response import HostShellListResponse
+from .host_shell_open_response import HostShellOpenResponse
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
 from .import_portable_config_request import ImportPortableConfigRequest
@@ -2320,6 +2324,10 @@ __all__ = (
     "HierarchyRefusalResponse",
     "Histogram",
     "HostPerf",
+    "HostShellCloseResponse",
+    "HostShellInfo",
+    "HostShellListResponse",
+    "HostShellOpenResponse",
     "HTTPValidationError",
     "IdempotencyDTO",
     "ImportPortableConfigRequest",

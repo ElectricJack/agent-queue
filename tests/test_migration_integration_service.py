@@ -189,13 +189,14 @@ async def _alembic(engine, direction, target):
         await conn.run_sync(run)
 
 
-async def test_retirement_keeps_true_events_idempotently_and_exposes_unknown_provenance():
+async def test_retirement_keeps_true_events_idempotently_and_exposes_unknown_provenance(tmp_path):
     from types import SimpleNamespace
 
     from sqlalchemy import select
 
     from src.database.engine import create_postgres_engine
     from src.database.tables import tasks
+    from src.git.manager import GitManager
     from src.integration.delivery_truth import (
         MISSING_PROVENANCE,
         DeliverySnapshot,
@@ -279,8 +280,13 @@ async def test_retirement_keeps_true_events_idempotently_and_exposes_unknown_pro
             db, {"branchless", "open-branchless", "coded"}, repository_id="r",
             target_ref="refs/heads/main",
         )
+        # Missing legacy generations now consult Git. An empty repository has
+        # no retained provenance, even though the migration kept a manifest.
+        git = GitManager()
+        initialized = await git.arun_git_result(["init", "--bare"], cwd=str(tmp_path))
+        assert initialized.returncode == 0, initialized.stderr
         snapshot = DeliverySnapshot(
-            None, "", "p", "r", "u", "refs/heads/main", "e" * 40, {},
+            git, str(tmp_path), "p", "r", "u", "refs/heads/main", "e" * 40, {},
         )
         branchless = await snapshot.evaluate(requests["branchless"])
         assert (branchless.state, branchless.reason) == (DeliveryState.UNKNOWN, MISSING_PROVENANCE)

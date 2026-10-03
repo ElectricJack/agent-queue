@@ -4,7 +4,7 @@ import { useRestartSupervisor, type FlockAgent } from "../../api/agents";
 import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
 import AgentTerminal from "./AgentTerminal";
-import TerminalPane from "../../components/TerminalPane";
+import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
 
 export default function AgentWindow({ agent, onClose, resetToken, focusRequest }: {
   agent: FlockAgent;
@@ -29,7 +29,8 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
   return (
     <section aria-label={agent.name + " agent window"}
       className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
-      <TerminalPane title={agent.name} status={<AgentState agent={agent} />} onClose={onClose} titleId={id + "-title"} details={<>
+      <TerminalPane title={agent.name} status={<AgentState agent={agent} />} onClose={onClose} titleId={id + "-title"}
+        tabs={<TerminalTabs label={agent.name + " view"} idPrefix={id} tabs={tabs} value={tab} onChange={setTab} />} details={<>
         <div className="space-y-1">
           <div>Role: {agent.role || "worker"}</div>
           <div>Profile: {agent.profile_id}</div>
@@ -41,16 +42,6 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
           {agent.current_task_id && <div>Task ID: {agent.current_task_id}</div>}
           <div>Session: {agent.session_id || "No active session"} · {agent.session_state || "unknown"}</div>
           {!supervisor && agent.project_id && <div>Attached project: {agent.project_id}</div>}
-        </div>
-        <div role="tablist" aria-label={agent.name + " view"} className="flex gap-2">
-          {tabs.map(({ id: key, label, Icon }) => (
-            <button key={key} type="button" role="tab" id={id + "-" + key} data-primary-control
-              aria-controls={id + "-panel"} aria-selected={tab === key} onClick={() => setTab(key)}
-              className={"flex items-center gap-1.5 rounded border px-2 py-1 text-xs "
-                + (tab === key ? "border-indigo-400/60 bg-indigo-500/10 text-indigo-200" : "border-transparent text-gray-400 hover:text-gray-200")}>
-              <Icon aria-hidden="true" className="h-3.5 w-3.5" />{label}
-            </button>
-          ))}
         </div>
         {agent.role === "supervisor" && (
           <div className="mt-2 flex flex-wrap items-center gap-2">

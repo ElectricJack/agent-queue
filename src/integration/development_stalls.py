@@ -89,8 +89,20 @@ _RECOVERY = {
     ),
     "missing_provenance": (
         "its completion has no exact source retained in git: run `aq integration "
-        "migrate-provenance <project-id> --apply` (or reopen and close it again), then "
-        "resolve anything it reports as ambiguous"
+        "migrate-provenance <project-id> --apply`, then resolve anything it reports "
+        "as ambiguous; for a missing completion row use --task-id TASK --source SHA "
+        "--reason REASON, or --no-artifact --reason REASON for artifact-free work"
+    ),
+    "invalid_parent_completion": (
+        "its parent verification binding is incomplete: inspect `aq integration status`; "
+        "a bare legacy episode can use `aq integration migrate-provenance <project-id> "
+        "--task-id TASK --source SHA --reason REASON --apply`; a damaged verified "
+        "binding requires recovery of its current parent verification"
+    ),
+    "parent_provenance_mismatch": (
+        "its retained source disagrees with its verified parent completion: inspect "
+        "`aq integration status` and recover the exact current parent verification "
+        "and provenance binding"
     ),
     "undelivered_dependency": (
         "a dependency is not delivered: publish or recover that dependency first"
@@ -111,6 +123,15 @@ _RECOVERY = {
     # Legacy persisted reason; flat batch assembly does not emit sibling holds.
     "parent_unavailable": "a sibling conflicted in parent assembly",
 }
+
+
+def delivery_skip_reason(reason: str) -> str:
+    """Preserve actionable delivery faults rather than calling every unknown a missing ref."""
+    if reason in {"invalid_parent_completion", "parent_provenance_mismatch", "git_error"}:
+        return reason
+    if reason == "missing_git_provenance":
+        return "missing_provenance"
+    return "missing_ref"
 
 
 @dataclass(frozen=True)

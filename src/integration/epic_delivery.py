@@ -10,17 +10,28 @@ authorizing an action.
 It is deliberately not a state machine. Every fact comes from an existing
 read: collection readiness (:meth:`ParentCompletion.readiness_on`), claim
 eligibility (:func:`claim_frontier_predicates`), live operations, branch
-reservations, root delivery receipts and operator holds. :func:`classify_epic_delivery`
-is a pure function over those facts, so every state is testable from
-fixtures. Design: docs/superpowers/specs/2026-10-02-epic-delivery-status-design.md.
+reservations, root delivery receipts, operator holds and — for what git says
+about the epic's *current* completion right now — the request-scoped
+:class:`~src.integration.delivery_observer.DeliveryObserver` every other
+delivery consumer already asks. :func:`classify_epic_delivery` is a pure
+function over those facts, so every state is testable from fixtures. Design:
+docs/superpowers/specs/2026-10-02-epic-delivery-status-design.md.
+
+The canonical git answer is gathered outside every transaction and its
+identity rechecked afterwards, exactly as
+:class:`~src.integration.delivery_observer.DeliveryView` requires, so this
+view never invents a receipt and never persists a git answer. What it reads
+here is what the archive guard, the settlement path and the publisher read:
+one question, one answer.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import JSON, exists, func, literal, select
@@ -37,6 +48,7 @@ from src.database.queries.integration_train_queries import (
 )
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.database.tables import (
+    events,
     gates,
     integration_batch_members,
     integration_batches,
@@ -106,11 +118,46 @@ class WorkerFacts:
 
 
 @dataclass(frozen=True)
+class CanonicalDelivery:
+    """What git says about this epic's *current* completion, right now.
+
+    Filled only from a request-scoped
+    :class:`~src.integration.delivery_observer.DeliveryObserver` answer whose
+    identity and target were rechecked after the fetch
+    (:meth:`~src.integration.delivery_observer.DeliveryView.verified_on`), so
+    it never describes a generation the epic no longer has. ``state`` is a
+    :class:`~src.integration.delivery_truth.DeliveryState` value as text:
+    ``contained``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
+
+    ``acceptance`` is wording, never the proof: git already established
+    containment, and it names a recorded operator adoption only when that
+    adoption explicitly accepted a source which is not an ancestor.
+    """
+
+    state: str
+    reason: str
+    source: str | None = None
+    target_ref: str | None = None
+    target_oid: str | None = None
+    completion_id: str | None = None
+    parent_generation: int | None = None
+    acceptance: str | None = None
+    settled_reason: str | None = None
+    #: Epoch seconds the identity itself records (the verified parent
+    #: completion, or the leaf completion).
+    since: float | None = None
+    #: The identity or target moved after the observation, so the answer
+    #: describes a question that is no longer the current one.
+    changed: bool = False
+
+
+@dataclass(frozen=True)
 class EpicFacts:
     task_id: str
     status: str
     updated_at: float | None = None
     resume_after: float | None = None
+    project_id: str | None = None
     parent_task_id: str | None = None
     parent_status: str | None = None
     mode: str = "disabled"
@@ -133,6 +180,9 @@ class EpicFacts:
     batch: Mapping[str, Any] | None = None
     batch_operation: Mapping[str, Any] | None = None
     batch_writer: WorkerFacts | None = None
+    #: Git's own answer for this epic's current completion; ``None`` when no
+    #: observer is registered or git had nothing to say about it.
+    canonical: CanonicalDelivery | None = None
 
 
 def lease_ttl_from(config: Any) -> float:
@@ -265,7 +315,14 @@ def classify_epic_delivery(
     if operation is not None:
         links.append(_ref("operation", operation["id"], f"Operation {_short(operation['id'])}"))
 
-    # 1. Delivered: only a receipt binding the current head says so.
+    # 1. Delivered: git's own answer for the epic's current completion, or a
+    #    receipt binding the current head.  A canonical adoption, a direct
+    #    publish and a train receipt all land here, so an epic the publisher
+    #    delivered while no train batch ever existed stops reading as
+    #    "waiting for the next train".
+    adopted = _canonical_delivered(facts, result=result)
+    if adopted is not None:
+        return adopted
     if facts.receipt is not None:
         receipt = facts.receipt
         if receipt.get("target_task_id"):
@@ -331,8 +388,14 @@ def classify_epic_delivery(
             since=_max_ts(*(child.get("updated_at") for child in children)),
         )
 
-    # 5. No durable delivery evidence for this project's mode.
+    # 5. No durable *train* evidence for this project's mode.
     if facts.mode not in TRACKED_MODES:
+        # A development/observe project still records delivery canonically:
+        # git answers whether the completed epic's own work is on the
+        # target, and that answer outranks "no per-epic delivery record".
+        unproven = _canonical_unproven(facts, result=result)
+        if unproven is not None:
+            return unproven
         reason = f"Integration mode {facts.mode} records no per-epic delivery"
         if hold == "backoff":
             reason = "Paused for a backoff; resumes automatically"
@@ -499,6 +562,13 @@ def _completed_epic(facts: EpicFacts, *, result) -> dict:
             reason=f"Train batch {_short(batch['id'])} is {lifecycle}",
             responsible=train, since=batch.get("updated_at"), extra=[link],
         )
+    # Nothing is running on it, so git has the last word: a verified,
+    # canonically adopted epic is delivered, an epic whose current work is
+    # provably not on the target is still owed, and an epic git cannot
+    # account for says so instead of claiming the train owes it nothing.
+    unproven = _canonical_unproven(facts, result=result)
+    if unproven is not None:
+        return unproven
     since = _max_ts(facts.updated_at, checkpoint.get("updated_at"))
     if facts.parent_task_id:
         parent_link = [_task_link(facts.parent_task_id, "Parent epic")]
@@ -527,6 +597,137 @@ def _completed_epic(facts: EpicFacts, *, result) -> dict:
         responsible=_ref("system", None, "Integration train"),
         since=since,
     )
+
+
+#: Why git could not account for a completion, as the sentence a card shows.
+#: The keys are :class:`~src.integration.delivery_truth.DeliveryState` reasons;
+#: anything unlisted (an observer or snapshot failure) is named as it stands.
+_UNPROVEN_REASONS = {
+    "missing_git_provenance": (
+        "no exact source is retained in git for this completion, so nothing can prove "
+        "what {target} received from it"
+    ),
+    "scope_mismatch": "this work names another repository, so {target} cannot prove it",
+    "invalid_parent_completion": (
+        "no current verified parent completion binds this epic's head to a source"
+    ),
+    "parent_provenance_mismatch": (
+        "the source retained in git differs from the verified parent completion"
+    ),
+    "missing_or_ambiguous_source": (
+        "git could not locate an exact source for this completion"
+    ),
+    "missing_target": "{target} does not exist, so nothing can be delivered to it",
+}
+
+
+def _target_name(canonical: CanonicalDelivery) -> str:
+    return str(canonical.target_ref or "the delivery target").removeprefix("refs/heads/")
+
+
+def _canonical_delivered(facts: EpicFacts, *, result) -> dict | None:
+    """Git's own delivered answer, or ``None`` when it has none.
+
+    ``contained`` and ``settled`` are the two canonical states that mean this
+    epic's current work does not owe its target anything. Both name the exact
+    identity they speak for — the verified parent completion's generation and
+    source, or the leaf completion's retained source — and a recorded operator
+    acceptance of a non-ancestor source is named, never silently absorbed.
+    """
+    canonical = facts.canonical
+    if canonical is None or canonical.changed or canonical.state not in {"contained", "settled"}:
+        return None
+    target = _target_name(canonical)
+    if canonical.state == "settled":
+        settled = canonical.settled_reason or canonical.reason.removeprefix("settled: ")
+        return result(
+            "delivered", "Delivered - not owed to this target",
+            reason=f"Recorded as not owed to {target}: {settled}",
+            since=canonical.since or facts.updated_at,
+        )
+    source = f"source {_short(canonical.source)}" if canonical.source else "its recorded source"
+    if canonical.parent_generation is not None:
+        detail = f"Verified generation {canonical.parent_generation} {source}"
+    else:
+        detail = f"Completion {_short(canonical.completion_id)} {source}"
+    detail += f" is in {target}"
+    if canonical.target_oid:
+        detail += f" at {_short(canonical.target_oid)}"
+    if canonical.acceptance == "operator_equivalent":
+        detail += " (operator accepted this source as equivalent)"
+    return result("delivered", "Delivered", reason=detail, since=canonical.since or facts.updated_at)
+
+
+def _canonical_unproven(facts: EpicFacts, *, result) -> dict | None:
+    """Replace a "nothing is owed" reading with what git actually says.
+
+    It only speaks for a completed epic with nothing working on it, so an
+    operator hold, an open gate, live integration work, an active train batch
+    and a failing child all keep their ordinary statuses: this override
+    applies exactly where the projection would otherwise conclude that
+    delivery is settled by the absence of evidence.
+    """
+    canonical = facts.canonical
+    if canonical is None or facts.status != "COMPLETED":
+        return None
+    if canonical.state == "pending":
+        observed = f" as observed at {_short(canonical.target_oid)}" if canonical.target_oid else ""
+        return result(
+            "queued", "Delivery pending",
+            reason=f"Complete; its {_source_phrase(canonical)} is not in "
+            f"{_target_name(canonical)}{observed} yet",
+            responsible=_ref("system", None, "Integration publisher"),
+            since=canonical.since or facts.updated_at,
+        )
+    if canonical.state != "unknown":
+        # ``no_artifact`` is an organizational container with nothing to prove.
+        return None
+    if canonical.changed:
+        return result(
+            "unknown", "Delivery evidence stale",
+            reason="Its completion or delivery target changed after git was asked, so "
+            "the earlier answer no longer describes this epic",
+            since=facts.updated_at, evidence="stale",
+        )
+    reason = _unknown_reason(canonical, facts)
+    return result(
+        "unknown", "Delivery evidence unavailable", reason=reason,
+        remedy=_unknown_remedy(canonical.reason, facts), since=facts.updated_at,
+        evidence="unavailable",
+    )
+
+
+def _source_phrase(canonical: CanonicalDelivery) -> str:
+    """What git locates for this completion, as a sentence fragment."""
+    if canonical.parent_generation is not None:
+        return f"verified generation {canonical.parent_generation} source {_short(canonical.source)}"
+    if canonical.completion_id:
+        return f"completion {_short(canonical.completion_id)} source {_short(canonical.source)}"
+    return "recorded source"
+
+
+def _unknown_reason(canonical: CanonicalDelivery, facts: EpicFacts) -> str:
+    target = _target_name(canonical)
+    template = _UNPROVEN_REASONS.get(canonical.reason)
+    if template is not None:
+        detail = template.format(target=target)
+    elif canonical.reason.startswith(("observer_error", "snapshot_git_error")):
+        detail = f"git could not be observed ({canonical.reason})"
+    else:
+        detail = f"git cannot account for this completion ({canonical.reason})"
+    return (
+        f"Delivery to {target} is unproven: {detail}; nothing is recorded that delivered "
+        "it and nothing in this view can prove otherwise"
+    )
+
+
+def _unknown_remedy(reason: str, facts: EpicFacts) -> str | None:
+    if reason == "missing_git_provenance" and facts.project_id:
+        return (
+            f"aq integration migrate-provenance {facts.project_id} --task-id {facts.task_id} "
+            "--apply"
+        )
+    return None
 
 
 def _train_verified(checkpoint: Mapping[str, Any]) -> bool:
@@ -763,13 +964,117 @@ def unavailable_result(*, reason: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _canonical_from(evidence, *, acceptance: str | None = None) -> CanonicalDelivery:
+    """One verified git answer, flattened for the classifier.
+
+    The verified parent completion, when it is what the answer speaks for, is
+    the identity to show: its generation and immutable source locate the exact
+    work that ``load_delivery_requests`` bound to the current checkpoint.
+    """
+    request = evidence.request
+    parent = request.parent_completion
+    return CanonicalDelivery(
+        state=str(evidence.state),
+        reason=evidence.reason,
+        source=evidence.source_oid or (parent.source_oid if parent else None),
+        target_ref=request.target_ref,
+        target_oid=evidence.target_oid,
+        completion_id=request.completion_id,
+        parent_generation=parent.generation if parent else None,
+        acceptance=acceptance,
+        settled_reason=request.settled_reason,
+        since=request.completed_at,
+    )
+
+
+def _moved_canonical(view, task_id: str, epic: EpicFacts) -> CanonicalDelivery:
+    """What an identity that changed after the observation is worth: nothing."""
+    target = view.targets.get(task_id)
+    oid = next(
+        (
+            snapshot.target_oid for snapshot in view.snapshots
+            if target is not None
+            and (snapshot.repository_id, snapshot.target_ref)
+            == (target.repository_id, target.target_ref)
+        ),
+        None,
+    )
+    return CanonicalDelivery(
+        state="unknown", reason="changed_during_observation",
+        target_ref=target.target_ref if target is not None else None,
+        target_oid=oid, changed=True, since=epic.updated_at,
+    )
+
+
+#: Newest recorded operator adoptions one read considers for their acceptance
+#: wording. An adoption is an exceptional, reasoned act, so the newest of them
+#: are the ones a card can still be describing.
+ADOPTION_SCAN_LIMIT = 200
+
+
+async def _recorded_acceptance_on(conn, facts: Mapping[str, EpicFacts], verified) -> dict[str, str]:
+    """``operator_equivalent`` adoptions recorded for exactly this source.
+
+    One indexed statement over the recorded adoptions of the projects this read
+    covers, newest first, matched here against the sources git proved. It is
+    wording, never the proof: git already established containment, and this
+    names the operator's explicit equivalence acceptance when the recorded
+    source was not an ancestor. A recorded operation can never turn pending or
+    unknown work into delivered work, because only a satisfied answer is asked
+    about here.
+    """
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    wanted = {
+        (task_id, evidence.source_oid)
+        for task_id, evidence in verified.items()
+        if evidence.satisfied and evidence.state != "no_artifact" and evidence.source_oid
+    }
+    if not wanted:
+        return {}
+    payload = cast(events.c.payload, JSONB)
+    rows = (await conn.execute(
+        select(events.c.payload).where(
+            events.c.event_type == "development.operation",
+            events.c.project_id.in_(sorted({
+                facts[task_id].project_id for task_id, _source in wanted if facts[task_id].project_id
+            })),
+            payload["evidence"]["kind"].as_string() == "operator_accepted",
+        ).order_by(events.c.id.desc()).limit(ADOPTION_SCAN_LIMIT)
+    )).scalars()
+    found: dict[str, str] = {}
+    for raw in rows:
+        try:
+            record = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        for member in record.get("manifest") or []:
+            if not isinstance(member, dict):
+                continue
+            pair = (member.get("task_id"), member.get("source_sha"))
+            acceptance = member.get("acceptance")
+            if pair in wanted and acceptance and pair[0] not in found:
+                found[pair[0]] = str(acceptance)
+    return found
+
+
 class EpicDeliveryProjection:
     """Batched, read-only fact gathering for :func:`classify_epic_delivery`."""
 
-    def __init__(self, db, *, clock=time.time, lease_ttl: float | None = None) -> None:
+    def __init__(
+        self, db, *, clock=time.time, lease_ttl: float | None = None, delivery: Any = None
+    ) -> None:
         self.db = db
         self.clock = clock
         self.lease_ttl = float(SessionsConfig.lease_ttl_seconds if lease_ttl is None else lease_ttl)
+        # Canonical git delivery truth, registered by the daemon
+        # (:meth:`~src.database.queries.archive_queries.set_delivery_observer`).
+        # Without one nothing is claimed about delivery beyond the train
+        # evidence below, so an unobserved daemon keeps today's reading.
+        self.delivery = delivery if delivery is not None else getattr(db, "_delivery_observer", None)
 
     async def for_tasks(self, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Return ``{task_id: result}`` for every given task that has children.
@@ -786,6 +1091,7 @@ class EpicDeliveryProjection:
         except Exception:  # a display read never fails its caller
             logger.warning("epic delivery projection failed for %d task(s)", len(ids), exc_info=True)
             return {}
+        facts = await self._canonical_on(facts)
         now = self.clock()
         out: dict[str, dict[str, Any]] = {}
         for task_id, epic in facts.items():
@@ -794,6 +1100,64 @@ class EpicDeliveryProjection:
             except Exception:  # one malformed row must not hide the rest
                 logger.warning("epic delivery classification failed for %s", task_id, exc_info=True)
                 out[task_id] = unavailable_result(reason="Delivery evidence could not be classified")
+        return out
+
+    async def _canonical_on(self, facts: dict[str, EpicFacts]) -> dict[str, EpicFacts]:
+        """Add git's answer for each completed epic, asked outside every transaction.
+
+        The observer fetches its own isolated stores and opens its own
+        connections, so no publisher lock and no projection read is held
+        across it. Each identity it evaluated is then rechecked on a fresh
+        read (:meth:`DeliveryView.verified_on`); one that was reopened,
+        re-completed or re-targeted meanwhile is reported stale rather than
+        answered for the question it was not asked, and one git never
+        evaluated at all (no designated repository) makes no claim here.
+
+        A read-only surface may reuse a snapshot the observer fetched within
+        its read window (:data:`DeliveryObserver.READ_MAX_AGE`), so a card can
+        lag a just-landed delivery by that much; what it reports is always
+        pinned to the exact target OID its reason names.
+
+        The candidates are the COMPLETED epics of one read — the same bound
+        :class:`~src.integration.status.IntegrationStatusService` puts on its
+        own delivery read — so a graph response observes at most the epics it
+        is already drawing.
+        """
+        observer = self.delivery
+        if observer is None or not facts:
+            return facts
+        candidates = sorted(
+            task_id for task_id, epic in facts.items() if epic.status == "COMPLETED"
+        )
+        if not candidates:
+            return facts
+        try:
+            # A read-only surface, so a snapshot fetched within the observer's
+            # read window is reused rather than refetched per poll; a guarded
+            # writer is the only thing that must fetch.
+            view = await observer.observe(
+                candidates, max_age=getattr(observer, "READ_MAX_AGE", 0.0)
+            )
+            async with self.db._engine.connect() as conn:
+                verified = await view.verified_on(conn, candidates)
+                acceptance = await _recorded_acceptance_on(conn, facts, verified)
+        except Exception:  # no canonical answer is still a usable answer
+            logger.warning(
+                "epic delivery observation failed for %d epic(s)", len(candidates), exc_info=True
+            )
+            return facts
+        out = dict(facts)
+        for task_id in candidates:
+            evidence = verified.get(task_id)
+            if evidence is None:
+                if view.get(task_id) is None:
+                    continue
+                canonical = _moved_canonical(view, task_id, facts[task_id])
+            else:
+                canonical = _canonical_from(evidence, acceptance=acceptance.get(task_id))
+            if canonical.state == "no_artifact":
+                continue  # an organizational container has nothing to prove
+            out[task_id] = replace(facts[task_id], canonical=canonical)
         return out
 
     async def facts_on(self, conn, ids: list[str]) -> dict[str, EpicFacts]:
@@ -898,6 +1262,7 @@ class EpicDeliveryProjection:
                 status=row["status"],
                 updated_at=row["updated_at"],
                 resume_after=row["resume_after"],
+                project_id=row["project_id"],
                 parent_task_id=row["parent_task_id"],
                 parent_status=row["parent_status"],
                 mode=row["mode"] or "disabled",

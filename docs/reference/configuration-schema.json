@@ -603,6 +603,25 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "host_shell": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": false,
+        "max_shells": 4
+      },
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_shells": {
+          "default": 4,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "inbox": {
       "default": {
         "client_secret": "$GOOGLE_CLIENT_SECRET",
@@ -3326,6 +3345,7 @@
       "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "host_shell",
       "knowledge",
       "llm_logging",
       "logging",
