@@ -254,11 +254,146 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
         assert await orch.integration_outbox._accept_event(
             "integration.sweep_due", {"project_id": "p"}, "event-1"
         )
+        # The adapter asks the runtime for explicit no-consumer evidence; a
+        # bare False from it stays retryable.
         runtime.accept_integration_event.assert_awaited_once_with(
-            "integration.sweep_due", {"project_id": "p"}, "event-1"
+            "integration.sweep_due", {"project_id": "p"}, "event-1", prove_no_consumer=True
         )
+        # A disabled runtime is never evidence that nothing subscribes.
+        orch.playbook_manager = None
+        assert await orch.integration_outbox._accept_event(
+            "integration.root_delivered", {"project_id": "p"}, "event-1"
+        ) is False
     finally:
         orch.playbook_manager = original_runtime
+
+
+def _orchestrator_policy(project_id: str, **extra) -> dict:
+    artifact = {
+        "playbook_id": "hierarchical-delivery",
+        "artifact_sha256": "sha256:" + "a" * 64,
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "source_digest": "sha256:" + "c" * 64,
+        "compiler_build": "test",
+        "version": 1,
+    }
+    boundary = {
+        "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        "repair": {"debug_intelligence_class": "high"},
+        "route": {
+            "playbook_id": "hierarchical-delivery",
+            "scope": "project",
+            "scope_identifier": project_id,
+            "artifact": artifact,
+        },
+    }
+    return {
+        "parent": boundary,
+        "root": boundary,
+        "branchless_parent": "verifier",
+        "on_failed_child": "block",
+        **extra,
+    }
+
+
+async def test_orchestrator_outbox_bounds_retries_by_validated_project_policy(orch):
+    resolve = orch.integration_outbox._project_max_wait
+    assert resolve is not None
+    await orch.db.create_project(Project(id="bounded", name="bounded"))
+    await orch.db.update_project(
+        "bounded",
+        hierarchical_integration_policy=_orchestrator_policy("bounded", max_wait_seconds=90),
+    )
+    await orch.db.create_project(Project(id="default-bound", name="default bound"))
+    await orch.db.update_project(
+        "default-bound", hierarchical_integration_policy=_orchestrator_policy("default-bound"),
+    )
+    await orch.db.create_project(Project(id="development", name="development"))
+    await orch.db.update_project(
+        "development",
+        hierarchical_integration_policy={"validation": "none", "commands": []},
+    )
+    await orch.db.create_project(Project(id="unconfigured", name="unconfigured"))
+
+    assert await resolve("bounded") == 90.0
+    assert await resolve("default-bound") == 3600.0
+    assert await resolve("development") == 3600.0
+    assert await resolve("unconfigured") == 3600.0
+    assert await resolve("missing-project") == 3600.0
+
+
+async def test_orchestrator_outbox_sinks_unsubscribed_events_with_runtime_evidence(
+    orch, tmp_path
+):
+    import time
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import PlaybooksConfig
+    from src.database.tables import integration_outbox
+    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_integration_event
+    from src.playbooks.runtime import V2PlaybookRuntime
+
+    await orch.db.create_project(Project(id="sink", name="sink"))
+    await orch.db.update_project(
+        "sink", hierarchical_integration_policy=_orchestrator_policy("sink", max_wait_seconds=90),
+    )
+    now = time.time()
+    async with orch.db.immediate() as conn:
+        for event_id, event_type in (
+            ("sink-event", "integration.human_blocked"),
+            ("unknown-event", "integration.custom_notification"),
+        ):
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id="sink",
+                event_type=event_type,
+                payload={"operation_id": "operation-1"},
+                available_at=now,
+            )
+        # Old enough that the project's 90 s bound, not the default hour, ends it.
+        await conn.execute(
+            integration_outbox.update()
+            .where(integration_outbox.c.id == "unknown-event")
+            .values(created_at=now - 120)
+        )
+    runtime = V2PlaybookRuntime(
+        config=SimpleNamespace(
+            compiled_root=str(tmp_path / "compiled"),
+            playbooks=PlaybooksConfig(enabled=True),
+            security=SimpleNamespace(capability_enforcement="enforce"),
+        ),
+        db=orch.db,
+        handler=SimpleNamespace(),
+        llm=None,
+        bus=None,
+    )
+    await runtime.refresh()
+    original_runtime = orch.playbook_manager
+    orch.playbook_manager = runtime
+    try:
+        assert await orch.integration_outbox.dispatch_due(now) == 0
+    finally:
+        orch.playbook_manager = original_runtime
+        await runtime.shutdown()
+
+    async with orch.db._engine.connect() as conn:
+        rows = {
+            row["id"]: row
+            for row in (await conn.execute(select(integration_outbox))).mappings()
+        }
+    sunk, unknown = rows["sink-event"], rows["unknown-event"]
+    assert sunk["delivered_at"] is not None
+    assert sunk["last_error"].startswith("unsubscribed: ")
+    assert sunk["destination_manifest"] is None
+    # An unknown type is never sunk: it stops as an explicit failed delivery.
+    assert unknown["delivered_at"] is None
+    assert unknown["last_error"].startswith(RETRY_EXHAUSTED_PREFIX + "max_wait=90s")
+    assert "NoIntegrationEventConsumer: no ready playbook" in unknown["last_error"]
 
 
 async def test_runtime_cycle_materializes_origins_and_starts_untouched_container(orch, tmp_path):
