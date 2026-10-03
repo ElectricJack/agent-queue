@@ -809,6 +809,9 @@
           "enabled": false
         },
         "global_enabled": false,
+        "import_inventory": {
+          "enabled": false
+        },
         "legacy_memory_mode": "disabled",
         "semantic": {
           "enabled": false
@@ -887,6 +890,19 @@
         "global_enabled": {
           "default": false,
           "type": "boolean"
+        },
+        "import_inventory": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "legacy_memory_mode": {
           "default": "disabled",

@@ -6136,6 +6136,101 @@ knowledge_redaction_targets = Table(
     PrimaryKeyConstraint("revision_id", name="pk_knowledge_redaction_targets"),
 )
 
-from src.records.schema import register_record_schema_events  # noqa: E402
+record_import_runs = Table(
+    "record_import_runs",
+    metadata,
+    Column("run_id", UUID, nullable=False),
+    Column("source_installation_id", Text, nullable=False),
+    Column("snapshot_id", Text, nullable=False),
+    Column("manifest_sha256", Text, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("cursor", JSONB),
+    Column("report", JSONB),
+    PrimaryKeyConstraint("run_id", name="pk_record_import_runs"),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_import_runs_scope",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_import_runs_hash"
+    ),
+    CheckConstraint(
+        "state IN ('prepared','applying','succeeded','failed','cancelled')",
+        name="ck_record_import_runs_state",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(cursor) = 'object'", name="ck_record_import_runs_cursor"
+    ),
+    CheckConstraint(
+        "jsonb_typeof(report) = 'object'", name="ck_record_import_runs_report"
+    ),
+)
+
+record_legacy_mappings = Table(
+    "record_legacy_mappings",
+    metadata,
+    Column("source_installation_id", Text, nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("source_scope", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("record_id", UUID),
+    Column("latest_source_sha256", Text),
+    Column("latest_revision_id", UUID),
+    Column("ownership", Text, nullable=False),
+    Column("decision_reason", Text),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint(
+        "source_installation_id",
+        "source_kind",
+        "source_scope",
+        "source_key",
+        name="pk_record_legacy_mappings",
+    ),
+    CheckConstraint(
+        "ownership IN ('legacy','managed','excluded','quarantined')",
+        name="ck_record_legacy_mappings_ownership",
+    ),
+    CheckConstraint(
+        "latest_source_sha256 IS NULL OR latest_source_sha256 ~ '^[0-9a-f]{64}$'",
+        name="ck_record_legacy_mappings_hash",
+    ),
+)
+
+record_import_items = Table(
+    "record_import_items",
+    metadata,
+    Column("run_id", UUID, nullable=False),
+    Column("item_key", Text, nullable=False),
+    Column("source_sha256", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("record_id", UUID),
+    Column("revision_id", UUID),
+    Column("error_code", Text),
+    PrimaryKeyConstraint("run_id", "item_key", name="pk_record_import_items"),
+    ForeignKeyConstraint(
+        ["run_id"],
+        ["record_import_runs.run_id"],
+        name="fk_record_import_items_run",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "source_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_import_items_hash"
+    ),
+    CheckConstraint(
+        "disposition IN ('candidate','quarantined','excluded','unavailable')",
+        name="ck_record_import_items_disposition",
+    ),
+    CheckConstraint(
+        "revision_id IS NULL OR record_id IS NOT NULL",
+        name="ck_record_import_items_owner",
+    ),
+)
+
+from src.records.schema import register_record_schema_events
 
 register_record_schema_events(metadata)

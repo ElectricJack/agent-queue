@@ -6858,6 +6858,51 @@
         }
       }
     },
+    "/api/knowledge/import": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written.",
+        "description": "Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written.",
+        "operationId": "knowledge_import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/knowledge/list": {
       "post": {
         "tags": [
@@ -37967,6 +38012,64 @@
         "additionalProperties": true,
         "type": "object",
         "title": "KnowledgeHistoryResponse"
+      },
+      "KnowledgeImportRequest": {
+        "properties": {
+          "roots": {
+            "items": {},
+            "type": "array",
+            "title": "Roots",
+            "description": ""
+          },
+          "vector_export": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Export",
+            "description": ""
+          },
+          "scope_aliases": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Aliases",
+            "description": ""
+          },
+          "source_installation_id": {
+            "type": "string",
+            "title": "Source Installation Id",
+            "description": ""
+          },
+          "snapshot_id": {
+            "type": "string",
+            "title": "Snapshot Id",
+            "description": ""
+          },
+          "snapshot_timestamp": {
+            "type": "string",
+            "title": "Snapshot Timestamp",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "roots",
+          "source_installation_id",
+          "snapshot_id",
+          "snapshot_timestamp"
+        ],
+        "title": "KnowledgeImportRequest"
       },
       "KnowledgeLifecycleResponse": {
         "properties": {
