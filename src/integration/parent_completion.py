@@ -37,6 +37,9 @@ from src.database.tables import (
     task_session_attempts,
     tasks,
 )
+from src.integration.parent_engine import (
+    active_parent_scope, legacy_parent_allowed_on, parent_engine_guard,
+)
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.playbooks.artifact_ref import ArtifactRef
@@ -251,6 +254,8 @@ class ParentCompletion:
 
     async def mark_ready_on(self, conn, task_id: str) -> dict[str, Any]:
         """Project readiness into checkpoint state and one durable event."""
+        if not await legacy_parent_allowed_on(conn, self.db, task_id):
+            return {"outcome": "waiting", "task_id": task_id}
         parent, project, checkpoint, operation = await self._locked_context_on(conn, task_id)
         if parent["status"] != "PAUSED":
             return {"outcome": "waiting", "task_id": task_id}
@@ -262,6 +267,11 @@ class ParentCompletion:
             operation=operation,
         )
         if readiness["outcome"] != "ready":
+            return readiness
+        if active_parent_scope(self.db, task_id) and operation.get("verifier_task_id") is None:
+            # A receipt committed by an active port may call this lifecycle
+            # hook. Filing belongs to the table's next visit. Only the explicit
+            # link step after writer_file may project a linked verifier here.
             return readiness
         policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         attempts = (
@@ -303,6 +313,19 @@ class ParentCompletion:
                 existing = (
                     await conn.execute(select(tasks.c.id).where(tasks.c.id == verifier_id))
                 ).first()
+                archived = await conn.scalar(
+                    select(archived_tasks.c.id).where(archived_tasks.c.id == verifier_id)
+                )
+                if existing is not None or archived is not None:
+                    # Recovery preserves the failed verifier and its completion.
+                    # Bind a fresh task to the new generation, never re-arm it.
+                    verifier_id = f"verify-{operation['id']}-g{checkpoint['generation']}"
+                    for table in (tasks, archived_tasks):
+                        if await conn.scalar(select(table.c.id).where(table.c.id == verifier_id)):
+                            raise HierarchyError(
+                                "invariant_error", "fresh aggregate verifier identity already exists"
+                            )
+                    existing = None
                 if existing is None:
                     await self.db.create_task(
                         Task(
@@ -317,7 +340,7 @@ class ParentCompletion:
                             repo_id=checkpoint["repository_id"],
                             branch_name=checkpoint["branch"],
                             class_hint=route.verifier_intelligence_class,
-                            dedup_key=f"integration-verifier:{operation['id']}",
+                            dedup_key=f"integration-verifier:{operation['id']}:{checkpoint['generation']}",
                         ),
                         conn=conn,
                     )
@@ -576,11 +599,50 @@ class ParentCompletion:
             key=lambda row: (row["created_at"], row["id"]),
         )
         head_sha = episode["pre_collection_checkpoint_sha"]
+        from src.integration.parent_repair_heads import extensions_on
+
+        try:
+            extensions = await extensions_on(conn, operation, checkpoint)
+        except ValueError:
+            extensions = []
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_proof"})
+
+        def extend_head(head):
+            while True:
+                matching = [edge for edge in extensions if edge["before_sha"] == head]
+                if not matching:
+                    return head
+                if len(matching) != 1:
+                    blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
+                    return head
+                edge = matching[0]
+                extensions.remove(edge)
+                head = edge["after_sha"]
+
         for row in code_chain:
+            if row["before_sha"] != head_sha:
+                head_sha = extend_head(head_sha)
             if row["before_sha"] != head_sha or not self._trusted_code_receipt(row):
                 blockers.append({"task_id": row["source_task_id"], "reason": "receipt_chain"})
                 break
             head_sha = row["after_sha"]
+        head_sha = extend_head(head_sha)
+        if extensions:
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
+        from src.integration.failed_verification_recovery import FAILED_AGGREGATE_META_KEY
+
+        failed_aggregate = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == parent["id"],
+            task_metadata.c.key == FAILED_AGGREGATE_META_KEY,
+        ))
+        if failed_aggregate is not None:
+            import json
+
+            failed_aggregate = json.loads(failed_aggregate)
+            if (failed_aggregate["operation_id"] == operation["id"]
+                    and failed_aggregate["episode_id"] == checkpoint["episode_id"]
+                    and failed_aggregate["head_sha"] == head_sha):
+                blockers.append({"task_id": parent["id"], "reason": "failed_aggregate_head_unchanged"})
         outcome = "ready" if not blockers else (
             "failed" if any(row["reason"] == "failed_child" for row in blockers) else "waiting"
         )
@@ -878,6 +940,7 @@ class ParentCompletion:
             await self.mark_ready_on(conn, parent["id"])
             return receipt | {"revision": revision}
 
+    @parent_engine_guard(outcome="stale_generation")
     async def verify_parent(
         self, task_id: str, generation: int, head_sha: str, evidence_ids: list[str]
     ) -> dict[str, Any]:
@@ -1014,6 +1077,7 @@ class ParentCompletion:
                 "verification_id": verification_id,
             }
 
+    @parent_engine_guard()
     async def wake_verifier(self, task_id: str, fence) -> dict[str, Any]:
         """Wake only the exact transferred verifier on the collected head."""
         from src.database.queries.task_queries import _INTEGRATION_WAKE_TOKEN
@@ -1084,6 +1148,7 @@ class ParentCompletion:
         await self.db._notify_ready(transition.ready)
         return readiness | {"outcome": "woken", "owner_id": expected_owner}
 
+    @parent_engine_guard()
     async def complete_parent(
         self, task_id: str, generation: int, head_sha: str,
         *, accepted_close: dict | None = None,

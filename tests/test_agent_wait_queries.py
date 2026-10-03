@@ -207,6 +207,84 @@ async def test_outbox_failure_and_retry_are_durable(env, monkeypatch):
     assert (await env.db.get_agent_wait(row["id"]))["result_message_id"]
 
 
+async def test_consume_repairs_outbox_after_restart_without_duplicate_wake(env, monkeypatch):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    original = env.db._enqueue_wait_result
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", AsyncMock())
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    resolved = await env.db.get_agent_wait(row["id"])
+    assert resolved["state"] == "satisfied" and resolved["result_message_id"] is None
+    fresh = Database(env.db._dsn)
+    fresh._engine = env.db._engine
+    # Recreated adapter has no in-memory delivery or registration state.
+    consumed = await fresh.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    assert consumed["digest"] == resolved["digest"]
+    assert consumed["version"] == resolved["version"]
+    message = await fresh.get_message(consumed["result_message_id"])
+    assert message.delivered_at == NOW + 3 and message.via == "wait_consume"
+    for now in (NOW + 4, NOW + 100):
+        await fresh.reconcile_agent_waits(now=now)
+        assert await fresh.consume_agent_wait(row["id"], identity=env.identity, now=now) == consumed
+    assert await result_count(fresh, row["id"]) == 1
+    assert await fresh.get_pending_messages("task", "owner") == []
+    assert (await fresh.get_message(message.id)).delivered_at == message.delivered_at
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", original)
+
+
+async def test_failed_consumption_does_not_discard_pending_result(env, monkeypatch):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", AsyncMock())
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    with pytest.raises(WaitError) as exc:
+        await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    assert exc.value.code == "wait.result_pending"
+    result = await env.db.get_agent_wait(row["id"])
+    assert result["state"] == "satisfied" and result["result_message_id"] is None
+
+
+async def test_consumption_keeps_feedback_and_active_exemption(env):
+    row = await register(env)
+    active = await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 1)
+    assert active == row and await env.db.blocking_wait_for(env.session, 1, NOW + 1)
+    feedback = await env.db.create_message(
+        project_id="p", from_kind="user", from_id="operator", to_kind="task", to_id="owner",
+        body="Recheck the deployment before closing.",
+    )
+    await complete(env.db, status="FAILED", outcome="fail")
+    await env.db.reconcile_agent_waits(now=NOW + 60)
+    await asyncio.gather(*(
+        env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 61)
+        for _ in range(3)
+    ))
+    result = await env.db.get_agent_wait(row["id"])
+    assert result["digest"]["status"] == "FAILED" and result["digest"]["outcome"] == "fail"
+    assert await result_count(env.db, row["id"]) == 1
+    assert [msg.id for msg in await env.db.get_pending_messages("task", "owner")] == [feedback.id]
+    assert result["wait_resumed_at"] == NOW + 60
+
+
+async def test_historical_consumption_requires_current_claim_and_never_renews_it(env):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+            last_claim_epoch=2, instance_token="new-token",
+        ))
+    with pytest.raises(WaitError):
+        await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    current = dict(env.identity, claim_epoch=2, instance_token="new-token")
+    with pytest.raises(WaitError) as exc:
+        await env.db.consume_agent_wait(
+            row["id"], identity={**current, "claim_epoch": 1}, now=NOW + 3
+        )
+    assert exc.value.code == "stale_claim"
+    consumed = await env.db.consume_agent_wait(row["id"], identity=current, now=NOW + 4)
+    assert consumed["claim_epoch"] == 1 and consumed["wait_resumed_at"] == NOW + 2
+    assert consumed["session_instance_token"] == "token"
+    assert await env.db.blocking_wait_for("s", 2, NOW + 4) is None
+
+
 @pytest.mark.parametrize("boundary", ["message", "pointer"])
 async def test_failed_message_insert_retains_resolution_intent(env, boundary):
     from sqlalchemy import event

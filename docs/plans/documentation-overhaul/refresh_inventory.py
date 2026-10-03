@@ -568,6 +568,10 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Schema definition, engine and migration guard."),
     ("src/models.py", "database", "docs/reference/database/README.md", PRODUCTION,
      "Domain dataclasses shared across the system."),
+    ("src/knowledge/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable knowledge domain: identities, revisions, search and services."),
+    ("src/records/**", "database", "docs/specs/database.md", PRODUCTION,
+     "Durable record identity and schema: validators, backfill, export and outbox."),
 
     ("src/config.py", "vault", "docs/reference/configuration.md", PRODUCTION,
      "Configuration schema and loader."),
@@ -603,6 +607,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Fills reference stubs using the direct LLM path."),
     ("src/prompts/*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Prompt construction helper."),
+    ("src/knowledge/**", "vault", "docs/concepts/configuration-and-vault.md",
+     PRODUCTION,
+     "Knowledge facilities: offline legacy-memory inventory and sealed manifests."),
 
     ("src/llm/providers/adapters/**", "providers", "docs/concepts/providers.md",
      PRODUCTION, "Provider wire-format adapter."),

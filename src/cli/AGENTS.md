@@ -34,7 +34,8 @@ exceptions.py      CommandError, DaemonNotRunningError, ScopeDeniedError
 formatter_registry.py  Maps CommandHandler commands to Rich formatters
 formatters.py      Rich table/panel formatters for all entity types
 formulas.py        `aq formula show` / `aq formula cook`
-global_options.py  Copies --json / --brief / --api-url onto commands so they parse anywhere
+global_options.py  Copies --json / --brief / --save-output / --api-url onto commands
+                   so they parse anywhere
 integration.py     `aq integration` — hierarchical integration trains
 install.py         `aq install` — the daemon-free installer: builds the step registry,
                    runs src/install's engine in-process, maps outcomes to exit codes;
@@ -99,7 +100,9 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
   (`aq doctor`, `aq logs`, `aq system config get`) keeps its local meaning. Design §4.0.
 - **Output contract:** `--json` prints the versioned envelope from `envelope.py`;
   `--brief` trims to `BRIEF_PROJECTIONS`; `AQ_JSON_LEGACY=1` restores the raw payload for
-  one release. Route new output through `emit()`, never print JSON directly.
+  one release. `--save-output PATH` saves a full private JSON envelope and prints a
+  receipt; actionable results/instructions remain visible. Route new output through
+  `emit()`, never print JSON directly.
 - **Registration:** a module imports `cli` from `app.py` and decorates with
   `@cli.group()` / `@group.command()`; importing registers. Hand-crafted modules are
   imported *before* `register_auto_commands()` so their names win over generated ones.
@@ -107,7 +110,10 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
 - **Plugin CLI extensions** register `aq <plugin-name> …` via the `aq.plugins` entry
   point group; saved plugin config is fetched only when that group is invoked, read-only
   and bounded. Import, help, version, schema and `aq test` discovery must never initialize
-  or migrate a database.
+  or migrate a database. A plugin never shadows a core command: a colliding entry point
+  is skipped with a warning naming its distribution, except the (name, distribution)
+  pairs in `_CORE_SURFACED_PLUGIN_ENTRY_POINTS` (aq-memory's `memory`), which core
+  surfaces itself and the CLI never imports.
 
 ## Conventions
 

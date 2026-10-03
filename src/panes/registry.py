@@ -30,5 +30,6 @@ SERVER_PANE_REGISTRY: dict[str, PaneEntry] = {
     "review": PaneEntry(id="review", agent_pushable=True),
     "session-peek": PaneEntry(id="session-peek", agent_pushable=True),
     "spec-doc-reader": PaneEntry(id="spec-doc-reader", agent_pushable=True),
+    "knowledge": PaneEntry(id="knowledge", agent_pushable=True),
     "task-detail": PaneEntry(id="task-detail", agent_pushable=True),
 }

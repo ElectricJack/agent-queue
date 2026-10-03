@@ -5,7 +5,6 @@ from __future__ import annotations
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.scope import AGENT_COMMAND_SET, OPERATOR_INTEGRATION_CONTROLS, check_command_scope
 
-
 SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
 
 
@@ -48,6 +47,23 @@ EXPECTED_AGENT_COMMANDS = {
     "message_status",
     "memory_save",
     "memory_search",
+    # Knowledge records (K03): worker-safe reads and writes; retire/restore are
+    # supervisor-only and remain out of the agent set.
+    "knowledge_create",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    # K04: a project-pinned authorized read that returns bytes; the operator's
+    # record_repair stays out of the agent set.
+    "knowledge_export",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "link_create",
+    "link_list",
+    "link_remove",
     "task_claim",
     "job_submit",
     "job_get",
@@ -150,6 +166,25 @@ class TestCheckCommandScope:
         assert "project_id mismatch" in check_command_scope(
             "message_status", {"message_id": "msg-1", "project_id": "p2"}, SESSION
         )
+
+    def test_knowledge_export_is_a_same_project_agent_read(self):
+        """K04 export returns authorized bytes to a worker in its own project only.
+
+        The record service is the independent authorization gate; this gate
+        pins the project, and the supervisor/operator record mutations stay out.
+        """
+        args = {"identity": "record:x"}
+        assert check_command_scope("knowledge_export", args, SESSION) is None
+        assert args["project_id"] == "p1"
+        assert "project_id mismatch" in check_command_scope(
+            "knowledge_export", {"identity": "record:x", "project_id": "p2"}, SESSION
+        )
+        unassigned = RequestScope(kind="session", session_id="s1")
+        assert "no assigned project" in check_command_scope(
+            "knowledge_export", {"identity": "record:x"}, unassigned
+        )
+        for command in ("knowledge_retire", "knowledge_restore", "record_repair"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_integration_status_is_same_project_agent_read(self):
         args = {"project_id": "p1"}

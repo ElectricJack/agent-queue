@@ -19,6 +19,7 @@ from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.parent_engine import parent_engine_guard
 from src.models import TaskStatus
 
 
@@ -55,6 +56,58 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_parent_action(self, args: dict) -> dict:
+        """Internal visit dispatch: process-bound engine scope is the authority."""
+        from src.integration.parent_engine import active_parent_scope
+        from src.integration.subjects import Subject
+
+        row = await self.db.get_integration_subject(args.get("subject_id"))
+        if row is None or row["version"] != args.get("expected_version"):
+            return _failure("stale", "parent subject version changed")
+        subject = Subject.from_row(row)
+        if not active_parent_scope(self.db, subject.task_id):
+            return _failure("unauthorized", "parent action needs the active visit exclusion")
+        runtime = getattr(self.orchestrator, "parent_subject_runtime", None)
+        if runtime is None:
+            return _failure("unavailable", "parent runtime unavailable")
+        value = await runtime.adapters.perform(self, subject, args["request"])
+        return {"success": not value.is_unknown, "value": value.model_dump(mode="json")}
+
+    async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationEngineTransferArgs
+        from src.integration.engine import EngineRefused, RootEngineOwnership
+        from src.integration.subjects import SubjectEngine
+
+        try:
+            request = IntegrationEngineTransferArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        repository = await self.db.get_repo(request.repository_id)
+        if repository is None:
+            return _failure("refused", "repository does not exist")
+        operator, error = await integration_operator(self.db, repository.project_id)
+        if error:
+            return _failure("unauthorized", error)
+        if (not request.dry_run and request.engine == "reconciler"
+            and not self.config.integration.reconciler_active):
+            return _failure("refused", "enable the active loop before transferring subjects")
+        try:
+            from src.integration.parent_engine import ParentEngineOwnership
+            owner = (ParentEngineOwnership(self.db) if request.parent_task_id
+                     else RootEngineOwnership(self.db))
+            parent_args = {"task_id": request.parent_task_id} if request.parent_task_id else {}
+            result = await owner.transfer(
+                request.repository_id, engine=SubjectEngine(request.engine),
+                expected_versions=request.expected_versions, reason=request.reason,
+                evidence=request.evidence, operator_id=operator, dry_run=request.dry_run,
+                **parent_args,
+            )
+        except (EngineRefused, BranchBusy, StaleFence) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     """Implemented integration command handlers are registered incrementally."""
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:
@@ -369,6 +422,7 @@ class IntegrationCommandsMixin:
             return await self._integration_collector_matches_target(owner_id, target, project_id)
         return False
 
+    @parent_engine_guard("command_target", outcome="human_required")
     async def _cmd_integration_transfer_owner(self, args: dict) -> dict:
         """Fence out one branch writer only after a proven server-side handoff."""
         from pydantic import ValidationError
@@ -390,7 +444,7 @@ class IntegrationCommandsMixin:
             _label, refusal = await integration_operator(self.db, repository.project_id)
             if refusal is not None:
                 return _failure("human_required", refusal)
-        if principal.kind is PrincipalKind.PLAYBOOK:
+        elif principal.kind is PrincipalKind.PLAYBOOK:
             explicitly_capable = not principal.unresolved and principal.policy.allows(
                 "aq_commands", "integration_transfer_owner"
             )
@@ -822,14 +876,20 @@ class IntegrationCommandsMixin:
         return await self._integration_control_service().flush(project_id)
 
     async def _cmd_integration_eject(self, args: dict) -> dict:
+        from src.integration.engine import current_policy_ejection
+
         batch_id = str(args.get("batch_id") or "")
         task_id = str(args.get("task_id") or "")
         reason = str(args.get("reason") or "")
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
-        operator_id, refusal = await self._integration_operator_for_batch(batch_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
+        policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
+        if policy_ejection is not None:
+            operator_id = "service:root-reconciler"
+        else:
+            operator_id, refusal = await self._integration_operator_for_batch(batch_id)
+            if refusal is not None:
+                return _failure("unauthorized", refusal)
 
         async def observe_resolution(resolution):
             batch = await self.db.get_integration_batch(resolution["batch_id"])
@@ -846,6 +906,7 @@ class IntegrationCommandsMixin:
             reason=reason,
             operator_id=operator_id,
             resolution_observer=observe_resolution,
+            **({"policy_ejection": policy_ejection} if policy_ejection is not None else {}),
         )
 
     async def _reconcile_integration_completion(self, project_id: str) -> None:
@@ -1269,6 +1330,73 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
+        """Recover a suspended producer, cancelled collection or failed verifier."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReopenCollectionArgs
+        from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
+        from src.integration.failed_verification_recovery import FailedVerificationRecovery
+        from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+        try:
+            request = IntegrationReopenCollectionArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid collection reopen request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        from src.integration.parent_engine import active_parent_scope
+        if task is not None and active_parent_scope(self.db, task.id):
+            principal, refusal = "policy:parent-reconciler", None
+        else:
+            principal, refusal = await integration_operator(
+                self.db, task.project_id if task is not None else None
+            )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        repair = self._integration_repair_service()
+
+        async def dispatch(operation_id: str, stage: int) -> dict:
+            return await repair.dispatch(operation_id, stage)
+
+        checkpoint = await self.db.get_integration_checkpoint(request.task_id)
+        if checkpoint is not None and checkpoint["state"] == "awaiting_children":
+            owner = await BranchOwnership(self.db).get_owner(
+                BranchKey(repository_id=checkpoint["repository_id"], branch=checkpoint["branch"])
+            )
+            operation = await self.db.get_active_parent_integration_operation(request.task_id)
+            if (operation is not None and operation["state"] in {"active", "escalated"}
+                    and owner is not None and owner["owner_role"] == "worker"):
+                result = await SuspendedParentRecovery(
+                    self.db, self._hierarchy_integration_service()
+                ).run(
+                    request.task_id, dry_run=request.dry_run,
+                    expected_head_sha=request.expected_head_sha, reason=request.reason,
+                    operator_id=principal,
+                )
+                return {
+                    "success": result["outcome"] in {"would_reopen", "reopened", "nothing_to_reopen"},
+                    "dry_run": request.dry_run, **result,
+                }
+        recovery_type = (
+            FailedVerificationRecovery
+            if checkpoint is not None and checkpoint["state"] in {"verifying", "integration_ready"}
+            else CancelledCollectionRecovery
+        )
+        result = await recovery_type(
+            self.db, self._integration_promotion_service(), dispatch=dispatch
+        ).run(
+            request.task_id,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_reopen", "reopened", "nothing_to_reopen"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
     async def _cmd_integration_rebind_reused_identity(self, args: dict) -> dict:
         """Prove a task's inherited integration identity; rebind it once settled."""
         from pydantic import ValidationError
@@ -1330,6 +1458,30 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
         return {
             "success": result["outcome"] in {"would_rebind", "rebound", "already_reserved"},
+            **result,
+        }
+
+    async def _cmd_integration_recover_parent_head(self, args: dict) -> dict:
+        """Reconcile a completed post-collection repair with its immutable receipts."""
+        from src.commands.contracts.integration import IntegrationRecoverParentHeadArgs
+        from src.integration.parent_repair_heads import ParentHeadRecovery
+        from src.integration.promotion import PromotionError
+
+        try:
+            request = IntegrationRecoverParentHeadArgs.model_validate(args)
+        except ValueError as exc:
+            return _failure("blocked", str(exc))
+        principal, refusal = await self._integration_operator_for_operation(request.operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await ParentHeadRecovery(self._integration_promotion_service()).run(
+                request, principal=principal,
+            )
+        except (PromotionError, GitError, ValueError, HierarchyError) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_recover", "recovered", "already_recovered"},
             **result,
         }
 
@@ -1969,17 +2121,19 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReleaseArgs
+        from src.integration.scheduler import empty_seal_request
 
         try:
             request = IntegrationReleaseArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("runtime_error", f"invalid integration release request: {exc}")
         batch = await self.db.get_integration_batch(request.batch_id)
-        if batch is None:
+        # An empty seal keeps no row; its id names the project it swept.
+        empty_seal = empty_seal_request(request.batch_id) if batch is None else None
+        if batch is None and empty_seal is None:
             return _failure("stale", "integration batch does not exist")
-        if not await self._integration_delivery_authorized(
-            batch["project_id"], "integration_release"
-        ):
+        project_id = batch["project_id"] if batch is not None else empty_seal[0]
+        if not await self._integration_delivery_authorized(project_id, "integration_release"):
             return _failure("unauthorized", "caller cannot release this root batch")
         result = await self._integration_release_service().release(
             request.batch_id, time.time()
@@ -2033,6 +2187,8 @@ class IntegrationCommandsMixin:
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
             git_manager=self.orchestrator.git,
+            subject_policy_loader=getattr(self.orchestrator, "_load_playbook_artifact", None)
+            if getattr(self.orchestrator, "parent_subject_runtime", None) is not None else None,
         )
 
     def _integration_repair_service(self):
@@ -2510,7 +2666,7 @@ class IntegrationCommandsMixin:
             return _failure("source_moved", str(exc))
         except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
             return _failure("target_moved", str(exc))
-        except PromotionInvariantError as exc:
+        except (PromotionInvariantError, ValueError) as exc:
             return _failure("runtime_error", str(exc))
         except (PromotionRuntimeError, GitError) as exc:
             return _failure("runtime_error", str(exc))
@@ -2520,10 +2676,12 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReconcilePromotionArgs
+        from src.integration.ownership import BranchBusy, StaleFence
         from src.integration.promotion import (
             PromotionConflict,
             PromotionInvariantError,
             PromotionNotApplied,
+            PromotionRecovery,
             PromotionRuntimeError,
             PromotionTargetMoved,
         )
@@ -2540,10 +2698,20 @@ class IntegrationCommandsMixin:
         ):
             return _failure("unauthorized", "caller cannot reconcile this project")
         try:
-            value = await self._integration_promotion_service().reconcile(parsed.intent_id)
+            service = self._integration_promotion_service()
+            if parsed.fence is None:
+                value = await service.reconcile(parsed.intent_id)
+            else:
+                value = await service.reconcile(parsed.intent_id, fence=parsed.fence)
+        except PromotionRecovery as exc:
+            return self._promotion_result(
+                exc.outcome, exc.value, success=exc.outcome in {"continued", "superseded"}
+            )
+        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
+            return _failure("target_moved", str(exc))
         except PromotionNotApplied as exc:
             return _failure("not_applied", str(exc))
-        except (PromotionConflict, PromotionInvariantError, PromotionTargetMoved) as exc:
+        except (PromotionConflict, PromotionInvariantError, ValueError) as exc:
             return _failure("invariant_error", str(exc))
         except (PromotionRuntimeError, GitError) as exc:
             return _failure("runtime_error", str(exc))

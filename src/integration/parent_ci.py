@@ -14,6 +14,7 @@ from src.integration.ci import (
     AuthenticatedGitHubObserver, CIService, ParentCISubject, SubjectTrustError,
 )
 from src.integration.outbox import enqueue_integration_event
+from src.integration.parent_engine import parent_engine_guard
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class ParentCIService:
             except Exception:
                 logger.exception('Parent CI remains retryable for %s', row['task_id'])
 
+    @parent_engine_guard("row", outcome="none")
     async def handle(self, row):
         repo = await self.db.get_repo(row['repository_id'])
         if repo is None:
@@ -138,10 +140,10 @@ class ParentCIService:
             return
         observed = await ci.observe_parent(subject)
         if observed['outcome'] not in {'green', 'red'}:
-            return
+            return observed
         evidence_ids = observed['evidence_ids']
         if not evidence_ids:
-            return
+            return observed
         repair_evidence_id = evidence_ids[0]
         if observed['outcome'] == 'red':
             # Repair records one evidence row. Prefer the row that names an
@@ -176,3 +178,5 @@ class ParentCIService:
                     'conclusion': 'success' if observed['outcome'] == 'green' else 'failure',
                 }, available_at=self.attestation.clock(),
             )
+
+        return observed

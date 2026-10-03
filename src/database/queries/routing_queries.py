@@ -15,13 +15,13 @@ import asyncio
 import json
 import random
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import exists, func, literal, or_, select, update
+from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, update
 
-from src.database.tables import playbook_v2_runs, sessions, tasks
+from src.database.tables import agent_profiles, agents, playbook_v2_runs, sessions, tasks
 from src.models import Task, TaskStatus
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
 
@@ -64,30 +64,148 @@ def _active_session():
     )
 
 
-class RoutingQueryMixin:
-    async def count_routed_backlog_by_profile(self, *, conn=None) -> dict[str, int]:
-        """Fleet-wide routed backlog: READY and ASSIGNED tasks per profile not yet started.
+def _eligible_backlog_predicate(ready_project_ids: Collection[str]):
+    """The routed backlog the planner's load admits: the claim frontier's.
 
-        Unlike ``count_ready_by_profile``, which counts one project's READY
-        frontier, this spans every project: pools are global, so the load on
-        a profile is too.  A task with a live session is load through
-        ``count_busy_sessions_by_profile`` instead, never twice.
-        """
-        statement = (
-            select(tasks.c.profile_id, func.count())
-            .where(
-                tasks.c.status.in_(ROUTED_BACKLOG_STATUSES),
-                tasks.c.profile_id.is_not(None),
-                ~_active_session(),
-            )
-            .group_by(tasks.c.profile_id)
+    The same acceptance rules as the pool claim frontier (shared, not
+    duplicated) plus the project-aware route filter: a READY task that a pool
+    worker could actually claim.  An ASSIGNED row is load through its live
+    session (``count_busy_sessions_by_profile``), never the backlog, and a
+    task that fails any frontier rule — dependency, hold, origin, container —
+    is blocked, not runnable: counting it here is what made one unclaimable
+    verifier fill a one-slot pool.
+    """
+    from src.database.queries.blocked_state import apply_label_filters
+    from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+
+    return and_(
+        tasks.c.status == TaskStatus.READY.value,
+        *(_frontier_predicates().values()),
+        route_claimable_in(ready_project_ids),
+        apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
+    )
+
+
+def _routed_backlog_statement(ready_project_ids: Collection[str]):
+    eligible = _eligible_backlog_predicate(ready_project_ids)
+    return (
+        select(
+            tasks.c.profile_id,
+            func.count().label("total"),
+            func.count().filter(eligible).label("eligible"),
         )
+        .where(
+            tasks.c.status.in_(ROUTED_BACKLOG_STATUSES),
+            tasks.c.profile_id.is_not(None),
+            ~_active_session(),
+        )
+        .group_by(tasks.c.profile_id)
+    )
+
+
+class RoutingQueryMixin:
+    async def routing_supply(self, *, now: float, stall_seconds: float, conn=None) -> dict:
+        """Grouped worker observations, without task titles, terminals or session tokens.
+
+        Starting, draining, preparing and unresponsive workers are never idle supply.
+        Project/fleet totals include them conservatively: a draining process still
+        occupies resources until it stops. Pending launches are folded in by the caller.
+        """
+        bucket = case(
+            (or_(sessions.c.state == "draining", sessions.c.desired_state == "stopped"),
+             "draining"),
+            (sessions.c.state == "starting", "starting"),
+            (or_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)), "busy"),
+            (and_(sessions.c.lifecycle == "pool", func.coalesce(
+                func.nullif(sessions.c.last_activity, 0), sessions.c.started_at
+            ) <= now - stall_seconds), "unresponsive"),
+            (or_(agents.c.enabled.is_(False), agents.c.deleted_at.is_not(None)), "unresponsive"),
+            else_="idle",
+        ).label("bucket")
+        supply = (
+            select(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle,
+                   bucket, func.count().label("count"),
+                   func.array_agg(sessions.c.id).label("session_ids"))
+            .select_from(sessions.outerjoin(agents, sessions.c.agent_id == agents.c.id))
+            .where(sessions.c.state.in_(_LIVE_SESSION_STATES),
+                   sessions.c.lifecycle.in_(("pool", "task")))
+            .group_by(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle, bucket)
+        )
+        kinds = (
+            select(tasks.c.task_type, func.count().label("count"))
+            .where(_active_session())
+            .group_by(tasks.c.task_type)
+        )
+        live_agent = select(sessions.c.id).where(
+            sessions.c.state.in_(_LIVE_SESSION_STATES),
+            or_(sessions.c.agent_id == agents.c.id, sessions.c.task_id == agents.c.current_task_id),
+        ).exists()
+        reservations = (
+            select(tasks.c.project_id, agents.c.profile_id,
+                   literal("task").label("lifecycle"), literal("busy").label("bucket"),
+                   func.count().label("count"),
+                   func.array_agg(cast(literal(None), Text)).label("session_ids"))
+            .select_from(agents.join(tasks, agents.c.current_task_id == tasks.c.id)
+                         .join(agent_profiles, agents.c.profile_id == agent_profiles.c.id))
+            .where(agents.c.enabled.is_(True), agents.c.deleted_at.is_(None),
+                   agents.c.role == "worker", agent_profiles.c.lifecycle == "task",
+                   tasks.c.status.in_((TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)),
+                   ~live_agent)
+            .group_by(tasks.c.project_id, agents.c.profile_id)
+        )
+        async def read(connection):
+            # Reservations and sessions share one SQL snapshot, so a reservation
+            # becoming a session between reads cannot disappear from both counts.
+            rows = [dict(r) for r in (
+                await connection.execute(supply.union_all(reservations))
+            ).mappings()]
+            # Deduplicate pending launches against the SAME supply read. A second
+            # query could see a just-inserted id that the first query never counted.
+            ids = {sid for row in rows for sid in row.pop("session_ids") if sid is not None}
+            return {
+                "supply": rows,
+                "active_kinds": {r[0] or "unknown": int(r[1])
+                                 for r in (await connection.execute(kinds)).fetchall()},
+                "session_ids": ids,
+            }
+
+        if conn is not None:
+            return await read(conn)
+        async with self._engine.connect() as connection:
+            return await read(connection)
+
+    async def count_routed_backlog_by_profile(
+        self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
+    ) -> dict[str, dict[str, int]]:
+        """Fleet-wide routed backlog, split eligible vs blocked, per profile.
+
+        Returns ``{profile_id: {"eligible": n, "blocked": m}}``.
+
+        *eligible* is the routed READY backlog the planner's load admits:
+        the claim frontier's acceptance rules (dependency, plan-subtask,
+        origin, container, siblings, retired-delegate) plus the project-
+        aware route filter and the ``hold:*`` label filter.  *blocked* is
+        the rest of the READY/ASSIGNED rows — work that is routed but not
+        currently claimable.
+
+        Unlike ``count_busy_sessions_by_profile`` (live sessions), an
+        ASSIGNED row counts as *blocked* here: it is load through its live
+        session, never the runnable backlog.  Counting every row as load is
+        what made one unclaimable verifier fill a one-slot pool.
+        """
+        statement = _routed_backlog_statement(ready_project_ids)
         if conn is not None:
             rows = (await conn.execute(statement)).fetchall()
         else:
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).fetchall()
-        return {str(profile_id): int(count) for profile_id, count in rows}
+        return {
+            str(profile_id): {
+                "eligible": int(eligible or 0),
+                "blocked": int(total or 0) - int(eligible or 0),
+            }
+            for profile_id, total, eligible in rows
+        }
 
     async def count_busy_sessions_by_profile(self, *, conn=None) -> dict[str, int]:
         """Live sessions holding a task, per profile, fleet-wide.

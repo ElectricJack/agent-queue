@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -86,10 +86,12 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_materialize_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_reopen_collection",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
+        "integration_recover_parent_head",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
@@ -303,6 +305,10 @@ class IntegrationRedriveChildArgs(CommandArgs):
         return self
 
 
+class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
+    """Dry run by default; applying names the parent branch head the dry run reported."""
+
+
 class IntegrationRebindReusedIdentityArgs(CommandArgs):
     task_id: str = Field(min_length=1)
     #: Prove only.  Applying needs every inherited origin the dry run reported
@@ -354,6 +360,47 @@ class IntegrationRebindRepairValue(CommandValue):
     session_id: str | None = None
     reason: str | None = None
     next_step: str | None = None
+
+
+class IntegrationRecoverParentHeadArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    head_sha: str
+    dry_run: bool = True
+    expected_episode_id: str | None = None
+    expected_generation: int | None = Field(default=None, ge=0)
+    expected_stage: int | None = Field(default=None, ge=0)
+    expected_fence_token: int | None = Field(default=None, ge=1)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_exact_recovery(self) -> IntegrationRecoverParentHeadArgs:
+        if not is_valid_git_oid(self.head_sha):
+            raise ValueError("head_sha must be a full commit id")
+        if not self.dry_run and (
+            not self.expected_episode_id or self.expected_generation is None
+            or self.expected_stage is None or self.expected_fence_token is None
+            or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires the previewed episode, generation, stage, fence and reason")
+        return self
+
+
+class IntegrationRecoverParentHeadValue(CommandValue):
+    operation_id: str | None = None
+    head_sha: str | None = None
+    episode_id: str | None = None
+    generation: int | None = None
+    stage: int | None = None
+    fence_token: int | None = None
+    receipt_head_sha: str | None = None
+    repair_task_id: str | None = None
+    completion_id: str | None = None
+    attempts: int | None = None
+    deadline_at: float | None = None
+    stage_state: str | None = None
+    operation_state: str | None = None
+    apply_command: str | None = None
+    reason: str | None = None
 
 
 class IntegrationRecoverPreservedRepairArgs(CommandArgs):
@@ -711,6 +758,31 @@ class IntegrationAuthorizeRootValue(CommandValue):
     reason: str | None = None
 
 
+class IntegrationReopenCollectionValue(CommandValue):
+    """A cancelled or failed-verification collection and what reopening it would do."""
+
+    task_id: str | None = None
+    project_id: str | None = None
+    kind: str | None = None
+    branch: str | None = None
+    head_sha: str | None = None
+    remote_head_sha: str | None = None
+    recorded_head_sha: str | None = None
+    operation_id: str | None = None
+    episode_id: str | None = None
+    checkpoint: dict[str, Any] | None = None
+    owner: dict[str, Any] | None = None
+    receipts: tuple[dict[str, Any], ...] = ()
+    conflict: dict[str, Any] | None = None
+    stage: dict[str, Any] | None = None
+    delegates: tuple[dict[str, Any], ...] = ()
+    human_gates: tuple[str, ...] = ()
+    blockers: tuple[dict[str, Any], ...] = ()
+    collector_fence_token: int | None = None
+    dispatch: dict[str, Any] | None = None
+    reason: str | None = None
+
+
 class IntegrationRedriveChildValue(CommandValue):
     """What a completed child's assembly waits on (``integration_redrive_child``)."""
 
@@ -789,6 +861,10 @@ class DeliveryReceiptsValue(CommandValue):
 
 class IntegrationReconcilePromotionArgs(CommandArgs):
     intent_id: str
+    fence: Fence | None = Field(
+        default=None,
+        description="Current reserved collector fence; enables recovery of unapplied child intents.",
+    )
 
 
 class IntegrationResolveConflictArgs(CommandArgs):
@@ -1420,6 +1496,27 @@ INTEGRATION_REDRIVE_CHILD = _operational_contract(
     result_model=IntegrationRedriveChildValue,
 )
 
+REOPEN_COLLECTION_OUTCOMES = (
+    "would_reopen",
+    "reopened",
+    "nothing_to_reopen",
+    "ambiguous",
+    "blocked",
+    "changed",
+    "not_eligible",
+    "not_found",
+    "invalid",
+)
+
+INTEGRATION_REOPEN_COLLECTION = _operational_contract(
+    "integration_reopen_collection",
+    IntegrationReopenCollectionArgs,
+    REOPEN_COLLECTION_OUTCOMES,
+    successes=frozenset({"would_reopen", "reopened", "nothing_to_reopen"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationReopenCollectionValue,
+)
+
 REBIND_REUSED_IDENTITY_OUTCOMES = (
     "rebound",
     "would_rebind",
@@ -1459,6 +1556,15 @@ INTEGRATION_RECOVER_PRESERVED_REPAIR = _operational_contract(
     successes=frozenset({"would_recover", "recovered", "already_recovered"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRecoverPreservedRepairValue,
+)
+
+INTEGRATION_RECOVER_PARENT_HEAD = _operational_contract(
+    "integration_recover_parent_head",
+    IntegrationRecoverParentHeadArgs,
+    PRESERVED_REPAIR_OUTCOMES,
+    successes=frozenset({"would_recover", "recovered", "already_recovered"}),
+    side_effect=SideEffectClass.UPDATE,
+    result_model=IntegrationRecoverParentHeadValue,
 )
 
 REBIND_DETACHED_REPAIR_OUTCOMES = (
@@ -1838,6 +1944,10 @@ INTEGRATION_RECONCILE_PROMOTION = CommandContract(
         outcomes=(
             OutcomeSpec(name="applied", classification=OutcomeClass.SUCCESS),
             OutcomeSpec(name="not_applied", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="superseded", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="continued", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="waiting", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="target_moved", classification=OutcomeClass.FAILURE),
             OutcomeSpec(name="invariant_error", classification=OutcomeClass.FAILURE),
         ),
         capability="integration_reconcile_promotion",
@@ -2419,7 +2529,8 @@ async def _reconcile_adapter(
         args,
         ctx,
         PromotionCommandValue,
-        {"applied", "not_applied", "invariant_error"},
+        {"applied", "not_applied", "invariant_error", "superseded", "continued",
+         "waiting", "target_moved"},
     )
 
 
@@ -2579,6 +2690,7 @@ async def _hierarchy_adapter(
     ctx: CommandContext | None,
     value_model: type[CommandValue],
     outcomes: set[str],
+    aliases: dict[str, str] | None = None,
 ) -> CommandResult:
     from src.commands.contracts.builtin import _handler
 
@@ -2589,6 +2701,11 @@ async def _hierarchy_adapter(
         with principal_context(ctx):
             raw = await _handler().execute(command, payload)
     outcome = raw.get("outcome")
+    if aliases and outcome in aliases:
+        # A handler outcome newer than the frozen contract maps onto a declared
+        # one with the same routing; the exact reason stays in the summary.
+        raw = raw | {"error": raw.get("reason") or raw.get("error") or outcome}
+        outcome = aliases[outcome]
     if outcome not in outcomes | {"unauthorized", "runtime_error"}:
         return CommandResult(
             outcome="contract_violation",
@@ -2721,6 +2838,9 @@ async def _repair_dispatch_adapter(
             "stale",
             "human_required",
         },
+        # ``unknown`` is a mechanical, retryable refusal.  Reviewed playbooks
+        # pin this contract's fingerprint, so it reaches them as ``busy``.
+        aliases={"unknown": "busy"},
     )
 
 
@@ -2982,6 +3102,18 @@ async def _redrive_child_adapter(args: IntegrationRedriveChildArgs, ctx: Command
     )
 
 
+async def _reopen_collection_adapter(
+    args: IntegrationReopenCollectionArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_reopen_collection",
+        args,
+        ctx,
+        IntegrationReopenCollectionValue,
+        set(REOPEN_COLLECTION_OUTCOMES),
+    )
+
+
 async def _rebind_reused_identity_adapter(
     args: IntegrationRebindReusedIdentityArgs, ctx: CommandContext | None
 ):
@@ -3010,6 +3142,15 @@ async def _recover_preserved_repair_adapter(
     return await _hierarchy_adapter(
         "integration_recover_preserved_repair", args, ctx,
         IntegrationRecoverPreservedRepairValue, set(PRESERVED_REPAIR_OUTCOMES),
+    )
+
+
+async def _recover_parent_head_adapter(
+    args: IntegrationRecoverParentHeadArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_recover_parent_head", args, ctx,
+        IntegrationRecoverParentHeadValue, set(PRESERVED_REPAIR_OUTCOMES),
     )
 
 
@@ -3091,6 +3232,17 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    name = "integration_engine_transfer"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationEngineTransferArgs,
+            ("preview", "transferred", "refused"), successes=frozenset({"preview", "transferred"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationEngineTransferValue)
+
+        async def transfer_engine(args, ctx):
+            return await _hierarchy_adapter("integration_engine_transfer", args, ctx, IntegrationEngineTransferValue,
+                                             {"preview", "transferred", "refused"})
+
+        registry.register(CommandRegistration(name, contract, transfer_engine))
     name = "integration_migrate_provenance"
     if registry.get(name) is None:
         contract = _operational_contract(name, IntegrationMigrateProvenanceArgs,
@@ -3166,10 +3318,12 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_MATERIALIZE_ROOT, _materialize_root_adapter),
         (INTEGRATION_AUTHORIZE_ROOT, _authorize_root_adapter),
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
+        (INTEGRATION_REOPEN_COLLECTION, _reopen_collection_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
         (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
         (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
+        (INTEGRATION_RECOVER_PARENT_HEAD, _recover_parent_head_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
@@ -3203,6 +3357,32 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     ):
         if registry.get(contract.name) is None:
             registry.register(CommandRegistration(contract.name, contract, adapter))
+
+class IntegrationEngineTransferArgs(CommandArgs):
+    parent_task_id: str | None = Field(default=None, min_length=1)
+    repository_id: str = Field(min_length=1)
+    engine: Literal["legacy", "reconciler"]
+    expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
+    reason: str = ""
+    evidence: tuple[str, ...] = ()
+    dry_run: bool = True
+
+    @field_validator("expected_versions")
+    @classmethod
+    def nonnegative_versions(cls, value):
+        if any(not key or isinstance(version, bool) or version < 0 for key, version in value.items()):
+            raise ValueError("expected_versions must name exact nonnegative subject versions")
+        return value
+
+
+class IntegrationEngineTransferValue(CommandValue):
+    repository_id: str | None = None
+    engine: Literal["legacy", "reconciler"] | None = None
+    subject_ids: tuple[str, ...] = ()
+    expected_versions: dict[str, int] = Field(default_factory=dict)
+    current_engines: dict[str, Literal["legacy", "reconciler"]] = Field(default_factory=dict)
+    reason: str | None = None
+
 
 class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):
     """Operator recovery of a malformed reservation which never wrote remotely."""

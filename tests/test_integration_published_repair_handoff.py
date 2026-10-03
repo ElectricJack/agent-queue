@@ -121,6 +121,10 @@ async def repair(command_handler_factory, tmp_path, request):
     if aggregate:
         async with db._engine.connect() as conn:
             deadline = await conn.scalar(select(integration_repair_stages.c.deadline_at))
+        # A never-claimed primary only extends its clock; one conclusive
+        # attempt is what lets the deadline escalate to the debug stage.
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).values(attempts=1))
         expired = await service.repair.expire("repair-batch-batch", 0, now=deadline)
         assert expired["action"] == "dispatch_debug"
         dispatched = await service.repair.dispatch("repair-batch-batch", 1)

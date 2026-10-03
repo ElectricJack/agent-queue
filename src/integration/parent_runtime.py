@@ -1,0 +1,424 @@
+"""Default-off parent visits share the existing integration remote pass."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+from sqlalchemy import select, text
+
+from src.database import tables as t
+from src.integration.models import BranchKey, Fence
+from src.integration.observe import GitObservationReader
+from src.integration.parent_adapters import (
+    ParentPolicyFacts,
+    ParentPrimitiveAdapters,
+    PendingParentPublication,
+)
+from src.integration.parent_engine import active_parent_scope, parent_lock_key
+from src.integration.parent_subjects import (
+    ParentDatabaseObservationReader,
+    ParentIntegrationObserver,
+    ParentSubjectAdapter,
+    _SnapshotReader,
+)
+from src.integration.reconciler import IntegrationReconciler, VisitTransition
+from src.integration.root_runtime import PinnedRootPolicy
+from src.integration.subjects import (
+    JournalMode,
+    MemberRef,
+    PolicyArtifactPin,
+    Primitive,
+    PrimitivePorts,
+    SubjectEngine,
+    SubjectKind,
+    SubjectSchedule,
+    WriterLease,
+    WriterStatus,
+    writer_values,
+)
+from src.playbooks.integration_policy import CompiledIntegrationPolicy
+
+logger = logging.getLogger(__name__)
+
+
+class ParentVisitObserver(ParentIntegrationObserver):
+    async def observe_subject(self, subject_id, *, include_remote=True):
+        snapshot = await self.reader.read(subject_id)
+        if snapshot is None:
+            return None
+        facts = await ParentIntegrationObserver(
+            _SnapshotReader(snapshot),
+            self.git,
+            clock=self.clock,
+            session_probe=self.session_probe,
+            facts_type=ParentPolicyFacts,
+        ).observe_subject(subject_id, include_remote=include_remote)
+        subject = snapshot.subject
+        operation = next(
+            (
+                r
+                for r in snapshot.all("integration_repair_operations")
+                if r["episode_id"] == subject.parent_episode_id
+            ),
+            {},
+        )
+        stages = [
+            r
+            for r in snapshot.all("integration_repair_stages")
+            if r["operation_id"] == operation.get("id") and r["state"] != "passed"
+        ]
+        owner = next(
+            (
+                r
+                for r in snapshot.all("integration_branch_owners")
+                if r["owner_id"] == operation.get("id")
+                and r["owner_role"] == "collector"
+                and r["handoff_state"] == "reserved"
+                and r["session_id"] is None
+                and r["workspace_id"] is None
+            ),
+            None,
+        )
+        children = {c.task_id: c for c in facts.children}
+        members = tuple(
+            MemberRef(task_id=m.task_id, head_sha=m.head_sha, base_sha=m.base_sha)
+            for m in facts.members
+            if m.head_sha
+            and m.base_sha
+            and not m.held
+            and not m.ejected
+            and m.review != "rejected"
+            and children[m.task_id].pending_collection
+        )
+        writer = facts.writer
+        if (
+            subject.writer.status is WriterStatus.FILED
+            and subject.writer.fence_token is None
+            and any(
+                r["id"] == subject.writer.task_id and r["status"] == "BLOCKED"
+                for r in snapshot.all("tasks")
+            )
+            and not any(
+                r.get("task_id") == subject.writer.task_id for r in snapshot.all("sessions")
+            )
+        ):
+            writer = subject.writer
+        fence = (
+            Fence(
+                target=BranchKey(
+                    repository_id=subject.repository_id,
+                    branch=subject.target_ref.removeprefix("refs/heads/"),
+                ),
+                owner_id=owner["owner_id"],
+                token=owner["fence_token"],
+            )
+            if owner
+            else None
+        )
+        pending = next(
+            (
+                r
+                for r in snapshot.all("integration_promotion_intents")
+                if r["operation_key"] == operation.get("id")
+                and r["state"] in {"prepared", "pushed"}
+                and r["prepared_sha"]
+                and r["expected_target"] == subject.head_sha
+                and any(
+                    m.task_id == r["source_task_id"] and m.head_sha == r["source_head"]
+                    for m in members
+                )
+            ),
+            None,
+        )
+        return facts.model_copy(
+            update={
+                "identity_moved": bool(
+                    set(facts.unknown) & {"parent_checkpoint_moved", "parent_collection_head_moved"}
+                ),
+                "collection_members": members,
+                "pending_publication": PendingParentPublication(
+                    intent_id=pending["id"],
+                    expected_old_sha=pending["expected_target"],
+                    new_sha=pending["prepared_sha"],
+                    fence=fence,
+                )
+                if pending and fence
+                else None,
+                "failed_child_count": facts.binding()["failed_child_count"],
+                "collector_fence": fence,
+                "legacy_repair_dossier": {"operation_id": operation.get("id"), "stages": stages}
+                if stages
+                else None,
+                "verifier_task_id": operation.get("verifier_task_id"),
+                "verifier_failed": bool(
+                    facts.verification and facts.verification.status == "failed"
+                ),
+                "parent_completed": operation.get("state") == "completed",
+                "aggregate_verified": bool(
+                    facts.verification
+                    and facts.verification.verification_id
+                    and facts.verification.status != "failed"
+                ),
+                "writer": writer,
+                "writer_file_ordinal": (
+                    subject.budget.ordinal
+                    if subject.budget
+                    and subject.writer.task_id
+                    and operation.get("verifier_task_id") is None
+                    else subject.budget.ordinal + 1
+                    if subject.budget
+                    else 1
+                ),
+                "ci_evidence_ids": tuple(
+                    r.evidence_id
+                    for r in facts.ci
+                    if r.head_sha == subject.head_sha and r.evidence_id
+                ),
+            }
+        )
+
+
+class PinnedParentPolicy(PinnedRootPolicy):
+    async def settle(self, subject, decision, outcome, *, now):
+        policy = await self.policy_for(subject.policy)
+        transition = await policy.settle(subject, decision, outcome, now=now)
+        facts = self.observations.pop((subject.id, subject.version), None)
+        values = dict(transition.values)
+        if facts and facts.holds and subject.schedule.gate_id:
+            return VisitTransition(
+                schedule=SubjectSchedule.hold(
+                    now=now,
+                    gate_id=subject.schedule.gate_id,
+                    max_wait_seconds=subject.schedule.max_wait_seconds,
+                    revisit_at=now + decision.request.seconds,
+                )
+            )
+        if outcome.primitive is Primitive.WAIT and facts and not facts.holds:
+            if facts.collection_current and facts.collection_generation >= subject.generation:
+                values.update(
+                    head_sha=facts.collection_head_sha, generation=facts.collection_generation
+                )
+            # Recovery's proof retired the previous verifier and restored the
+            # collector. Its historical completion/receipt rows stay intact.
+            if (
+                facts.collection_reopened
+                and facts.verifier_task_id is None
+                and facts.collector_fence
+            ):
+                # Keep the ordinal ledger: writer-file journals survive
+                # recovery, so resetting it would replay the failed writer.
+                values.update(writer_values(WriterLease()))
+            elif facts.writer.task_id == subject.writer.task_id:
+                values.update(writer_values(facts.writer))
+            # An unleased task missed capacity, not a repair attempt. The
+            # table's finite wait controls the next capacity window.
+            if (
+                facts.writer.status is WriterStatus.FILED
+                and facts.budget
+                and facts.budget.expired(now)
+                and subject.writer.fence_token is None
+            ):
+                values["budget_deadline_at"] = now + decision.request.seconds
+        return VisitTransition(schedule=transition.schedule, values=values)
+
+
+async def ensure_parent_subject_on(db, conn, task_id, loader, *, clock=time.time):
+    """The command owner calls this after updating the checkpoint's episode."""
+    if loader is None:
+        return None
+    if not active_parent_scope(db, task_id):
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": parent_lock_key(task_id)}
+        )
+    await conn.execute(
+        select(t.task_integration_checkpoints.c.task_id)
+        .where(t.task_integration_checkpoints.c.task_id == task_id)
+        .with_for_update()
+    )
+    operation = (
+        (
+            await conn.execute(
+                select(t.integration_repair_operations)
+                .join(
+                    t.task_integration_checkpoints,
+                    t.task_integration_checkpoints.c.episode_id
+                    == t.integration_repair_operations.c.episode_id,
+                )
+                .where(
+                    t.task_integration_checkpoints.c.task_id == task_id,
+                    t.integration_repair_operations.c.parent_task_id == task_id,
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if operation is None:
+        return None
+    artifact = operation["artifact_snapshot"]
+    try:
+        definition = await asyncio.to_thread(loader, artifact["artifact_sha256"])
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Parent %s keeps legacy authority: pinned artifact unavailable: %s", task_id, exc
+        )
+        return None
+    if (
+        definition.integration_policy is None
+        or SubjectKind.PARENT_EPISODE not in definition.integration_policy.tables
+    ):
+        return None
+    policy = CompiledIntegrationPolicy(definition)
+    pin = PolicyArtifactPin(
+        playbook_id=artifact["playbook_id"], artifact_sha256=artifact["artifact_sha256"]
+    )
+    if policy.pin != pin:
+        raise ValueError("parent artifact pin does not match loaded definition")
+    active = await conn.scalar(
+        select(t.integration_subjects.c.id)
+        .where(
+            t.integration_subjects.c.task_id == task_id,
+            t.integration_subjects.c.kind == "parent_episode",
+            t.integration_subjects.c.engine == "reconciler",
+        )
+        .limit(1)
+    )
+    return await ParentSubjectAdapter(db, clock=clock).ensure_on(
+        conn,
+        task_id,
+        policy=pin,
+        max_wait_seconds=policy.policy.max_wait_seconds,
+        engine=SubjectEngine.RECONCILER if active else SubjectEngine.LEGACY,
+    )
+
+
+class _ParentShadowDB:
+    def __init__(self, db):
+        self.db = db
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    async def due_integration_subject_page(self, **kwargs):
+        return await self.db.due_integration_subject_page(**{**kwargs, "engine": "legacy"})
+
+
+class ParentSubjectRuntime:
+    def __init__(
+        self,
+        db,
+        observer,
+        policy,
+        adapters,
+        loader,
+        *,
+        shadow=False,
+        active=False,
+        clock=time.time,
+        page_size=20,
+    ):
+        self.db, self.loader, self.clock = db, loader, clock
+        self.adapters, self.cursor, self.page_size = adapters, "", page_size
+        ports = adapters.bind(PrimitivePorts())
+        self.loops = [
+            IntegrationReconciler(
+                _ParentShadowDB(db) if mode is JournalMode.SHADOW else db,
+                observer.observe,
+                policy,
+                ports,
+                mode=mode,
+                kinds=(SubjectKind.PARENT_EPISODE,),
+                clock=clock,
+            )
+            for enabled, mode in ((active, JournalMode.ACTIVE), (shadow, JournalMode.SHADOW))
+            if enabled
+        ]
+
+    def subscribe(self, bus):
+        for loop in self.loops:
+            loop.subscribe(bus)
+
+    async def stop(self):
+        for loop in self.loops:
+            await loop.stop()
+
+    async def tick(self, now):
+        async with self.db.immediate() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(t.tasks.c.id)
+                        .join(
+                            t.task_integration_checkpoints,
+                            t.task_integration_checkpoints.c.task_id == t.tasks.c.id,
+                        )
+                        .where(
+                            t.tasks.c.id > self.cursor,
+                            t.task_integration_checkpoints.c.episode_id.is_not(None),
+                        )
+                        .order_by(t.tasks.c.id)
+                        .limit(self.page_size)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for task_id in rows:
+                try:
+                    async with conn.begin_nested():
+                        await ensure_parent_subject_on(
+                            self.db, conn, task_id, self.loader, clock=self.clock
+                        )
+                except Exception:
+                    logger.exception("Parent subject seed failed for %s; page continues", task_id)
+            self.cursor = rows[-1] if len(rows) == self.page_size else ""
+            gate_ids = (
+                (
+                    await conn.execute(
+                        select(t.gates.c.id)
+                        .join(
+                            t.integration_subjects, t.integration_subjects.c.gate_id == t.gates.c.id
+                        )
+                        .where(
+                            t.integration_subjects.c.kind == "parent_episode",
+                            t.integration_subjects.c.phase != "done",
+                            t.integration_subjects.c.next_due_at.is_(None),
+                            t.gates.c.status == "resolved",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        if gate_ids:
+            await self.db.wake_integration_subjects(now=now, gate_ids=gate_ids)
+        for loop in self.loops:
+            await loop.tick(now, background=True)
+
+
+def parent_runtime_for(orchestrator, parent_ci):
+    config = orchestrator.config.integration
+    if not (config.reconciler_shadow or config.reconciler_active):
+        return None
+    observer = ParentVisitObserver(
+        ParentDatabaseObservationReader(orchestrator.db),
+        GitObservationReader(orchestrator.git),
+        session_probe=orchestrator._root_subject_session_probe,
+        facts_type=ParentPolicyFacts,
+    )
+    adapters = ParentPrimitiveAdapters(
+        orchestrator.db, lambda: orchestrator._command_handler, observer, parent_ci=parent_ci
+    )
+    runtime = ParentSubjectRuntime(
+        orchestrator.db,
+        observer,
+        PinnedParentPolicy(orchestrator._load_playbook_artifact),
+        adapters,
+        orchestrator._load_playbook_artifact,
+        shadow=config.reconciler_shadow,
+        active=config.reconciler_active,
+    )
+    runtime.subscribe(orchestrator.bus)
+    return runtime

@@ -12,6 +12,7 @@ from typing import Any
 from src.commands.principal import ExecutionPrincipal
 from src.integration.outbox import (
     DestinationArtifactUnavailable,
+    NoIntegrationEventConsumer,
     advance_acceptance_cursor,
     freeze_destination_manifest,
     load_acceptance_state,
@@ -27,6 +28,7 @@ from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
     IntegrationRouteTarget,
     build_v2_engine,
+    is_integration_route_event,
     resolve_integration_route,
 )
 from src.playbooks.waits import PENDING_EVENT_DISPATCH_LEASE_SECONDS
@@ -113,6 +115,7 @@ class V2PlaybookRuntime:
         self._triggers: tuple[str, ...] = ()
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
+        self._integration_catalog_loaded = False
         self._unsubscribe = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._integration_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -199,6 +202,7 @@ class V2PlaybookRuntime:
         self._required_inactive_ids = self._required_inactive_from(runtime_rows)
         self._integration_destinations = tuple(integration_destinations)
         self._integration_activation_addresses = tuple(activation_addresses)
+        self._integration_catalog_loaded = True
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
 
@@ -285,7 +289,12 @@ class V2PlaybookRuntime:
             logger.exception("V2 playbook dispatch failed for event=%s", event.get("_event_type"))
 
     async def accept_integration_event(
-        self, event_type: str, payload: dict[str, Any], event_id: str
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        event_id: str,
+        *,
+        prove_no_consumer: bool = False,
     ) -> bool:
         """Persist matching destinations, then replay them asynchronously.
 
@@ -293,6 +302,12 @@ class V2PlaybookRuntime:
         outbox.  It intentionally does not call :class:`EventBus`: the normal
         subscription schedules a background task and cannot say whether a run
         or pending row committed.
+
+        False means "not yet": incomplete fanout, an artifact lost before its
+        pin, an unready activation or an unavailable frozen route all return
+        it, so it is always retryable.  With ``prove_no_consumer`` the runtime
+        instead raises :class:`NoIntegrationEventConsumer` when it can show
+        that no subscription matches (``_no_integration_consumer``).
         """
         state = await load_acceptance_state(self._db, event_id)
         event = dict(payload)
@@ -316,6 +331,10 @@ class V2PlaybookRuntime:
                 ),
             )
             if not destinations:
+                if prove_no_consumer:
+                    evidence = await self._no_integration_consumer(event_type, hydrated)
+                    if evidence is not None:
+                        raise NoIntegrationEventConsumer(evidence)
                 return False
             manifest = [
                 {
@@ -367,6 +386,64 @@ class V2PlaybookRuntime:
         self._ensure_integration_reconciler()
         self._integration_wakeup.set()
         return state.cursor == len(state.manifest)
+
+    async def _no_integration_consumer(
+        self, event_type: str, hydrated: dict[str, Any]
+    ) -> str | None:
+        """Why no subscription can match this event, or None when that is unproven.
+
+        Called only after an empty selection with no frozen manifest, so no
+        fanout was captured.  The proof also needs a loaded catalog that is
+        not shutting down, an event without a frozen operation route, and
+        every enabled activation in the event's scope, reread from the
+        database, ready and loaded at that artifact with no rule selecting the
+        event.  A selecting rule that the lifecycle fence or merge-sweep
+        suppression filtered out is still a subscription.
+        """
+        if not self._integration_catalog_loaded or self._integration_shutting_down:
+            return None
+        if is_integration_route_event(event_type):
+            # An empty selection here means the frozen route is unavailable.
+            return None
+        project_id = hydrated.get("project_id")
+        list_activations = getattr(self._db, "list_playbook_activations", None)
+        if not isinstance(project_id, str) or not project_id.strip() or not callable(
+            list_activations
+        ):
+            return None
+        agent_type = hydrated.get("agent_type")
+        loaded = {
+            (destination.activation_id, destination.artifact_sha256): destination
+            for destination in self._integration_destinations
+        }
+        checked = 0
+        for row in await list_activations(enabled_only=True):
+            scope = row.get("scope")
+            scope_identifier = row.get("scope_identifier") or ""
+            if scope not in {"system", "project", "agent_type"}:
+                continue
+            if scope == "project" and scope_identifier != project_id:
+                continue
+            if scope == "agent_type" and scope_identifier != agent_type:
+                continue
+            destination = loaded.get(
+                (row.get("activation_id"), row.get("active_artifact_sha256"))
+            )
+            health = getattr(row.get("health"), "value", row.get("health"))
+            if health != "ready" or destination is None:
+                # Unready, unloadable, or committed after the last refresh:
+                # its rules are unknown, so it may subscribe.
+                return None
+            if any(
+                self._engine._rule_selected(rule, event_type, hydrated)
+                for rule in destination.definition.rules
+            ):
+                return None
+            checked += 1
+        return (
+            f"no ready playbook in scope for project {project_id} subscribes to "
+            f"{event_type} ({checked} enabled in-scope activation(s) checked)"
+        )
 
     def _select_integration_destinations(
         self,

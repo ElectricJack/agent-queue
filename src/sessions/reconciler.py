@@ -888,6 +888,19 @@ class SessionReconciler:
 
             task = await self.db.get_task(row.task_id) if row.task_id else None
             peek = await self._peek(provider, row)
+            if row.lifecycle == "pool":
+                # session_kill persists stop intent before signalling, while
+                # this tick may still hold the earlier live-session snapshot.
+                # Read after both provider probes so requested stops drain
+                # rather than quarantining the whole pool as rapid crashes.
+                current = await self.db.get_session(row.id)
+                if (
+                    current is None
+                    or current.state not in _LIVE_STATES
+                    or current.instance_token != row.instance_token
+                ):
+                    continue
+                row = current
             verdict = classify_exit(
                 row,
                 task,

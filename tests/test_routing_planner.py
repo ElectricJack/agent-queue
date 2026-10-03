@@ -9,6 +9,9 @@ touches a database, a clock or a provider.
 from __future__ import annotations
 
 import random
+import json
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -21,13 +24,14 @@ from src.routing.planner import (
     Snapshot,
     TaskFacts,
     plan_route,
+    is_candidate,
     reselect,
     worker_classes,
 )
 from src.routing.policy import PolicyError, parse_policy
 
-#: The shipped policy (v1), verbatim from spec §6.3.
-SHIPPED_POLICY = """\
+#: Original balanced policy; retained to check backwards compatibility and replay.
+BALANCED_POLICY = """\
 version: 1
 class_order: [fast-off, fast-low, fast-high, standard-low, standard-high, deep-low, deep-high]
 default_kind: feature
@@ -61,17 +65,26 @@ lanes:
     classes: {fast-low: fast-off}
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
+  narrow-hosted:
+    harnesses: [opencode-zen]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode]
+  tie_order: [codex, claude, opencode, opencode-zen]
 """
 
-POLICY, DIGEST = parse_policy(SHIPPED_POLICY)
+SHIPPED_POLICY = BALANCED_POLICY.replace(
+    "narrow: true}", "narrow: true, prefer_harnesses: [codex]}",
+)
+
+POLICY, DIGEST = parse_policy(BALANCED_POLICY)
 CLASSES = frozenset(POLICY.class_order)
 NARROW_YES = {
     "task_type": "bugfix", "intelligence_class": "standard-high", "narrow": True,
@@ -106,7 +119,7 @@ def _fleet() -> tuple[ProfileFacts, ...]:
 
 def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, backlog=None):
     providers = {}
-    for key in ("claude", "codex", "opencode"):
+    for key in ("claude", "codex", "opencode", "opencode-zen"):
         state = "exhausted" if key in out else "degraded" if key in degraded else "available"
         providers[key] = ProviderFacts(
             state=state, launchable=key not in out, usage_percent=(usage or {}).get(key),
@@ -136,7 +149,7 @@ def _planned(task, snapshot, classification=None) -> dict:
 
 
 def test_benchmark_selector_pins_allowlisted_class_and_harness() -> None:
-    policy, digest = parse_policy(SHIPPED_POLICY + """
+    policy, digest = parse_policy(BALANCED_POLICY + """
 benchmark_arms:
   opus55:
     class: deep-high
@@ -166,11 +179,11 @@ benchmark_arms:
 def test_the_shipped_policy_parses_and_its_digest_is_canonical() -> None:
     assert DIGEST.startswith("sha256:") and len(DIGEST) == len("sha256:") + 64
     # Reformatting the YAML does not change the policy, so not the digest.
-    reflowed = SHIPPED_POLICY.replace("{class: deep-high,     max_class", "{class: deep-high, max_class")
+    reflowed = BALANCED_POLICY.replace("{class: deep-high,     max_class", "{class: deep-high, max_class")
     assert parse_policy(reflowed)[1] == DIGEST
-    changed = SHIPPED_POLICY.replace("usage_soft_percent: 80", "usage_soft_percent: 70")
+    changed = BALANCED_POLICY.replace("usage_soft_percent: 80", "usage_soft_percent: 70")
     assert parse_policy(changed)[1] != DIGEST
-    assert POLICY.narrow_harnesses() == {"opencode"}
+    assert POLICY.narrow_harnesses() == {"opencode", "opencode-zen"}
 
 
 @pytest.mark.parametrize(
@@ -179,16 +192,16 @@ def test_the_shipped_policy_parses_and_its_digest_is_canonical() -> None:
         ("", "non-empty"),
         ("- a\n- b\n", "mapping"),
         ("version: [", "not valid YAML"),
-        (SHIPPED_POLICY.replace("version: 1", "version: 2"), "version"),
-        (SHIPPED_POLICY.replace("default_kind: feature", "default_kind: nope"), "default_kind"),
-        (SHIPPED_POLICY.replace("lane: art-design}", "lane: nowhere}"), "nowhere"),
-        (SHIPPED_POLICY.replace("lane: art-design}", "lane: narrow}"), "narrow lane"),
-        (SHIPPED_POLICY.replace("max_class: standard-high, narrow: true}\n  docs",
+        (BALANCED_POLICY.replace("version: 1", "version: 2"), "version"),
+        (BALANCED_POLICY.replace("default_kind: feature", "default_kind: nope"), "default_kind"),
+        (BALANCED_POLICY.replace("lane: art-design}", "lane: nowhere}"), "nowhere"),
+        (BALANCED_POLICY.replace("lane: art-design}", "lane: narrow}"), "narrow lane"),
+        (BALANCED_POLICY.replace("max_class: standard-high, narrow: true}\n  docs",
                                 "max_class: galaxy, narrow: true}\n  docs"), "galaxy"),
-        (SHIPPED_POLICY.replace("requires: [narrow, test_verified]\n",
+        (BALANCED_POLICY.replace("requires: [narrow, test_verified]\n",
                                 "requires: [narrow, vibes]\n"), "vibes"),
-        (SHIPPED_POLICY.replace("tie_order:", "tie_orders:"), "tie_orders"),
-        (SHIPPED_POLICY.replace("harness_weights: {claude: 1.0", "harness_weights: {claude: 0"),
+        (BALANCED_POLICY.replace("tie_order:", "tie_orders:"), "tie_orders"),
+        (BALANCED_POLICY.replace("harness_weights: {claude: 1.0", "harness_weights: {claude: 0"),
          "positive"),
     ],
     ids=lambda value: value if len(value) < 20 else None,
@@ -354,6 +367,74 @@ def test_a_repair_never_goes_to_opencode(origin) -> None:
     assert "opencode" not in {c["harness"] for c in plan["candidates"]}
 
 
+def _hosted_fleet() -> tuple[ProfileFacts, ...]:
+    """The fleet plus one hosted OpenCode rung: OpenCode Zen, a pool of one."""
+    return (*_fleet(), _rung("standard-high", "opencode-zen", slots=1))
+
+
+def test_hosted_opencode_takes_narrow_work_when_local_opencode_is_full() -> None:
+    task = _task(task_type="bugfix")
+    # Both OpenCode lanes are the preferred tier; the local one is declared first.
+    plan = _planned(task, _snapshot(_hosted_fleet()), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+    assert [c["profile_id"] for c in plan["candidates"][:2]] == [
+        "standard-high-opencode", "standard-high-opencode-zen",
+    ]
+    assert {c["tier"] for c in plan["candidates"][:2]} == {PREFERRED}
+
+    # Local OpenCode full (1/1): the hosted lane, at the task's own class.
+    busy = _snapshot(_hosted_fleet(), busy={"standard-high-opencode": 1})
+    plan = _planned(task, busy, NARROW_YES)
+    assert (plan["profile_id"], plan["intelligence_class"]) == (
+        "standard-high-opencode-zen", "standard-high",
+    )
+    assert plan["lane"] == "narrow-hosted"
+
+    # Both full: the general tier, never past a free Claude or Codex slot.
+    full = _snapshot(_hosted_fleet(), busy={
+        "standard-high-opencode": 1, "standard-high-opencode-zen": 1,
+    })
+    plan = _planned(task, full, NARROW_YES)
+    assert plan["profile_id"] in {"standard-high-codex", "standard-high-claude"}
+    assert "fell back" in plan["reason"]
+
+
+def test_hosted_and_local_opencode_are_separate_providers() -> None:
+    task = _task(task_type="bugfix")
+    # Local Ollama out says nothing about the hosted gateway, and vice versa.
+    plan = _planned(task, _snapshot(_hosted_fleet(), out={"opencode"}), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode-zen"
+    plan = _planned(task, _snapshot(_hosted_fleet(), out={"opencode-zen"}), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+
+
+@pytest.mark.parametrize(
+    ("task", "classification"),
+    [
+        # Not narrow: hosted OpenCode is not even a candidate.
+        (_task(task_type="bugfix"), NARROW_NO),
+        # A repair is never OpenCode work, whatever the classification says.
+        (_task(task_type="bugfix", created_by_kind="integration_repair"), NARROW_YES),
+        (_task(task_type="bugfix", created_by_kind="development_repair"), NARROW_YES),
+        # The lane maps standard-high only: cheap and deep work never reach it.
+        (_task(task_type="chore"), {**NARROW_YES, "task_type": "chore",
+                                     "intelligence_class": "fast-high"}),
+        (_task(task_type="bugfix", class_hint="deep-high"), NARROW_YES),
+        # Narrow but not test-verified.
+        (_task(task_type="bugfix"), {**NARROW_YES, "test_verified": False}),
+    ],
+    ids=["not-narrow", "integration-repair", "development-repair", "fast", "deep",
+         "unverified"],
+)
+def test_hosted_opencode_gets_only_narrow_test_verified_standard_high_work(
+    task, classification
+) -> None:
+    busy = {"standard-high-opencode": 1, "fast-low-opencode": 1}
+    plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
+    assert "opencode-zen" not in {c["harness"] for c in plan["candidates"]}
+    assert plan["profile_id"] != "standard-high-opencode-zen"
+
+
 def test_work_moves_away_from_a_provider_above_the_usage_soft_limit() -> None:
     task = _task(task_type="research")
     # Claude idle and Codex a little busy: Claude wins on load alone.
@@ -485,7 +566,7 @@ def test_the_plan_names_its_rule_policy_and_balance() -> None:
     plan = _planned(_task(task_type="research"), _snapshot())
     assert plan["rule"] == "kinds.research"
     assert plan["policy_sha256"] == DIGEST
-    assert plan["balance"]["tie_order"] == ["codex", "claude", "opencode"]
+    assert plan["balance"]["tie_order"] == ["codex", "claude", "opencode", "opencode-zen"]
     assert plan["reason"].startswith("kind research, class standard-high")
     assert {s["profile_id"] for s in plan["scores"]} == {
         "standard-high-codex", "standard-high-claude",
@@ -517,3 +598,206 @@ def test_reselection_drops_unlaunchable_candidates_and_returns_none_when_empty()
     selection = reselect(candidates, _snapshot(out={"codex"}), POLICY.balance)
     assert selection is not None and selection.chosen.profile_id == "standard-high-claude"
     assert reselect(candidates, _snapshot(out={"codex", "claude"}), POLICY.balance) is None
+
+
+@pytest.mark.parametrize("change", [{"provider": "other"}, {"lifecycle": "task"}])
+def test_candidate_eligibility_rejects_changed_provider_or_lifecycle(change):
+    snapshot = _snapshot()
+    plan = _planned(_task(task_type="research"), snapshot)
+    candidate = Candidate.from_dict(plan["candidates"][0])
+    assert is_candidate(candidate, snapshot)
+    changed = replace(snapshot, profiles=tuple(
+        replace(p, **change) if p.id == candidate.profile_id else p
+        for p in snapshot.profiles
+    ))
+    assert not is_candidate(candidate, changed)
+
+
+def test_live_context_is_bounded_and_aggregates_unknown_task_kinds():
+    from src.routing.context import (
+        MAX_PROFILES, MAX_PROVIDERS, MAX_QUOTA_WINDOWS, MAX_SUMMARY_CHARS,
+        live_context, quota_observations, summarize_context,
+    )
+
+    rows = [{"window": f"window-{i}", "scope": "all models", "used_percent": i,
+             "observed_at": 990, "last_seen_at": 995, "source": "/secret/path"}
+            for i in range(50)]
+    quota = quota_observations(rows, now=1000, stale_after=100)
+    profiles = tuple(ProfileFacts(
+        id=f"worker-{i}", harness="codex", provider=f"provider-{i}",
+        lifecycle="task", classes=frozenset({"standard-high"}), slots=2,
+    ) for i in range(100))
+    snapshot = Snapshot(profiles=profiles, providers={
+        p.provider: ProviderFacts(quota=quota) for p in profiles
+    })
+    context = live_context(
+        snapshot, project_id="p", now=1000, started_at=999, supply=[],
+        active_kinds={"research": 2, **{f"private-title-{i}": 1 for i in range(100)}},
+        project_cap=5, project_active=True, global_cap=10, workspace_capacity=5, quarantine={},
+    )
+    assert len(context["profiles"]) == MAX_PROFILES
+    assert len(context["providers"]) == MAX_PROVIDERS
+    assert all(len(p["quota"]) == MAX_QUOTA_WINDOWS for p in context["providers"])
+    assert context["truncated"]
+    assert all(p["quota_truncated"] for p in context["providers"])
+    assert context["active_work"] == {"research": 2, "unknown": 100}
+    assert "/secret/path" not in json.dumps(context)
+    assert "private-title" not in json.dumps(context)
+    assert len(summarize_context(context)) <= MAX_SUMMARY_CHARS
+
+
+def routine_policy():
+    source = Path("src/prompts/default_playbooks/default-assignment-routing.md").read_text()
+    return parse_policy(source.split("```yaml\n", 1)[1].split("```", 1)[0])
+
+
+def routine_plan(snapshot=None, **task_changes):
+    policy, digest = routine_policy()
+    task_changes.setdefault("task_type", "feature")
+    return plan_route(_task(**task_changes), policy, snapshot or _snapshot(),
+                      policy_sha256=digest, classification=NARROW_NO)
+
+
+@pytest.mark.parametrize("kind", ["feature", "bugfix", "refactor", "test", "docs", "chore", "sync"])
+def test_routine_hosted_work_prefers_compatible_codex_despite_lower_claude_pressure(kind):
+    snapshot = _snapshot(busy={"standard-high-codex": 2, "fast-high-codex": 1})
+    snapshot = replace(snapshot, context={"as_of": 1000, "collection_seconds": 0.25},
+                       headroom={"standard-high-codex": 1, "fast-high-codex": 1})
+    result = routine_plan(snapshot, task_type=kind)
+    assert result.outcome == "planned"
+    assert result.value["provider"] == "codex"
+    assert result.value["provider_intent"] == "class_only"
+    assert result.value["decision"]["mode"] == "hosted_preference"
+    assert "headroom 1" in result.value["reason"]
+    assert "quota unknown" in result.value["reason"]
+    assert "snapshot age 0.25s" in result.value["reason"]
+
+
+@pytest.mark.parametrize("cause", ["unavailable", "busy", "backlog", "headroom", "disabled",
+                                  "class", "degraded", "usage"])
+def test_routine_preference_falls_back_to_claude_without_raising_class(cause):
+    snapshot = _snapshot()
+    if cause == "unavailable":
+        snapshot = _snapshot(out={"codex"})
+    elif cause in {"busy", "backlog"}:
+        snapshot = _snapshot(**{cause: {"standard-high-codex": 4}})
+    elif cause == "headroom":
+        snapshot = replace(snapshot, headroom={"standard-high-codex": 0,
+                                              "standard-high-claude": 1})
+    elif cause in {"disabled", "class"}:
+        changes = {"enabled": False} if cause == "disabled" else {"classes": frozenset()}
+        snapshot = replace(snapshot, profiles=tuple(
+            replace(p, **changes) if p.harness == "codex" else p for p in snapshot.profiles
+        ))
+    elif cause == "degraded":
+        snapshot = _snapshot(degraded={"codex"})
+    else:
+        snapshot = _snapshot(usage={"codex": 95})
+    result = routine_plan(snapshot)
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["intelligence_class"] == "standard-high"
+    assert result.value["decision"]["mode"] == "pressure_fallback"
+    assert "bypassed" in result.value["reason"]
+
+
+def test_routine_preference_preserves_local_design_art_and_operator_rules():
+    policy, digest = routine_policy()
+    narrow = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
+                        policy_sha256=digest, classification=NARROW_YES)
+    assert narrow.value["provider"] == "opencode"
+    assert narrow.value["decision"]["mode"] == "lane_preference"
+    assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
+    assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
+    assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
+    assert routine_plan(preferred_provider="claude").value["provider"] == "claude"
+    assert routine_plan(exclude_providers=frozenset({"codex"})).value["provider"] == "claude"
+    assert routine_plan(_snapshot(out={"codex", "claude"})).outcome == "held"
+
+
+def test_routine_preference_keeps_quota_window_identity_and_ignores_stale_or_reset_usage():
+    from src.routing.context import quota_observations
+
+    quota = quota_observations([
+        {"window": "weekly", "scope": "account", "used_percent": 99, "observed_at": 100},
+        {"window": "five_hour", "scope": "account", "used_percent": 20, "observed_at": 995},
+        {"window": "old", "scope": "account", "used_percent": 100, "observed_at": 990,
+         "resets_at": 999},
+    ], now=1000, stale_after=100)
+    snapshot = replace(_snapshot(busy={"standard-high-codex": 2}), providers={
+        "codex": ProviderFacts(usage_percent=99, quota=quota),
+        "claude": ProviderFacts(usage_percent=5),
+    })
+    result = routine_plan(snapshot)
+    assert result.value["provider"] == "codex"
+    codex = next(s for s in result.value["scores"] if s["profile_id"] == "standard-high-codex")
+    assert codex["usage_percent"] == 20
+    evidence = result.value["decision"]["candidates"][0]["quota"]
+    assert {q["freshness"] for q in evidence} == {"fresh", "stale", "reset"}
+    assert {q["window"] for q in evidence} == {"weekly", "five_hour", "old"}
+
+
+def test_routine_preference_reselects_when_fresh_capacity_disappears():
+    policy, _digest = routine_policy()
+    plan = routine_plan().value
+    candidates = [Candidate.from_dict(c) for c in plan["candidates"]]
+    selected = reselect(candidates, replace(_snapshot(), headroom={
+        "standard-high-codex": 0, "standard-high-claude": 1,
+    }), policy.balance)
+    assert selected.chosen.provider == "claude"
+    assert not selected.took_hosted_preference
+
+
+def test_usage_just_above_soft_limit_does_not_get_rounded_into_healthy_preference():
+    result = routine_plan(_snapshot(usage={"codex": 80.00001}))
+    assert result.value["decision"]["mode"] == "pressure_fallback"
+    assert "own_usage_above_soft_limit" in result.value["reason"]
+
+
+def test_routine_policy_keeps_allowlisted_benchmark_provider_intent():
+    policy, _digest = routine_policy()
+    body = policy.model_dump(mode="json", by_alias=True)
+    body["benchmark_arms"] = {"claude-arm": {
+        "class": "deep-high", "harness": "claude", "requested_model": "opus",
+        "observed_models": ["opus"],
+    }}
+    policy, digest = parse_policy(json.dumps(body))
+    result = plan_route(_task(task_type="feature", benchmark_arms=("claude-arm",)),
+                        policy, _snapshot(), policy_sha256=digest)
+    assert result.value["profile_id"] == "deep-high-claude"
+    assert result.value["provider_intent"] == "pinned"
+
+
+def test_origin_can_disable_hosted_preference_without_changing_class_fit():
+    policy, _digest = routine_policy()
+    body = policy.model_dump(mode="json", by_alias=True)
+    body["origins"]["integration_repair"]["prefer_harnesses"] = []
+    policy, digest = parse_policy(json.dumps(body))
+    result = plan_route(_task(task_type="bugfix", created_by_kind="integration_repair"),
+                        policy, _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest)
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["intelligence_class"] == "standard-high"
+
+
+def test_historical_replay_quantifies_changes_and_reports_missing_evidence():
+    from src.routing.replay import replay_routes
+
+    records = []
+    for i, snapshot in enumerate([
+        _snapshot(busy={"standard-high-codex": 1}),
+        _snapshot(busy={"standard-high-codex": 4}),
+    ]):
+        # The pre-change policy chooses idle Claude for both snapshots.
+        route = _planned(_task(task_type="bugfix"), snapshot, NARROW_NO)
+        records.append({"task_id": f"historical-{i}", "route": route})
+    records.extend([
+        {"task_id": "override", "route_source": "override", "route": records[0]["route"]},
+        {"task_id": "missing", "route": {"provider": "claude"}},
+    ])
+    policy, digest = routine_policy()
+    report = replay_routes(records, policy, digest)
+    assert report["before"] == {"claude": 2}
+    assert report["after"] == {"codex": 1, "claude": 1}
+    assert report["changed"] == 1 and report["skipped"] == 2
+    assert report["missing_observations"]["headroom_and_snapshot_age_unknown"] == 2
+    assert "measured quota savings" in report["limitations"][1]
