@@ -76,6 +76,7 @@ from src.commands.discord_commands import DiscordCommandsMixin
 from src.commands.formula_commands import FormulaCommandsMixin
 from src.commands.graph_commands import GraphCommandsMixin
 from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.integration_surface_commands import IntegrationSurfaceCommandsMixin
 
 # Framework-overhaul substrate mixins (Wave 0).  Empty today — registered
 # here so the Wave 1/2 lanes add methods to their own module without
@@ -372,6 +373,7 @@ class CommandHandler(
     DiscordCommandsMixin,
     FormulaCommandsMixin,
     GraphCommandsMixin,
+    IntegrationSurfaceCommandsMixin,
     IntegrationCommandsMixin,
     # -- Framework-overhaul substrate mixins (empty until their lane) ----
     GateCommandsMixin,

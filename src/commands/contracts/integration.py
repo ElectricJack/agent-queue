@@ -114,6 +114,8 @@ class IntegrationStatusArgs(CommandArgs):
 
 class IntegrationStatusReadArgs(IntegrationStatusArgs):
     control_only: bool = False
+    #: Narrow the subject view to one subject (``aq integration status --subject``).
+    subject_id: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationTrustManifestArgs(CommandArgs):
@@ -736,6 +738,8 @@ class IntegrationStatusValue(IntegrationOperationalValue):
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
+    #: The reconciler's subjects: phase, wait reason, due time and open gate.
+    subjects: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationRedriveRootValue(CommandValue):

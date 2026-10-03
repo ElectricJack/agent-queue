@@ -782,7 +782,11 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         if args.get("control_only"):
             return await self._integration_control_service().status(project_id, control_only=True)
-        return await self._integration_control_service().status(project_id)
+        return await self._integration_status_subjects(
+            await self._integration_control_service().status(project_id),
+            project_id,
+            args.get("subject_id") or None,
+        )
 
     async def _integration_app_inputs(
         self, args: dict
