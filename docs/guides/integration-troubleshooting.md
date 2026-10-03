@@ -69,6 +69,7 @@ aq doctor --check git.stale_branches
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `redrive-child` answers "the parent has no live collection operation"; a later child's conflict never gets a repair | `cancel-preserving` cancelled the parent's whole collection operation | [A parent's collection was cancelled](#a-parents-collection-was-cancelled) |
+| An aggregate verifier's `pass` close is refused with `awaiting_trusted_verification`, or repeats on an unchanged head | The daemon has not recorded the trusted CI evidence for that parent generation and head | [An aggregate verifier keeps refusing its close](#an-aggregate-verifier-keeps-refusing-its-close) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | An open PR the train will never seat (untracked branch, child with no repository, parent with no verification), or one whose work already landed under other commits | Legacy delivery the train has no identity for | [A legacy PR stays open](#a-legacy-pr-stays-open) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
@@ -978,6 +979,45 @@ as reviewer, the reason in the evidence), queues the parent's collection, and
 logs an `integration.child_redriven` event. Promotion, the receipt and the
 parent's readiness then follow the normal path.
 
+## An aggregate verifier keeps refusing its close
+
+```text
+close refused: Parent integration completion was refused: awaiting_trusted_verification
+(verification_not_recorded). Trusted integration check evidence is not recorded for parent
+<parent> generation <n> at <head>; required producer <producer> version <v> covering <checks>.
+```
+
+A parent's branchless verifier (`verify-<operation-id>[-g<n>]`) proves the
+collected aggregate itself, then completes the parent through
+[`integration_complete_parent`](../reference/playbook-commands/integration_complete_parent.md).
+That completion needs one more thing the verifier cannot produce: the trusted
+check evidence for that exact generation and head. Only the daemon's parent CI
+producer (it publishes the frozen `aq/parent/…` snapshot and observes the
+required checks) and the parent-integration playbook (`integration.ci_completed`
+→ `integration_parent_verify`) may record it. So while the evidence is still
+missing the verifier keeps its claim, its fence and its `IN_PROGRESS` task, and
+the refusal says a re-run of the local suite cannot change it — re-running the
+whole focused/schema sweep per attempt is pure waste on an unchanged aggregate.
+
+Before 2026-10-03 this wait answered as `stale_verification`, an undifferentiated
+"something moved" that invited exactly that re-run; calm-grove-25 generation 5
+spent two 450-test sweeps on one unchanged head before the retry budget ran out
+and a fresh `-g6` verifier was filed.
+
+| What you see | Meaning | Next step |
+|---|---|---|
+| `awaiting_trusted_verification (verification_not_recorded)`, no recorded evidence | Nothing has verified this generation and head yet. Normal while CI is running. | Wait. `aq integration status --project <project>` shows the parent's blockers; `aq integration flush <project>` re-drives the sweep. |
+| The same, with green evidence already recorded for that head | CI went green and the parent-integration playbook has not accepted it yet. | Read the playbook's last `verify-parent` rule; its own outcome says why `integration_parent_verify` did not record the verification. |
+| The same, with a recorded failing conclusion | The aggregate did not pass its required checks; the repair ladder owns the next step. | `aq integration status --project <project>` for the active stage. A new aggregate needs a new CI run, not a re-run of the local suite. |
+| `… (verified_other_head)` / `… (verified_other_generation)` | A verification exists for a different subject. | The collected aggregate moved; the current one needs its own CI run. |
+| `… (verification_record_missing)` | The checkpoint names a verification that does not resolve to this operation. | A durable gap, not a pending run: read `aq integration status` for that parent. |
+| `stale_verification` | The collected aggregate advanced past the head the close quoted. | A genuinely superseded subject; the verifier re-reads readiness. |
+| Refusal 2+ on the same subject, `needs_attention=awaiting_trusted_verification:…` | The wait is stalled, not pending: the verifier re-attempted the close with unchanged evidence. The task is flagged and no new attempt is warranted. | Settle whichever owner the refusal names, then report with `aq message send --to user:dashboard`. |
+
+Every refusal records its subject/evidence state on the verifier task under
+`integration_trusted_evidence_wait`, so a replay on unchanged state is
+deduplicated into one escalation instead of another invitation to re-run.
+
 ## A parent's collection was cancelled
 
 ```text
@@ -1507,6 +1547,7 @@ refused.
 [`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py),
 [`src/integration/service.py`](../../src/integration/service.py),
 [`src/integration/green_continuation.py`](../../src/integration/green_continuation.py),
+[`src/integration/parent_completion.py`](../../src/integration/parent_completion.py),
 [`src/integration/parent_intents.py`](../../src/integration/parent_intents.py).
 
 ```bash

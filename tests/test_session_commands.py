@@ -36,6 +36,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.ownership import BranchBusy, BranchOwnership
+from src.orchestrator.git_ops import TRUSTED_EVIDENCE_WAIT_KEY
 from src.models import (
     Agent,
     AgentProfile,
@@ -3226,6 +3227,136 @@ class TestEndToEndOnFakeProvider:
         real_orch.git.areserved_paths_in_diff.assert_awaited_once_with(
             wd, "refs/remotes/origin/main", "refs/heads/aq/t1"
         )
+
+    async def test_verifier_close_waits_for_trusted_evidence_instead_of_rerunning(
+        self, db, real_orch, real_handler, provider, tmp_path
+    ):
+        """Missing trusted CI evidence is a wait, not a stale subject.
+
+        The verifier's own aggregate proof already passed (the 450-test
+        focused/schema sweep of calm-grove-25 generation 5); only the trusted
+        integration check evidence for this exact generation and head is
+        absent.  Answering that close with a fixable "record the aggregate
+        verification" issue sent every retry back through the whole local
+        suite while no evidence had changed, so:
+
+        * the first refusal names the missing producer and the owner action,
+          and says a re-run cannot change it;
+        * a replay of that identical subject/evidence state is deduplicated
+          into one escalation instead of another identical invitation to
+          re-run, and never transitions the task or writes a completion;
+        * real trusted evidence arriving completes the parent and the
+          verifier through the ordinary path.
+        """
+        from unittest.mock import AsyncMock
+
+        from src.git.manager import RemoteRefState
+        from src.integration.parent_completion import ParentCompletion
+
+        verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
+        completion = ParentCompletion(db)
+        wd = tmp_path / "wd"
+
+        async def git_run(args, *, cwd):
+            assert cwd == str(wd)
+            if args in (["status", "--porcelain"], ["rev-parse", "HEAD"]):
+                return "" if args[0] == "status" else head
+            raise AssertionError(f"unexpected verifier Git command: {args!r}")
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            _arun=git_run,
+        )
+        close_args = {
+            "task_id": verifier_id,
+            "session_id": session.id,
+            "outcome": "pass",
+            "work_outcome": "no-op",
+            "summary": "aggregate validated locally; waiting for trusted CI evidence",
+        }
+
+        first = await real_handler.execute("task_close", dict(close_args))
+        assert first["result"] == "verification_failed", first
+        assert first["escalated"] is False
+        assert len(first["issues"]) == 1
+        issue = first["issues"][0]
+        assert "awaiting_trusted_verification" in issue
+        assert "verification_not_recorded" in issue
+        assert "forge-observer" in issue and "parent-v1" in issue
+        assert "re-running the test suite does not change this refusal" in issue
+        assert "Next owner: parent_ci_producer" in issue
+        assert "aq integration status" in issue
+        assert "stale_verification" not in issue
+        recorded = await db.get_task_meta(verifier_id, TRUSTED_EVIDENCE_WAIT_KEY)
+        assert recorded["reason"] == "verification_not_recorded"
+        assert recorded["refusals"] == 1
+        assert recorded["head_sha"] == head
+        assert recorded["required_check_names"] == ["unit"]
+        # The refusal keeps the claim, the fence and the task: nothing
+        # transitions, nothing is queued, and no completion is recorded.
+        assert (await db.get_task(verifier_id)).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert await db.get_task_completion(verifier_id) is None
+
+        replay = await real_handler.execute("task_close", dict(close_args))
+        assert replay["result"] == "verification_failed", replay
+        assert replay["escalated"] is True
+        assert "Refusal 2 on the same subject" in replay["issues"][0]
+        assert await db.get_task_meta(verifier_id, TRUSTED_EVIDENCE_WAIT_KEY) == {
+            **recorded,
+            "refusals": 2,
+        }
+        assert await db.get_task_meta(verifier_id, "needs_attention") == (
+            "awaiting_trusted_verification:verification_not_recorded"
+        )
+        attention = [
+            payload
+            for event, payload in real_orch.bus.events
+            if event == "task.needs_attention" and payload.get("task_id") == verifier_id
+        ]
+        assert len(attention) == 1
+        assert (await db.get_task(verifier_id)).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion(verifier_id) is None
+
+        operation = await db.get_active_parent_integration_operation("t1")
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_check_evidence.insert().values(
+                    id="aggregate-trusted-check",
+                    operation_id=operation["id"],
+                    parent_task_id="t1",
+                    parent_generation=0,
+                    parent_head_sha=head,
+                    producer_id="forge-observer",
+                    workflow_id="workflow",
+                    run_id="run",
+                    attempt=1,
+                    required_check_version="parent-v1",
+                    checks={"unit": "success"},
+                    conclusion="success",
+                    classification="conclusive",
+                    observed_at=2.0,
+                )
+            )
+        verified = await completion.verify_parent("t1", 0, head, ["aggregate-trusted-check"])
+        assert verified["outcome"] == "verified"
+
+        final = await real_handler.execute(
+            "task_close", {**close_args, "summary": "aggregate verified from trusted evidence"}
+        )
+        assert final["success"] is True, final
+        assert final["status"] == "COMPLETED"
+        assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
+        assert (await db.get_task(verifier_id)).status is TaskStatus.COMPLETED
+        assert (await db.get_integration_operation(operation["id"]))["state"] == "completed"
 
     async def test_hierarchy_transfer_cannot_pass_provider_start_exclusion(
         self, db, real_orch, provider, tmp_path, monkeypatch
