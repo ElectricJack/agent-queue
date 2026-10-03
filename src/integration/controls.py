@@ -46,6 +46,8 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.engine import root_engine_guard
+
 from src.integration.models import HierarchicalIntegrationPolicy, deprecated_route_fields
 from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
@@ -1129,6 +1131,7 @@ class IntegrationControlService:
             return {"outcome": "eligibility", **await self.preflight(project_id)}
         return await self.scheduler.mark_due(project_id, self.clock(), "manual")
 
+    @root_engine_guard("batch", outcome="invalid_state", refusal={"success": False})
     async def eject(
         self,
         batch_id: str,

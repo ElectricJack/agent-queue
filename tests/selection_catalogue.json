@@ -568,15 +568,20 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
+        "tests/test_integration_observe.py",
         "tests/test_integration_outbox.py",
+        "tests/test_integration_reconciler.py",
         "tests/test_integration_resume_metadata.py",
+        "tests/test_integration_root_adapters.py",
+        "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
-        "tests/test_integration_state.py"
+        "tests/test_integration_state.py",
+        "tests/test_integration_subjects.py"
       ]
     },
     "intelligence-classes": {
@@ -722,6 +727,7 @@
         "tests/test_migration_integration_controls.py",
         "tests/test_migration_integration_promotion.py",
         "tests/test_migration_integration_service.py",
+        "tests/test_migration_integration_subjects.py",
         "tests/test_migration_json_columns.py",
         "tests/test_migration_metadata.py",
         "tests/test_migration_parent_collection.py",
@@ -820,6 +826,7 @@
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
+        "tests/test_playbook_v2_integration_policy.py",
         "tests/test_playbook_v2_resolution.py",
         "tests/test_playbook_v2_validation.py"
       ]
@@ -1328,7 +1335,7 @@
       ]
     }
   },
-  "digest": "sha256:255090acd6e3ab6ff6e3a96e17dc846e04789f5bd99dd69d0f1e7d65031bcc62",
+  "digest": "sha256:8c6dae29d6434b31f644d9565e0ebab4ea00f03a787bc0f5fd0380db71800c29",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7410,6 +7417,24 @@
       ],
       "summary": "Integration-mode policy tests."
     },
+    "tests/test_integration_observe.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic facts, unknowns and read-only ports for integration subjects."
+    },
     "tests/test_integration_operational_controls.py": {
       "areas": [
         "integration-controls"
@@ -7673,6 +7698,23 @@
       ],
       "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
     },
+    "tests/test_integration_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.reconciler",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
+    },
     "tests/test_integration_repair.py": {
       "areas": [
         "integration-promotion"
@@ -7770,6 +7812,35 @@
       "markers": [],
       "summary": "Trusted real-review verdict production for integration sources."
     },
+    "tests/test_integration_root_adapters.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.integration.development",
+        "src.integration.engine",
+        "src.integration.models",
+        "src.integration.repair",
+        "src.integration.root_adapters",
+        "src.integration.root_runtime",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.models",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Root cutover races, restart/rollback, exact records and trusted publication."
+    },
     "tests/test_integration_root_authorization.py": {
       "areas": [
         "integration-promotion"
@@ -7799,6 +7870,45 @@
         "parametrize"
       ],
       "summary": "A completed train root always gets its pull request, or says why not."
+    },
+    "tests/test_integration_root_scenarios.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_app",
+        "src.git.manager",
+        "src.integration.accepted_repair",
+        "src.integration.candidates",
+        "src.integration.ci",
+        "src.integration.cleanup",
+        "src.integration.engine",
+        "src.integration.main_promotion",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.promotion",
+        "src.integration.release",
+        "src.integration.repair",
+        "src.integration.review_evidence",
+        "src.integration.root_adapters",
+        "src.integration.root_runtime",
+        "src.integration.scheduler",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train."
     },
     "tests/test_integration_schedule.py": {
       "areas": [
@@ -7957,6 +8067,23 @@
       ],
       "markers": [],
       "summary": "Durable hierarchical-integration persistence contracts."
+    },
+    "tests/test_integration_subjects.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.database",
+        "src.database.tables",
+        "src.integration.models",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
     },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
@@ -9147,6 +9274,20 @@
       ],
       "summary": "Integration service schema: catch-up state and the retired delivery journal."
     },
+    "tests/test_migration_integration_subjects.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Revision a00000000057: integration subjects and their journal, additive and replayable."
+    },
     "tests/test_migration_json_columns.py": {
       "areas": [
         "migrations"
@@ -10148,6 +10289,27 @@
         "parametrize"
       ],
       "summary": "Operator adoption path for reviewed Playbook V2 artifact bundles."
+    },
+    "tests/test_playbook_v2_integration_policy.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.models",
+        "src.integration.subjects",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy",
+        "src.playbooks.proposal",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reviewed subject tables: compiler guards, pure decisions and immutable pins."
     },
     "tests/test_playbook_v2_resolution.py": {
       "areas": [

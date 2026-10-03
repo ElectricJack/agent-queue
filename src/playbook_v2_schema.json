@@ -1235,6 +1235,41 @@
       "title": "ForEachStep",
       "type": "object"
     },
+    "IntegrationPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_wait_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Max Wait Seconds",
+          "type": "integer"
+        },
+        "tables": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SubjectDecisionTable"
+          },
+          "maxProperties": 3,
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/SubjectKind"
+          },
+          "title": "Tables",
+          "type": "object"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_wait_seconds",
+        "tables"
+      ],
+      "title": "IntegrationPolicy",
+      "type": "object"
+    },
     "ListValue": {
       "additionalProperties": false,
       "properties": {
@@ -1699,6 +1734,241 @@
       "title": "ObjectValue",
       "type": "object"
     },
+    "OutcomeSchedule": {
+      "additionalProperties": false,
+      "properties": {
+        "ceiling_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ceiling Seconds"
+        },
+        "kind": {
+          "enum": [
+            "progress",
+            "backoff",
+            "wait",
+            "hold",
+            "close"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectPhase"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seconds"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "OutcomeSchedule",
+      "type": "object"
+    },
+    "PolicyAction": {
+      "additionalProperties": false,
+      "properties": {
+        "answers": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/OutcomeSchedule"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answers"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "event_ref": "#/$defs/EventRef",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              }
+            ]
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "messages": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "outcomes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OutcomeSchedule"
+          },
+          "title": "Outcomes",
+          "type": "object"
+        },
+        "primitive": {
+          "$ref": "#/$defs/Primitive"
+        }
+      },
+      "required": [
+        "primitive",
+        "outcomes"
+      ],
+      "title": "PolicyAction",
+      "type": "object"
+    },
+    "PolicyCase": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Action",
+          "type": "string"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "when": {
+          "discriminator": {
+            "mapping": {
+              "bool": "#/$defs/BooleanExpr",
+              "comparison": "#/$defs/Comparison",
+              "exists": "#/$defs/Exists"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "$ref": "#/$defs/BooleanExpr"
+            },
+            {
+              "$ref": "#/$defs/Exists"
+            }
+          ],
+          "title": "When"
+        }
+      },
+      "required": [
+        "rule",
+        "when",
+        "action"
+      ],
+      "title": "PolicyCase",
+      "type": "object"
+    },
+    "Primitive": {
+      "description": "The twenty mechanism primitives of §3.4, in table order.",
+      "enum": [
+        "integration_observe_subject",
+        "integration_seal",
+        "git_materialize_ref",
+        "git_merge_members",
+        "git_preserve",
+        "git_publish",
+        "git_ancestry",
+        "ci_request",
+        "ci_observe",
+        "ci_attest",
+        "writer_file",
+        "writer_lease",
+        "writer_stop_proof",
+        "record_receipt",
+        "record_attempt",
+        "record_decision",
+        "wait",
+        "gate",
+        "eject",
+        "cleanup"
+      ],
+      "title": "Primitive",
+      "type": "string"
+    },
     "ProjectScope": {
       "additionalProperties": false,
       "properties": {
@@ -1717,6 +1987,34 @@
         "project_id"
       ],
       "title": "ProjectScope",
+      "type": "object"
+    },
+    "RequiredCheckSet": {
+      "additionalProperties": false,
+      "properties": {
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Names",
+          "type": "array"
+        },
+        "producer_id": {
+          "title": "Producer Id",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "names",
+        "producer_id"
+      ],
+      "title": "RequiredCheckSet",
       "type": "object"
     },
     "RetryPolicy": {
@@ -1886,6 +2184,79 @@
       ],
       "title": "SourceRef",
       "type": "object"
+    },
+    "SubjectDecisionTable": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "maxProperties": 100,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/PolicyAction"
+            }
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/PolicyCase"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Cases",
+          "type": "array"
+        },
+        "default": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Default",
+          "type": "string"
+        },
+        "required_checks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequiredCheckSet"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "cases",
+        "actions",
+        "default"
+      ],
+      "title": "SubjectDecisionTable",
+      "type": "object"
+    },
+    "SubjectKind": {
+      "enum": [
+        "root_batch",
+        "parent_episode",
+        "source"
+      ],
+      "title": "SubjectKind",
+      "type": "string"
+    },
+    "SubjectPhase": {
+      "description": "Where a subject is in its walk (§3.2); shared by every kind.",
+      "enum": [
+        "admitting",
+        "building",
+        "testing",
+        "repairing",
+        "promotable",
+        "publishing",
+        "published",
+        "cleaning",
+        "done"
+      ],
+      "title": "SubjectPhase",
+      "type": "string"
     },
     "SystemScope": {
       "additionalProperties": false,
@@ -2404,6 +2775,17 @@
       "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
       "title": "Id",
       "type": "string"
+    },
+    "integration_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntegrationPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "purpose": {
       "default": "routine",

@@ -1,7 +1,7 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:8e34c15d9c3dfe6ba22f600113e6e4bbdd118a453504d61608c4aae42f91ea65
-source_sha256: sha256:da4f0cd28522b2e85654c5019f96ed0c7b560db2746550eaae561a0edb295d07
+artifact_sha256: sha256:387536e8e7b0a903270073ae6ce69f51a4dd4eb44ddd3cfdf50939b84d8ae6db
+source_sha256: sha256:fc4003fbd27f7e090bb9ea294663ded27032d960e636813e33f7b063caec6001
 contract_fingerprint: sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd
 questions_resolved: 0
 capabilities_granted:
@@ -27,3 +27,13 @@ The parent route handles `already_completed` as idempotent success and `failed`
 as failure. Commands receive durable subject identities; CI trust, Git refs,
 repair budgets, and promotion authority stay server-owned. Import and activation
 require operator review. The bundle has no automatic activation.
+
+## Subject table handoff
+
+The disabled bundle includes a source-owned integration decision table.
+Existing event rules remain available for feature-off rollback. Each subject
+retains its exact artifact pin. Gate choices and replay deadlines are explicit;
+root publication needs the observed publisher fence, distinct from repair
+writer authority. Agent Queue retains authorized continuation; the generic
+template retains a no-default exhaustion gate. Import/activation and production
+cutover evidence remain operator-owned.
