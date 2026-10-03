@@ -622,6 +622,9 @@ from .knowledge_create_request import KnowledgeCreateRequest
 from .knowledge_create_request_metadata_type_0 import KnowledgeCreateRequestMetadataType0
 from .knowledge_create_response import KnowledgeCreateResponse
 from .knowledge_create_response_422 import KnowledgeCreateResponse422
+from .knowledge_create_task_request import KnowledgeCreateTaskRequest
+from .knowledge_create_task_response import KnowledgeCreateTaskResponse
+from .knowledge_create_task_response_422 import KnowledgeCreateTaskResponse422
 from .knowledge_diff_request import KnowledgeDiffRequest
 from .knowledge_diff_response import KnowledgeDiffResponse
 from .knowledge_diff_response_422 import KnowledgeDiffResponse422
@@ -660,6 +663,7 @@ from .knowledge_share_response_422 import KnowledgeShareResponse422
 from .knowledge_show_request import KnowledgeShowRequest
 from .knowledge_show_response import KnowledgeShowResponse
 from .knowledge_show_response_422 import KnowledgeShowResponse422
+from .knowledge_show_response_authority_type_0 import KnowledgeShowResponseAuthorityType0
 from .knowledge_show_response_snapshot import KnowledgeShowResponseSnapshot
 from .knowledge_update_request import KnowledgeUpdateRequest
 from .knowledge_update_request_metadata_type_0 import KnowledgeUpdateRequestMetadataType0
@@ -2334,6 +2338,9 @@ __all__ = (
     "KnowledgeCreateRequestMetadataType0",
     "KnowledgeCreateResponse",
     "KnowledgeCreateResponse422",
+    "KnowledgeCreateTaskRequest",
+    "KnowledgeCreateTaskResponse",
+    "KnowledgeCreateTaskResponse422",
     "KnowledgeDiffRequest",
     "KnowledgeDiffResponse",
     "KnowledgeDiffResponse422",
@@ -2372,6 +2379,7 @@ __all__ = (
     "KnowledgeShowRequest",
     "KnowledgeShowResponse",
     "KnowledgeShowResponse422",
+    "KnowledgeShowResponseAuthorityType0",
     "KnowledgeShowResponseSnapshot",
     "KnowledgeUpdateRequest",
     "KnowledgeUpdateRequestMetadataType0",

@@ -31,6 +31,8 @@ class RecordShowArgs(RecordScopeArgs):
 class RecordSearchArgs(RecordScopeArgs):
     query: str = Field(default="", max_length=512)
     category: str | None = None
+    lifecycle: Literal["active", "retired"] | None = None
+    verification: Literal["unverified", "verified", "disputed"] | None = None
     include_retired: bool = False
     include_disputed: bool = False
     limit: int = Field(default=25, ge=1, le=100)

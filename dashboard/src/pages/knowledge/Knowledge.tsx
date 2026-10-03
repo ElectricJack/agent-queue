@@ -21,6 +21,8 @@ export interface KnowledgeProps {
   adapter: KnowledgeAdapter;
   /** Starting state, e.g. read from the URL by the route owner. */
   initialFilters?: KnowledgeListFilters;
+  /** Controlled addressable state supplied by the route. */
+  state?: KnowledgeState;
   initialSelection?: KnowledgeSelection;
   /** Every filter or selection change, so the route owner can write the URL. */
   onStateChange?: (state: KnowledgeState) => void;
@@ -44,12 +46,16 @@ export default function Knowledge({
   initialFilters = DEFAULT_KNOWLEDGE_FILTERS,
   initialSelection = NO_SELECTION,
   onStateChange,
+  state,
   onOpenTask,
   onAction,
   heading = "Knowledge",
 }: KnowledgeProps) {
-  const [filters, setFiltersState] = useState<KnowledgeListFilters>(initialFilters);
-  const [selection, setSelectionState] = useState<KnowledgeSelection>(initialSelection);
+  const [localFilters, setFiltersState] = useState<KnowledgeListFilters>(initialFilters);
+  const [localSelection, setSelectionState] = useState<KnowledgeSelection>(initialSelection);
+
+  const filters = state?.filters ?? localFilters;
+  const selection = state?.selection ?? localSelection;
 
   const setFilters = useCallback((next: KnowledgeListFilters) => {
     setFiltersState(next);

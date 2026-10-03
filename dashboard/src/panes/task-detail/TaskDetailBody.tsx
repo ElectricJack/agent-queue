@@ -1,3 +1,4 @@
+import TaskKnowledgeSection from "../../pages/knowledge/TaskKnowledgeSection";
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ClipboardEvent, DragEvent } from "react";
@@ -293,7 +294,9 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
 
       {task && <TaskProviderRouting task={task} />}
 
-      {task && <TaskDescription key={task.id} task={task} />}
+      {task && <TaskKnowledgeSection key={task.id} projectId={task.project_id ?? ""} taskId={task.id}>
+        <TaskDescription task={task} />
+      </TaskKnowledgeSection>}
 
       {task && (
         <section>
