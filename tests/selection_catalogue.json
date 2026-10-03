@@ -1365,7 +1365,7 @@
       ]
     }
   },
-  "digest": "sha256:dc7032c9402bb315c6a42d55bc1a3c988ad0dec2a10aaf769925ce735bbe6b21",
+  "digest": "sha256:fc8ae7fbf6615fdcf6e784ca1eaabbeb2b9c1f51615384c76acf885951e9bac1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11713,6 +11713,7 @@
         "src.api.auth",
         "src.config",
         "src.database",
+        "src.install.providers",
         "src.llm",
         "src.llm.fake",
         "src.llm.providers.errors",

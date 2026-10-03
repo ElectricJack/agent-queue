@@ -79,8 +79,15 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                 )
             }
             assert installed == {(name, table) for name, table, _ in TRIGGERS} | {
+                # Guards that post-date the immutable baseline snapshot. Each
+                # is defined by one revision, in provenance order: the repair
+                # ejection's candidate-result and manifest triggers, then the
+                # durable subject's identity/journal/parent-episode triggers.
                 ("integration_result_current_member", "integration_candidate_member_results"),
                 ("integration_revision_manifest_immutable", "integration_candidate_revisions"),
+                ("integration_subject_identity_pinned", "integration_subjects"),
+                ("integration_subject_journal_append_only", "integration_subject_journal"),
+                ("integration_subject_parent_episode_pinned", "integration_subjects"),
             }
             for statement in (
                 "UPDATE integration_review_evidence SET verdict='rejected' WHERE id='keep'",
