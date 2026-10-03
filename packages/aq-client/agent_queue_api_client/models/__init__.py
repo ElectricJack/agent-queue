@@ -644,8 +644,12 @@ from .knowledge_export_request import KnowledgeExportRequest
 from .knowledge_export_response import KnowledgeExportResponse
 from .knowledge_export_response_422 import KnowledgeExportResponse422
 from .knowledge_generation_status_request import KnowledgeGenerationStatusRequest
+from .knowledge_generation_status_response import KnowledgeGenerationStatusResponse
 from .knowledge_generation_status_response_422 import KnowledgeGenerationStatusResponse422
+from .knowledge_generation_status_response_budgets_item import KnowledgeGenerationStatusResponseBudgetsItem
+from .knowledge_generation_status_response_jobs_item import KnowledgeGenerationStatusResponseJobsItem
 from .knowledge_generation_tick_request import KnowledgeGenerationTickRequest
+from .knowledge_generation_tick_response import KnowledgeGenerationTickResponse
 from .knowledge_generation_tick_response_422 import KnowledgeGenerationTickResponse422
 from .knowledge_history_request import KnowledgeHistoryRequest
 from .knowledge_history_response import KnowledgeHistoryResponse
@@ -2388,8 +2392,12 @@ __all__ = (
     "KnowledgeExportResponse",
     "KnowledgeExportResponse422",
     "KnowledgeGenerationStatusRequest",
+    "KnowledgeGenerationStatusResponse",
     "KnowledgeGenerationStatusResponse422",
+    "KnowledgeGenerationStatusResponseBudgetsItem",
+    "KnowledgeGenerationStatusResponseJobsItem",
     "KnowledgeGenerationTickRequest",
+    "KnowledgeGenerationTickResponse",
     "KnowledgeGenerationTickResponse422",
     "KnowledgeHistoryRequest",
     "KnowledgeHistoryResponse",

@@ -6928,7 +6928,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGenerationStatusResponse"
+                }
               }
             }
           },
@@ -6973,7 +6975,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGenerationTickResponse"
+                }
               }
             }
           },
@@ -38547,10 +38551,95 @@
         "type": "object",
         "title": "KnowledgeGenerationStatusRequest"
       },
+      "KnowledgeGenerationStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "jobs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Jobs",
+            "default": []
+          },
+          "budgets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Budgets",
+            "default": []
+          },
+          "unknown_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Calls"
+          },
+          "page_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Limit"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeGenerationStatusResponse",
+        "description": "Content-free cost and ambiguity diagnostics; never inspects a provider.\n\n``jobs`` groups by scope / state / error code, ``budgets`` is the daily\nper-feature allowance projection, and ``unknown_calls`` counts reservations\nwhose paid provider operation has no known outcome."
+      },
       "KnowledgeGenerationTickRequest": {
         "properties": {},
         "type": "object",
         "title": "KnowledgeGenerationTickRequest"
+      },
+      "KnowledgeGenerationTickResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "captured": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured"
+          },
+          "states": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "States",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "KnowledgeGenerationTickResponse",
+        "description": "One bounded tick: how much was retained and the terminal state per job.\n\n``states`` carries one terminal state string per job the tick ran\n(``succeeded`` / ``retry`` / ``quarantined`` / ``cancelled``); it is empty\nwhen no due job was claimed."
       },
       "KnowledgeHistoryRequest": {
         "properties": {
