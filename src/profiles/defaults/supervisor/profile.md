@@ -158,6 +158,7 @@ its outbox; transport failures never need a new author turn.
     "integration_resume",
     "integration_settle_parked",
     "integration_retry_cleanup",
+    "integration_shadow_report",
     "integration_status",
     "integration_transfer_owner",
     "integration_trust_manifest",
