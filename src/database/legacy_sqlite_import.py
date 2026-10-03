@@ -226,6 +226,11 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "knowledge_context_bundles",
         "knowledge_context_deliveries",
         "knowledge_citations",
+        # K12 derived provider index receipts shipped in revision 61. A legacy
+        # SQLite file predates every record revision, so it has no index state;
+        # the derived index is rebuilt by reindexing authorized records.
+        "record_index_state",
+
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
     }

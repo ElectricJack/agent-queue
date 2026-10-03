@@ -12,6 +12,12 @@ Services available to internal plugins via ``ctx.get_service(name)``:
 - ``"workspace"``     — :class:`WorkspaceService`
 - ``"config"``        — :class:`ConfigService` (external-allowed)
 - ``"vault_watcher"`` — :class:`VaultWatcherService` (external-allowed)
+
+Plugins also *provide* services that core looks up (the inverse direction; see
+:meth:`src.plugins.registry.PluginRegistry.get_service`):
+
+- ``"knowledge_retrieval"`` — :class:`KnowledgeRetrievalService` (optional
+  semantic ranking and derived indexing of core-owned knowledge revisions)
 """
 
 from __future__ import annotations
@@ -215,6 +221,76 @@ class MemoryServiceProtocol(Protocol):
     # Lifecycle
     async def initialize(self) -> None: ...
     async def shutdown(self) -> None: ...
+
+
+@runtime_checkable
+class KnowledgeIndexService(Protocol):
+    """Derived-index half of a retrieval provider (optional, ``indexer``).
+
+    Index writes are rebuildable derived data. The provider owns embeddings,
+    chunking and its own fixed managed index; it never writes records, revisions,
+    tasks, authority or delivery state, and it never queries a collection chosen
+    by a caller.
+    """
+
+    async def index(self, payload: dict) -> dict:
+        """Index one hydrated revision and return a text-free chunk manifest.
+
+        ``payload`` is server-authorized core output: ``record_id``,
+        ``revision_id``, ``sequence``, ``content_sha256``, ``hash_version``,
+        ``scope_key``, ``title`` and ``body``. The manifest declares a
+        contiguous partition of that exact ``body`` as
+        ``{"chunk_id", "ordinal", "char_start", "char_end"}`` entries bound to
+        ``record_id``/``revision_id``/``content_sha256``/``hash_version``.
+        """
+        ...
+
+    async def erase(self, record_id: str, revision_id: str) -> dict:
+        """Drop derived chunks for one revision and acknowledge the erasure."""
+        ...
+
+
+@runtime_checkable
+class KnowledgeRetrievalService(Protocol):
+    """Optional ranking over core-owned knowledge (plugin -> core).
+
+    Registered by a loaded plugin as ``"knowledge_retrieval"`` and read back
+    locally by :class:`src.knowledge.registration.RetrievalProviderRegistry`.
+    Core never imports the plugin to obtain one, never initializes it and never
+    falls back to a caller-chosen index: ``search`` receives a core-derived
+    ``RetrievalRequest`` (bounded query, ``scope_key``, shared-global hint and
+    ``limit``) and returns at most ``limit``
+    :class:`src.knowledge.providers.RetrievalReference` values in relevance
+    order. Text, snippets, scope and authority are rejected by core.
+
+    Two registered providers are never raced: selecting one, paying its cost and
+    retiring it are explicit operator decisions (plan sections 2 and 11, G5).
+    """
+
+    @property
+    def provider_id(self) -> str: ...
+
+    @property
+    def provider_version(self) -> str: ...
+
+    @property
+    def available(self) -> bool:
+        """Local availability only; never a health check or a network probe."""
+        ...
+
+    @property
+    def deprecated(self) -> bool:
+        """A retired provider stops serving without any core code change."""
+        ...
+
+    async def search(self, request: Any) -> Any:
+        """Rank the provider's own index; return references, never content."""
+        ...
+
+    @property
+    def indexer(self) -> KnowledgeIndexService | None:
+        """Optional derived-index service used for index receipts."""
+        ...
 
 
 @runtime_checkable

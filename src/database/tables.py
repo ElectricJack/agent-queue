@@ -5946,6 +5946,39 @@ record_backfill_state = Table(
     ),
 )
 
+# K12 derived provider index receipts. A rebuildable checkpoint for one
+# provider's optional semantic index of an exact revision: never
+# authoritative, never a substitute for the revision it describes, and
+# retained after erasure so the acknowledgment stays auditable.
+record_index_state = Table(
+    "record_index_state",
+    metadata,
+    Column("provider_id", Text, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("chunk_manifest_sha256", Text, nullable=False),
+    Column("indexed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("redacted_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("provider_id", "record_id", name="pk_record_index_state"),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id", "sequence"],
+        [
+            "knowledge_revisions.record_id",
+            "knowledge_revisions.revision_id",
+            "knowledge_revisions.sequence",
+        ],
+        name="fk_record_index_state_revision",
+    ),
+    CheckConstraint("sequence > 0", name="ck_record_index_state_sequence"),
+    CheckConstraint(
+        "provider_id ~ '^[a-z][a-z0-9_-]{0,63}$'", name="ck_record_index_state_provider"
+    ),
+    CheckConstraint(
+        "chunk_manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_index_state_manifest"
+    ),
+)
+
 # create_all is used by the squashed baseline as well as disposable fixtures.
 # SQL functions must precede checks; deferred guards follow table creation.
 # K05 protection records. Authoritative state stays in PostgreSQL, not exports.

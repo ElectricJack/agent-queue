@@ -26,6 +26,9 @@ def run_migration(conn, action):
     with Operations.context(MigrationContext.configure(conn)):
         # A current baseline includes later additive knowledge tables. Exercise
         # the real downgrade dependency order before dropping the K01 schema.
+        receipts = importlib.import_module(
+            "migrations.versions.a00000000061_knowledge_index_receipts"
+        )
         protection = importlib.import_module("migrations.versions.a00000000059_knowledge_protection")
         inventory = importlib.import_module(
             "migrations.versions.a00000000060_knowledge_import_inventory"
@@ -33,12 +36,14 @@ def run_migration(conn, action):
         context = importlib.import_module("migrations.versions.a00000000062_knowledge_context")
         if action == "downgrade":
             context.downgrade()
+            receipts.downgrade()
             inventory.downgrade()
             protection.downgrade()
         getattr(migration, action)()
         if action == "upgrade":
             protection.upgrade()
             inventory.upgrade()
+            receipts.upgrade()
             context.upgrade()
 
 
