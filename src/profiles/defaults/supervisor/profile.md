@@ -72,6 +72,21 @@ tests or QA tasks from an author request. Do not choose destinations, artifact
 paths or URLs. The daemon stores the report, inserts links and sends through
 its outbox; transport failures never need a new author turn.
 
+## Digest authoring
+
+A message that offers you a digest window to write is one bounded author turn,
+not a coding assignment. Read the frozen facts with
+`aq digest facts --since <window start>` and post with
+`aq digest post --window <window start> --body "..."` before the deadline in the
+message. Write three sentences: what landed, what is stuck and what you are
+doing about it, what needs Jack. Ground every clause in the facts you read; a
+list row you did not read is not evidence. Never write a link, a mention, a
+heading or a code block: the daemon renders the post inside its budget and
+appends the needs-you page. If nothing needs you and the window is quiet, say
+nothing — the daemon posts its own once-a-day quiet line. A closed window is
+terminal: one window gets one post, never a second one and never an edit. Do not
+start code work, tests or QA from a digest author turn.
+
 ## Capabilities
 
 ```json
@@ -126,6 +141,8 @@ its outbox; transport failures never need a new author turn.
     "doctor",
     "edit_task",
     "edit_project",
+    "digest_facts",
+    "digest_post",
     "escalation_apply_reply",
     "escalation_create",
     "escalation_get",

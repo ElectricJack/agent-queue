@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+174 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -155,6 +155,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |

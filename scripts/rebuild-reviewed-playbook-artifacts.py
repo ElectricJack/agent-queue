@@ -65,6 +65,7 @@ from src.playbooks.validation import (  # noqa: E402
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
+    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
     "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
@@ -347,6 +348,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _provider_usage_probe_body(source)
     if playbook_id == "morning-report":
         return _morning_report_body(source)
+    if playbook_id == "supervisor-digest":
+        return _supervisor_digest_body(source)
     if playbook_id == "github-issue-triage":
         return _github_issue_triage_body(source)
     return {}
@@ -1256,6 +1259,35 @@ def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
                 "type": "command", "rule": rule, "title": "tick",
                 "source": index.step_ref(rule, 1), "command": "morning_report_tick",
                 "inputs": {}, "save_result_as": "report",
+                "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _supervisor_digest_body(source: PlaybookSource) -> dict[str, Any]:
+    """One optional minute reconciliation command, with no model or worker step.
+
+    Phase P3 of *Discord as a chat extension of the supervisor* (2026-10-03 §4).
+    The supervisor writes the digest in its own session, so this policy has no
+    author step of its own: it only decides when held windows become author turns,
+    and the command owns the rest.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "reconcile-digest"
+    request, done, failed = (f"{rule}--{suffix}" for suffix in ("request", "done", "failed"))
+    return {
+        "rules": [{
+            "id": rule, "name": rule, "trigger": {"event_type": "timer.1m"},
+            "entry_step": request, "source": index.rule_ref(rule),
+        }],
+        "steps": {
+            request: {
+                "type": "command", "rule": rule, "title": "request",
+                "source": index.step_ref(rule, 1), "command": "digest_request",
+                "inputs": {}, "save_result_as": "windows",
                 "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
             },
             done: _terminal(rule, "completed", index.step_ref(rule, None)),

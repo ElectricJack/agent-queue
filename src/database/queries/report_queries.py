@@ -148,6 +148,26 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                 return None
             message_id = f"msg-{request_id}"
             if row["state"] == "reserved":
+                if row["kind"] == "digest":
+                    # §4.2's author turn. The message names the two commands and
+                    # the window start, which is exactly how ``digest facts`` and
+                    # ``digest post`` address it, and states the deadline so the
+                    # author knows the fallback is coming.
+                    subject = "Digest window ready"
+                    body = (
+                        f"Digest window {row['owner_ref']} is ready. Read the frozen facts "
+                        f"with `aq digest facts --since {row['brief'].get('window', {}).get('since')}` "
+                        f"and post three sentences with "
+                        f"`aq digest post --window {row['brief'].get('window', {}).get('since')} "
+                        f'--body "..."`. The daemon posts the deterministic digest at '
+                        f"{row['deadline']:.0f} if you do not."
+                    )
+                else:
+                    subject = "Hourly report request"
+                    body = (
+                        f"Hourly report {request_id} is ready. Read the brief with "
+                        f"`aq report brief {request_id}` and submit before the deadline."
+                    )
                 await conn.execute(
                     pg_insert(messages)
                     .values(
@@ -157,11 +177,8 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                         from_id="reports",
                         to_kind="session",
                         to_id=row["author_session_id"],
-                        subject="Hourly report request",
-                        body=(
-                            f"Hourly report {request_id} is ready. Read the brief with "
-                            f"`aq report brief {request_id}` and submit before the deadline."
-                        ),
+                        subject=subject,
+                        body=body,
                         priority=100,
                         created_at=now,
                         archive_after_inject=1,

@@ -138,6 +138,35 @@ class PerProjectChannelsConfig:
     private: bool = True  # Make auto-created channels private (only bot + permitted users)
 
 
+_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass
+class ReportQuietHoursConfig:
+    """Local wall-clock interval during which an author wake is skipped.
+
+    Shared by the hourly report author (``reports.hourly.quiet_hours``) and the
+    supervisor-authored digest (``discord.digest.quiet_hours``, 2026-10-03 §4.1):
+    both suppress a *wake*, and both are evaluated in the daemon's report
+    timezone rather than UTC.
+    """
+
+    start: str = ""
+    end: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        if (
+            not isinstance(self.start, str)
+            or not isinstance(self.end, str)
+            or not _REPORT_CLOCK.fullmatch(self.start)
+            or not _REPORT_CLOCK.fullmatch(self.end)
+        ):
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
+        if self.start == self.end:
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
+        return []
+
+
 @dataclass
 class DiscordDigestConfig:
     """Hourly activity digest settings (discord-simplification §8, §9).
@@ -146,6 +175,14 @@ class DiscordDigestConfig:
     ``project_ids`` empty means every project the configured destination can
     see; a non-empty list is the destination's visibility, applied before any
     activity is read so one project's detail can never leak into another's.
+
+    ``supervisor_authored`` is phase P3 of the Discord-as-chat design
+    (2026-10-03 §4): the same window, written by the supervisor through
+    ``aq digest post`` instead of rendered only by the deterministic renderer.
+    It is off by default, so every field below it is inert until an operator
+    turns the flag on -- rollback is the flag, nothing else.  The cadence and
+    quiet hours are the spec's §8 Q4 proposal (two hours, 22:00-07:00 in the
+    daemon's report timezone), still gated on Jack's answer to that question.
     """
 
     enabled: bool = True
@@ -159,6 +196,19 @@ class DiscordDigestConfig:
     )
     catchup_hours: int = field(
         default=24, metadata={"json_schema": {"minimum": 1, "maximum": 168}}
+    )
+    supervisor_authored: bool = False
+    cadence_minutes: int = field(
+        default=120, metadata={"json_schema": {"minimum": 15, "maximum": 1440}}
+    )
+    quiet_hours: ReportQuietHoursConfig | None = field(
+        default_factory=lambda: ReportQuietHoursConfig(start="22:00", end="07:00")
+    )
+    author_fallback_minutes: int = field(
+        default=10, metadata={"json_schema": {"minimum": 1, "maximum": 60}}
+    )
+    quiet_line_after_skips: int = field(
+        default=3, metadata={"json_schema": {"minimum": 1, "maximum": 24}}
     )
 
     def validate(self) -> list[ConfigError]:
@@ -208,30 +258,35 @@ class DiscordDigestConfig:
                     )
                 )
                 break
-        return errors
-
-
-_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
-
-
-@dataclass
-class ReportQuietHoursConfig:
-    """Local wall-clock interval during which hourly author wakes are skipped."""
-
-    start: str = ""
-    end: str = ""
-
-    def validate(self) -> list[ConfigError]:
-        if (
-            not isinstance(self.start, str)
-            or not isinstance(self.end, str)
-            or not _REPORT_CLOCK.fullmatch(self.start)
-            or not _REPORT_CLOCK.fullmatch(self.end)
+        if not isinstance(self.supervisor_authored, bool):
+            errors.append(
+                ConfigError("discord.digest", "supervisor_authored", "must be a boolean")
+            )
+        if not MIN_DIGEST_INTERVAL_MINUTES <= self.cadence_minutes <= MAX_DIGEST_INTERVAL_MINUTES:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "cadence_minutes",
+                    f"cadence_minutes must be between {MIN_DIGEST_INTERVAL_MINUTES} and "
+                    f"{MAX_DIGEST_INTERVAL_MINUTES}; got {self.cadence_minutes}",
+                )
+            )
+        for name, upper in (
+            ("author_fallback_minutes", 60),
+            ("quiet_line_after_skips", 24),
         ):
-            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
-        if self.start == self.end:
-            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
-        return []
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("discord.digest", name, f"must be 1–{upper}"))
+        if self.quiet_hours is not None:
+            # The quiet-hours shape names the hourly report in its section; a
+            # digest window is the same policy in a different block, so the
+            # message is restated under the digest's own section.
+            errors.extend(
+                ConfigError("discord.digest.quiet_hours", error.field, error.message)
+                for error in self.quiet_hours.validate()
+            )
+        return errors
 
 
 @dataclass
@@ -549,6 +604,13 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.digest.enabled and self.digest.supervisor_authored:
+            notes.append(
+                f"The digest is supervisor-authored: one window every "
+                f"{self.digest.cadence_minutes} minutes, each held "
+                f"{self.digest.author_fallback_minutes} minutes for "
+                "`aq digest post` before the deterministic fallback posts."
+            )
         if self.conversation.enabled:
             notes.append(
                 "Discord conversations are enabled: an @mention from an authorized_users "
@@ -4776,12 +4838,30 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         inventory_names = tuple(name for name in inventory_names if name)
         dg = d.get("digest", {}) or {}
+        digest_quiet_raw = dg.get("quiet_hours")
+        digest_quiet: ReportQuietHoursConfig | None = None
+        if digest_quiet_raw is not None:
+            if not isinstance(digest_quiet_raw, Mapping):
+                raise ConfigValidationError(["[discord.digest.quiet_hours] must be a mapping"])
+            digest_quiet = ReportQuietHoursConfig(
+                start=str(digest_quiet_raw.get("start", "") or ""),
+                end=str(digest_quiet_raw.get("end", "") or ""),
+            )
         digest_cfg = DiscordDigestConfig(
             enabled=bool(dg.get("enabled", True)),
             interval_minutes=int(dg.get("interval_minutes", 60)),
             project_ids=list(dg.get("project_ids", []) or []),
             categories=list(dg.get("categories", DIGEST_CATEGORIES) or []),
             catchup_hours=int(dg.get("catchup_hours", 24)),
+            supervisor_authored=bool(dg.get("supervisor_authored", False)),
+            cadence_minutes=int(dg.get("cadence_minutes", 120)),
+            quiet_hours=(
+                digest_quiet
+                if digest_quiet_raw is not None
+                else ReportQuietHoursConfig(start="22:00", end="07:00")
+            ),
+            author_fallback_minutes=int(dg.get("author_fallback_minutes", 10)),
+            quiet_line_after_skips=int(dg.get("quiet_line_after_skips", 3)),
         )
         esc = d.get("escalation", {}) or {}
         escalation_cfg = DiscordEscalationConfig(

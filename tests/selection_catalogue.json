@@ -234,6 +234,7 @@
         "tests/test_digest_commands.py",
         "tests/test_digest_dispatch.py",
         "tests/test_digest_queries.py",
+        "tests/test_digest_supervisor.py",
         "tests/test_discord_settings.py",
         "tests/test_morning_reports.py",
         "tests/test_report_delivery.py",
@@ -770,6 +771,7 @@
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_conversation_kind.py",
+        "tests/test_migration_digest_author_requests.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
         "tests/test_migration_escalation_state.py",
@@ -1393,7 +1395,7 @@
       ]
     }
   },
-  "digest": "sha256:663b6eeaf89a52675d81e98b47214e00ec480f050fc2b1aa33a84a4efa26ab19",
+  "digest": "sha256:fbbd1c56c1c49f169c5edb0161ad43ad6579fc8d8a7ff52e88f0aafe053477fc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5024,6 +5026,29 @@
       ],
       "markers": [],
       "summary": "What a digest window is allowed to see (implementation spec §8)."
+    },
+    "tests/test_digest_supervisor.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.digest.supervisor",
+        "src.escalations.transport",
+        "src.event_bus",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The §4 supervisor-authored digest window (2026-10-03 §4.1-4.3, §7.1 P3)."
     },
     "tests/test_discord_adapter.py": {
       "areas": [
@@ -9840,6 +9865,18 @@
         "migration"
       ],
       "summary": "The conversation-kind revision upgrades idempotently on PostgreSQL."
+    },
+    "tests/test_migration_digest_author_requests.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The digest revision follows the collected siblings and preserves author requests."
     },
     "tests/test_migration_epic_pull_requests.py": {
       "areas": [

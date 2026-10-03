@@ -2000,7 +2000,11 @@ supervisor_report_requests = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
-    CheckConstraint("kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"),
+    # ``digest`` is the supervisor-authored digest window (2026-10-03 §4, P3):
+    # one author request per digest window, same lifecycle, no new columns.
+    CheckConstraint(
+        "kind IN ('hourly','morning','digest')", name="ck_supervisor_report_requests_kind"
+    ),
     CheckConstraint(
         "state IN ('reserved','requested','submitted','fallback','cancelled')",
         name="ck_supervisor_report_requests_state",

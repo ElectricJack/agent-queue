@@ -227,7 +227,7 @@ class OutboundQueriesMixin:
                     await conn.execute(
                         select(supervisor_report_requests.c.id)
                         .where(
-                            supervisor_report_requests.c.kind == "hourly",
+                            supervisor_report_requests.c.kind.in_(("hourly", "digest")),
                             supervisor_report_requests.c.owner_ref == candidate["id"],
                         )
                         .with_for_update()
@@ -276,7 +276,7 @@ class OutboundQueriesMixin:
                     await conn.execute(
                         update(supervisor_report_requests)
                         .where(
-                            supervisor_report_requests.c.kind == "hourly",
+                            supervisor_report_requests.c.kind.in_(("hourly", "digest")),
                             supervisor_report_requests.c.owner_ref == old["id"],
                             supervisor_report_requests.c.state.in_(("reserved", "requested")),
                         )
