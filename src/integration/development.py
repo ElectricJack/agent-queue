@@ -474,13 +474,21 @@ class DevelopmentBusy(RuntimeError):
 
 
 @asynccontextmanager
-async def publisher_exclusion(db, repository_id):
+async def publisher_exclusion(db, repository_id, subject=None):
     """Hold *repository_id*'s development publisher lock, or raise ``DevelopmentBusy``.
 
     A dedicated connection owns a session advisory lock across short DB
     commits.  A process death releases it; durable publishing rows retain
     ambiguous writes.  Anything that rewrites a batch row outside the
     publisher (an obsolete close dropping a parked batch) takes it too.
+
+    *subject* names the root subject whose own mutation this exclusion
+    authorizes.  A repository the reconciler engine owns refuses an unnamed
+    root mutation outright ("repository root publisher belongs to the
+    reconciler"), so the shared primitives have to present the exact subject
+    they act for; the ownership check then admits it only while that subject is
+    still a live root at the pinned engine version.  Omitting it keeps the
+    legacy publisher's meaning unchanged.
     """
     key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
     async with db._engine.connect() as conn:
@@ -491,7 +499,9 @@ async def publisher_exclusion(db, repository_id):
             from src.integration.engine import EngineRefused, RootEngineOwnership
 
             try:
-                async with RootEngineOwnership(db).operation(repository_id, publisher=True):
+                async with RootEngineOwnership(db).operation(
+                    repository_id, subject=subject, publisher=True
+                ):
                     yield
             except EngineRefused as exc:
                 raise DevelopmentBusy(str(exc)) from exc

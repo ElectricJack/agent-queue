@@ -1209,7 +1209,7 @@ class SubjectCleanup:
         pending, retained, deleted, retention_deadlines = [], [], [], []
         try:
             repo = await self.gitops._repository(subject)
-            async with self.gitops.exclusion(repo.repository_id):
+            async with self.gitops.exclusion(repo.repository_id, subject):
                 await self.gitops.authority(subject)
                 items = await self.inventory(subject)
                 for item in items:

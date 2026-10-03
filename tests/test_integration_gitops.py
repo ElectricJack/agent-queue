@@ -486,11 +486,19 @@ async def test_materialization_and_preservation_are_exact_and_do_not_overwrite(s
 
 async def test_repository_publisher_fence_is_shared_with_legacy_and_independent_of_ref(setup):
     db, ops, s, fence, _, base, head, _ = setup
-    async with publisher_exclusion(db, "r"):
+    # This repository's root is reconciler-owned, so the *unnamed* legacy
+    # publisher is refused by the cut-over itself. The lock below is shared,
+    # not a second fence, so the refusal has to be asked for outside it.
+    with pytest.raises(DevelopmentBusy, match="belongs to the reconciler"):
+        async with publisher_exclusion(db, "r"):
+            pass
+    # The primitives take that same lock, naming the subject they act for, so a
+    # publisher already holding it is exactly the "already running" outcome.
+    async with publisher_exclusion(db, "r", s):
         result = await ops.publish(s, PublishArgs(fence=fence, expected_old_sha=base, new_sha=head))
         assert result.is_unknown and "already running" in result.reason
         with pytest.raises(DevelopmentBusy):
-            async with publisher_exclusion(db, "r"):
+            async with publisher_exclusion(db, "r", s):
                 pass
         async with publisher_exclusion(db, "other-repository"):
             pass
