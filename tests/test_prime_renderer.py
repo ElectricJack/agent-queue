@@ -742,6 +742,163 @@ class TestStaticSections:
         assert "## Emergent work" in body
 
 
+
+class TestToolGuidanceProjectScope:
+    """The addendum follows the harness file that launches, in its project.
+
+    A project may shadow a harness id with its own file, and the launch path
+    reads that file (``orchestrator/execution.py`` resolves the harness with
+    ``task.project_id``, as does ``orchestrator/pools.py``).  So when the
+    shadow names another executable, the session launched in that project runs
+    that CLI, and the addendum for the CLI it does *not* run must be withheld
+    -- while every other project on the same harness id still gets it.
+    """
+
+    #: One phrase from OpenCode's addendum, absent from the shared guidance.
+    ADDENDUM = "Do not ask optional questions"
+    #: The hosted-pool recipe of ``noble-delta-40``: the ``opencode``
+    #: executable against the OpenCode Zen gateway.
+    ZEN = "/home/u/.agent-queue/harness-bin/opencode"
+
+    @classmethod
+    def _registry(cls, system_command, *, project_command=None):
+        from src.sessions.harness_parser import Harness
+        from src.sessions.harness_registry import HarnessRegistry
+
+        registry = HarnessRegistry()
+        registry.upsert(Harness(id="opencode-zen", command=system_command, provider="opencode"))
+        if project_command is not None:
+            registry.upsert(
+                Harness(
+                    id="opencode-zen",
+                    command=project_command,
+                    provider="opencode",
+                    project_id="proj-1",
+                )
+            )
+        return registry
+
+    @staticmethod
+    async def _second_project_task(db):
+        await db.create_project(Project(id="proj-2", name="Other Project"))
+        await db.create_task(
+            Task(
+                id="task-2",
+                project_id="proj-2",
+                title="Elsewhere",
+                description="",
+                profile_id="coder",
+                route_source="legacy",
+            )
+        )
+
+    @staticmethod
+    async def _running_session(db, *, session_id, project_id, task_id, harness="opencode-zen"):
+        await db.create_session(
+            SessionRecord(
+                id=session_id,
+                project_id=project_id,
+                profile_id="coder",
+                harness=harness,
+                provider="fake",
+                name=session_id,
+                lifecycle="pool",
+                work_dir=f"/tmp/{session_id}",
+                epoch="test",
+                instance_token=f"token-{session_id}",
+                started_at=time.time(),
+                task_id=task_id,
+                state="running",
+            )
+        )
+
+    @staticmethod
+    async def _guidance(db, config, registry, *, session_id, task_id):
+        doc = await PrimeRenderer(db, config, harness_registry=registry).render_for_task(
+            task_id, session_id=session_id
+        )
+        return " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].split())
+
+    async def test_a_project_override_of_the_command_withholds_the_addendum(
+        self, db, config, task
+    ):
+        registry = self._registry(self.ZEN, project_command="claude")
+        await self._second_project_task(db)
+        await self._running_session(db, session_id="s-p1", project_id="proj-1", task_id="task-1")
+        await self._running_session(db, session_id="s-p2", project_id="proj-2", task_id="task-2")
+
+        overridden = await self._guidance(db, config, registry, session_id="s-p1", task_id="task-1")
+        inherited = await self._guidance(db, config, registry, session_id="s-p2", task_id="task-2")
+
+        assert self.ADDENDUM not in overridden
+        assert "aq test" in overridden  # the shared guidance is withheld, not truncated
+        assert self.ADDENDUM in inherited
+
+    async def test_the_reverse_override_grants_the_addendum_to_one_project(self, db, config, task):
+        # The system file runs another CLI; proj-1 overrides it back to
+        # opencode, so the addendum is added there and nowhere else.
+        registry = self._registry("/opt/bin/codex", project_command=self.ZEN)
+        await self._second_project_task(db)
+        await self._running_session(db, session_id="s-p1", project_id="proj-1", task_id="task-1")
+        await self._running_session(db, session_id="s-p2", project_id="proj-2", task_id="task-2")
+
+        granted = await self._guidance(db, config, registry, session_id="s-p1", task_id="task-1")
+        inherited = await self._guidance(db, config, registry, session_id="s-p2", task_id="task-2")
+
+        assert self.ADDENDUM in granted
+        assert self.ADDENDUM not in inherited
+
+    async def test_an_override_that_keeps_the_command_keeps_the_addendum(self, db, config, task):
+        # The common override changes launch flags, not the executable, and a
+        # Windows path spells the same binary: the addendum must survive.
+        registry = self._registry(self.ZEN, project_command="C:/bin/opencode.EXE")
+        await self._running_session(db, session_id="s-p1", project_id="proj-1", task_id="task-1")
+
+        body = await self._guidance(db, config, registry, session_id="s-p1", task_id="task-1")
+        assert self.ADDENDUM in body
+
+    async def test_a_project_only_harness_id_is_offered_to_that_project_alone(
+        self, db, config, task
+    ):
+        from src.sessions.harness_parser import Harness
+        from src.sessions.harness_registry import HarnessRegistry
+
+        # No system file at all: on proj-2 the harness does not resolve, so no
+        # addendum may be attributed to a session there.
+        registry = HarnessRegistry()
+        registry.upsert(
+            Harness(
+                id="zen-local",
+                command=self.ZEN,
+                provider="opencode",
+                project_id="proj-1",
+            )
+        )
+        await self._second_project_task(db)
+        await self._running_session(
+            db, session_id="s-p1", project_id="proj-1", task_id="task-1", harness="zen-local"
+        )
+        await self._running_session(
+            db, session_id="s-p2", project_id="proj-2", task_id="task-2", harness="zen-local"
+        )
+
+        granted = await self._guidance(db, config, registry, session_id="s-p1", task_id="task-1")
+        elsewhere = await self._guidance(db, config, registry, session_id="s-p2", task_id="task-2")
+
+        assert self.ADDENDUM in granted
+        assert self.ADDENDUM not in elsewhere
+
+    async def test_without_a_registry_the_id_match_still_answers(self, db, config, task):
+        # Unchanged contract: no registry means id match only, so a project
+        # scope cannot withhold the addendum from a harness named opencode.
+        await self._running_session(
+            db, session_id="s-oc", project_id="proj-1", task_id="task-1", harness="opencode"
+        )
+
+        body = await self._guidance(db, config, None, session_id="s-oc", task_id="task-1")
+        assert self.ADDENDUM in body
+
+
 # ---------------------------------------------------------------------------
 # .aq/PRIME.md override (design §5.3)
 # ---------------------------------------------------------------------------
