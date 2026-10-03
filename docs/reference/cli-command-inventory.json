@@ -12173,11 +12173,14 @@
           "--intent-id"
         ],
         "optional": [
+          "--fence",
           "--json",
           "--brief",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--fence"
+        ],
         "nullable": []
       }
     },

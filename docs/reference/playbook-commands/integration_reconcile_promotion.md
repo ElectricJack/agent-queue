@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:70e973e12017c1f5fa9d38b616842733e2fe7cf1a6db993e4882b6e435768176` |
+| Contract fingerprint | `sha256:aa0700ae1920fb559f2f0ff61966b9a2bfbbed38fd6f35f7ca11a0e0c172cb57` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `intent_id` | `string` | yes | — | — |
+| `fence` | `Fence \| null` | no | `null` | Current reserved collector fence; enables recovery of unapplied child intents. |
 
 ## Result
 
@@ -34,13 +35,34 @@ Projected into the run receipt: `intent_id`, `receipt_id`, `prepared_sha`.
 
 Redacted in receipts and explanations: `prepared_sha`.
 
+## Nested objects
+
+### `BranchKey`
+
+| Field | Type | Description |
+|---|---|---|
+| `repository_id` | `string` | — |
+| `branch` | `string` | — |
+
+### `Fence`
+
+| Field | Type | Description |
+|---|---|---|
+| `target` | `BranchKey` | — |
+| `owner_id` | `string` | — |
+| `token` | `integer` | — |
+
 ## Outcomes
 
 | Outcome | Classification | Meaning |
 |---|---|---|
 | `applied` | success | — |
+| `continued` | success | — |
 | `invariant_error` | failure | — |
 | `not_applied` | failure | — |
+| `superseded` | success | — |
+| `target_moved` | failure | — |
+| `waiting` | failure | — |
 
 ## Declared effects
 
@@ -64,7 +86,12 @@ to remember whether it pushed; it can always ask the remote and decide with the
 frozen intent in hand. That also means the command deliberately refuses to
 *guess*: a remote still sitting at the expected old tip is `not_applied`, and a
 remote that moved somewhere unrelated is `invariant_error`, never a silent
-success.
+success. Supplying the current reserved collector `fence` also enables child
+recovery: an unapplied diverged attempt becomes `superseded` after fresh ancestry
+proof, or an interrupted reservation queues a `delivery.ready` continuation and
+returns `continued`. A pending or recently delivered continuation returns
+`waiting`. Recovery rechecks the active parent episode and operator pause; stale
+ownership returns `target_moved`. These outcomes do not assert a delivery receipt.
 
 ## When a playbook uses it
 
@@ -91,8 +118,10 @@ receipt or check-success assertion".
    * `conflict` → raise `PromotionConflict` with the stored diagnostics.
    * `resolution_reserved` → hand off to `_reconcile_resolution`
      (`src/integration/promotion.py:732`), the repair-resolution variant.
-   * otherwise the intent must have a `prepared_sha`, or it is an invariant
-     error.
+   * `superseded` → return the terminal recovery outcome without a receipt.
+   * with a collector `fence`, reserved/prepared intents enter fenced recovery.
+   * without a fence, the intent must have a `prepared_sha`, or it is an
+     invariant error.
 3. **Frozen repository** — `_assert_frozen_repository`
    (`src/integration/promotion.py:1283`) re-checks that the intent's project
    and origin URL still match the resolved repository and that the retained
@@ -144,7 +173,11 @@ receipt or check-success assertion".
 |---|---|---|
 | `applied` | The remote proves the intent landed; the receipt is written. | Done. |
 | `not_applied` | The remote is still at the expected old tip. | The push genuinely did not happen — safe to retry the push path. |
-| `invariant_error` | Unknown intent, no project, no prepared commit, an intent in `conflict`, a branch that disappeared, a target that diverged from the prepared commit, or a resolution tip that is not the exact reserved head. | Human territory. |
+| `superseded` | Fresh proof retired an unapplied attempt, or it was already retired. | Collection queues a fresh attempt on the current target. |
+| `continued` | A reserved intent queued a durable `delivery.ready` continuation. | The parent playbook rebuilds and handles any conflict. |
+| `waiting` | A continuation is pending or still within its retry delay. | Wait for delivery or the next reconciliation pass. |
+| `target_moved` | The supplied collector fence or active parent episode is stale. | Re-read ownership and parent state. |
+| `invariant_error` | Unknown intent, no project, a disappeared branch, conflicting or unprepared state without recovery authority, or an unproven remote result. | For reserved or diverged child attempts, retry with the current collector fence; investigate other invariant failures. |
 | `runtime_error` | Remote state unknown, fetch failure, or a Git error. | Usually transient; retry. |
 | `unauthorized` | Caller is outside the intent's project. | — |
 

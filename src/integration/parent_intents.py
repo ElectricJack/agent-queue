@@ -18,9 +18,9 @@ On each visit, after a grace for the run that may still be in flight:
    commit the original run would have made.  A target held by any other
    writer is a wait, and an intent whose collection operation has ended or
    whose parent an operator paused is left alone.
-3. Anything else (a diverged target, a ``reserved`` intent whose commit was
-   never built, a conflict awaiting its repair writer) is reported once and
-   left for its owner; nothing here builds, supersedes or repairs an intent.
+3. A diverged, unapplied attempt is superseded under that same fence after
+   fresh read-back. A ``reserved`` intent emits a durable ``delivery.ready``
+   continuation so its playbook can rebuild it and own any conflict repair.
 
 Every call goes through the command handler as a service principal, which
 re-derives authority, fences and Git state.  Visits back off per intent.
@@ -28,6 +28,7 @@ re-derives authority, fences and Git state.  Visits back off per intent.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from collections.abc import Callable
@@ -35,8 +36,10 @@ from typing import Any
 
 from sqlalchemy import select
 
-from src.database.tables import integration_repair_operations, task_metadata
+from src.database.tables import integration_outbox, integration_repair_operations, task_metadata
+from src.integration.green_continuation import continuation_delay
 from src.integration.models import BranchKey
+from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.service import RetryBackoff
 
@@ -51,7 +54,48 @@ FORGET_AFTER_SECONDS = 86_400.0
 
 _SETTLED_STATES = frozenset({"committed", "conflict", "superseded"})
 #: Outcomes that are progress or an expected wait; anything else is logged as a warning.
-_QUIET_OUTCOMES = frozenset({"applied", "promoted", "already_promoted", "settled", "waiting"})
+_QUIET_OUTCOMES = frozenset({
+    "applied", "promoted", "already_promoted", "settled", "waiting", "continued", "superseded",
+})
+
+
+async def enqueue_parent_continuation_on(conn, *, intent, fence, now) -> bool:
+    """Pace wakeups durably under the caller's collector and intent locks."""
+    prefix = f"parent-intent:{intent['id']}:{fence.owner_id}:{fence.token}:"
+    emitted = (await conn.execute(
+        select(integration_outbox).where(
+            integration_outbox.c.dedup_key.startswith(prefix, autoescape=True),
+        ).order_by(integration_outbox.c.available_at, integration_outbox.c.id)
+    )).mappings().all()
+    if any(row["delivered_at"] is None for row in emitted):
+        return False
+    if emitted:
+        last = emitted[-1]
+        due = max(
+            float(last["available_at"]) + continuation_delay(len(emitted)),
+            float(last["delivered_at"]) + GRACE_SECONDS,
+        )
+        if now < due:
+            return False
+    key = prefix + str(len(emitted))
+    await enqueue_integration_event(
+        conn,
+        event_id="parent-continuation-" + hashlib.sha256(key.encode()).hexdigest(),
+        dedup_key=key,
+        project_id=intent["project_id"],
+        event_type="delivery.ready",
+        available_at=now,
+        payload={
+            "operation_id": intent["operation_key"],
+            "operation_key": intent["operation_key"],
+            "source_task_id": intent["source_task_id"],
+            "source_head": intent["source_head"],
+            "source_base": intent["source_base"],
+            "expected_target": intent["expected_target"],
+            "fence": fence.model_dump(mode="json"),
+        },
+    )
+    return True
 
 
 class ParentIntentReconciler:
@@ -108,16 +152,16 @@ class ParentIntentReconciler:
             )
             if reconciled.get("success"):
                 return self._result(
-                    "applied", intent_id, "the exact promotion is on the target; finalized"
+                    reconciled.get("outcome", "applied"), intent_id,
+                    "promotion reconciliation advanced the intent",
                 )
             if state == "resolution_reserved" and reconciled.get("outcome") == "not_applied":
                 return self._result(
                     "waiting", intent_id, "its repair writer has not pushed the resolution yet"
                 )
-            if state != "prepared" or reconciled.get("outcome") != "not_applied":
-                # A ``reserved`` intent never finished building its commit;
-                # rebuilding it can conflict, and starting that repair is the
-                # parent playbook's decision, so it is reported, not replayed.
+            if state not in {"reserved", "prepared"} or reconciled.get("outcome") not in {
+                "not_applied", "invariant_error",
+            }:
                 return self._result(
                     reconciled.get("outcome") or "error",
                     intent_id,
@@ -142,6 +186,19 @@ class ParentIntentReconciler:
                 )
                 return self._result(
                     "busy", intent_id, f"{target.branch} is held by {holder}, not its collector"
+                )
+            if state == "reserved" or reconciled.get("outcome") == "invariant_error":
+                recovered = await handler._cmd_integration_reconcile_promotion({
+                    "intent_id": intent_id,
+                    "fence": {
+                        "target": target.model_dump(mode="json"),
+                        "owner_id": owner["owner_id"],
+                        "token": int(owner["fence_token"]),
+                    },
+                })
+                return self._result(
+                    recovered.get("outcome") or "error", intent_id,
+                    recovered.get("error") or "recovered under the current collector fence",
                 )
             promoted = await handler._cmd_delivery_promote(
                 {

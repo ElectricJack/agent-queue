@@ -2556,7 +2556,7 @@ class IntegrationCommandsMixin:
             return _failure("source_moved", str(exc))
         except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
             return _failure("target_moved", str(exc))
-        except PromotionInvariantError as exc:
+        except (PromotionInvariantError, ValueError) as exc:
             return _failure("runtime_error", str(exc))
         except (PromotionRuntimeError, GitError) as exc:
             return _failure("runtime_error", str(exc))
@@ -2566,10 +2566,12 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReconcilePromotionArgs
+        from src.integration.ownership import BranchBusy, StaleFence
         from src.integration.promotion import (
             PromotionConflict,
             PromotionInvariantError,
             PromotionNotApplied,
+            PromotionRecovery,
             PromotionRuntimeError,
             PromotionTargetMoved,
         )
@@ -2586,10 +2588,20 @@ class IntegrationCommandsMixin:
         ):
             return _failure("unauthorized", "caller cannot reconcile this project")
         try:
-            value = await self._integration_promotion_service().reconcile(parsed.intent_id)
+            service = self._integration_promotion_service()
+            if parsed.fence is None:
+                value = await service.reconcile(parsed.intent_id)
+            else:
+                value = await service.reconcile(parsed.intent_id, fence=parsed.fence)
+        except PromotionRecovery as exc:
+            return self._promotion_result(
+                exc.outcome, exc.value, success=exc.outcome in {"continued", "superseded"}
+            )
+        except (PromotionTargetMoved, StaleFence, BranchBusy) as exc:
+            return _failure("target_moved", str(exc))
         except PromotionNotApplied as exc:
             return _failure("not_applied", str(exc))
-        except (PromotionConflict, PromotionInvariantError, PromotionTargetMoved) as exc:
+        except (PromotionConflict, PromotionInvariantError, ValueError) as exc:
             return _failure("invariant_error", str(exc))
         except (PromotionRuntimeError, GitError) as exc:
             return _failure("runtime_error", str(exc))

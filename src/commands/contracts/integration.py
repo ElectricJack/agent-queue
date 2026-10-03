@@ -819,6 +819,10 @@ class DeliveryReceiptsValue(CommandValue):
 
 class IntegrationReconcilePromotionArgs(CommandArgs):
     intent_id: str
+    fence: Fence | None = Field(
+        default=None,
+        description="Current reserved collector fence; enables recovery of unapplied child intents.",
+    )
 
 
 class IntegrationResolveConflictArgs(CommandArgs):
@@ -1889,6 +1893,10 @@ INTEGRATION_RECONCILE_PROMOTION = CommandContract(
         outcomes=(
             OutcomeSpec(name="applied", classification=OutcomeClass.SUCCESS),
             OutcomeSpec(name="not_applied", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="superseded", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="continued", classification=OutcomeClass.SUCCESS),
+            OutcomeSpec(name="waiting", classification=OutcomeClass.FAILURE),
+            OutcomeSpec(name="target_moved", classification=OutcomeClass.FAILURE),
             OutcomeSpec(name="invariant_error", classification=OutcomeClass.FAILURE),
         ),
         capability="integration_reconcile_promotion",
@@ -2470,7 +2478,8 @@ async def _reconcile_adapter(
         args,
         ctx,
         PromotionCommandValue,
-        {"applied", "not_applied", "invariant_error"},
+        {"applied", "not_applied", "invariant_error", "superseded", "continued",
+         "waiting", "target_moved"},
     )
 
 

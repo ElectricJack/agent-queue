@@ -1327,7 +1327,7 @@
       ]
     }
   },
-  "digest": "sha256:ce9b2ee1725c5f2566cebb6c10aacf692297d6b1f9253f9d79c0088d3b2d1cc3",
+  "digest": "sha256:10b2f8487196df691b028140fac333201b60f6d79d30d0d73277c821211e2e6f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7597,6 +7597,7 @@
         "src.doctor.models",
         "src.git.identity",
         "src.git.manager",
+        "src.integration.collection",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.owner_recovery",
