@@ -68,6 +68,8 @@ somehow declares none.
   ],
   "aq_commands": [
     "knowledge_export",
+    "knowledge_propose",
+    "knowledge_proposal_show",
     "create_task",
     "formula_list",
     "formula_show",

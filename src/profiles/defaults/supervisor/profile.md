@@ -92,6 +92,12 @@ its outbox; transport failures never need a new author turn.
   ],
   "aq_commands": [
     "knowledge_export",
+    "knowledge_proposal_decide",
+    "knowledge_verify",
+    "knowledge_authority_grant",
+    "knowledge_authority_revoke",
+    "knowledge_propose",
+    "knowledge_proposal_show",
     "add_dependency",
     "agent_message",
     "collaboration_accept",

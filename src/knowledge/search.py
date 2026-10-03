@@ -42,7 +42,9 @@ async def lexical_search_on(
         )
     ):
         raise RecordError("record.invalid_input", "Invalid search bounds or filters")
-    scope = f"project:{access.project_id}"
+    from src.knowledge.sharing import visible_scope
+
+    scope = access.scope_key
     principal = access.principal
     binding = content_hash(
         dict(
@@ -87,8 +89,8 @@ async def lexical_search_on(
             knowledge_revision_payloads, knowledge_revision_payloads.c.revision_id == s.revision_id
         )
         .where(
-            records.c.scope_key == scope,
-            s.scope_key == scope,
+            visible_scope(access, records),
+            s.scope_key == records.c.scope_key,
             knowledge_revision_payloads.c.snapshot.is_not(None),
         )
     )

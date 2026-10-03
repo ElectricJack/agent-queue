@@ -7,7 +7,6 @@ from typing import Any, Literal
 from pydantic import Field
 
 from src.commands.contracts.models import (
-    CommandArgs,
     CommandContract,
     CommandPresentation,
     CommandResult,
@@ -19,15 +18,13 @@ from src.commands.contracts.models import (
     SideEffectClass,
 )
 from src.commands.contracts.registry import CommandRegistration
+from src.commands.contracts.record_scope import RecordScopeArgs
 from src.commands.principal import principal_context
 
-CATEGORY = Literal[
-    "fact", "decision", "policy", "procedure", "incident", "reference", "note"
-]
+CATEGORY = Literal["fact", "decision", "policy", "procedure", "incident", "reference", "note"]
 
 
-class KnowledgeCreateArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeCreateArgs(RecordScopeArgs):
     title: str = Field(min_length=1, max_length=240)
     body: str
     category: CATEGORY
@@ -39,8 +36,7 @@ class KnowledgeCreateArgs(CommandArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
-class KnowledgeListArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeListArgs(RecordScopeArgs):
     category: CATEGORY | None = None
     include_retired: bool = False
     include_disputed: bool = False
@@ -48,8 +44,7 @@ class KnowledgeListArgs(CommandArgs):
     cursor: str | None = None
 
 
-class KnowledgeShowArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeShowArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     revision_id: str | None = None
 
@@ -58,8 +53,7 @@ class KnowledgeExportArgs(KnowledgeShowArgs):
     """Returns authorized bytes; the daemon accepts no filesystem destination."""
 
 
-class KnowledgeUpdateArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeUpdateArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     idempotency_key: str = Field(min_length=1, max_length=128)
     if_revision: str | None = None
@@ -78,22 +72,19 @@ class KnowledgeUpdateArgs(CommandArgs):
     summary_of_revision: str | None = None
 
 
-class KnowledgeHistoryArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeHistoryArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     before_sequence: int | None = Field(default=None, ge=1)
     limit: int = Field(default=25, ge=1, le=100)
 
 
-class KnowledgeDiffArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeDiffArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     from_revision: str
     to_revision: str
 
 
-class KnowledgeRetireArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeRetireArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     reason: str = Field(min_length=1, max_length=4096)
     idempotency_key: str = Field(min_length=1, max_length=128)
@@ -102,8 +93,7 @@ class KnowledgeRetireArgs(CommandArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
-class KnowledgeRestoreArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class KnowledgeRestoreArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     revision_id: str
     reason: str = Field(min_length=1, max_length=4096)
@@ -182,7 +172,10 @@ def register_knowledge_contracts(registry) -> None:
         if registry.get(name) is not None:
             continue
         keyed = name not in {
-            "knowledge_list", "knowledge_show", "knowledge_history", "knowledge_diff",
+            "knowledge_list",
+            "knowledge_show",
+            "knowledge_history",
+            "knowledge_diff",
             "knowledge_export",
         }
         registry.register(
@@ -196,9 +189,7 @@ def register_knowledge_contracts(registry) -> None:
                         capability=name,
                         side_effect=effect,
                         retry_safe=True,
-                        idempotency=IdempotencySpec(
-                            mode="keyed", key_field="idempotency_key"
-                        )
+                        idempotency=IdempotencySpec(mode="keyed", key_field="idempotency_key")
                         if keyed
                         else IdempotencySpec(mode="natural"),
                         outcomes=(

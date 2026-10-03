@@ -19,17 +19,16 @@ from src.commands.contracts.models import (
     SideEffectClass,
 )
 from src.commands.contracts.registry import CommandRegistration
+from src.commands.contracts.record_scope import RecordScopeArgs
 from src.commands.principal import principal_context
 
 
-class RecordShowArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class RecordShowArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     revision_id: str | None = None
 
 
-class RecordSearchArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class RecordSearchArgs(RecordScopeArgs):
     query: str = Field(default="", max_length=512)
     category: str | None = None
     include_retired: bool = False
@@ -49,8 +48,7 @@ class RecordRepairArgs(CommandArgs):
     max_batches: int = Field(default=2, ge=1, le=20)
 
 
-class LinkCreateArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class LinkCreateArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
     idempotency_key: str = Field(min_length=1, max_length=128)
@@ -59,14 +57,12 @@ class LinkCreateArgs(CommandArgs):
     claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
 
-class LinkListArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class LinkListArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     revision_id: str | None = None
 
 
-class LinkRemoveArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
+class LinkRemoveArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     link_id: str
     idempotency_key: str = Field(min_length=1, max_length=128)

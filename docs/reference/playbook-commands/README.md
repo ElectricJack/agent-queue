@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-161 commands are registered.
+169 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -163,15 +163,23 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
+| [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
+| [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
 | [`knowledge_create`](knowledge_create.md) | Knowledge Create | Create one active, unverified knowledge finding. |
 | [`knowledge_diff`](knowledge_diff.md) | Knowledge Diff | Diff two exact, readable revisions of a knowledge record. |
 | [`knowledge_export`](knowledge_export.md) | Knowledge Export | Export an authorized knowledge revision as Markdown bytes. |
 | [`knowledge_history`](knowledge_history.md) | Knowledge History | Read the revision history of a knowledge record. |
 | [`knowledge_list`](knowledge_list.md) | Knowledge List | List authorized knowledge metadata with a page cursor. |
+| [`knowledge_proposal_decide`](knowledge_proposal_decide.md) | Knowledge Proposal Decide | Accept or reject an exact proposal; supervisor grant required. |
+| [`knowledge_proposal_show`](knowledge_proposal_show.md) | Knowledge Proposal Show | Read an authorized proposal and its exact hash. |
+| [`knowledge_propose`](knowledge_propose.md) | Knowledge Propose | Submit an unverified correction bound to its exact base. |
+| [`knowledge_redact`](knowledge_redact.md) | Knowledge Redact | Preview or permanently erase selected knowledge and derived copies; local operator only. |
 | [`knowledge_restore`](knowledge_restore.md) | Knowledge Restore | Restore a knowledge finding to a retained revision. |
 | [`knowledge_retire`](knowledge_retire.md) | Knowledge Retire | Retire a knowledge finding with an optional successor. |
+| [`knowledge_share`](knowledge_share.md) | Knowledge Share | Preview or change a global record share; explicit global authority required. |
 | [`knowledge_show`](knowledge_show.md) | Knowledge Show | Read an authorized knowledge snapshot at an exact revision. |
 | [`knowledge_update`](knowledge_update.md) | Knowledge Update | Revise editable knowledge fields with a concurrency token. |
+| [`knowledge_verify`](knowledge_verify.md) | Knowledge Verify | Verify or dispute an exact revision with named evidence. |
 | [`link_create`](link_create.md) | Link Create | Add, update, or remove typed record links in one batch. |
 | [`link_list`](link_list.md) | Link List | List the typed links on a record. |
 | [`link_remove`](link_remove.md) | Link Remove | Remove one typed record link. |

@@ -653,6 +653,7 @@ class KnowledgeConfig:
     enabled: bool = False
     enabled_projects: list[str] = field(default_factory=list)
     global_enabled: bool = False
+    authority_review_required: bool = True
     writes_enabled: bool = False
     ui_enabled: bool = False
     legacy_memory_mode: str = "disabled"
@@ -664,7 +665,7 @@ class KnowledgeConfig:
 
     def validate(self) -> list[ConfigError]:
         errors = []
-        for name in ("enabled", "global_enabled", "writes_enabled", "ui_enabled"):
+        for name in ("enabled", "global_enabled", "writes_enabled", "ui_enabled", "authority_review_required"):
             if type(getattr(self, name)) is not bool:
                 errors.append(ConfigError("knowledge", name, "must be a boolean"))
         if (not isinstance(self.enabled_projects, list) or any(

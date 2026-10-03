@@ -793,6 +793,7 @@
     "knowledge": {
       "additionalProperties": false,
       "default": {
+        "authority_review_required": true,
         "consolidation": {
           "enabled": false
         },
@@ -816,6 +817,10 @@
         "writes_enabled": false
       },
       "properties": {
+        "authority_review_required": {
+          "default": true,
+          "type": "boolean"
+        },
         "consolidation": {
           "additionalProperties": false,
           "default": {

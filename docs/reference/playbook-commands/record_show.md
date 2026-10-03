@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:a83a0a0215279b079948ef42b8cd4b1e1e378d6305ce75a5614800a4b6b52aba` |
+| Contract fingerprint | `sha256:867d392092749a5a8de7fffc0de3d51598df483d35625ee2e7cdf21d9d6169d0` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `revision_id` | `string \| null` | no | `null` | — |
 
@@ -64,7 +65,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, identity, revision_id | — | always |
+| Read using project_id, global_scope, identity, revision_id | — | always |
 
 <!-- aq:generated:end -->
 

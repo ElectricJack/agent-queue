@@ -15,26 +15,32 @@ T = TypeVar("T", bound="RecordSearchRequest")
 class RecordSearchRequest:
     """
     Attributes:
-        project_id (str):
+        project_id (None | str | Unset):
         query (None | str | Unset):
         category (None | str | Unset):
         include_retired (bool | Unset):  Default: False.
         include_disputed (bool | Unset):  Default: False.
         limit (int | Unset):  Default: 25.
         cursor (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
     """
 
-    project_id: str
+    project_id: None | str | Unset = UNSET
     query: None | str | Unset = UNSET
     category: None | str | Unset = UNSET
     include_retired: bool | Unset = False
     include_disputed: bool | Unset = False
     limit: int | Unset = 25
     cursor: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         query: None | str | Unset
         if isinstance(self.query, Unset):
@@ -60,13 +66,13 @@ class RecordSearchRequest:
         else:
             cursor = self.cursor
 
+        global_scope = self.global_scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "project_id": project_id,
-            }
-        )
+        field_dict.update({})
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if query is not UNSET:
             field_dict["query"] = query
         if category is not UNSET:
@@ -79,13 +85,23 @@ class RecordSearchRequest:
             field_dict["limit"] = limit
         if cursor is not UNSET:
             field_dict["cursor"] = cursor
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_query(data: object) -> None | str | Unset:
             if data is None:
@@ -120,6 +136,8 @@ class RecordSearchRequest:
 
         cursor = _parse_cursor(d.pop("cursor", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
         record_search_request = cls(
             project_id=project_id,
             query=query,
@@ -128,6 +146,7 @@ class RecordSearchRequest:
             include_disputed=include_disputed,
             limit=limit,
             cursor=cursor,
+            global_scope=global_scope,
         )
 
         record_search_request.additional_properties = d
