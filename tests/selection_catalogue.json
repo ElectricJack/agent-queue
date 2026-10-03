@@ -595,6 +595,12 @@
         "tests/test_tier_provider_defaults.py"
       ]
     },
+    "knowledge-evaluation": {
+      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks.",
+      "modules": [
+        "tests/test_knowledge_evaluation.py"
+      ]
+    },
     "level-editor": {
       "description": "The level editor: voxel grid, page, layer and level models and the brush system.",
       "modules": [
@@ -1319,7 +1325,7 @@
       ]
     }
   },
-  "digest": "sha256:4d2f66320d5393a4eca1fa966078dc02499bdc17590d1bf8a2ee2222dc0ca707",
+  "digest": "sha256:893e03a5e39fd3fcdf2938dd60e169de7d7e3f1c1bc1f0748ad54baed536303f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8218,6 +8224,17 @@
         "parametrize"
       ],
       "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
+    },
+    "tests/test_knowledge_evaluation.py": {
+      "areas": [
+        "knowledge-evaluation"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
     },
     "tests/test_known_tools.py": {
       "areas": [

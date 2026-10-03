@@ -699,6 +699,9 @@ areas:
       - tests/test_readme_handler.py
       - tests/test_override_handler.py
       - tests/test_reference_stub_*.py
+  - id: knowledge-evaluation
+    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks."
+    match: [tests/test_knowledge_evaluation.py]
   - id: memory-facts
     description: "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection."
     match:
