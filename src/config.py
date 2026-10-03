@@ -3347,6 +3347,34 @@ class GraphLayoutConfig:
         return errors
 
 
+@dataclass
+class HostShellConfig:
+    """Operator host shells in the dashboard (docs/guides/dashboard.md, Host shell).
+
+    YAML: ``dashboard.host_shell`` **or** a top-level ``host_shell:`` block
+    (the config editor's field-name spelling); the nested one wins. Off by
+    default: an enabled host shell is remote code execution by design, open
+    only to the authenticated local operator. Read per request, so an edit
+    bites on the next open or attach.
+    """
+
+    enabled: bool = False
+    #: Upper bound on concurrently open host shells.
+    max_shells: int = 4
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("dashboard.host_shell", "enabled", "must be true or false"))
+        if isinstance(self.max_shells, bool) or not isinstance(self.max_shells, int) or not (
+            1 <= self.max_shells <= 32
+        ):
+            errors.append(ConfigError(
+                "dashboard.host_shell", "max_shells", "must be between 1 and 32",
+            ))
+        return errors
+
+
 DEFAULT_DASHBOARD_SERVER_PORT = 8082
 #: The default when ``mcp_server.port`` already holds :data:`DEFAULT_DASHBOARD_SERVER_PORT`.
 ALTERNATE_DASHBOARD_SERVER_PORT = 8083
@@ -3618,6 +3646,7 @@ class AppConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
+    host_shell: HostShellConfig = field(default_factory=HostShellConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -3841,6 +3870,7 @@ class AppConfig:
         errors.extend(self.graph_layout.validate())
         errors.extend(self.git_identity.validate())
         errors.extend(self.dashboard_server.validate())
+        errors.extend(self.host_shell.validate())
         if self.dashboard_server.port == self.mcp_server.port:
             errors.append(ConfigError(
                 "dashboard.server", "port",
@@ -4014,6 +4044,9 @@ HOT_RELOADABLE_SECTIONS = {
     # Read by the dashboard server process when it starts, never by the
     # daemon's runtime: `aq dashboard restart` applies an edit.
     "dashboard_server",
+    # Read per host-shell request (open, list, attach), so an edit bites on
+    # the next request.
+    "host_shell",
     "pricing",
     "surface",
     "project_roots",
@@ -5182,6 +5215,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         ),
         row_aspect=gl.get("row_aspect", gl_defaults.row_aspect),
     )
+
+    hs = (raw.get("dashboard") or {}).get("host_shell") or raw.get("host_shell") or {}
+    config.host_shell = HostShellConfig(**_dataclass_kwargs(HostShellConfig, hs))
 
     config.dashboard_server = dashboard_server_config_from_raw(raw)
     public_url_conflict = dashboard_public_url_conflict(raw)
