@@ -3912,6 +3912,10 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    # Read per use through lambda getters (``orchestrator.core`` knowledge
+    # reads and ``records`` outbox/export), so an edit bites on the next
+    # access without a restart.
+    "knowledge",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
