@@ -359,6 +359,7 @@ async def test_knowledge_import_empty_roots_scans_nothing(tmp_path):
 
 
 async def test_knowledge_import_dry_run_returns_reconciliation(tmp_path):
+    from src.api.models.knowledge import KnowledgeImportResponse
     from src.commands.principal import TRUSTED_LOCAL
 
     root_dir = tmp_path / "notes"
@@ -388,6 +389,10 @@ async def test_knowledge_import_dry_run_returns_reconciliation(tmp_path):
     # The accounting closes: every identity maps exactly once.
     id_keys = {(m["source_kind"], m["source_scope"], m["source_key"]) for m in result["mappings"]}
     assert len(id_keys) == len(result["mappings"])
+    # API serialization must retain the exact sealed bytes and accounting.
+    serialized = KnowledgeImportResponse.model_validate(result).model_dump()
+    for field in result:
+        assert serialized[field] == result[field]
 
 
 async def test_knowledge_import_sealed_manifest_content_is_verifiable(tmp_path):

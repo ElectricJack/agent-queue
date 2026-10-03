@@ -6881,7 +6881,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeImportResponse"
+                }
               }
             }
           },
@@ -38070,6 +38072,133 @@
           "snapshot_timestamp"
         ],
         "title": "KnowledgeImportRequest"
+      },
+      "KnowledgeImportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "replay": {
+            "type": "boolean",
+            "title": "Replay",
+            "default": false
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "source_installation_id": {
+            "type": "string",
+            "title": "Source Installation Id"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "title": "Snapshot Id"
+          },
+          "snapshot_timestamp": {
+            "type": "string",
+            "title": "Snapshot Timestamp"
+          },
+          "manifest_sha256": {
+            "type": "string",
+            "title": "Manifest Sha256"
+          },
+          "manifest_content_base64": {
+            "type": "string",
+            "title": "Manifest Content Base64"
+          },
+          "vector_observation": {
+            "type": "string",
+            "title": "Vector Observation"
+          },
+          "counts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Counts"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "mappings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Mappings"
+          },
+          "identities": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Identities"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "source_installation_id",
+          "snapshot_id",
+          "snapshot_timestamp",
+          "manifest_sha256",
+          "manifest_content_base64",
+          "vector_observation",
+          "counts",
+          "items",
+          "mappings",
+          "identities"
+        ],
+        "title": "KnowledgeImportResponse",
+        "description": "The sealed, read-only inventory report returned by the local operator scan."
       },
       "KnowledgeLifecycleResponse": {
         "properties": {

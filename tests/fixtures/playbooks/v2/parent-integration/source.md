@@ -116,9 +116,9 @@ timeout outcome.
 ## Rule: reconcile-resolution-push
 
 On `integration.resolution_push_observed`, call `integration_reconcile_promotion` with
-`promotion_intent_id` bound to `intent_id`. `applied` completes; `not_applied` and
-`invariant_error` fail. This lifecycle fact triggers exact remote reconciliation but is
-not a receipt or check-success assertion.
+`promotion_intent_id` bound to `intent_id`. `applied`, `superseded`, and `continued` complete;
+`not_applied`, `waiting`, `target_moved`, and `invariant_error` fail. This lifecycle fact triggers
+exact remote reconciliation; supersession and continuation are not receipt or check-success assertions.
 
 ## Rule: complete-verified-parent
 

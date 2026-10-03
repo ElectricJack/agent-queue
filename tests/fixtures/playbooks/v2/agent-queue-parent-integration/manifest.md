@@ -1,8 +1,8 @@
 ---
 playbook_id: agent-queue-parent-integration
-artifact_sha256: sha256:35ac00bcd2141638c2e08cb25eba2f0a18757da46d22be4f4adbbce0fd779f50
-source_sha256: sha256:03becdc66d6f31f19642ff1450451699551c892afc08ee469d390327eab40a91
-contract_fingerprint: sha256:8c7f0f87bdffdf6827d49588c1fc0ef3d2823fd68ae6d6af8f81090d328c27d3
+artifact_sha256: sha256:4ca7856e20e09aeef0faa2534a664fdd3bf5883653a68799ce2da6ef55c26f94
+source_sha256: sha256:7681a298cbbd8da569dd3099c2d0a8a12ae424c2eacd751109c162ca5f6b0921
+contract_fingerprint: sha256:3e4cad60a27bfb8064b6897a85b865fe667f93fd9710ca9242c444b3b47322fb
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -45,3 +45,10 @@ Failed children, conflicts, old repair dossiers and expired writer budgets use
 explicit no-default gates. Import remains write-if-absent and no activation or
 engine transfer is authorized by this bundle. Operator rollout review binds the
 new digest before cutover.
+
+CI repair `fleet-dune-24` reconciles the current promotion contract explicitly:
+`applied`, `superseded` and `continued` complete the event rule; `not_applied`,
+`waiting`, `target_moved` and `invariant_error` fail. Supersession or continuation
+does not create a delivery receipt, and waiting cannot report reconciliation
+success. All other graph semantics and grants are unchanged. Fingerprints bind
+the current implementation; operator import and activation review remain required.

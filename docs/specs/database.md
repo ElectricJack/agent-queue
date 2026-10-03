@@ -4151,3 +4151,51 @@ Proposals and authority are independent of document-review state. Redaction targ
 | `revision_id` | UUID | PRIMARY KEY |
 | `redaction_id` | UUID | NOT NULL |
 | `content_sha256` | TEXT | NOT NULL |
+
+## Knowledge import inventory (K06)
+
+Migration `a00000000060` adds the sealed inventory, permanent legacy identity
+mapping and per-item receipts. The read-only inventory command computes these
+reports in memory; the later apply path owns persistence.
+
+### Table: `record_import_runs`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `run_id` | UUID | PRIMARY KEY |
+| `source_installation_id` | TEXT | NOT NULL |
+| `snapshot_id` | TEXT | NOT NULL |
+| `manifest_sha256` | TEXT | NOT NULL; 64 lowercase hex characters |
+| `scope_key` | TEXT | NOT NULL; FK → record_scopes.scope_key, ON DELETE RESTRICT |
+| `state` | TEXT | NOT NULL; prepared, applying, succeeded, failed or cancelled |
+| `started_at` | TIMESTAMP WITH TIME ZONE | NOT NULL; DEFAULT now() |
+| `finished_at` | TIMESTAMP WITH TIME ZONE | nullable |
+| `cursor` | JSONB | nullable; object when present |
+| `report` | JSONB | nullable; object when present |
+
+### Table: `record_legacy_mappings`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `source_installation_id` | TEXT | NOT NULL; composite PRIMARY KEY |
+| `source_kind` | TEXT | NOT NULL; composite PRIMARY KEY |
+| `source_scope` | TEXT | NOT NULL; composite PRIMARY KEY |
+| `source_key` | TEXT | NOT NULL; composite PRIMARY KEY |
+| `record_id` | UUID | nullable; soft record reference |
+| `latest_source_sha256` | TEXT | nullable; 64 lowercase hex characters when present |
+| `latest_revision_id` | UUID | nullable; soft revision reference |
+| `ownership` | TEXT | NOT NULL; legacy, managed, excluded or quarantined |
+| `decision_reason` | TEXT | nullable |
+| `updated_at` | TIMESTAMP WITH TIME ZONE | NOT NULL; DEFAULT now() |
+
+### Table: `record_import_items`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `run_id` | UUID | NOT NULL; composite PRIMARY KEY; FK → record_import_runs.run_id, ON DELETE RESTRICT |
+| `item_key` | TEXT | NOT NULL; composite PRIMARY KEY |
+| `source_sha256` | TEXT | NOT NULL; 64 lowercase hex characters |
+| `disposition` | TEXT | NOT NULL; candidate, quarantined, excluded or unavailable |
+| `record_id` | UUID | nullable; required when revision_id is present |
+| `revision_id` | UUID | nullable; soft revision reference |
+| `error_code` | TEXT | nullable |
