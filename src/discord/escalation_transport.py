@@ -121,6 +121,16 @@ class DiscordEscalationTransport:
         if tracker is not None and not tracker.should_allow(critical=True):
             raise TransportRetryable("held by the Discord invalid-request rate guard")
 
+    def _outbound_guard(self) -> None:
+        self._guard()
+        from src.discord.rate_guard import OutboundTokenBucket
+
+        bucket = getattr(self._bot, "_outbound_bucket", None)
+        if bucket is None:
+            bucket = self._bot._outbound_bucket = OutboundTokenBucket()
+        if not bucket.take():
+            raise TransportRetryable("held by the shared Discord outbound budget")
+
     # -- port ------------------------------------------------------------
     async def read_history(
         self,
@@ -161,7 +171,7 @@ class DiscordEscalationTransport:
             raise self._http_error(exc) from exc
 
     async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
-        self._guard()
+        self._outbound_guard()
         channel = await self._channel(channel_id)
         try:
             message = await channel.send(
@@ -205,6 +215,7 @@ class DiscordEscalationTransport:
         if existing is not None:
             return ThreadHandle(thread_id=str(existing.id), created=False)
         try:
+            self._outbound_guard()
             thread = await message.create_thread(name=name)
         except discord.Forbidden as exc:
             self._record(403)
@@ -220,7 +231,9 @@ class DiscordEscalationTransport:
         thread = await self._thread(thread_id)
         try:
             if getattr(thread, "archived", False):
+                self._outbound_guard()
                 await thread.edit(archived=False)
+            self._outbound_guard()
             message = await thread.send(content, allowed_mentions=discord.AllowedMentions.none())
         except discord.Forbidden as exc:
             self._record(403)
@@ -238,6 +251,7 @@ class DiscordEscalationTransport:
         channel = await self._channel(channel_id)
         try:
             message = await channel.fetch_message(int(root_message_id))
+            self._outbound_guard()
             await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
         except discord.NotFound as exc:
             raise TransportMissing(f"root message {root_message_id} was deleted") from exc
@@ -253,6 +267,7 @@ class DiscordEscalationTransport:
         self._guard()
         thread = await self._thread(thread_id)
         try:
+            self._outbound_guard()
             await thread.edit(archived=True)
         except discord.NotFound as exc:
             raise TransportMissing(f"thread {thread_id} no longer exists") from exc

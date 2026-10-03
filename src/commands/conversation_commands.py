@@ -1,4 +1,4 @@
-"""Verified, daemon-internal intake for global-supervisor conversations."""
+"""Verified, daemon-internal intake for supervisor conversations."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from src.database.queries.conversation_queries import (
     ConversationNotFound,
     ConversationRateLimited,
     ConversationStateError,
+    QUEUED_SUPERVISOR_RECIPIENT,
 )
 from src.sessions.spec import named_session_name
 
@@ -196,35 +197,27 @@ class ConversationCommandsMixin:
         }
 
     async def _cmd_supervisor_inbox_reply(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Only an explicit answer from the live global supervisor queues a reply."""
+        """Only the live launch addressed by the input may queue an answer."""
         bad = sorted(_FORBIDDEN_AUTHORITY_ARGS.intersection(args))
         if bad:
             return _error("spoofed_identity", "caller identity and destination are server-derived")
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is not PrincipalKind.LOCAL:
-            # The global supervisor's messaging address is ``supervisor-global``;
-            # every real launch is a separate session row (a UUID) whose name is
-            # ``n-supervisor--global``, adopted with its instance token across
-            # restarts. The live launch holding that row's token is the sender.
             live = None
-            if (
-                principal.kind is PrincipalKind.SESSION
-                and principal.elevated
-                and principal.project_id is None
-            ):
+            if principal.kind is PrincipalKind.SESSION and principal.elevated:
                 live = await self.db.get_session(principal.session_id)
-            expected_name = named_session_name("supervisor", "global")
+            expected_name = named_session_name("supervisor", principal.project_id or "global")
             if (
                 live is None
                 or live.state not in _LIVE_SESSION_STATES
                 or live.name != expected_name
                 or live.profile_id != "supervisor"
                 or live.lifecycle != "named"
-                or live.project_id is not None
+                or live.project_id != principal.project_id
                 or principal.session_id != live.id
                 or not matches_session_instance(principal, live.instance_token)
             ):
-                return _error("out_of_scope", "reply requires the live global supervisor launch")
+                return _error("out_of_scope", "reply requires the live addressed supervisor launch")
 
         required = {"conversation_id", "input_id", "text", "idempotency_key"}
         if set(args) != required or any(
@@ -240,6 +233,14 @@ class ConversationCommandsMixin:
         item = await self.db.get_conversation_input(input_id)
         if item is None or item["conversation_id"] != conversation_id:
             return _error("input_not_in_conversation", "input does not belong to this conversation")
+        await self.db.route_queued_conversation_inputs(self.config.discord.project_id)
+        notice = await self.db.get_message(item["supervisor_message_id"])
+        if principal.kind is not PrincipalKind.LOCAL and (
+            notice is None
+            or notice.to_id != f"supervisor-{principal.project_id or 'global'}"
+            or notice.project_id != principal.project_id
+        ):
+            return _error("out_of_scope", "input is addressed to another supervisor")
         if conversation["state"] == "closed":
             return _error("conversation_closed", "conversation is closed")
         if item["state"] == "revoked":
@@ -267,6 +268,8 @@ class ConversationCommandsMixin:
         except ConversationClosed:
             return _error("conversation_closed", "conversation is closed")
         except ConversationStateError:
+            if item["reply_message_id"] is not None:
+                return _error("input_already_answered", "conversation input already has an answer")
             return _error("input_revoked", "conversation input is revoked")
 
         # Repair a crash after persistence but before enqueue, using the first
@@ -329,6 +332,7 @@ class ConversationCommandsMixin:
             payload={
                 "kind": kind,
                 "channel_id": envelope.channel_id,
+                "author_id": envelope.author_id,
                 "thread_id": conversation["external_thread_id"] if conversation else None,
                 **facts,
             },
@@ -517,6 +521,9 @@ class ConversationCommandsMixin:
             )
 
         try:
+            recipient, supervisor_project_id = await self.db.resolve_conversation_supervisor(
+                self.config.discord.project_id
+            )
             accepted = await self.db.accept_conversation_input(
                 **envelope.model_dump(exclude={"mentions_bot", "text"}),
                 text=text,
@@ -527,6 +534,8 @@ class ConversationCommandsMixin:
                 brief=brief,
                 now=now,
                 enforce_limits=True,
+                supervisor_recipient=recipient or QUEUED_SUPERVISOR_RECIPIENT,
+                supervisor_project_id=supervisor_project_id,
             )
         except ConversationRateLimited as exc:
             scope_id = envelope.author_id if exc.scope == "author" else envelope.channel_id

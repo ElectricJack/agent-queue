@@ -380,10 +380,10 @@ class DiscordEscalationConfig:
 
 @dataclass
 class DiscordConversationConfig:
-    """Opt-in @mention conversations with the global supervisor (mention-routing spec §4).
+    """Opt-in @mention conversations with the addressed supervisor.
 
     Off by default.  Enabling means the ``discord.authorized_users`` identities
-    are trusted operator correspondents of the *elevated* global supervisor;
+    are trusted operator correspondents of the *elevated* addressed supervisor;
     there is no sandboxed chatbot.  Every numeric bound is fixed in
     :mod:`src.conversations.limits`, not configured here, and the runtime
     preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
@@ -406,6 +406,8 @@ class DiscordConfig:
     #: single-channel model binds durable delivery to an ID that survives a
     #: rename (§1, §9).  Empty means "not configured yet".
     channel_id: str = ""
+    #: Conversation destination; inferred only when there is exactly one project.
+    project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
     conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
@@ -498,7 +500,8 @@ class DiscordConfig:
         if self.conversation.enabled:
             notes.append(
                 "Discord conversations are enabled: an @mention from an authorized_users "
-                "identity reaches the elevated global supervisor. This is not a sandboxed "
+                "identity reaches the elevated project supervisor or elevated global supervisor. "
+                "This is not a sandboxed "
                 "chatbot; keep it off where chat must be read-only."
             )
         if self.legacy_destination_conflict and not self.channel_id:
@@ -4745,6 +4748,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             guild_id=d.get("guild_id", ""),
             authorized_users=d.get("authorized_users", []),
             channel_id=str(d.get("channel_id", "") or ""),
+            project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
             conversation=conversation_cfg,

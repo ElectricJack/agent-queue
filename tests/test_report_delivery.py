@@ -241,17 +241,27 @@ async def test_permission_faults_back_off_and_stop_without_burning_held_attempts
     assert not transport.messages
 
 
-async def test_thread_adapter_and_morning_summary_budget(db):
+async def test_frozen_thread_route_and_morning_summary_budget(db):
     clock, transport = Clock(BASE), SinkTransport()
     row, _ = await reserve(db, text="x" * 1400)
     transport.threads["thread-1"] = "root-1"
-    thread, _ = await reserve(db, key="reply", thread_id="thread-1", owner_kind="conversation")
+    thread, _ = await reserve(db, key="reply", thread_id="thread-1")
     await dispatcher(db, transport, clock).pump()
     assert (await db.get_outbound_delivery(row["id"]))["state"] == "sent"
     assert (await db.get_outbound_delivery(thread["id"]))["state"] == "sent"
     assert any(message.thread_id == "thread-1" for message in transport.messages.values())
     with pytest.raises(ValueError, match="1500"):
         await reserve(db, key="too-long", text="x" * 1500)
+
+
+async def test_conversation_rows_wait_for_a_bound_domain_adapter(db):
+    clock, transport = Clock(BASE), SinkTransport()
+    row, _ = await reserve(db, owner_kind="conversation")
+    await dispatcher(db, transport, clock).pump()
+    stored = await db.get_outbound_delivery(row["id"])
+    assert stored["state"] == "retry"
+    assert stored["last_error"] == "conversation adapter is not bound"
+    assert transport.messages == {}
 
 
 class Commands(ReportCommandsMixin):

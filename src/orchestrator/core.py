@@ -3571,6 +3571,11 @@ class Orchestrator(
         except Exception:
             logger.exception("Recovery incident notification pass failed")
         try:
+            if self.config.discord.conversation.enabled:
+                await self.db.route_queued_conversation_inputs(self.config.discord.project_id)
+        except Exception:
+            logger.exception("Conversation input routing pass failed")
+        try:
             await self.message_delivery.run_delivery_pass()
             await self.message_delivery.check_reply_timeouts()
         except Exception:

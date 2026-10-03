@@ -269,7 +269,8 @@
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
-        "tests/test_conversation_render.py"
+        "tests/test_conversation_render.py",
+        "tests/test_conversation_wiring.py"
       ]
     },
     "docs-guards": {
@@ -1097,6 +1098,7 @@
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
         "tests/test_conversation_render.py",
+        "tests/test_conversation_wiring.py",
         "tests/test_supervisor_capability_sync.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_supervisor_global_lifecycle.py",
@@ -1386,7 +1388,7 @@
       ]
     }
   },
-  "digest": "sha256:c87dfc08db19b36c47a9b31832536a890f3f027057356c44facffe9577271f40",
+  "digest": "sha256:9f6cde6255c4e2d8e99b9e18f3a74aae86c4d2fc40bd1e87ff6dc9a2c38b5c38",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4296,6 +4298,34 @@
       "markers": [],
       "summary": "Explicit replies are bounded, mention-free and link-filtered."
     },
+    "tests/test_conversation_wiring.py": {
+      "areas": [
+        "discord-conversations",
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.outbox",
+        "src.conversations.preconditions",
+        "src.digest",
+        "src.discord.inbound",
+        "src.discord.intake_diagnostics",
+        "src.discord.rate_guard",
+        "src.escalations.transport",
+        "src.main",
+        "src.messages.delivery",
+        "src.messages.session_lens",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Production outbox binding and project-supervisor conversation round trips."
+    },
     "tests/test_costs.py": {
       "areas": [
         "provider-usage"
@@ -5050,6 +5080,7 @@
       "imports": [
         "src.config",
         "src.discord.escalation_transport",
+        "src.discord.rate_guard",
         "src.escalations.transport"
       ],
       "markers": [

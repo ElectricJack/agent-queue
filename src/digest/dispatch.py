@@ -147,6 +147,7 @@ class DigestScheduleService:
         authoring_ready: Callable[[], bool] | None = None,
         event_bus: Any | None = None,
         include_outbound: bool = False,
+        conversation_adapter: Any | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -164,6 +165,7 @@ class DigestScheduleService:
         self._authoring_ready = authoring_ready
         self._event_bus = event_bus
         self._include_outbound = include_outbound
+        self._conversation_adapter = conversation_adapter
         self._delivery = MessageDelivery(transport, clock=clock, max_attempts=max_attempts)
         # Anchor for a generation nothing has been persisted for yet, keyed by
         # ``(destination, generation)``.  A configuration change lands here as
@@ -449,6 +451,19 @@ class DigestScheduleService:
 
         class ScopedOutboundAdapter:
             async def deliver(adapter, row):
+                if row["owner_kind"] == "conversation":
+                    if self._conversation_adapter is None:
+                        await self.db.finish_outbound_delivery(
+                            row["id"],
+                            lease_owner=self._lease_owner,
+                            status="retry",
+                            now=self._clock(),
+                            next_attempt_at=self._clock() + 30,
+                            last_error="conversation adapter is not bound",
+                        )
+                        return
+                    await self._conversation_adapter.deliver(row)
+                    return
                 if row["owner_kind"] == "morning" and row["payload"].get("report_id"):
                     from src.reports.delivery import morning_policy, visibility_matches
 

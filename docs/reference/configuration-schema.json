@@ -321,6 +321,7 @@
           "supervisor_delivery_timeout_minutes": 15
         },
         "guild_id": "",
+        "project_id": "",
         "rate_guard_critical": 5000,
         "rate_guard_halt": 8000,
         "rate_guard_warn": 1000
@@ -456,6 +457,10 @@
           "type": "object"
         },
         "guild_id": {
+          "default": "",
+          "type": "string"
+        },
+        "project_id": {
           "default": "",
           "type": "string"
         },
