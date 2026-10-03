@@ -26,6 +26,7 @@ handful of its methods (``get_task``, ``get_task_contexts``,
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,6 +46,23 @@ class PrimeRenderer:
         #: Resolves a session's harness id to the CLI it runs, for the
         #: CLI-specific tool-guidance addendum.  ``None`` matches by id only.
         self.harness_registry = harness_registry
+
+    @staticmethod
+    def with_context(doc, bundle):
+        """Accept a prepared bundle without acquiring new authority or writing."""
+        from src.knowledge.budget import ContextBudget
+
+        baseline = doc.to_markdown()
+        budget = ContextBudget(**bundle.budget["requested"])
+        budget.enforce(baseline, bundle.to_markdown())
+        sections = tuple(
+            _sections.build_knowledge_section(bundle) if s.key == "l2_context" else s
+            for s in doc.sections
+        )
+        # Append the same evidence once even if an operator override omits the
+        # memory placeholder. An override never acquires retrieval authority.
+        body = baseline + ("\n\n" + bundle.to_markdown() if bundle.items else "")
+        return replace(doc, sections=sections, override_markdown=body, context_bundle=bundle)
 
     async def render_for_task(
         self,

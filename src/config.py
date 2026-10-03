@@ -647,6 +647,32 @@ class KnowledgeFeatureConfig:
 
 
 @dataclass
+class KnowledgeGenerationConfig(KnowledgeFeatureConfig):
+    """Outbound generation needs an explicit provider and separate daily allowance."""
+
+    provider_id: str = ""
+    allowed_providers: list[str] = field(default_factory=list)
+    daily_microusd: int = 0
+    daily_tokens: int = 0
+    policy_version: str = "1"
+
+
+@dataclass
+class KnowledgeContextConfig(KnowledgeFeatureConfig):
+    input_max_tokens: int = 32768
+    output_reserve_tokens: int = 4096
+    wrapper_reserve_tokens: int = 256
+    max_tokens: int = 4096
+    max_bytes: int = 16384
+    discovery_max_tokens: int = 1000
+    discovery_max_items: int = 8
+    bundle_ttl_seconds: int = 300
+    supervisor_query: str = ""
+    supervisor_project_ids: list[str] = field(default_factory=list)
+    supervisor_global_scope: bool = False
+
+
+@dataclass
 class KnowledgeConfig:
     """Core records are independent of memory and require explicit pilot activation."""
 
@@ -657,10 +683,10 @@ class KnowledgeConfig:
     writes_enabled: bool = False
     ui_enabled: bool = False
     legacy_memory_mode: str = "disabled"
-    context: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    context: KnowledgeContextConfig = field(default_factory=KnowledgeContextConfig)
     semantic: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
-    extraction: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
-    consolidation: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    extraction: KnowledgeGenerationConfig = field(default_factory=KnowledgeGenerationConfig)
+    consolidation: KnowledgeGenerationConfig = field(default_factory=KnowledgeGenerationConfig)
     export: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     import_inventory: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
     import_apply: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
@@ -689,6 +715,48 @@ class KnowledgeConfig:
             feature = getattr(self, name)
             if not isinstance(feature, KnowledgeFeatureConfig) or type(feature.enabled) is not bool:
                 errors.append(ConfigError("knowledge", f"{name}.enabled", "must be a boolean"))
+        for name in ("extraction", "consolidation"):
+            feature = getattr(self, name)
+            for counter in ("daily_microusd", "daily_tokens"):
+                value = getattr(feature, counter, None)
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    errors.append(ConfigError("knowledge", f"{name}.{counter}", "must be nonnegative"))
+            allowed = getattr(feature, "allowed_providers", None)
+            if not isinstance(allowed, list) or any(
+                not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", item)
+                for item in allowed
+            ):
+                errors.append(ConfigError("knowledge", f"{name}.allowed_providers", "invalid providers"))
+            selected = getattr(feature, "provider_id", None)
+            if not isinstance(selected, str) or (
+                selected and not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", selected)
+            ):
+                errors.append(ConfigError("knowledge", f"{name}.provider_id", "invalid provider"))
+            version = getattr(feature, "policy_version", None)
+            if not isinstance(version, str) or not version.strip() or len(version) > 128:
+                errors.append(ConfigError("knowledge", f"{name}.policy_version", "invalid version"))
+        for name in (
+            "input_max_tokens", "output_reserve_tokens", "wrapper_reserve_tokens",
+            "max_tokens", "max_bytes", "discovery_max_tokens", "discovery_max_items",
+            "bundle_ttl_seconds",
+        ):
+            value = getattr(self.context, name, None)
+            if type(value) is not int or value < 0:
+                errors.append(ConfigError("knowledge", f"context.{name}", "must be nonnegative"))
+        item_limit = getattr(self.context, "discovery_max_items", None)
+        if type(item_limit) is int and item_limit > 8:
+            errors.append(ConfigError("knowledge", "context.discovery_max_items", "must be <= 8"))
+        query = getattr(self.context, "supervisor_query", None)
+        if not isinstance(query, str) or len(query.encode()) > 4096:
+            errors.append(ConfigError("knowledge", "context.supervisor_query", "must be <= 4096 bytes"))
+        project_ids = getattr(self.context, "supervisor_project_ids", None)
+        if (not isinstance(project_ids, list) or len(project_ids) > 8
+                or any(not isinstance(p, str) or not p or p == "*" for p in project_ids)):
+            errors.append(ConfigError("knowledge", "context.supervisor_project_ids",
+                                      "must be at most eight explicit projects"))
+        if type(getattr(self.context, "supervisor_global_scope", None)) is not bool:
+            errors.append(ConfigError("knowledge", "context.supervisor_global_scope",
+                                      "must be a boolean"))
         return errors
 
 
@@ -4890,9 +4958,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         for name in ("context", "semantic", "extraction", "consolidation", "export",
                      "import_inventory", "import_apply"):
             if name in values:
-                values[name] = KnowledgeFeatureConfig(
-                    **_dataclass_kwargs(KnowledgeFeatureConfig, values[name])
+                feature_type = (
+                    KnowledgeContextConfig if name == "context"
+                    else KnowledgeGenerationConfig if name in ("extraction", "consolidation")
+                    else KnowledgeFeatureConfig
                 )
+                values[name] = feature_type(**_dataclass_kwargs(feature_type, values[name]))
         config.knowledge = KnowledgeConfig(**values)
 
     if "memory" in raw:

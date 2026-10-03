@@ -633,17 +633,27 @@
         "tests/test_api_knowledge.py",
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_budget.py",
+        "tests/test_knowledge_capture.py",
+        "tests/test_knowledge_citations.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
+        "tests/test_knowledge_context.py",
+        "tests/test_knowledge_deprecation.py",
         "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_extraction.py",
+        "tests/test_knowledge_extraction_store.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
+        "tests/test_knowledge_index_receipts.py",
         "tests/test_knowledge_inventory.py",
+        "tests/test_knowledge_memory_adapter.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_proposals.py",
         "tests/test_knowledge_provider_absence.py",
         "tests/test_knowledge_redaction.py",
         "tests/test_knowledge_retrieval.py",
+        "tests/test_knowledge_retrieval_benchmark.py",
         "tests/test_knowledge_service.py",
         "tests/test_knowledge_task_creation.py",
         "tests/test_record_backfill.py",
@@ -1387,7 +1397,7 @@
       ]
     }
   },
-  "digest": "sha256:4770e0efa928d50efe23f37a745a12011e804931bec231498d9abf3b14357d75",
+  "digest": "sha256:7dd036fb8d6730195dc6a87c4222bf75a7e9f3bcfed5e668fc81bf69bc56f037",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8843,6 +8853,53 @@
       ],
       "summary": "Core access remains fail closed with legacy capability enforcement disabled."
     },
+    "tests/test_knowledge_budget.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.knowledge.budget",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Hard aggregate caps include required text, tools, wrappers and output."
+    },
+    "tests/test_knowledge_capture.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.knowledge.capture",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact retained capture, lost-wake reconciliation, rollback and role separation."
+    },
+    "tests/test_knowledge_citations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.profiles.capabilities",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Only observed, authorized delivery becomes persistent injected evidence."
+    },
     "tests/test_knowledge_commands.py": {
       "areas": [
         "knowledge-records"
@@ -8869,6 +8926,60 @@
       "markers": [],
       "summary": "Ownership stays fenced across disabled writes and filesystem divergence."
     },
+    "tests/test_knowledge_context.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.budget",
+        "src.knowledge.context",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.messages",
+        "src.models",
+        "src.prime.models",
+        "src.prime.renderer",
+        "src.profiles.capabilities",
+        "src.prompt_builder",
+        "src.records.auth",
+        "src.records.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
+    },
+    "tests/test_knowledge_deprecation.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.engine",
+        "src.database.tables",
+        "src.knowledge.deprecation",
+        "src.knowledge.imports.apply",
+        "src.knowledge.imports.compatibility",
+        "src.knowledge.imports.manifest",
+        "src.knowledge.models",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "K14 synthetic reconciliation, honest telemetry and disposable restore proof."
+    },
     "tests/test_knowledge_evaluation.py": {
       "areas": [
         "knowledge-evaluation",
@@ -8880,6 +8991,48 @@
         "parametrize"
       ],
       "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
+    },
+    "tests/test_knowledge_extraction.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.registry",
+        "src.commands.knowledge_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.event_bus",
+        "src.knowledge.extraction",
+        "src.knowledge.extraction_diagnostics",
+        "src.knowledge.generation_port",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Crash/replay, ambiguous charges, scope policy, independent budgets and proposal safety."
+    },
+    "tests/test_knowledge_extraction_store.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.knowledge.extraction_schema",
+        "src.knowledge.extraction_store",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL race, fenced lease, crash replay and independent budget checks."
     },
     "tests/test_knowledge_import.py": {
       "areas": [
@@ -8925,6 +9078,28 @@
       ],
       "summary": "K06 legacy read-only import inventory: schema, authorization and dry-run CLI."
     },
+    "tests/test_knowledge_index_receipts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Derived index receipts, the chunk manifest and local provider registration."
+    },
     "tests/test_knowledge_inventory.py": {
       "areas": [
         "knowledge-inventory",
@@ -8940,6 +9115,25 @@
         "parametrize"
       ],
       "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
+    },
+    "tests/test_knowledge_memory_adapter.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.knowledge.memory_port",
+        "src.knowledge.providers",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The legacy aq-memory adapter port: scope isolation and summary suppression."
     },
     "tests/test_knowledge_migrations.py": {
       "areas": [
@@ -9025,6 +9219,23 @@
         "parametrize"
       ],
       "summary": "Reference-only optional ranking with real core PostgreSQL authorization."
+    },
+    "tests/test_knowledge_retrieval_benchmark.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.benchmark",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service"
+      ],
+      "markers": [],
+      "summary": "The G5 pre-gate comparison: lexical vs offline semantic over one corpus."
     },
     "tests/test_knowledge_service.py": {
       "areas": [

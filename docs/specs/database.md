@@ -3694,6 +3694,24 @@ the invariant `scanned >= inserted >= 0`.
 | `inserted` | BIGINT | NOT NULL, DEFAULT 0 | Records inserted |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Cursor update time |
 
+### Table: `record_index_state`
+
+Per-(provider, record) checkpoint of one optional provider's derived semantic
+index: which exact revision was indexed, the core-computed digest of its
+text-free chunk manifest, and when the provider acknowledged the erasure of a
+redacted revision. Rebuildable derived state — it never carries record content
+and never substitutes for the revision it describes.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `provider_id` | TEXT | PRIMARY KEY | Bounded provider id (`ck_record_index_state_provider`) |
+| `record_id` | UUID | PRIMARY KEY | Indexed record |
+| `revision_id` | UUID | NOT NULL, FK → knowledge_revisions (RESTRICT) | Exact indexed revision |
+| `sequence` | BIGINT | NOT NULL | Revision sequence (`ck_record_index_state_sequence`) |
+| `chunk_manifest_sha256` | TEXT | NOT NULL | 64-hex digest of the validated chunk manifest |
+| `indexed_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Acknowledgment time |
+| `redacted_at` | TIMESTAMPTZ | nullable | Erasure acknowledgment; set once, never cleared |
+
 ---
 
 ## 4. Projects
