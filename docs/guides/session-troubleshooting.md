@@ -221,10 +221,35 @@ aq doctor --check sessions.stall_unreachable
 ```
 
 The check lists every live task holder idle past the lease whose composer
-would refuse the nudge right now, with the refusal and the text the composer
-shows, so a human draft, a painted-over box and an unrecognised layout can be
-told apart. It is read-only: no repaint, no key. Sessions in a durable wait
-are skipped, as the ladder skips them.
+would refuse the nudge right now, with the refusal, its structured
+`reason_kind` and the text the composer shows, so a human draft, a
+painted-over box and an unrecognised layout can be told apart. It is
+read-only: no repaint, no key. Sessions in a durable wait are skipped, as
+the ladder skips them.
+
+**When nothing is typing.** A refusal that reports `stale_frame` or
+`unreadable` is *not* a human, so the ladder goes looking for evidence that
+does not come from the screen:
+
+- the harness's own transcript has not been written for longer than the
+  lease — a rung is spent and the stall climbs to backoff and then restart,
+  quarantine, or — for a pool holder — termination and a requeued claim;
+- a pane that stops changing — the wedge from 2026-10-03
+  (`vivid-quest-44.3`: 116 identical refusals over 78 minutes, zero rungs,
+  zero events, task held the whole time). That is *reported*, never spent,
+  because a screen that has stopped moving is also what an agent between two
+  writes looks like. The announcement quotes how long it has been still;
+- neither can be established — nothing is spent and nothing is destroyed,
+  but the stall is *announced*: a daemon WARNING and a `task.stalled` event
+  with `evidence="unverified"` and how long the pane has shown the same
+  thing, repeated at most every 15 minutes. Look for it in the digest or on
+  the dashboard. This is the case an `opencode` holder lands in, and it is a
+  person who decides: AQ will not release a claim because a screen stopped
+  moving, since one long tool looks exactly like that.
+
+A `draft`, `terminal_busy` or `recent_input` reason still holds the ladder
+indefinitely, by design — a person is mid-thought, and their draft is their
+work.
 
 **Fix at the source.** A plugin that logs to stderr will keep painting over
 OpenCode's screen. Make it log to a file only, or add `--pure` to the OpenCode
