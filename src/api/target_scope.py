@@ -30,15 +30,18 @@ mean "allowed":
 * a target whose row is gone resolves to *no* project claim, and the handler
   reports ``not_found`` itself — the pre-existing answer for a missing row, not
   a cross-project read;
+* a target whose row exists but whose project cannot be resolved is refused,
+  including a row whose indirect owner is gone;
 * a database the scope layer cannot query refuses the call rather than
   admitting it unchecked.
 
 Only reads of a single-hop ``project_id`` column belong in
 :data:`TARGET_RESOLVERS`.  A row that owns no project of its own resolves
 through its owner — an operation through the row its ``target_kind`` names, a
-branch owner through its repository, an escalation message through its
-escalation — and anything polymorphic (an escalation action's ``target_id``, a
-report request's ``request_id``, a transfer's branch ``target``) is
+branch owner or a NULL-project promotion intent through its repository, an
+escalation message through its escalation — and anything polymorphic (an
+escalation action's ``target_id``, a report request's ``request_id``, a
+transfer's branch ``target``) is
 deliberately absent, so those commands stay with the global operator.
 """
 
@@ -59,7 +62,6 @@ from src.database.tables import (
     integration_check_evidence,
     integration_outbox,
     integration_parent_episodes,
-    integration_promotion_intents,
     jobs,
     repos,
     test_selection_promotions,
@@ -81,24 +83,27 @@ TARGET_REFERENCE_NAMES: Final[frozenset[str]] = frozenset({"depends_on"})
 #: through.
 VALUE_ARGUMENTS: Final[frozenset[str]] = frozenset({"external_message_id"})
 
-Resolver = Callable[[Any, str], Awaitable[str | None]]
+#: Preserve the named row's existence independently of its resolved project.
+#: A present row with no owner must never inherit the missing-row allowance.
+Ownership = tuple[bool, str | None]
+Resolver = Callable[[Any, str], Awaitable[Ownership]]
 
 
-async def _project_id_of(db, table, value: str) -> str | None:
-    """The ``project_id`` of the ``table`` row whose id is *value*, else ``None``."""
+async def _project_id_of(db, table, value: str) -> Ownership:
+    """Whether *value* exists in *table*, and its nullable ``project_id``."""
     async with db._engine.connect() as conn:
         row = (
             await conn.execute(
                 select(table.c.project_id).where(table.c.id == value)
             )
         ).mappings().one_or_none()
-    return None if row is None else row["project_id"]
+    return (False, None) if row is None else (True, row["project_id"])
 
 
 def _row_resolver(table) -> Resolver:
     """A resolver reading ``project_id`` from one row of *table*."""
 
-    async def resolve(db, value: str) -> str | None:
+    async def resolve(db, value: str) -> Ownership:
         return await _project_id_of(db, table, value)
 
     return resolve
@@ -107,23 +112,23 @@ def _row_resolver(table) -> Resolver:
 def _entity_resolver(getter: str) -> Resolver:
     """A resolver reading ``project_id`` from a ``Database.get_*`` row."""
 
-    async def resolve(db, value: str) -> str | None:
+    async def resolve(db, value: str) -> Ownership:
         row = await getattr(db, getter)(value)
         if row is None:
-            return None
+            return False, None
         project_id = row.get("project_id") if isinstance(row, dict) else row.project_id
-        return None if project_id is None else str(project_id)
+        return True, None if project_id is None else str(project_id)
 
     return resolve
 
 
-async def _owner_column_value(db, table, column, value: str):
-    """``column`` of the ``table`` row whose primary key is *value*."""
+async def _owner_column_value(db, table, column, value: str) -> Ownership:
+    """Whether *value* exists in *table*, and its nullable owner column."""
     async with db._engine.connect() as conn:
         row = (
             await conn.execute(select(column).where(table.c.id == value))
         ).mappings().one_or_none()
-    return None if row is None else row[column.name]
+    return (False, None) if row is None else (True, row[column.name])
 
 
 def _foreign_resolver(table, column, owner_argument: str) -> Resolver:
@@ -134,14 +139,17 @@ def _foreign_resolver(table, column, owner_argument: str) -> Resolver:
     *owner_argument*.
     """
 
-    async def resolve(db, value: str) -> str | None:
-        owner = await _owner_column_value(db, table, column, value)
-        return None if owner is None else await _target_project(db, owner_argument, owner)
+    async def resolve(db, value: str) -> Ownership:
+        found, owner = await _owner_column_value(db, table, column, value)
+        if not found or owner is None:
+            return found, None
+        _, project_id = await _target_project(db, owner_argument, owner)
+        return True, project_id
 
     return resolve
 
 
-async def _task_project(db, task_id: str) -> str | None:
+async def _task_project(db, task_id: str) -> Ownership:
     """A task's project, live or archived.
 
     Archived identity matters: a delivery control that names a completed task
@@ -151,13 +159,29 @@ async def _task_project(db, task_id: str) -> str | None:
 
     async with db._engine.connect() as conn:
         identity = await resolve_task_identity_on(conn, task_id)
-    return identity.project_id if identity is not None else None
+    return (False, None) if identity is None else (True, identity.project_id)
 
 
-async def _operation_project(db, operation_id: str) -> str | None:
-    from src.integration.operation_ownership import operation_project_id_for
+async def _operation_project(db, operation_id: str) -> Ownership:
+    from src.integration.operation_ownership import operation_project_id
 
-    return await operation_project_id_for(db, operation_id)
+    operation = await db.get_integration_operation(operation_id)
+    if operation is None:
+        return False, None
+    return True, await operation_project_id(db, operation)
+
+
+async def _promotion_intent_project(db, intent_id: str) -> Ownership:
+    """A promotion intent's project, using its repository when the project is NULL."""
+    intent = await db.get_integration_promotion_intent(intent_id)
+    if intent is None:
+        return False, None
+    if intent["project_id"] is not None:
+        return True, intent["project_id"]
+    # Promotion services resolve this same persisted repository_id. A missing
+    # repository leaves the existing intent unowned, not a missing target.
+    _, project_id = await _target_project(db, "repository_id", intent["repository_id"])
+    return True, project_id
 
 
 #: Target reference argument -> the resolver that reads its owning project.
@@ -191,7 +215,7 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
         integration_check_evidence.c.operation_id,
         "operation_id",
     ),
-    "intent_id": _row_resolver(integration_promotion_intents),
+    "intent_id": _promotion_intent_project,
     # Rows that carry their own project.
     "batch_id": _row_resolver(integration_batches),
     "event_id": _row_resolver(integration_outbox),
@@ -235,7 +259,7 @@ def unresolvable_targets(args: dict) -> list[str]:
     )
 
 
-async def _target_project(db, argument: str, value: str) -> str | None:
+async def _target_project(db, argument: str, value: str) -> Ownership:
     resolver = TARGET_RESOLVERS[argument]
     return await resolver(db, value)
 
@@ -266,8 +290,12 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
         )
     for name, ids in references.items():
         for value in ids:
-            owning = await _target_project(db, name, value)
-            if owning is None or owning == project_id:
+            found, owning = await _target_project(db, name, value)
+            if not found:
+                continue
+            if owning is None:
+                return f"out of scope: {command} targets a row owned by no project"
+            if owning == project_id:
                 continue
             return (
                 f"out of scope: {command} targets another project "

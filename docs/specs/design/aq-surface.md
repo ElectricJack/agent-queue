@@ -509,7 +509,10 @@ isolation is the target's own**. `src/api/target_scope.py` resolves every target
 call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
 and requires each to equal the token's. A task is read live-or-archived, an operation through
 the row its `target_kind` names, a branch owner row through its repository, check evidence
-through its operation.
+through its operation. Resolution retains whether the named row exists: a present row
+with no project is distinct from a missing row. A promotion intent whose `project_id` is
+NULL resolves through its persisted repository; if that repository cannot supply a project,
+the intent remains a present row with no resolved owner.
 
 The policy fails closed, because "I could not work out who owns this" is not "allowed":
 
@@ -517,6 +520,7 @@ The policy fails closed, because "I could not work out who owns this" is not "al
 |---|---|
 | every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
 | a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
+| a named target exists but has no resolved project (including a missing indirect owner) | `out of scope: <cmd> targets a row owned by no project` |
 | the call names no target at all (`list_projects`, provider previews) | `out of scope: <cmd> names no project-owned target` |
 | a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
 | the scope layer has no database | refused rather than admitted unchecked |
