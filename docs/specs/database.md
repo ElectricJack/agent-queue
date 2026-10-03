@@ -4151,3 +4151,52 @@ Proposals and authority are independent of document-review state. Redaction targ
 | `revision_id` | UUID | PRIMARY KEY |
 | `redaction_id` | UUID | NOT NULL |
 | `content_sha256` | TEXT | NOT NULL |
+
+## Legacy knowledge import inventory (K06)
+
+Migration `a00000000060` adds the sealed import run, permanent source identity mapping,
+and per-item receipt tables. K06's read-only dry run returns the corresponding report
+without writing these tables; the apply path owns their persisted rows. Empty tables can
+be downgraded in dependency order. A populated inventory refuses destructive rollback.
+
+### Table: `record_import_runs`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `run_id` | UUID | PK | Import run identity |
+| `source_installation_id` | TEXT | NOT NULL | Legacy installation identity |
+| `snapshot_id` | TEXT | NOT NULL | Source snapshot identity |
+| `manifest_sha256` | TEXT | NOT NULL, 64 lowercase hexadecimal digits | Canonical manifest seal |
+| `scope_key` | TEXT | NOT NULL, FK record_scopes.scope_key, RESTRICT | Destination scope |
+| `state` | TEXT | NOT NULL | prepared, applying, succeeded, failed, or cancelled |
+| `started_at` | DATETIME | NOT NULL, DEFAULT now() | Time with timezone |
+| `finished_at` | DATETIME | nullable | Terminal time with timezone |
+| `cursor` | JSONB | nullable, object | Apply continuation |
+| `report` | JSONB | nullable, object | Reconciliation evidence |
+
+### Table: `record_legacy_mappings`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `source_installation_id` | TEXT | PK (with source_kind, source_scope, source_key) | Legacy installation |
+| `source_kind` | TEXT | PK | Legacy source kind |
+| `source_scope` | TEXT | PK | Legacy scope |
+| `source_key` | TEXT | PK | Permanent legacy identity |
+| `record_id` | UUID | nullable | Resulting record identity |
+| `latest_source_sha256` | TEXT | nullable, 64 lowercase hexadecimal digits | Last observed source hash |
+| `latest_revision_id` | UUID | nullable | Last resulting revision |
+| `ownership` | TEXT | NOT NULL | legacy, managed, excluded, or quarantined |
+| `decision_reason` | TEXT | nullable | Ownership decision evidence |
+| `updated_at` | DATETIME | NOT NULL, DEFAULT now() | Time with timezone |
+
+### Table: `record_import_items`
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `run_id` | UUID | PK (with item_key), FK record_import_runs.run_id, RESTRICT | Owning run |
+| `item_key` | TEXT | PK | Manifest item identity |
+| `source_sha256` | TEXT | NOT NULL, 64 lowercase hexadecimal digits | Source content hash |
+| `disposition` | TEXT | NOT NULL | candidate, quarantined, excluded, or unavailable |
+| `record_id` | UUID | nullable | Resulting record identity |
+| `revision_id` | UUID | nullable, requires record_id | Resulting revision identity |
+| `error_code` | TEXT | nullable | Item failure code |

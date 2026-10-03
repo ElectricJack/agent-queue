@@ -210,6 +210,16 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_consumer_receipts",
         "record_export_state",
         "record_backfill_state",
+        # Protection (revision 59) and import inventory (revision 60) also
+        # postdate SQLite removal and reference PostgreSQL-only records.
+        "knowledge_proposals",
+        "knowledge_authority_grants",
+        "knowledge_global_shares",
+        "knowledge_redactions",
+        "knowledge_redaction_targets",
+        "record_import_runs",
+        "record_legacy_mappings",
+        "record_import_items",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
     }
