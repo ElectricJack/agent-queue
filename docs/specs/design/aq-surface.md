@@ -243,6 +243,15 @@ with global `--json` they fail before any side effect with one `usage_error` env
 groups supplied by third-party `aq.plugins` entry points are an extension boundary rather than
 core-owned wrappers, so their structured-output behavior remains defined by that plugin.
 
+Daemon startup polls `/health` for a bounded 120 seconds using a monotonic clock;
+HTTP 200 and degraded HTTP 503 count as started. An exited child fails immediately.
+Timeout diagnostics read at most the last 64 KiB of the log and print at most the
+requested line count. After diagnostics, startup rechecks health and child liveness
+before terminating its own launched instance. Child-handle polling and signaling
+must not target a reused PID, and cleanup removes `daemon.pid` only while it still
+names that child. A daemon that becomes healthy during diagnostics proceeds through
+the usual post-start readiness checks.
+
 ### 4.2 `--brief` lite projections
 
 `--brief` trims each entity to a fixed projection so agents can list cheaply:
