@@ -1,0 +1,620 @@
+{
+  "$defs": {
+    "observation": {
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "injected"
+              },
+              "owner": {
+                "$ref": "#/$defs/owner"
+              },
+              "record_id": {
+                "pattern": "^[a-z0-9-]+$",
+                "type": "string"
+              },
+              "revision_id": {
+                "pattern": "^[a-z0-9-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "record_id",
+              "revision_id",
+              "content_sha256",
+              "kind",
+              "owner"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "deliveries": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bundle_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "final_state": {
+                "enum": [
+                  "prepared",
+                  "delivered",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "new": {
+                "type": "boolean"
+              },
+              "transport": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "transport_key": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "bundle_id",
+              "transport",
+              "transport_key",
+              "final_state",
+              "new"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "diagnostics": {
+          "items": {
+            "enum": [
+              "context.required_over_budget"
+            ]
+          },
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "omissions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "identity": {
+                "pattern": "^[a-z0-9-]+@[a-z0-9-]+:[a-z_]+$",
+                "type": "string"
+              },
+              "reason": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "identity",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "owner": {
+          "$ref": "#/$defs/owner"
+        },
+        "rendered": {
+          "type": "string"
+        },
+        "rendered_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "selected": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "authority": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "content_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "evidence": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "excerpt": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "freshness": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "procedure",
+                  "evidence",
+                  "guidance",
+                  "context",
+                  "diagnostic",
+                  "note"
+                ]
+              },
+              "record_id": {
+                "pattern": "^[a-z0-9-]+$",
+                "type": "string"
+              },
+              "revision_id": {
+                "pattern": "^[a-z0-9-]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "record_id",
+              "revision_id",
+              "kind",
+              "evidence",
+              "authority",
+              "freshness",
+              "excerpt",
+              "content_sha256"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "usage": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "const": "upper_bound_bytes:utf8"
+            },
+            "tokens": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "method",
+            "tokens",
+            "bytes"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "selected",
+        "omissions",
+        "rendered",
+        "rendered_sha256",
+        "owner",
+        "citations",
+        "deliveries",
+        "usage",
+        "diagnostics",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "owner": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "owner_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "owner_kind": {
+          "enum": [
+            "task_attempt",
+            "supervisor_session"
+          ]
+        }
+      },
+      "required": [
+        "owner_kind",
+        "owner_id",
+        "claim_epoch"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:aq:knowledge-fixture:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Independent expected oracle and recorded adapter observation. Every top-level section except input_hashes is SHA-256 sealed. No production ContextBundle or delivery state is implemented here.",
+  "properties": {
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reserved_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reserved_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "token_unit": {
+          "const": "upper_bound_bytes:utf8"
+        }
+      },
+      "required": [
+        "max_tokens",
+        "max_bytes",
+        "token_unit",
+        "reserved_tokens",
+        "reserved_bytes"
+      ],
+      "type": "object"
+    },
+    "delivery_rules": {
+      "additionalProperties": false,
+      "properties": {
+        "bundle_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "claim_epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "events": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bundle_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "final_state": {
+                "enum": [
+                  "prepared",
+                  "delivered",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "transport": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "transport_key": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "bundle_id",
+              "transport",
+              "transport_key",
+              "final_state"
+            ],
+            "type": "object"
+          },
+          "minItems": 0,
+          "type": "array"
+        },
+        "owner_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "owner_kind": {
+          "enum": [
+            "task_attempt",
+            "supervisor_session"
+          ]
+        },
+        "prepared_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "worker",
+            "supervisor"
+          ]
+        }
+      },
+      "required": [
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "prepared_at",
+        "bundle_id",
+        "role",
+        "events"
+      ],
+      "type": "object"
+    },
+    "expected": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_identities": {
+          "items": {
+            "pattern": "^[a-z0-9-]+@[a-z0-9-]+:[a-z_]+$",
+            "type": "string"
+          },
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "duplicate_delivery": {
+          "additionalProperties": false,
+          "properties": {
+            "attempts": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "bundle_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expected_new": {
+                    "type": "boolean"
+                  },
+                  "final_state": {
+                    "enum": [
+                      "prepared",
+                      "delivered",
+                      "failed",
+                      "unknown"
+                    ]
+                  },
+                  "transport": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "transport_key": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bundle_id",
+                  "transport",
+                  "transport_key",
+                  "final_state",
+                  "expected_new"
+                ],
+                "type": "object"
+              },
+              "minItems": 0,
+              "type": "array"
+            }
+          },
+          "required": [
+            "attempts"
+          ],
+          "type": "object"
+        },
+        "forbidden_records": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "body": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "count": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "error": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "snippet": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "omitted_reasons": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "required_budget_diagnostic": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowed_identities",
+        "omitted_reasons",
+        "forbidden_records",
+        "required_budget_diagnostic",
+        "duplicate_delivery"
+      ],
+      "type": "object"
+    },
+    "fixture_id": {
+      "pattern": "^[a-z0-9][a-z0-9-]{1,80}$",
+      "type": "string"
+    },
+    "input_hashes": {
+      "additionalProperties": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "labels": {
+      "additionalProperties": false,
+      "properties": {
+        "harnesses": {
+          "items": {
+            "enum": [
+              "claude",
+              "codex",
+              "opencode",
+              "local"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "harnesses"
+      ],
+      "type": "object"
+    },
+    "observation": {
+      "$ref": "#/$defs/observation"
+    },
+    "records": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "authority": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "excerpts": {
+            "additionalProperties": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minProperties": 1,
+            "type": "object"
+          },
+          "freshness": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "procedure",
+              "evidence",
+              "guidance",
+              "context",
+              "diagnostic",
+              "note"
+            ]
+          },
+          "record_id": {
+            "pattern": "^[a-z0-9-]+$",
+            "type": "string"
+          },
+          "revision_id": {
+            "pattern": "^[a-z0-9-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "revision_id",
+          "kind",
+          "evidence",
+          "authority",
+          "freshness",
+          "excerpts"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "scenario": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "source_class": {
+      "const": "synthetic"
+    },
+    "stale_claim": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_epoch": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expected_forbidden_identity": {
+          "pattern": "^[a-z0-9-]+@[a-z0-9-]+:[a-z_]+$",
+          "type": "string"
+        },
+        "stale_epoch": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expected_forbidden_identity",
+        "claim_epoch",
+        "stale_epoch"
+      ],
+      "type": "object"
+    },
+    "synthetic": {
+      "const": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "scenario",
+    "synthetic",
+    "source_class",
+    "records",
+    "expected",
+    "delivery_rules",
+    "labels",
+    "budget",
+    "observation",
+    "input_hashes"
+  ],
+  "title": "Synthetic offline knowledge contract fixture",
+  "type": "object"
+}
