@@ -126,6 +126,39 @@ class IntegrationSubjectQueriesMixin:
             )
         return dict(row) if row is not None else None
 
+    async def list_integration_subjects(
+        self,
+        *,
+        project_id: str | None = None,
+        subject_ids: Iterable[str] = (),
+        include_done: bool = False,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Subjects for the operator surfaces, soonest due first.
+
+        ``project_id`` narrows to one project and ``subject_ids`` to named
+        subjects; neither given lists every project.  Finished subjects are
+        omitted unless ``include_done``.  Read-only: status, explain and doctor
+        show what the reconciler holds and never write through this.
+        """
+        _require_limit(limit)
+        due_at = integration_subjects.c.next_due_at
+        statement = (
+            select(integration_subjects)
+            .order_by(due_at.asc().nulls_last(), integration_subjects.c.id)
+            .limit(limit)
+        )
+        if project_id is not None:
+            statement = statement.where(integration_subjects.c.project_id == project_id)
+        wanted = sorted({value for value in subject_ids if value})
+        if wanted:
+            statement = statement.where(integration_subjects.c.id.in_(wanted))
+        if not include_done:
+            statement = statement.where(integration_subjects.c.phase != "done")
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
     async def get_integration_subject_by_key(
         self, *, project_id: str, kind: str, subject_key: str
     ) -> dict[str, Any] | None:
@@ -354,13 +387,21 @@ class IntegrationSubjectQueriesMixin:
         after_seq: int | None = None,
         limit: int = 100,
         entry_kinds: Sequence[str] | None = None,
+        newest_first: bool = False,
     ) -> list[dict[str, Any]]:
-        """A subject's journal in append order, keyset-paged by ``seq``."""
+        """A subject's journal in append order, keyset-paged by ``seq``.
+
+        ``newest_first`` reads the latest ``limit`` entries, newest first, for
+        ``aq integration explain``; it cannot be combined with ``after_seq``.
+        """
         _require_limit(limit)
+        if newest_first and after_seq is not None:
+            raise ValueError("newest_first reads the latest entries; after_seq pages forward")
+        seq = integration_subject_journal.c.seq
         statement = (
             select(integration_subject_journal)
             .where(integration_subject_journal.c.subject_id == subject_id)
-            .order_by(integration_subject_journal.c.seq)
+            .order_by(seq.desc() if newest_first else seq)
             .limit(limit)
         )
         if after_seq is not None:
