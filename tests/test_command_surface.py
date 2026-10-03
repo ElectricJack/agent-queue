@@ -87,10 +87,6 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
         # Supervisor-internal navigation meta-tool.  Excluded from MCP, the
         # CLI and the API; its schema is synthesised by ``ToolRegistry``.
         "load_tools",
-        # Internal parent-visit dispatch (src/commands/integration_commands.py).
-        # Excluded from MCP by DEFAULT_EXCLUDED_COMMANDS: only the process-bound
-        # engine exclusion grants it, so there is no caller who could pass args.
-        "integration_parent_action",
         # Plugin lifecycle.  Hand-crafted in the CLI (``aq plugin *``, which
         # reaches the database directly), so only the MCP registration is left
         # holding an empty schema.
