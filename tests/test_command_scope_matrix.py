@@ -18,13 +18,24 @@ Two layers, both derived from the real sources rather than a hand list:
    scope succeeds, and a foreign ID is refused — for the mutating ``task_set``,
    with no state change.  ``tests/test_task_command_authorization.py`` carries
    the deeper end-to-end mutating pair.
+
+3. **Injected-ID/schema alignment.** Layer 1b proves the gate *injects* the ID
+   triple.  A command whose handler then validates that same dict against an
+   ``extra="forbid"`` model has to declare all three, or the injection is a
+   validation error the agent cannot fix by changing its arguments.  The set of
+   such commands is derived from the source, so the guard survives new
+   registrations.
 """
 
 from __future__ import annotations
 
+import inspect
+import json
 import time
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from src.api.auth import RequestScope
 from src.api.scope import _TASK_ID_UNPINNED, AGENT_COMMAND_SET, check_command_scope
@@ -184,6 +195,124 @@ def test_commands_outside_the_agent_set_are_refused_outright(command):
     assert check_command_scope(command, args, scope) == f"out of scope: {command}"
     # A refused command is never given injected IDs.
     assert args == {}
+
+
+# ---------------------------------------------------------------------------
+# Layer 1c — the injected IDs must be declarable by the command's own contract
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_validated_args_models() -> dict[str, Any]:
+    """Agent-surface commands that validate the *raw* args dict themselves.
+
+    ``CommandHandler.execute`` does not validate args against a contract — most
+    handlers read what they need — so a command opts into strict validation by
+    calling its own ``args_model.model_validate(args)``.  Those are exactly the
+    commands the gate's in-place injection can break, so they are derived here
+    from the registered contract plus the handler source rather than listed.
+    """
+    from src.commands.contracts import CONTRACTS
+    from src.commands.handler import CommandHandler
+
+    found: dict[str, Any] = {}
+    for name in sorted(AGENT_COMMAND_SET):
+        registration = CONTRACTS.get(name)
+        handler = getattr(CommandHandler, f"_cmd_{name}", None)
+        if registration is None or handler is None:
+            continue
+        model = registration.contract.execution.args_model
+        if f"{model.__name__}.model_validate(args)" in inspect.getsource(handler):
+            found[name] = model
+    return found
+
+
+def test_the_dispatch_validating_derivation_is_not_silently_empty():
+    """Guard the guard: if the derivation ever stops finding handlers the layer
+    below would pass vacuously."""
+    derived = _dispatch_validated_args_models()
+
+    assert "task_handoff" in derived
+    assert len(derived) > 1
+
+
+@pytest.mark.parametrize("command", sorted(_dispatch_validated_args_models()))
+def test_every_dispatch_validating_command_accepts_the_injected_id_triple(command):
+    """The bug: ``aq handoff --auto`` from a worker died with
+
+        Invalid handoff: TaskHandoffArgs project_id
+        Extra inputs are not permitted (input_value agent-queue)
+
+    because :func:`check_command_scope` injects the token's ``project_id`` into
+    the very dict the handler validates.  The CLI has no ``--project-id`` and
+    ``aq prime`` documents none, so the agent could not do anything about it.
+
+    Declaring the field is a contract alignment, not a scope widening: layer 1b
+    still rejects a foreign ``project_id`` before dispatch, and
+    ``_assert_session_owns`` still fences task/session/claim_epoch.
+
+    Only the injected IDs are asserted.  A command may of course still refuse
+    the triple for a missing business field it requires — that is the caller's
+    job, not the gate's — so the check is that no injected ID is rejected as an
+    extra.  ``extra`` is asserted forbidden first so a model loosened to
+    ``extra="allow"`` cannot pass this by tolerating everything.
+    """
+    model = _dispatch_validated_args_models()[command]
+    injected = {"task_id": "t1", "project_id": "p1", "session_id": "s1"}
+
+    assert model.model_config.get("extra") == "forbid", command
+    try:
+        model.model_validate(injected)
+    except ValidationError as exc:
+        forbidden = [error["loc"] for error in exc.errors() if error["type"] == "extra_forbidden"]
+        assert not forbidden, f"{command} refuses scope-injected {forbidden}"
+
+
+async def test_worker_handoff_survives_the_ids_the_scope_gate_injects(matrix):
+    """End-to-end through the boundary that failed: the gate mutates ``args``,
+    ``execute()`` forwards that same dict, ``_cmd_task_handoff`` validates it.
+
+    Every structured field ``aq prime`` documents is accepted, and the note the
+    agent asked for is what gets stored.
+    """
+    scope = _session_scope()
+    args: dict = {
+        "auto": True,
+        # A pool session must read its epoch from .aq/claim.json; the CLI does.
+        "claim_epoch": (await matrix.db.get_task("t1")).claim_epoch,
+        "goal": "Ship the handoff fix",
+        "completed": ["Reproduced the extra-inputs rejection"],
+        "next_step": "Push the branch",
+        "constraints": ["Do not weaken the scope gate"],
+        "evidence": ["aq test tests/test_command_scope_matrix.py"],
+    }
+
+    assert check_command_scope("task_handoff", args, scope) is None
+    assert args["project_id"] == "p1"  # the gate injected what the CLI never sent
+
+    args["_scope"] = _scope(task_id="t1")
+    result = await matrix.execute("task_handoff", args)
+
+    assert result.get("success"), result
+    rows = await matrix.db.get_task_contexts("t1")
+    note = json.loads(next(row["content"] for row in rows if row["id"] == result["handoff_id"]))
+    assert note["agent"]["goal"] == "Ship the handoff fix"
+    assert note["agent"]["next_step"] == "Push the branch"
+    assert note["agent"]["constraints"] == ["Do not weaken the scope gate"]
+    # The injected scope identity is not agent prose and stays out of the note.
+    assert "project_id" not in note["agent"]
+    assert not result["restart_requested"]  # --auto is note-only
+
+
+async def test_a_foreign_project_id_is_still_refused_before_the_handoff_is_validated(matrix):
+    """The alignment must not become a hole: the gate still compares the ID it
+    injected against the one the caller supplied, and refuses the foreign one."""
+    args: dict = {"auto": True, "goal": "g", "project_id": "p2"}
+
+    assert check_command_scope("task_handoff", args, _session_scope()) == (
+        "out of scope: project_id mismatch"
+    )
+    # Refused before dispatch, so nothing is written.
+    assert await matrix.db.get_task_contexts("t1") == []
 
 
 #: The only commands a projectless (manually opened) worker terminal may run:
