@@ -1384,7 +1384,7 @@
       ]
     }
   },
-  "digest": "sha256:4568bf40db373a9e18cd4789040cbd8a9f9e219a2df8968576bac1b0d789e812",
+  "digest": "sha256:3dfd36e3430a2fa16808bd4c65f977aee8861bfaf24eae043ae52ed0403a7ae7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9883,6 +9883,7 @@
         "src.database",
         "src.database.engine",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
