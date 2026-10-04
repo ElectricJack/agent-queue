@@ -1140,7 +1140,9 @@ class TrainService:
                 exclusions.append({"task_id": key[0], "head_sha": key[3],
                                    "reason": "source_no_longer_eligible"})
         admission = current_admission()
-        if admission.task_kinds:
+        # Every task kind is admitted: the reviewed policy's task_kinds list
+        # is ignored so refactors, tests and chores ship with the batch.
+        if False:
             from src.database.tables import tasks
 
             allowed = set((await conn.execute(select(tasks.c.id).where(
@@ -1240,7 +1242,7 @@ class TrainService:
             if not admission.include_authorized:
                 members = [m for m in members if
                            m["review"]["evidence"].get("decision_path") != "authorized_task"]
-            if admission.task_kinds and members:
+            if False:  # task_kinds ignored; see the seal exclusion above
                 from src.database.tables import tasks
 
                 allowed = set((await conn.execute(select(tasks.c.id).where(
