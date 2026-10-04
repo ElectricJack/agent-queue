@@ -445,6 +445,16 @@ Registered in `src/api/app.py::create_app` next to `execute_router`/`health_rout
 `_run_completion_pipeline` via the orchestrator, transitions the task) and
 `_cmd_task_heartbeat` (updates `agents.last_heartbeat` + `touch_session_activity`).
 
+**Project isolation is the session's own.** These commands address a row by id, unique id
+prefix, name or task and never read the `project_id` a per-project elevated token has
+injected, so `_session_project_scope_error` fences them: a supervisor token pinned to project
+A is refused a session belonging to project B ("out of scope: session belongs to another
+project"). It guards `session_kill`, `session_peek`, `session_drain_ack` and `session_token`;
+`session_logs` carries the same comparison inline, because it resolves a task session attempt
+as well as a session row. The loopback CLI and the global supervisor carry no project pin and
+stay unrestricted. See `tests/test_command_scope_matrix.py` for the derived set of
+supervisor-granted contractless commands the scope layer cannot pin this way.
+
 **A PR is matched by head commit, not only by head name.** In `pull_request` mode
 verification looks for an open PR for the task branch (`GitManager.afind_open_pr`). Matching
 only `--head aq/<task_id>` failed correct, fully pushed work: a task description that names a
