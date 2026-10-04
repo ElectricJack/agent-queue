@@ -16899,6 +16899,7 @@
           "--object-id",
           "--attempt-id",
           "--incumbent-sha256",
+          "--incumbent-capture-sha256",
           "--reference-sha256",
           "--rig-sha256",
           "--scorer-sha256",
@@ -16916,6 +16917,7 @@
         ],
         "optional": [
           "--incumbent-artifact",
+          "--reference-kind",
           "--max-repair-rounds",
           "--max-plateau-rounds",
           "--json",

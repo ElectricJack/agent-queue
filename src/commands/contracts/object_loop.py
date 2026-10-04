@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from src.commands.contracts.models import (
     CommandArgs, CommandContract, CommandPresentation, CommandResult, CommandValue,
@@ -36,6 +36,8 @@ class ObjectLoopStartArgs(CommandArgs):
     attempt_id: str = Field(min_length=1, max_length=128, pattern=IDENTIFIER)
     incumbent_sha256: str = Field(pattern=SHA256)
     incumbent_artifact: Artifact | None = None
+    incumbent_capture_sha256: str = Field(pattern=SHA256)
+    reference_kind: Literal["calibrated", "self"] = "calibrated"
     reference_sha256: str = Field(pattern=SHA256)
     rig_sha256: str = Field(pattern=SHA256)
     scorer_sha256: str = Field(pattern=SHA256)
@@ -52,6 +54,13 @@ class ObjectLoopStartArgs(CommandArgs):
     max_repair_rounds: int = Field(default=2, ge=0, le=8)
     max_plateau_rounds: int = Field(default=3, ge=1, le=8)
     variants: list[Variant] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def self_reference_matches_capture(self):
+        if (self.reference_kind == "self"
+                and self.reference_sha256 != self.incumbent_capture_sha256):
+            raise ValueError("self reference_sha256 must match incumbent_capture_sha256")
+        return self
 
 
 class ObjectLoopReconcileArgs(CommandArgs):

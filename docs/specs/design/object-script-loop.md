@@ -17,6 +17,23 @@ transaction as the loop row. The first candidate is admitted only by
 `object_loop_reconcile` after that transaction commits. A repeated start with
 the same fixed inputs returns the existing loop; conflicting inputs fail.
 
+The start packet records `reference_kind`, either `calibrated` (the default)
+or `self`. An explicit supervisor `self` packet discharges only the calibrated
+reference precondition for a plumbing pilot. The kind is fixed for the attempt
+and cannot change on replay. Candidate and finalization descriptions label
+self-reference results as indicative, for plumbing only. All repair, plateau,
+round, whole-attempt budget and final-suite reserve bounds continue to apply,
+as does the experiment publication refusal.
+
+`incumbent_capture_sha256` is required for both kinds and identifies the retained
+baseline capture receipt (`job_retain`'s artifact of kind `capture_receipt`).
+It is fixed for the attempt and remains distinct from `incumbent_sha256`, which
+identifies the candidate manifest. For `self`, packet validation requires
+`reference_sha256 == incumbent_capture_sha256` before any loop or child is
+created. For `calibrated`, the reference hash remains independent of this
+baseline capture hash. Legacy loops lacking that capture identity can still
+reconcile, but a new start cannot silently bind them to a claimed baseline.
+
 `object_loop_reconcile` is safe to call from task, review or timer events and
 after restart. It takes the loop row lock and re-reads task settlement. Its
 stored intent uses `object:<id>:attempt:<id>:round:<n>:variant:<id>:candidate`

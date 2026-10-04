@@ -1389,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:c0524f992fe3c275ed1eff9849e81b79497e3172c6f3cdcf7857ed72a61dbd9a",
+  "digest": "sha256:12d07a54cc76c715ad13fbb76d2df692b3fc39383f28c33f605e3ee4c40e2712",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10382,8 +10382,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.scope",
         "src.commands.contracts.job",
         "src.commands.contracts.object_loop",
+        "src.commands.formula_commands",
         "src.commands.job_commands",
         "src.commands.object_loop_commands",
         "src.database.tables",

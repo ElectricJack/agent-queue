@@ -86,8 +86,9 @@ async def setup(command_handler_factory, tmp_path, monkeypatch):
     await handler.db.close()
 
 
-def variables():
+def variables(reference_kind="calibrated"):
     request = start_args()
+    request["reference_kind"] = reference_kind
     request.pop("project_id")
     request.pop("epic_task_id")
     request["policy_sha256"] = artifact_ref_for(artifact()).artifact_sha256.removeprefix("sha256:")
@@ -95,9 +96,9 @@ def variables():
     return {"object_id": "rock", "proposal_sha256": H, "start": json.dumps(request)}
 
 
-async def cook(handler):
+async def cook(handler, *, reference_kind="calibrated"):
     result = await handler._cmd_formula_cook({
-        "name": "object", "project_id": PROJECT, "vars": variables(),
+        "name": "object", "project_id": PROJECT, "vars": variables(reference_kind),
     })
     assert result["success"], result
     return result
@@ -218,8 +219,8 @@ async def score_packet(handler, current, *, loss=0.1, invalid=False, action="con
     return packet
 
 
-async def boot(handler):
-    cooked = await cook(handler)
+async def boot(handler, *, reference_kind="calibrated"):
+    cooked = await cook(handler, reference_kind=reference_kind)
     bootstrap = await handler.db.get_task(cooked["task_ids"][0])
     assert bootstrap.is_blocked
     trace, tree = await sweep(handler, rule="on-formula")
@@ -254,9 +255,10 @@ async def test_bootstrap_restart_and_formula_discovery(setup, tmp_path):
     assert (await setup.db.get_task(cooked["container_id"])).status != TaskStatus.COMPLETED
 
 
-@pytest.mark.parametrize("scenario", ["improve", "tie", "invalid", "budget", "plateau", "cap"])
-async def test_scoring_live_and_dry_traces(setup, scenario):
-    await boot(setup)
+@pytest.mark.parametrize("scenario", ["improve", "tie", "invalid", "repair", "budget", "plateau", "cap"])
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+async def test_scoring_live_and_dry_traces(setup, scenario, reference_kind):
+    await boot(setup, reference_kind=reference_kind)
     current = await complete_wave(setup)
     if scenario in {"tie", "plateau"}:
         async with setup.db.immediate() as conn:
@@ -272,13 +274,23 @@ async def test_scoring_live_and_dry_traces(setup, scenario):
             modified["round_id"] = 7
             await conn.execute(update(object_loops).values(state=modified))
         current = await state(setup)
+    if scenario == "repair":
+        async with setup.db.immediate() as conn:
+            modified = copy.deepcopy(current["state"])
+            modified["repair_count"] = modified["max_repair_rounds"]
+            await conn.execute(update(object_loops).values(state=modified))
+        current = await state(setup)
     next_variants = [variant("next", usd=100 if scenario == "budget" else 1).model_dump()]
-    await score_packet(setup, current, invalid=scenario == "invalid", next_variants=next_variants)
+    await score_packet(setup, current, invalid=scenario in {"invalid", "repair"},
+                       next_variants=next_variants)
     trace, _ = await sweep(setup)
     result = await state(setup)
+    assert result["state"]["reference_kind"] == reference_kind
     assert any(name == "object_score_record" for name, _, _ in trace)
-    assert result["state"]["incumbent_sha256"] == (H if scenario in {"tie", "invalid", "plateau"} else B)
-    if scenario in {"budget", "plateau", "cap"}:
+    assert result["state"]["incumbent_sha256"] == (
+        H if scenario in {"tie", "invalid", "repair", "plateau"} else B
+    )
+    if scenario in {"repair", "budget", "plateau", "cap"}:
         assert result["state"]["status"] == "stopped"
         assert "continuation refused" in result["state"]["stop_reason"]
     else:

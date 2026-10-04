@@ -45206,6 +45206,17 @@
             "title": "Incumbent Artifact",
             "description": ""
           },
+          "incumbent_capture_sha256": {
+            "type": "string",
+            "title": "Incumbent Capture Sha256",
+            "description": ""
+          },
+          "reference_kind": {
+            "type": "string",
+            "title": "Reference Kind",
+            "description": "",
+            "default": "calibrated"
+          },
           "reference_sha256": {
             "type": "string",
             "title": "Reference Sha256",
@@ -45301,6 +45312,7 @@
           "object_id",
           "attempt_id",
           "incumbent_sha256",
+          "incumbent_capture_sha256",
           "reference_sha256",
           "rig_sha256",
           "scorer_sha256",
