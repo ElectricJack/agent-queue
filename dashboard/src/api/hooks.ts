@@ -307,9 +307,10 @@ export type { PoolStatusRow, PoolProjectStatus };
 export function usePoolStatus(projectId?: string) {
   return useQuery({
     queryKey: ["pools", projectId ?? "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await poolStatus({
         body: projectId ? { project_id: projectId } : {},
+        signal,
         throwOnError: true,
       });
       return ((data as PoolStatusResponse).pools ?? []) as PoolStatusRow[];
@@ -370,16 +371,42 @@ export function usePoolSetEnabled() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: PoolSetEnabledRequest) => {
-      const { data } = await poolSetEnabled({ body: input, throwOnError: true });
+      // A stalled relay must produce a visible error instead of leaving the
+      // switch on "Saving…" until the relay's much longer header timeout.
+      const signal = AbortSignal.timeout(10_000);
+      let data;
+      try {
+        ({ data } = await poolSetEnabled({ body: input, signal, throwOnError: true }));
+      } catch (error) {
+        if (signal.aborted) {
+          throw new Error("Saving this pool timed out. Check its current state before trying again.");
+        }
+        throw error;
+      }
       const result = data as PoolSetEnabledResponse;
       // Refusals (no such pool profile) come back in band with a 200, exactly
       // as they do for pool_scale, so success has to be checked here.
       if (!result.success) throw new Error(result.error || "Could not update this pool");
       return result;
     },
-    onSuccess: () => {
+    onSuccess: async (result, input) => {
+      // A fleet status read can start before the write and finish after it.
+      // Cancel it before publishing the confirmed value in every pool view.
+      // Otherwise clearing the toggle's pending state shows the old cached
+      // value until the expensive status refresh completes.
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, enabled: result.enabled ?? input.enabled }
+          : row),
+      );
       void queryClient.invalidateQueries({ queryKey: ["pools"] });
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: () => {
+      // A timeout may occur after persistence; reconcile without hiding the
+      // mutation error or automatically retrying an ambiguous write.
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
     },
   });
 }

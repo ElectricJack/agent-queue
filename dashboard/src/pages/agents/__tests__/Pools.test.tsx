@@ -860,6 +860,85 @@ describe("enabling and disabling a pool from the directory", () => {
     });
   });
 
+  it("keeps the confirmed state while the status refresh is slow", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+    const toggle = await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW);
+    // The write succeeds immediately, but rebuilding the fleet status has
+    // not finished. The response itself must update the visible switch.
+    api.poolStatus.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(toggle).toBeEnabled();
+      expect(toggle).toHaveAttribute("aria-checked", "false");
+    }, SLOW);
+    expect(directory.getByText("disabled")).toBeInTheDocument();
+  });
+
+  it("discards a status read that started before the pool was changed", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+    const toggle = await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW);
+    let finishRead!: (value: unknown) => void;
+    api.poolStatus.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    const queryClient = clients[clients.length - 1]!;
+    let read!: Promise<void>;
+    act(() => { read = queryClient.refetchQueries({ queryKey: ["pools"] }); });
+    await waitFor(() => expect(finishRead).toBeDefined(), SLOW);
+    api.poolStatus.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toBeEnabled(), SLOW);
+    await act(async () => {
+      finishRead({ data: { success: true, pools: [pool(idle)] } });
+      await read;
+    });
+
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(queryClient.getQueryData<PoolStatusRow[]>(["pools", "all"])?.[0]?.enabled).toBe(false);
+  });
+
+  it("shows a transport error beside the switch", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    api.poolSetEnabled.mockRejectedValue(new Error("API 504: daemon_timeout"));
+    renderAgents("/agents");
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+    fireEvent.click(await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW));
+
+    expect(await directory.findByRole("alert", undefined, SLOW)).toHaveTextContent("daemon_timeout");
+    expect(directory.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("ends a stalled save with a visible timeout and reconciles its state", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    api.poolSetEnabled.mockImplementation(({ signal }: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+    );
+    try {
+      renderAgents("/agents");
+      const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+      fireEvent.click(await directory.findByRole("switch", { name: "Disable worker-standard pool" }, SLOW));
+      await waitFor(() => expect(api.poolSetEnabled).toHaveBeenCalledTimes(1), SLOW);
+      expect(directory.getByRole("switch")).toBeDisabled();
+      // Persistence can succeed before the relay fails to deliver its reply.
+      // Re-read it, but keep the error visible so an ambiguous write is clear.
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ ...idle, enabled: false })] } });
+      act(() => controller.abort(new DOMException("Timed out", "TimeoutError")));
+
+      expect(await directory.findByRole("alert", undefined, SLOW)).toHaveTextContent("Saving this pool timed out");
+      await waitFor(() => {
+        expect(directory.getByRole("switch")).toBeEnabled();
+        expect(directory.getByRole("switch")).toHaveAttribute("aria-checked", "false");
+      }, SLOW);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("restores the shown state and reports an in-band refusal", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
     api.poolSetEnabled.mockResolvedValue({ data: { success: false, error: "no pool profile 'worker-standard'" } });
