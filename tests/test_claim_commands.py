@@ -1040,6 +1040,14 @@ class TestClaim:
         assert await db.get_task_meta("t1", "needs_attention") == "operator_investigation"
         assert await db.get_task_meta("t1", "claim_prepare_backoff_until") is None
 
+    async def test_claim_consumes_operator_handoff_checkpoint(self, handler, db, tmp_path):
+        """A prepared claim consumes the handoff, so no later prepare replays it."""
+        await mktask(db, "t1", profile_id="worker")
+        await db.set_task_meta("t1", "supervisor_recovery_checkpoint", {"sha": "abc"})
+        sid, _wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        assert await db.get_task_meta("t1", "supervisor_recovery_checkpoint") is None
+
     async def test_slot_reset_recovery_is_bounded_and_resume_retries(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
         sid, _wd = await pool_session(db, tmp_path)

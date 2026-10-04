@@ -1113,6 +1113,9 @@ class ExecutionMixin:
                 )
                 return
         await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
+        # The operator-handoff checkpoint was applied by this launch's prepare;
+        # keeping it would replay the handoff on every later prepare.
+        await self.db.delete_task_meta(task.id, "supervisor_recovery_checkpoint")
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",
             task.id,
