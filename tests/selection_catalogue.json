@@ -57,6 +57,7 @@
         "tests/test_reviewer_api_scope.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_target_scope.py",
         "tests/test_triage_api_scope.py",
         "tests/test_worker_git_scope.py"
       ]
@@ -220,6 +221,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_scenarios.py",
         "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
@@ -542,6 +544,7 @@
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
+        "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
@@ -593,6 +596,8 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
+        "tests/test_integration_surface.py",
+        "tests/test_integration_surface_commands.py",
         "tests/test_integration_table_retirement.py"
       ]
     },
@@ -1058,6 +1063,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1247,6 +1253,7 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_host_shell.py",
         "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
@@ -1385,7 +1392,7 @@
       ]
     }
   },
-  "digest": "sha256:9a59d6ef59987c56c22ee28c16a9a713de50d24ed56e697b90bf8955f0a3c7d6",
+  "digest": "sha256:2f9fd9ba76b6f6977a047b14a62231b1f92ff95083463b3efc5db35c76650885",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4651,6 +4658,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.proposal_commands",
         "src.doctor.integration_checks",
         "src.playbooks.definition",
@@ -4854,6 +4863,38 @@
         "parametrize"
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
+    },
+    "tests/test_development_scenarios.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.development_runtime",
+        "src.integration.engine",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.ownership",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.jobs.result",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 phase-3 Development acceptance over real Git and PostgreSQL."
     },
     "tests/test_development_subjects.py": {
       "areas": [
@@ -5176,6 +5217,7 @@
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
         "src.doctor.integration_checks",
+        "src.doctor.integration_subject_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
         "src.doctor.perf_checks",
@@ -6089,9 +6131,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.integration.development"
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.regeneration",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
+        "parametrize",
         "slow"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
@@ -6161,11 +6208,13 @@
         "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -6491,6 +6540,7 @@
         "src.api",
         "src.api.dependencies",
         "src.api.health",
+        "src.api.health_monitor",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
@@ -7212,7 +7262,8 @@
         "src.integration.recovery_controls",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -7395,6 +7446,29 @@
         "parametrize"
       ],
       "summary": "Releasing the delegates of an integration operation that has ended."
+    },
+    "tests/test_integration_delivered_parent_adoption.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.integration.delivered_parent_adoption",
+        "src.integration.delivery_truth",
+        "src.integration.epic_delivery",
+        "src.integration.parent_subjects",
+        "src.integration.provenance",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git recovery for parents whose children reached main by other routes."
     },
     "tests/test_integration_eject.py": {
       "areas": [
@@ -7803,6 +7877,7 @@
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
@@ -7925,7 +8000,8 @@
         "src.integration.promotion",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -8424,6 +8500,45 @@
         "parametrize"
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
+    },
+    "tests/test_integration_surface.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.integration_legacy",
+        "src.doctor",
+        "src.profiles.capabilities",
+        "src.profiles.parser",
+        "src.vault"
+      ],
+      "markers": [],
+      "summary": "The consolidated integration operator surface (simplification §5.1, Phase 4)."
+    },
+    "tests/test_integration_surface_commands.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_surface_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.doctor.integration_subject_checks",
+        "src.doctor.models",
+        "src.integration.records",
+        "src.integration.subjects",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "The consolidated integration operator surface against a real database."
     },
     "tests/test_integration_table_retirement.py": {
       "areas": [
@@ -9556,6 +9671,7 @@
       "imports": [
         "src.config",
         "src.metrics.histogram",
+        "src.metrics.loop_watchdog",
         "src.metrics.perf"
       ],
       "markers": [
@@ -9900,6 +10016,7 @@
         "src.database",
         "src.database.engine",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
@@ -13581,6 +13698,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13640,6 +13774,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
@@ -14212,6 +14347,27 @@
       "markers": [],
       "summary": "Tests for path= validation in _cmd_read_prompt / _cmd_render_prompt."
     },
+    "tests/test_target_scope.py": {
+      "areas": [
+        "api-scope"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Per-project elevated tokens may run target-keyed commands (azure-journey-72)."
+    },
     "tests/test_task_activity.py": {
       "areas": [
         "task-activity"
@@ -14760,6 +14916,24 @@
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
     },
+    "tests/test_terminal_host_shell.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.terminal_stream",
+        "src.config",
+        "src.sessions",
+        "src.sessions.host_shell",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
+    },
     "tests/test_terminal_input.py": {
       "areas": [
         "tmux-terminals"
@@ -15145,6 +15319,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.health",
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
