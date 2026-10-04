@@ -25,8 +25,7 @@ from src.database import Database
 from src.database import tables as t
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
-from src.integration.accepted_repair import complete_accepted_delegate
-from src.integration.candidates import AuditPullRequest, CandidateResolutionInput, CandidateService
+from src.integration.candidates import AuditPullRequest, CandidateService
 from src.integration.ci import (
     CandidateCISubject,
     CIReceiptPayload,
@@ -826,45 +825,40 @@ class Writer:
         return _git(self.path, "rev-parse", "HEAD")
 
     async def publish_resolution(self, batch, *, member_ordinal, operation_id, partial):
-        """The writer's own resolve command: reserve, fenced push, accept."""
-        candidate = self.train.writer_candidates
+        """The writer's command derives authority and never continues legacy construction."""
         resolved = _git(self.path, "rev-parse", "HEAD")
-        with principal_context(self.principal()):
-            reservation = await candidate.reserve_repair(
-                CandidateResolutionInput(
-                    batch_id=batch["id"],
-                    revision=0,
-                    member_ordinal=member_ordinal,
-                    operation_id=operation_id,
-                    resolved_head_sha=resolved,
-                    resolved_tree_sha=_git(self.path, "rev-parse", "HEAD^{tree}"),
-                    repair_commit_shas=tuple(
-                        _git(
-                            self.path,
-                            "rev-list",
-                            "--first-parent",
-                            "--reverse",
-                            f"{partial}..{resolved}",
-                        ).split()
-                    ),
-                    fence=self.fence,
-                )
-            )
-            await candidate.push_repair(reservation, self.fence)
-            accepted = await candidate.accept_repair(reservation)
+        orchestrator = self.train.handler.orchestrator
+        previous = orchestrator.integration_candidate_service
+        orchestrator.integration_candidate_service = self.train.writer_candidates
+        args = {
+            "resolved_head_sha": resolved,
+            "resolved_tree_sha": _git(self.path, "rev-parse", "HEAD^{tree}"),
+            "repair_commit_shas": _git(
+                self.path, "rev-list", "--first-parent", "--reverse", f"{partial}..{resolved}"
+            ).split(),
+            "claim_epoch": 1,
+        }
+        try:
+            with principal_context(self.principal()):
+                accepted = await self.train.handler._cmd_integration_resolve_candidate_member(args)
+                assert accepted["success"], accepted
+                assert accepted["continuation"] is None
+                replay = await self.train.handler._cmd_integration_resolve_candidate_member(args)
+                assert replay["success"], replay
+                assert replay["continuation"] is None
+        finally:
+            orchestrator.integration_candidate_service = previous
         return resolved, accepted
 
     async def close_accepted(self, commit: str):
-        """The accepted writer's task close, then its session ends."""
+        """The accepted writer closes through the production command."""
         with principal_context(self.principal()):
-            closed = await complete_accepted_delegate(
-                self.train.db,
-                self.task_id,
-                session_id=self.session_id,
-                claim_epoch=1,
-                commit=commit,
-            )
-        await self.stop()
+            closed = await self.train.handler._cmd_task_close({
+                "task_id": self.task_id, "session_id": self.session_id, "claim_epoch": 1,
+                "commit": commit, "outcome": "pass", "summary": "Accepted candidate repair",
+            })
+        assert closed["success"], closed
+        assert await self.train.db.get_workspace_for_task(self.task_id) is None
         return closed
 
     async def close_attached(self, head_sha: str, *, base_sha: str, operation_id: str, stage: int):
@@ -1104,7 +1098,7 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     resolved, accepted = await writer.publish_resolution(
         batch, member_ordinal=1, operation_id=operation["id"], partial=partial
     )
-    assert accepted.outcome == "accepted"
+    assert accepted["outcome"] == "accepted"
 
     # The accepted handoff is the writer letting go: the reconciler rebuilds
     # with it, mirroring the repaired candidate identity, then the writer's
@@ -1424,3 +1418,82 @@ async def test_live_green_candidate_promotes_without_prior_ci_evidence_or_operat
     journal = await train.journal(subject.id)
     assert any(row.get("rule") == "promote-exact-green" for row in journal)
     await assert_reconciler_only(train)
+
+
+@pytest.mark.parametrize("outcome", ["pass", "fail"])
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_reconciler_delegate_task_close_records_stop_and_resumes(train, outcome, lifecycle):
+    """Actual task close, without manual owner transfer or workspace unlocking."""
+    await train.open()
+    train.source("alpha", {"feature.txt": "feature\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    red = await train.subject(subject.id)
+    train.ci.finish(red.head_sha, "failure", run=31)
+
+    async def filed():
+        return (await train.subject(subject.id)).writer.status is WriterStatus.FILED
+
+    await train.run_until(filed, label="red CI repair filed")
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    writer = await train.claim(stage["repair_task_id"], batch)
+    await train.db.update_session(writer.session_id, lifecycle=lifecycle)
+    writer.checkout(batch["integration_branch"])
+    head = red.head_sha
+    if outcome == "pass":
+        head = writer.commit("repair red candidate", {"fix.txt": "fixed\n"})
+        with principal_context(writer.principal()):
+            refused = await train.handler._cmd_task_close({
+                "task_id": writer.task_id, "session_id": writer.session_id, "claim_epoch": 1,
+                "outcome": outcome, "summary": "Unpushed repair", "commit": head,
+            })
+        assert not refused["success"], refused
+        assert (await train.db.get_task(writer.task_id)).status.value == "IN_PROGRESS"
+        assert (await train.writer_ownership.get_owner(writer.fence.target))["handoff_state"] == "attached"
+        assert (await train.subject(subject.id)).writer.stop_proof is None
+        _git(writer.path, "push", str(train.origin), "HEAD:" + batch["integration_branch"])
+    with principal_context(writer.principal()):
+        stale = await train.handler._cmd_task_close({
+            "task_id": writer.task_id, "session_id": writer.session_id, "claim_epoch": 0,
+            "outcome": outcome, "summary": "Stale claim", "commit": head,
+        })
+        assert not stale["success"] and stale["result"] == "stale_claim", stale
+        assert (await train.db.get_task(writer.task_id)).status.value == "IN_PROGRESS"
+        result = await train.handler._cmd_task_close({
+            "task_id": writer.task_id, "session_id": writer.session_id, "claim_epoch": 1,
+            "outcome": outcome, "work_outcome": "shipped" if outcome == "pass" else "blocked",
+            "summary": "Repaired candidate" if outcome == "pass" else "Cannot repair candidate",
+            "commit": head,
+        })
+    assert result["success"], result
+    task = await train.db.get_task(writer.task_id)
+    assert task.status.value == ("COMPLETED" if outcome == "pass" else "BLOCKED")
+    assert await train.db.get_workspace_for_task(writer.task_id) is None
+    owner = await train.writer_ownership.get_owner(writer.fence.target)
+    assert owner["handoff_state"] == "released"
+    current = await train.subject(subject.id)
+    assert current.writer.stop_proof["stop_proof"]["kind"] == "accepted_handoff"
+    facts = await train.observer.observe(current)
+    assert facts.writer.status is WriterStatus.STOPPED, facts
+    assert not any("writer_stop_unproven" in reason for reason in facts.unknown)
+    # The process is still alive: relinquished authority, not process death,
+    # is the close proof. No test helper stops it or releases its checkout.
+    assert writer.session_id in train.live_sessions
+    if outcome == "pass":
+        async def rebuilt():
+            current = await train.subject(subject.id)
+            return current.phase is SubjectPhase.TESTING and current.head_sha == head
+
+        await train.run_until(rebuilt, label="new head observed")
+        train.ci.finish(head, "success", run=32)
+        await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="promoted")
+        assert train.remote("refs/heads/main") == head
+    else:
+        async def successor():
+            current = await train.subject(subject.id)
+            return current.writer.status is WriterStatus.FILED and current.writer.task_id != task.id
+
+        await train.run_until(successor, label="blocked writer replaced", limit=90)

@@ -174,3 +174,24 @@ filter project integration mode before the keyset limit: root visits `train` and
 `hierarchy`, and development visits `development`. Development writer projection
 and resolved-gate scans follow the same ownership boundary. A train artifact must
 never be interpreted as a development policy.
+
+## Reconciler repair close handoff
+
+A root repair delegate closes through its owning reconciler, including a failed
+or blocked work outcome. The close verifies the exact session, claim, workspace
+and writer fence, preserves the clean pushed head, and detaches the checkout.
+One transaction accepts the task close, releases its branch/workspace holds and
+records an `accepted_handoff` stop proof on the subject. An accepted candidate
+resolution may already have transferred the branch; closing its original writer
+must not release a successor's fence. Stale claims and changed fences refuse.
+The proof describes relinquished write authority, so a pool process may still be
+alive. It cannot apply to a later claim or writer. CI and promotion remain the
+reconciler's decisions on the new exact head; candidate submission never invokes
+a legacy construction continuation for a reconciler-owned repository.
+
+A failed handoff is an explicit exhausted-writer fact for the pinned successor
+rule. The adapter retains the original stage deadline; it does not start a new
+writer early. Once dispatch advances the authoritative stage, observation drops
+the predecessor's cached writer identity before projecting the new delegate.
+Task sessions release their resources normally; pool sessions retain the agent's
+slot reservation while releasing the completed task's workspace hold.
