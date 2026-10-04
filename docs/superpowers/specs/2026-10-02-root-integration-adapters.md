@@ -174,3 +174,23 @@ filter project integration mode before the keyset limit: root visits `train` and
 `hierarchy`, and development visits `development`. Development writer projection
 and resolved-gate scans follow the same ownership boundary. A train artifact must
 never be interpreted as a development policy.
+
+## Git-first root admission (2026-10-04)
+
+Active reconciler seals admit completed, unheld root tasks with an exact current
+PR head, absent from the default branch, whose configured required checks are
+successful on GitHub from the configured producer. The sealer reads Git and
+GitHub before its hierarchy transaction and reselects the task/checkpoint and
+policy generation under the lock. Legacy review and source-CI polling rows are
+not prerequisites for this path. Explicit rejected reviews, holds, gates,
+active membership, dependency ordering and migration collision checks still bind.
+The frozen admission evidence identifies `git_source_ci` as its decision path;
+it is not a human review. Existing candidate validation and publication proofs
+remain required. Missing checks, changed PR identities and failed remote reads
+exclude the member with a reason, never with cached green evidence.
+
+Seal results and the reconciler action journal include each excluded candidate's
+identity and reason; an atomic audit event preserves them across seal replay.
+Admitting observations omit incomplete roots, retired or delivered sources and
+closed PRs. Missing local source objects defer to the fetching admission reader
+without blocking other sources. Sealed manifests remain immutable.

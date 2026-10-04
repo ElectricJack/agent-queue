@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -417,7 +417,18 @@ class Train:
         # The section-6 batch keeps three colliding revisions together for its
         # writer to re-chain, as the continuous-delivery fixture did; the
         # production seal would defer them to later batches instead.
-        orchestrator.integration_train_service = TrainService(db)
+        async def source_admission(member, policy):
+            number = int(member["pr_url"].rsplit("/", 1)[-1])
+            pull = self.forge.prs[number]
+            if pull["state"] != "open":
+                return {"reason": "pr_closed"}
+            assert pull["head_sha"] == member["source_head"]
+            return {"reason": None,
+                    "tree": _git(self.origin, "rev-parse", member["source_head"] + "^{tree}"),
+                    "checks": {"head_sha": member["source_head"], "state": "green"},
+                    "target_sha": self.remote("refs/heads/main"), "observed_at": self.clock()}
+
+        orchestrator.integration_train_service = TrainService(db, admission_reader=source_admission)
         orchestrator.integration_attestation_service = self.ci
         orchestrator.root_promotion_service = RootPromotionService(
             db,
@@ -611,9 +622,10 @@ class Train:
             ),
             clock=self.clock,
         )
-        assert await reviews.snapshot_from_pull_request(
-            task_id, verdict=review, reviewer_login="human", reviewed_sha=head
-        )
+        if review is not None:
+            assert await reviews.snapshot_from_pull_request(
+                task_id, verdict=review, reviewer_login="human", reviewed_sha=head
+            )
 
     async def cutover(self) -> Subject:
         """Legacy seals the first batch, shadow observes it, the operator transfers."""
@@ -1198,7 +1210,12 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     # Newly approved work arrives; the released request seeds the next
     # reconciler subject, which seals and builds it on the promoted main.
     train.source("future", {"future.txt": "next batch\n"})
-    await train.add_source("future", number=10)
+    await train.add_source("future", number=10, review=None)
+    # Green GitHub observation precedes the legacy source-CI poller's DB record.
+    async with train.db.immediate() as conn:
+        await conn.execute(delete(t.integration_source_ci).where(
+            t.integration_source_ci.c.task_id == "future",
+        ))
 
     async def next_batch_testing():
         later = [s for s in await train.subjects() if s.id != subject.id and s.batch_id]
