@@ -861,7 +861,9 @@ leave a subject waiting:
   never built (`reserved`) gets a durable `delivery.ready` continuation so the
   parent playbook can rebuild it and handle any conflict. Pending continuations
   deduplicate across restarts; delivered but refused continuations retry with
-  exponential backoff. Ended operations and operator pauses remain held.
+  exponential backoff, and so does one the outbox quarantined
+  (`retry_budget_exhausted:`), paced from its deadline. The quarantined row stays
+  for inspection. Ended operations and operator pauses remain held.
 
 Every source of the pass and every item of a page the service iterates itself
 runs under a budget: `integration.service_source_timeout_seconds` (300 s),

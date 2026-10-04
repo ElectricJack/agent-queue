@@ -4289,7 +4289,57 @@ async def test_parent_intent_reserved_continuation_retries_after_delivery_and_fe
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
 
 
-@pytest.mark.parametrize("blocker", ["stale_fence", "paused", "cancelled", "absent", "error", "fetch_moved"])
+async def test_parent_intent_quarantined_continuation_does_not_block_the_next(
+    db, promotion_case,
+):
+    """A continuation the outbox gave up on is a failed delivery, not a pending one."""
+    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX
+    from src.integration.parent_intents import ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    now = intent["updated_at"] + 60
+    service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(), clock=lambda: now,
+    )
+    handler = _intent_commands(db, service)
+
+    async def visit():
+        return await ParentIntentReconciler(db, commands=lambda: handler).reconcile(intent, now=now)
+
+    assert (await visit())["outcome"] == "continued"
+    # The consumer stayed unavailable until the outbox's max_wait deadline.
+    deadline = now + 3600
+    quarantined = f"{RETRY_EXHAUSTED_PREFIX}max_wait=3600s deadline={deadline:.3f}; 503"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_outbox).values(
+            attempts=7, available_at=deadline, last_error=quarantined,
+        ))
+    now = deadline + 59
+    assert (await visit())["outcome"] == "waiting"
+    now += 1
+    assert (await visit())["outcome"] == "continued"
+    # The fresh continuation is pending again; the quarantined row stays for inspection.
+    assert (await visit())["outcome"] == "waiting"
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_outbox).order_by(
+            integration_outbox.c.available_at,
+        ))).mappings().all()
+    assert [row["dedup_key"].rsplit(":", 1)[1] for row in rows] == ["0", "1"]
+    assert rows[0]["delivered_at"] is None and rows[0]["last_error"] == quarantined
+    assert rows[1]["delivered_at"] is None and rows[1]["last_error"] is None
+    assert rows[1]["available_at"] == now
+
+
+@pytest.mark.parametrize("blocker",["stale_fence", "paused", "cancelled", "absent", "error", "fetch_moved"])
 async def test_parent_intent_fenced_recovery_preserves_intent_without_proof(
     db, promotion_case, monkeypatch, blocker,
 ):
