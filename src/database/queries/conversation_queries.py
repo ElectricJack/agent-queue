@@ -153,9 +153,8 @@ class ConversationQueriesMixin:
             projects = await self.list_projects()
             if len(projects) == 1:
                 project_id = projects[0].id
-            elif len(projects) > 1:
-                # A shared channel cannot guess which project's supervisor owns it.
-                return None, None
+            # A shared channel cannot guess which project's supervisor owns it,
+            # so it goes to the global supervisor rather than waiting forever.
         for scope in [project_id, None] if project_id else [None]:
             live = await self.get_session_by_name(
                 named_session_name("supervisor", scope or "global")
