@@ -27,6 +27,11 @@ from src.object_loop.contracts import validate_score_receipt
 _UNITS = ("usd", "calls", "bakes", "active_seconds")
 _TERMINAL = {"COMPLETED", "BLOCKED"}
 
+#: The round ceiling a loop row written before ``max_rounds`` existed was
+#: admitted with.  The cap is start input now; a row without the field keeps
+#: the ceiling that was in force when it was admitted, never a silent raise.
+_DEFAULT_MAX_ROUNDS = 8
+
 
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
@@ -43,7 +48,7 @@ def _zero() -> dict:
 def _reserve(state: dict, variants: list[Variant]) -> None:
     if not variants or len({v.variant_id for v in variants}) != len(variants):
         raise ValueError("wave needs one to three distinct variants")
-    if state["round_id"] >= 8:
+    if state["round_id"] >= state.get("max_rounds", _DEFAULT_MAX_ROUNDS):
         raise ValueError("round cap reached")
     additional = {
         unit: (sum(getattr(v.reservation, unit) for v in variants)
@@ -91,6 +96,7 @@ def _same_start(state: dict, request: ObjectLoopStartArgs) -> bool:
         and state["score_reservation"] == _budget(request.score_reservation)
         and state["mandatory_views"] == request.mandatory_views
         and state["noise_band"] == request.noise_band
+        and state.get("max_rounds", _DEFAULT_MAX_ROUNDS) == request.max_rounds
         and state["max_repair_rounds"] == request.max_repair_rounds
         and state["max_plateau_rounds"] == request.max_plateau_rounds
         and state["brief_checkpoint"]["review_id"] == request.brief_review_id
@@ -197,6 +203,7 @@ class ObjectLoopCommandsMixin:
                 "score_task_id": None, "checkpoint": None, "stop_reason": None,
                 "status": "active", "decision_sha256": None,
                 "repair_count": 0, "plateau_count": 0,
+                "max_rounds": request.max_rounds,
                 "max_repair_rounds": request.max_repair_rounds,
                 "max_plateau_rounds": request.max_plateau_rounds,
             }

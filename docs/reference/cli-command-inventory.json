@@ -16916,6 +16916,7 @@
         ],
         "optional": [
           "--incumbent-artifact",
+          "--max-rounds",
           "--max-repair-rounds",
           "--max-plateau-rounds",
           "--json",

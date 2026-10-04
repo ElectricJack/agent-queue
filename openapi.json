@@ -45275,6 +45275,12 @@
             "title": "Noise Band",
             "description": ""
           },
+          "max_rounds": {
+            "type": "integer",
+            "title": "Max Rounds",
+            "description": "",
+            "default": 8
+          },
           "max_repair_rounds": {
             "type": "integer",
             "title": "Max Repair Rounds",

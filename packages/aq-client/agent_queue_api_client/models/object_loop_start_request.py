@@ -44,6 +44,7 @@ class ObjectLoopStartRequest:
         noise_band (float):
         variants (list[Any]):
         incumbent_artifact (None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset):
+        max_rounds (int | Unset):  Default: 8.
         max_repair_rounds (int | Unset):  Default: 2.
         max_plateau_rounds (int | Unset):  Default: 3.
     """
@@ -68,6 +69,7 @@ class ObjectLoopStartRequest:
     noise_band: float
     variants: list[Any]
     incumbent_artifact: None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset = UNSET
+    max_rounds: int | Unset = 8
     max_repair_rounds: int | Unset = 2
     max_plateau_rounds: int | Unset = 3
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -123,6 +125,8 @@ class ObjectLoopStartRequest:
         else:
             incumbent_artifact = self.incumbent_artifact
 
+        max_rounds = self.max_rounds
+
         max_repair_rounds = self.max_repair_rounds
 
         max_plateau_rounds = self.max_plateau_rounds
@@ -154,6 +158,8 @@ class ObjectLoopStartRequest:
         )
         if incumbent_artifact is not UNSET:
             field_dict["incumbent_artifact"] = incumbent_artifact
+        if max_rounds is not UNSET:
+            field_dict["max_rounds"] = max_rounds
         if max_repair_rounds is not UNSET:
             field_dict["max_repair_rounds"] = max_repair_rounds
         if max_plateau_rounds is not UNSET:
@@ -226,6 +232,8 @@ class ObjectLoopStartRequest:
 
         incumbent_artifact = _parse_incumbent_artifact(d.pop("incumbent_artifact", UNSET))
 
+        max_rounds = d.pop("max_rounds", UNSET)
+
         max_repair_rounds = d.pop("max_repair_rounds", UNSET)
 
         max_plateau_rounds = d.pop("max_plateau_rounds", UNSET)
@@ -251,6 +259,7 @@ class ObjectLoopStartRequest:
             noise_band=noise_band,
             variants=variants,
             incumbent_artifact=incumbent_artifact,
+            max_rounds=max_rounds,
             max_repair_rounds=max_repair_rounds,
             max_plateau_rounds=max_plateau_rounds,
         )

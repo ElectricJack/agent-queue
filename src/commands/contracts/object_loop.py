@@ -49,6 +49,7 @@ class ObjectLoopStartArgs(CommandArgs):
     final_reserve: Reservation
     score_reservation: Reservation
     noise_band: float = Field(ge=0, allow_inf_nan=False)
+    max_rounds: int = Field(default=8, ge=1, le=8)
     max_repair_rounds: int = Field(default=2, ge=0, le=8)
     max_plateau_rounds: int = Field(default=3, ge=1, le=8)
     variants: list[Variant] = Field(min_length=1, max_length=3)

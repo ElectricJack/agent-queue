@@ -12,6 +12,8 @@ reference, rig, scorer, render-profile and policy hashes. It requires a
 finite first wave, a whole-attempt budget, scorer/retry reserve per wave,
 a separate final-suite reserve,
 and the exact approved brief review revision and document hash.
+The three round caps — `max_rounds`, `max_repair_rounds` and
+`max_plateau_rounds` — are start input and part of that fixed identity.
 The command creates the finalization child and its event gate in the same
 transaction as the loop row. The first candidate is admitted only by
 `object_loop_reconcile` after that transaction commits. A repeated start with
@@ -38,8 +40,14 @@ external scorer supplies per-view measurements; this command never computes
 an image metric. Missing receipts or cost coverage marked unknown charges the
 full wave reservation even when a lower measured aggregate is supplied. A
 continue decision reserves every sibling and retry allowance together in the
-same loop-row update as the score decision. Eight rounds, repair and plateau
-caps are enforced.
+same loop-row update as the score decision. The round, repair and plateau caps
+are enforced. The round ceiling is `object_loop_start`'s `max_rounds`, one to
+eight and eight by default, so a pilot cap of three rounds is three rounds of
+its wave size rather than a `calls` budget that happens to fit one variant per
+wave. It is fixed input: a repeat start with a different `max_rounds` is
+refused as different fixed inputs, and a row admitted before the field existed
+keeps the eight-round ceiling it was admitted with. A refused continuation is
+a cap, not a dead loop — the loop still records a stop with its reason.
 
 An exhausted FAILED or BLOCKED scorer may instead record a defect stop with
 the exact loop version, `action=stop`, an explicit nonblank reason and no
