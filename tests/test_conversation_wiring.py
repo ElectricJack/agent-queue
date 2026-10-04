@@ -53,7 +53,6 @@ from tests.test_tmux_integration import (
     _spec,
 )
 
-
 env = inbox_tests.env
 DM_CHANNEL = "999999999999999999"
 lifecycle_clock = lifecycle_tests.lifecycle_clock
@@ -181,15 +180,18 @@ async def test_recipient_project_then_global_then_queued(env, project_live, glob
     assert message.project_id == (None if expected == "supervisor-global" else "agent-queue")
 
 
-async def test_multiple_projects_require_explicit_discord_project_id(env):
+async def test_multiple_projects_route_to_global_unless_discord_project_id_is_explicit(env):
     handler, db = env
     for project_id in ("agent-queue", "other"):
         await db.create_project(Project(id=project_id, name=project_id))
         await supervisor(db, project_id)
     await supervisor(db)
-    assert await db.resolve_conversation_supervisor() == (None, None)
-    handler.config.discord.project_id = "agent-queue"
+    assert await db.resolve_conversation_supervisor() == ("supervisor-global", None)
     accepted = await post(handler)
+    message = await db.get_message(accepted["supervisor_message_id"])
+    assert (message.to_id, message.project_id) == ("supervisor-global", None)
+    handler.config.discord.project_id = "agent-queue"
+    accepted = await post(handler, inbox_tests.args(1))
     assert (
         await db.get_message(accepted["supervisor_message_id"])
     ).to_id == "supervisor-agent-queue"

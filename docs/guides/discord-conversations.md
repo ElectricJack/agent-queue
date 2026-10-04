@@ -32,9 +32,10 @@ session exists.
 
 The approved 2026-10-03 chat-extension spec adds project routing. Set
 `discord.project_id` to the project served by this channel. AQ infers it when
-there is exactly one project; installations with multiple projects must set it
-explicitly. Inputs go to that project's live named supervisor, then to the live
-global supervisor. When neither is running, inputs remain queued until a
+there is exactly one project. With multiple projects and no explicit project,
+inputs go to the live global supervisor. With an explicit project, inputs go
+to that project's live named supervisor, then to the live global supervisor.
+When neither is running, inputs remain queued until a
 supervisor starts; conversation intake does not cold-start a session.
 
 ## Enable the route
