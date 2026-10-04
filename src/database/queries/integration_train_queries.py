@@ -8,6 +8,7 @@ from sqlalchemy import and_, case, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
+    archived_tasks,
     gates,
     integration_batch_members,
     integration_batches,
@@ -77,7 +78,13 @@ class IntegrationTrainQueriesMixin:
         )
         operation = integration_repair_operations.alias("integration_train_operation")
 
-        has_children = exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id))
+        archived_child = archived_tasks.alias("integration_train_archived_child")
+        has_children = or_(
+            exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id)),
+            exists(select(archived_child.c.id).where(
+                archived_child.c.parent_task_id == tasks.c.id,
+            )),
+        )
         leaf_identity = and_(
             ~has_children,
             checkpoint.c.checkpoint_sha.is_not(None),

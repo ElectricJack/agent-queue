@@ -56,6 +56,23 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def reverify_integration_parent_source(self, observation) -> dict:
+        """Daemon-only adapter for a configured canonical PR head observation."""
+        from src.integration.cancelled_collection_recovery import _ProofFailed
+        from src.integration.parent_source import ParentHeadObservation, ParentSourceReverification
+
+        principal = current_principal()
+        if (principal is None or principal.kind is not PrincipalKind.SERVICE
+                or not isinstance(observation, ParentHeadObservation)):
+            return _failure("unauthorized", "parent head must be server-observed")
+        try:
+            result = await ParentSourceReverification(
+                self.db, self._integration_promotion_service(),
+            ).run(observation.task_id, observation)
+        except (HierarchyError, _ProofFailed, BranchBusy, StaleFence) as exc:
+            return _failure("blocked", str(exc))
+        return _with_reason(result["outcome"] == "reverifying", result)
+
     async def _cmd_integration_parent_action(self, args: dict) -> dict:
         """Internal visit dispatch: process-bound engine scope is the authority."""
         from src.integration.parent_engine import active_parent_scope
@@ -2744,6 +2761,27 @@ class IntegrationCommandsMixin:
         # ``already_completed`` is the crash-retry replay of a durable completion
         # for this exact operation, generation, head and verification, so it is a
         # success like every other ``already_*`` outcome in this module.
+        if result["outcome"] in {"completed", "already_completed"}:
+            # The completion is already committed. Evidence is best effort;
+            # the review poller retries under the same authorization and Git
+            # guards after a crash, unavailable remote, or delayed PR opening.
+            import logging
+            from src.integration.review_evidence import ReviewEvidenceProducer
+
+            try:
+                project = await self.db.get_project(task.project_id)
+                if project.hierarchical_integration_mode == "train":
+                    await ReviewEvidenceProducer(
+                        self.db, self._integration_promotion_service(),
+                    ).snapshot_authorized(
+                        request.task_id, reviewed_sha=request.head_sha,
+                        policy_generation=project.hierarchical_integration_generation,
+                    )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Parent %s completed; exact review evidence awaits poller retry",
+                    request.task_id, exc_info=True,
+                )
         return {
             "success": result["outcome"] in {"completed", "already_completed"},
             **result,

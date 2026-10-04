@@ -549,6 +549,7 @@
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
@@ -1389,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:cadd3789539a5ec002bb5df2b6f43cfd091d204af591e23ffa208b35f7e41f72",
+  "digest": "sha256:bbb20c140c7b85c72b1cb24d357b276bbae062e34a567ea9fe60e0fba73e1812",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7934,6 +7935,37 @@
         "parametrize"
       ],
       "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
+    },
+    "tests/test_integration_parent_source.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.git.manager",
+        "src.integration.cancelled_collection_recovery",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.parent_completion",
+        "src.integration.parent_source",
+        "src.integration.promotion",
+        "src.integration.review_evidence",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Two-child aggregate admission survives an advanced canonical PR head."
     },
     "tests/test_integration_parent_subjects.py": {
       "areas": [

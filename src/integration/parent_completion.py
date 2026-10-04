@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import and_, insert, or_, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
@@ -287,10 +287,22 @@ class ParentCompletion:
                         task_delivery_receipts.c.repository_id
                         == checkpoint["repository_id"],
                         task_delivery_receipts.c.target_branch == checkpoint["branch"],
-                        task_delivery_receipts.c.parent_operation_id
-                        == carry_forward["operation_id"],
-                        task_delivery_receipts.c.parent_episode_id
-                        == carry_forward["episode_id"],
+                        or_(
+                            and_(
+                                task_delivery_receipts.c.parent_operation_id
+                                == carry_forward["operation_id"],
+                                task_delivery_receipts.c.parent_episode_id
+                                == carry_forward["episode_id"],
+                            ),
+                            task_delivery_receipts.c.id.in_(
+                                select(integration_episode_receipt_acceptances.c.receipt_id).where(
+                                    integration_episode_receipt_acceptances.c.operation_id
+                                    == carry_forward["operation_id"],
+                                    integration_episode_receipt_acceptances.c.episode_id
+                                    == carry_forward["episode_id"],
+                                )
+                            ),
+                        ),
                     )
                 )
             ).scalars().all()
@@ -323,7 +335,9 @@ class ParentCompletion:
                 operation=operation,
             )
 
-    async def mark_ready_on(self, conn, task_id: str) -> dict[str, Any]:
+    async def mark_ready_on(
+        self, conn, task_id: str, *, require_verifier: bool = False
+    ) -> dict[str, Any]:
         """Project readiness into checkpoint state and one durable event."""
         if not await legacy_parent_allowed_on(conn, self.db, task_id):
             return {"outcome": "waiting", "task_id": task_id}
@@ -352,7 +366,7 @@ class ParentCompletion:
                 ).limit(1)
             )
         ).first()
-        if attempts is None and policy.branchless_parent == "verifier":
+        if require_verifier or (attempts is None and policy.branchless_parent == "verifier"):
             route = policy.parent
             # Only the class hint is required: the verifier is filed unrouted
             # and the router writes its profile (``verifier_profile_id`` is

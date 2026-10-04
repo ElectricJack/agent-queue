@@ -339,6 +339,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/parent_source.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
   - { paths: ["src/integration/delivered_parent_adoption.py"], areas: ["integration-promotion", "integration-controls", "development-delivery"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
