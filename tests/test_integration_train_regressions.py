@@ -321,19 +321,6 @@ def recycled_slot(setup, tmp_path, name):
     return slot
 
 
-def refused_only_by(result, refusal):
-    """Gate an xfail: today's refusal must be the incident's own, nothing else.
-
-    An unrelated refusal or outcome is a real failure (``pytest.fail`` is not an
-    AssertionError, so ``xfail(raises=AssertionError)`` does not absorb it).
-    """
-    if result.get("outcome") != "blocked":
-        return
-    if refusal not in result.get("error", ""):
-        pytest.fail(f"refused for a reason other than the incident's: {result}")
-    raise AssertionError(f"still refused: {result['error']}")
-
-
 async def test_keen_grove_22_epic_settles_from_children_delivered_by_other_routes(
     setup, operator,
 ):
@@ -504,15 +491,6 @@ async def test_crisp_cascade_19_noble_journey_92_finished_writer_reservations_se
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "fresh-meadow-81: a writerless reserved collector of a superseded parent operation on"
-        " the epic branch is refused 'must be recovered first'; remove when fresh-meadow-81"
-        " lands (approved at 9c85fbad0, not on main)"
-    ),
-    raises=AssertionError,
-    strict=False,
-)
 async def test_fresh_meadow_81_superseded_collector_reservation_settles(setup, operator):
     """fresh-meadow-81 (ticket shape): a stale collector reservation blocked settlement.
 
@@ -521,9 +499,8 @@ async def test_fresh_meadow_81_superseded_collector_reservation_settles(setup, o
     ``confirmed_workspace_id`` naming an unlocked slot that holds the epic branch
     clean and published. The guard accepts only the parent, its current operation
     or a delegate, so settlement refuses "branch owner <id> must be recovered
-    first". The fresh-meadow-81 fix (approved at 9c85fbad0, not on main) retires
-    such a row and keeps the historical operation's state; this scenario passes
-    against that head.
+    first". Fixed by fresh-meadow-81 (a389deba1, on main via 3b9e6eea5): settlement
+    retires such a row and keeps the historical operation's state.
 
     Negative guard (holds before and after the fix): uncommitted work in the
     confirmed checkout of the epic branch refuses settlement.
@@ -554,13 +531,11 @@ async def test_fresh_meadow_81_superseded_collector_reservation_settles(setup, o
 
     (source / "uncommitted.txt").write_text("unpublished parent work\n")
     dirty = await operator(parent, main, settle_delivered_children=True)
-    if dirty["outcome"] != "blocked":
-        pytest.fail(f"dirty confirmed checkout of the epic branch did not refuse: {dirty}")
+    assert dirty["outcome"] == "blocked", dirty
     (source / "uncommitted.txt").unlink()
 
     refs = git(remote, "show-ref")
     preview = await operator(parent, main, settle_delivered_children=True, dry_run=True)
-    refused_only_by(preview, "branch owner epic-owner must be recovered first")
     assert preview["outcome"] == "would_adopt_parent", preview
     assert [row["owner_id"] for row in preview["ownership"]] == ["old-collection"]
     assert git(remote, "show-ref") == refs
@@ -744,7 +719,7 @@ async def _crisp_horizon_case(db, tmp_path, *, final_close_audits: int):
     ``final_close_audits`` is how many ``integration.repair_delegate_closed``
     audits the final stage has. A clean close leaves one. Live stage 6 of
     operation 6397b45b had two (fences 37 and 40, from two delegate sessions).
-    The shape fresh-meadow-81's fix a389deba1 (approved at 9c85fbad0) reconciles
+    The shape fresh-meadow-81's fix a389deba1 (on main via 3b9e6eea5) reconciles
     has none, with the resolution receipt standing in for the audit.
     """
     origin, work = tmp_path / "origin.git", tmp_path / "work"
@@ -989,14 +964,6 @@ async def _crisp_horizon_case(db, tmp_path, *, final_close_audits: int):
         pytest.param(
             0,
             id="resolution-receipt-only",
-            marks=pytest.mark.xfail(
-                reason=(
-                    "fresh-meadow-81: recover-parent-head refuses an escalated finished "
-                    "collection ('repair lacks its exact fenced delegate-close audit'); "
-                    "passes on its approved head 9c85fbad0; remove when that is on main"
-                ),
-                strict=False,
-            ),
         ),
         pytest.param(
             2,
@@ -1004,8 +971,8 @@ async def _crisp_horizon_case(db, tmp_path, *, final_close_audits: int):
             marks=pytest.mark.xfail(
                 reason=(
                     "no ticket yet: live stage 6 had two delegate-close audits and "
-                    "recover-parent-head accepts exactly one, even on fresh-meadow-81's "
-                    "approved head 9c85fbad0; remove when that is fixed"
+                    "recover-parent-head accepts exactly one, even with fresh-meadow-81 "
+                    "(3b9e6eea5) on main; remove when that is fixed"
                 ),
                 strict=False,
             ),
@@ -1017,9 +984,9 @@ async def test_escalated_parent_with_all_children_delivered_moves_to_fresh_verif
 ):
     """crisp-horizon-90 (Discord epic): an escalated finished collection must reach fresh verification.
 
-    Incident 2026-10-03/04, ticket fresh-meadow-81 part 2 (fix a389deba1,
-    "fix(integration): reconcile proven historical parent recovery", approved
-    at 9c85fbad0 and not on main).
+    Incident 2026-10-03/04, ticket fresh-meadow-81 part 2, fixed by a389deba1
+    ("fix(integration): reconcile proven historical parent recovery", on main via
+    3b9e6eea5) for one delegate-close audit or a resolution receipt.
     Related fixes: stark-ridge-78 (3399edc2d, on main) and wise-torrent
     (6d9ca2d7d, on main).
 
