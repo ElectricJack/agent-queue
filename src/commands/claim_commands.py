@@ -512,12 +512,18 @@ class ClaimCommandsMixin:
         attempt rather than a stranded repair.  Withholding is never worth a
         failed claim, so nothing here raises into the claim path.
         """
-        from src.integration.source_delivery import delivered_queued_repairs
+        from src.integration.source_delivery import (
+            delivered_queued_repairs,
+            retire_delivered_queued_repairs,
+        )
 
         try:
-            return await delivered_queued_repairs(
+            proofs = await delivered_queued_repairs(
                 self.db, getattr(self.db, "_delivery_observer", None),
                 project_id=project_id,
+            )
+            return await retire_delivered_queued_repairs(
+                self.db, proofs, project_id=project_id, retired_by="task_claim",
             )
         except Exception:
             logger.warning(
@@ -576,10 +582,10 @@ class ClaimCommandsMixin:
             # repository and default branch on every call and revalidates the
             # exact task/completion identity through ``DeliveryView.verified_on``,
             # so a retargeted or rewound target and a delivery that has not
-            # arrived yet each release the delegate on the next attempt.
+            # arrived yet leave an unretired delegate claimable.
             #
-            # Nothing is persisted and no frontier predicate reads a record
-            # back, so the withhold is per-attempt and never durable.
+            # A fresh proof also retires an unclaimed READY delegate under
+            # the hierarchy/task locks. A claimed writer is left alone.
             withheld_source_repairs = await self._delivered_source_repairs(project.id)
             if want_id and want_id in withheld_source_repairs:
                 return self._simple(

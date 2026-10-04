@@ -188,6 +188,26 @@ AQ-owned workflow prose is compact and links to applicable skills and authoritat
 project references on demand. Pool prime has one pool completion command instead of
 also prescribing task-session drain acknowledgement. No custom profile text is trimmed.
 
+### 4.0a Startup and command discovery
+
+Importing the CLI and building its complete command tree must not import the
+daemon command handler, database layer, SQLAlchemy or asyncpg. This applies to
+ordinary command execution as well as help: daemon-backed commands reach it
+through the client after argument parsing. The public `src.commands.CommandHandler`
+export remains available and loads its implementation only when requested.
+
+Explicit tool definitions retain precedence for auto-generated commands.
+The packaged `src/tools/command_catalogue.json` contains those definitions,
+categories, fallback definitions from live handler discovery and typed contracts,
+and internal plugin schemas. The common generation
+driver rebuilds this catalogue before the CLI inventory; a drift test compares
+the packaged definitions with live discovery. Runtime command registration must
+preserve the same command names, schemas and option order.
+
+CI checks startup in fresh processes, serially with performance checks enabled:
+the median of three `aq --help` runs must be less than one second. A separate
+import isolation check runs with the regular CLI tests.
+
 ### 4.1 Versioned JSON envelope
 
 Every command run with `--json` emits exactly one JSON object on stdout:
@@ -513,6 +533,11 @@ through its operation. Resolution retains whether the named row exists: a presen
 with no project is distinct from a missing row. A promotion intent whose `project_id` is
 NULL resolves through its persisted repository; if that repository cannot supply a project,
 the intent remains a present row with no resolved owner.
+
+An integration `subject_id` resolves the subject row's own `project_id`. For
+`integration_release_held_gate`, both the subject and gate must belong to the token's
+project; passing this ownership check still leaves the handler's local human operator
+requirement in force.
 
 The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.

@@ -10,16 +10,16 @@ paths, and run the drift check itself.
 
 from __future__ import annotations
 
-import subprocess
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from src.git.manager import GitError, GitManager
 from src.integration.development import GENERATED_MERGE_CONFIG, GENERATED_MERGE_DRIVER
-from src.git.manager import GitManager
 from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
 from src.test_selection import catalogue as cat
 
@@ -254,6 +254,30 @@ async def test_clean_generated_overlap_is_regenerated_and_deleted_side_is_suppor
         assert set(actual["modules"]) == {
             "tests/test_a.py", "tests/test_b.py", "tests/test_c.py",
         }
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout", "missing"])
+async def test_clean_merge_regeneration_infrastructure_failure_is_retryable(tmp_path, failure):
+    repo, base, current, other = _catalogue_branches(tmp_path)
+    args = [*GENERATED_MERGE_CONFIG, "merge-tree", "--write-tree",
+            f"--merge-base={base}", current, other]
+    assert _git(repo, *args, check=False).returncode == 0
+    script = tmp_path / "regenerate.py"
+    script.write_text(
+        "raise SystemExit(1)\n" if failure == "exit" else "import time\ntime.sleep(30)\n"
+    )
+    command = (
+        str(tmp_path / "absent-regenerator") if failure == "missing"
+        else f"{sys.executable} {script}"
+    )
+    # A clean merge has no conflict: the failure must not become GeneratedMergeConflict.
+    with pytest.raises(GitError, match="generated regeneration failed"):
+        await merge_generated_tree(
+            GitManager(), repo, args, command=command,
+            timeout_seconds=1 if failure == "timeout" else 600,
+        )
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert not list(tmp_path.glob("aq-regen-*"))
 
 
 async def test_generated_fallback_preserves_the_explicit_merge_base(tmp_path):

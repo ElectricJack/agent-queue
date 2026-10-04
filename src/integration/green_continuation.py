@@ -15,6 +15,9 @@ batch stays green forever.  This module owns the paced replacement wakeup:
   transient reason (a writer still attached, a short lease) is re-driven at
   least once an hour until it promotes or its authority changes, so a lost
   or refused wakeup cannot leave a green batch waiting for nothing;
+* a continuation the outbox quarantined after its retry budget is a failed
+  delivery, not a pending one, so it settles at its deadline and the next
+  continuation follows on the same backoff instead of waiting for a replay;
 * nothing here builds, tests, dispatches a repair, or supplies evidence.  The
   event names only the subject; ``integration_promote_main`` re-derives every
   authority from durable state.
@@ -39,7 +42,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
 )
-from src.integration.outbox import enqueue_integration_event
+from src.integration.outbox import enqueue_integration_event, settled_at
 
 logger = logging.getLogger(__name__)
 
@@ -323,14 +326,17 @@ class GreenPromotionReconciler:
             state = readiness["state"]
             revision = int(readiness["revision"])
             candidate = state["revision"]
-            delivered = await self._green_deliveries_on(conn, project_id, batch_id, revision)
-            if any(row["delivered_at"] is None for row in delivered):
+            green_rows = await self._green_deliveries_on(conn, project_id, batch_id, revision)
+            # A row the outbox quarantined is settled, not still queued: it settles
+            # at the deadline quarantine left in ``available_at``.
+            settled = [settled_at(row) for row in green_rows]
+            if None in settled:
                 return {
                     "outcome": "pending",
                     "batch_id": batch_id,
                     "reason": "a green continuation is still queued for delivery",
                 }
-            if not delivered:
+            if not green_rows:
                 # CI persists green before it publishes the attestation and
                 # emits the fact; that publisher owns the first wakeup.
                 return {
@@ -338,8 +344,8 @@ class GreenPromotionReconciler:
                     "batch_id": batch_id,
                     "reason": "no green fact has been delivered for this revision yet",
                 }
-            latest_delivery = max(float(row["delivered_at"]) for row in delivered)
-            if observed_at < latest_delivery + DELIVERY_GRACE_SECONDS:
+            latest_settled = max(float(value) for value in settled if value is not None)
+            if observed_at < latest_settled + DELIVERY_GRACE_SECONDS:
                 return {
                     "outcome": "pending",
                     "batch_id": batch_id,
@@ -363,7 +369,9 @@ class GreenPromotionReconciler:
             )
             generation = len(emitted)
             if emitted:
-                # ``available_at`` is the emitter's service clock, like ``now``.
+                # ``available_at`` is the emitter's service clock, like ``now``, and
+                # quarantine leaves a given-up continuation's deadline there, so a
+                # quarantined generation paces the next one like a delivered one.
                 due = float(emitted[-1]["available_at"]) + continuation_delay(generation)
                 if observed_at < due:
                     return {
@@ -398,7 +406,12 @@ class GreenPromotionReconciler:
     async def _green_deliveries_on(conn, project_id, batch_id, revision):
         rows = (
             await conn.execute(
-                select(integration_outbox.c.id, integration_outbox.c.delivered_at).where(
+                select(
+                    integration_outbox.c.id,
+                    integration_outbox.c.available_at,
+                    integration_outbox.c.delivered_at,
+                    integration_outbox.c.last_error,
+                ).where(
                     integration_outbox.c.project_id == project_id,
                     integration_outbox.c.event_type == GREEN_EVENT_TYPE,
                     integration_outbox.c.payload["batch_id"].as_string() == batch_id,

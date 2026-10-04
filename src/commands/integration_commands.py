@@ -56,6 +56,40 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_release_held_gate(self, args: dict) -> dict:
+        """A human may lift a hold without changing its immutable gate answer."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReleaseHeldGateArgs
+        from src.integration.engine import EngineRefused
+        from src.integration.gates import GatePrimitives
+        from src.integration.subjects import Subject
+
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            return _failure("unauthorized", "a verified human operator is required")
+        try:
+            request = IntegrationReleaseHeldGateArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        if not request.dry_run and (
+            request.expected_version is None or not request.reason.strip()
+        ):
+            return _failure("refused", "release requires an exact subject version and reason")
+        row = await self.db.get_integration_subject(request.subject_id)
+        if row is None:
+            return _failure("refused", "integration subject is missing")
+        if not request.dry_run and row["version"] != request.expected_version:
+            return _failure("refused", "stale_subject")
+        try:
+            result = await GatePrimitives(self.db).release_hold(
+                Subject.from_row(row), request.gate_id, reason=request.reason,
+                operator_id="human:local-operator", verified_human=True, dry_run=request.dry_run,
+            )
+        except EngineRefused as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def reverify_integration_parent_source(self, observation) -> dict:
         """Daemon-only adapter for a configured canonical PR head observation."""
         from src.integration.cancelled_collection_recovery import _ProofFailed
@@ -255,11 +289,14 @@ class IntegrationCommandsMixin:
     async def _record_integration_source_ci(self, observation) -> dict:
         from sqlalchemy import select, update
         from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from src.database.tables import archived_tasks, integration_source_ci, projects, tasks
+        from src.database.tables import (
+            archived_tasks, integration_source_ci, projects, task_completion_records,
+            task_metadata, tasks,
+        )
         from src.integration.models import HierarchicalIntegrationPolicy
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.source_ci import SourceCIObservation, repair_description
-        from src.integration.source_delivery import prove_source_delivered
+        from src.integration.source_delivery import RETIREMENT_KEY, prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
@@ -301,9 +338,19 @@ class IntegrationCommandsMixin:
                 if status is None:
                     status = (await conn.execute(select(archived_tasks.c.status).where(
                         archived_tasks.c.id == existing_repair))).scalar_one_or_none()
-                if status != TaskStatus.FAILED.value:
+                retired = await conn.scalar(select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == existing_repair,
+                    task_metadata.c.key == RETIREMENT_KEY,
+                ))
+                if retired is None:
+                    # Completion audit survives archival of the obsolete task.
+                    retired = await conn.scalar(select(task_completion_records.c.task_id).where(
+                        task_completion_records.c.task_id == existing_repair,
+                        task_completion_records.c.id.like("source-ci-retired:%"),
+                    ).limit(1))
+                if status != TaskStatus.FAILED.value and retired is None:
                     delegate_open = True
-                elif policy.root.repair.on_exhausted != "continue":
+                elif status == TaskStatus.FAILED.value and policy.root.repair.on_exhausted != "continue":
                     return _failure("human_required", "source repair failed under finite policy")
             attempt = record["repair_attempt"] + (0 if delegate_open else 1)
         # Canonical delivery truth, asked of the same evidence the root

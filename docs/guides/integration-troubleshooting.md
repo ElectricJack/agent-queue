@@ -848,7 +848,9 @@ leave a subject waiting:
   (`human_required`), supervisor-recovery stages and delegates an operator
   paused are never selected.
 - **Green promotion.** See [A green batch never promotes](#a-green-batch-never-promotes);
-  continuations never stop, at most an hour apart.
+  continuations never stop, at most an hour apart, including after the outbox
+  quarantined one (`retry_budget_exhausted:`), which settles at its deadline and
+  paces the next one from there. The quarantined row stays for inspection.
 - **Parent delivery intents.** A child delivery whose exact commit is already on
   the parent branch is finalized. A `prepared` intent whose push did not apply
   is pushed again with its own frozen identity under the parent's *current*
@@ -908,8 +910,14 @@ intent and head) and hands the parent back to its collector; the ordinary
 readiness projection, verifier wake and exact-head CI then run on the new head.
 A stage that changes nothing on such a subject no longer produces a
 `Repair … stopped without progress` incident, and a successor stage is only
-allocated when a conclusive failure is recorded at that head — which the
-successor's dossier then carries.
+allocated when a conclusive failure is recorded at that head. That red always
+arrives after the settle, since the settle is what starts the CI: recording it
+opens the next ordinal on the debug budget, tells the held verifier its head is
+red, and leaves the writer to the dispatcher. The successor's `previous_stage`
+carries the passed stage's `resolution_verification`. A red on the live head of
+a stage that a reopened collection left `cancelled` opens the next ordinal the
+same way; a red on a superseded head, or one classified `infrastructure`, is
+still `stale`.
 
 If a resolution was recorded but the aggregate head still does not include it
 (the stage closed without a commit proof, or its extension edge is missing), the

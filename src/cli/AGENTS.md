@@ -107,6 +107,12 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
   `@cli.group()` / `@group.command()`; importing registers. Hand-crafted modules are
   imported *before* `register_auto_commands()` so their names win over generated ones.
   `_run()` in `app.py` bridges sync Click commands to the async client.
+- **Command discovery:** the CLI reads `src/tools/command_catalogue.json` instead
+  of importing the handler, typed schemas or internal plugin implementations.
+  After changing tool definitions, handler methods, contracts or internal plugin schemas,
+  run `python scripts/generate-command-catalogue.py` (also part of the common
+  regeneration script). `tests/test_cli_startup_offline.py` checks drift and
+  forbids handler, database, SQLAlchemy and asyncpg imports during CLI startup.
 - **Plugin CLI extensions** register `aq <plugin-name> …` via the `aq.plugins` entry
   point group; saved plugin config is fetched only when that group is invoked, read-only
   and bounded. Import, help, version, schema and `aq test` discovery must never initialize

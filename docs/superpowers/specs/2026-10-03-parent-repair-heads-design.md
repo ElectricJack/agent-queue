@@ -15,6 +15,23 @@ verification. Stage budgets, deadlines, policy, state and original receipts reta
 their existing lifecycle. Verification and completion continue through the existing
 exact-head checks and ownership controls.
 
+One range carries exactly one proof. When this operation's own committed conflict
+resolution already finalized an immutable code receipt for the very movement the
+subject binding is about to record — same operation, episode, parent, repository,
+branch, and exactly `expected_target` to `resolution_head_sha`, of the trusted
+resolution shape and sourced from a live child of this parent — the receipt is that
+proof and the binding records no edge. Readiness folds each range once, so a second
+edge beside the receipt would strand the walk on `repair_head_chain`. The stage
+dossier keeps the covering intent and receipt identity, the stage's own recorded
+lineage stays unchanged, and the checkpoint still advances at the verifier handoff
+exactly as an ordinary child delivery does. Anything short of exactly one such
+receipt — a pending or uncommitted intent, an untrusted proof shape, a foreign
+episode or operation, another range, or an ambiguous set of intents — is no proof at
+all, and the ordinary extension edge is recorded instead. An edge an older close
+already recorded beside such a receipt is a historical fact: this binding never
+rewrites one, and reconciling that state belongs to
+`aq integration recover-parent-head`.
+
 `aq integration recover-parent-head OPERATION --head SHA` previews recovery of a
 completed authorized repair whose older close recorded its commit range but omitted
 the extension. Apply additionally requires the previewed episode, generation, stage,

@@ -2211,6 +2211,314 @@ async def test_normal_parent_repair_binding_propagates_the_fenced_head(db, tmp_p
     assert readiness["outcome"] == "ready" and readiness["head_sha"] == head
 
 
+def _resolution_evidence(
+    *, operation_id, before_sha, head_sha, tree_sha, commits, stage_ordinal=0, token=2
+):
+    """The audited resolution proof shape ``_trusted_code_receipt`` accepts."""
+    return {
+        "kind": "conflict_resolution",
+        "original_source_base": "a" * 40,
+        "original_source_head": "b" * 40,
+        "original_source_tree": "c" * 40,
+        "original_expected_target": before_sha,
+        "resolved_head_sha": head_sha,
+        "resolved_tree_sha": tree_sha,
+        "repair_commit_shas": list(commits),
+        "authoring": {
+            "operation_id": operation_id,
+            "stage_ordinal": stage_ordinal,
+            "repair_task_id": "repair",
+            "repair_session_id": "repair-session",
+            "repair_session_instance_token": "instance",
+            "repair_workspace_id": "repair-workspace",
+            "fence": {
+                "repository_id": "repo",
+                "branch": "aq/parent",
+                "owner_id": "repair",
+                "token": token,
+            },
+        },
+        "remote_proof": {
+            "kind": "exact_resolution_tip",
+            "remote_sha": head_sha,
+            "resolved_tree_sha": tree_sha,
+            "repair_commit_shas": list(commits),
+        },
+    }
+
+
+async def _record_parent_resolution_on(
+    db,
+    *,
+    operation_id,
+    child_id,
+    before_sha,
+    head_sha,
+    tree_sha,
+    defect=None,
+):
+    """Finalize one reconciled resolution: committed intent plus its code receipt."""
+    evidence = _resolution_evidence(
+        operation_id=operation_id,
+        before_sha=before_sha,
+        head_sha=head_sha,
+        tree_sha=tree_sha,
+        commits=[head_sha],
+    )
+    overrides = {}
+    intents = []
+    if defect == "untrusted_proof":
+        evidence = {**evidence, "remote_proof": {"kind": "exact_resolution_tip"}}
+    elif defect == "foreign_episode":
+        overrides["parent_episode_id"] = "another-episode"
+    elif defect == "other_range":
+        before_sha, head_sha = "1" * 40, "2" * 40
+        evidence = _resolution_evidence(
+            operation_id=operation_id,
+            before_sha=before_sha,
+            head_sha=head_sha,
+            tree_sha=tree_sha,
+            commits=[head_sha],
+        )
+    elif defect == "ambiguous_intents":
+        intents.append("rival-resolution")
+    if defect == "foreign_episode":
+        # The episode column is foreign-keyed, so the rival episode is real:
+        # this receipt proves a range in a collection that is not this one.
+        async with db.immediate() as conn:
+            episode = dict(
+                (await conn.execute(select(integration_parent_episodes))).mappings().one()
+            )
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    **(episode | {"id": "another-episode"})
+                )
+            )
+    await _code_receipt(
+        db,
+        child_id,
+        before_sha,
+        head_sha,
+        squash_sha=None,
+        review_evidence={"review": {"source_base": "a" * 40}},
+        resolution_evidence=evidence,
+        **overrides,
+    )
+    async with db.immediate() as conn:
+        for intent_id in [f"resolution-{child_id}", *intents]:
+            await conn.execute(
+                insert(integration_promotion_intents).values(
+                    id=intent_id,
+                    domain_key=intent_id,
+                    operation_key=operation_id,
+                    project_id="p",
+                    receipt_id=(
+                        f"receipt-{child_id}"
+                        if intent_id == f"resolution-{child_id}"
+                        else "receipt-rival"
+                    ),
+                    source_task_id=child_id,
+                    target_task_id="parent",
+                    source_head="b" * 40,
+                    source_base="a" * 40,
+                    repository_id="repo",
+                    target_branch="aq/parent",
+                    expected_target=before_sha,
+                    fence_owner_id=operation_id,
+                    fence_token=5,
+                    state="committed",
+                    resolution_head_sha=head_sha,
+                    resolution_tree_sha=tree_sha,
+                    resolution_commit_shas=[head_sha],
+                    resolution_operation_id=operation_id,
+                    resolution_stage_ordinal=0,
+                    resolution_task_id="repair",
+                    resolution_session_id="repair-session",
+                    resolution_session_instance_token="instance",
+                    resolution_workspace_id="repair-workspace",
+                    resolution_fence_owner_id="repair",
+                    resolution_fence_token=2,
+                    resolution_push_started_at=29.0,
+                    resolution_push_evidence={
+                        "kind": "exact_resolution_push_observed",
+                        "remote_sha": head_sha,
+                    },
+                    remote_evidence=evidence["remote_proof"],
+                    committed_at=30.0,
+                    created_at=28.0,
+                    updated_at=30.0,
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [None, "untrusted_proof", "foreign_episode", "other_range", "ambiguous_intents"],
+)
+async def test_committed_resolution_receipt_suppresses_the_duplicate_head_edge(
+    db, tmp_path, defect
+):
+    """A reconciled resolution owns its range; the close must not re-prove it.
+
+    The writer's push finalizes the resolution receipt before its own close
+    reaches the subject bind, so the pending-intent guard no longer holds and
+    the bind appends a second proof of a range readiness has already consumed.
+    The chain walk then strands on ``repair_head_chain`` and the parent waits
+    forever. Only a fully proved receipt may stand in for the edge: every
+    defect below still records it, because a receipt that proves nothing must
+    not quietly drop the writer's audited head movement.
+    """
+    from src.integration.parent_repair_heads import EXTENSIONS
+    from src.integration.repair import RepairService
+    from src.models import SessionRecord
+
+    _recovery, hierarchy, request, git, collected, head = await _parent_repair_case(
+        db, tmp_path, children=2
+    )
+    tree = git("rev-parse", f"{head}^{{tree}}")
+    async with db._engine.connect() as conn:
+        resolving_child = (
+            await conn.execute(
+                select(tasks.c.id)
+                .where(tasks.c.parent_task_id == "parent")
+                .order_by(tasks.c.id)
+            )
+        ).scalars().all()[1]
+    await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
+    await db.create_session(
+        SessionRecord(
+            id="repair-session",
+            task_id="repair",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="repair-session",
+            lifecycle="task",
+            state="running",
+            work_dir=str(tmp_path),
+            epoch="epoch",
+            instance_token="instance",
+            started_at=2.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "repair").values(status="IN_PROGRESS"))
+        await conn.execute(
+            insert(workspaces).values(
+                id="repair-workspace",
+                project_id="p",
+                workspace_path=str(tmp_path),
+                source_type="link",
+                locked_by_task_id="repair",
+                enabled=True,
+                created_at=2.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners).values(
+                owner_id="repair",
+                owner_role="repair",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+                handoff_state="attached",
+            )
+        )
+        await conn.execute(
+            update(integration_repair_stages).values(
+                current_subject={"kind": "parent", "generation": 1, "head_sha": collected},
+                dossier={},
+            )
+        )
+    await _record_parent_resolution_on(
+        db,
+        operation_id=request.operation_id,
+        child_id=resolving_child,
+        before_sha=collected,
+        head_sha=head,
+        tree_sha=tree,
+        defect=defect,
+    )
+    # The receipts alone already prove the aggregate head before the close;
+    # a receipt this parent cannot fold proves nothing, which is exactly why
+    # its close keeps the edge. Rival intents are invisible to readiness.
+    before = await hierarchy.readiness("parent")
+    if defect in {None, "ambiguous_intents"}:
+        assert before["outcome"] == "ready" and before["head_sha"] == head
+    else:
+        assert before["outcome"] == "waiting"
+    async with db.immediate() as conn:
+        bound = await RepairService(db).bind_current_parent_subject_on(
+            conn,
+            request.operation_id,
+            head_sha=head,
+            commit_proof={"base_sha": collected, "head_sha": head, "commits": [head]},
+        )
+    assert bound["changed"] is True
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    dossier = stage["dossier"]
+    assert dossier["repair_commits"] == [head]
+    assert stage["current_subject"]["head_sha"] == head
+    if defect is None:
+        assert dossier.get(EXTENSIONS, []) == []
+        assert dossier["receipt_covered_head"] == {
+            "intent_id": f"resolution-{resolving_child}",
+            "receipt_id": f"receipt-{resolving_child}",
+            "source_task_id": resolving_child,
+            "before_sha": collected,
+            "after_sha": head,
+            "committed_at": 30.0,
+        }
+        assert [item["id"] for item in dossier["receipts"]] == [
+            f"receipt-{child}" for child in sorted({resolving_child, "parent.1"})
+        ]
+        # The receipt owns the head, so the checkpoint still advances at the
+        # verifier handoff exactly as it does for an ordinary delivery.
+        checkpoint = await db.get_integration_checkpoint("parent")
+        assert checkpoint["checkpoint_sha"] == collected
+        readiness = await hierarchy.readiness("parent")
+        assert readiness["outcome"] == "ready" and readiness["head_sha"] == head
+        assert readiness["blockers"] == []
+        # The reported symptom end to end: the closed writer's stage settles on
+        # its recorded resolution and the parent projects verification at that
+        # head instead of waiting forever.
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "repair").values(status="COMPLETED")
+            )
+        service = RepairService(db, clock=lambda: 40.0)
+        settled = await service.dispatch(request.operation_id, 0)
+        assert settled["reason"] == "resolution_recorded_for_subject"
+        assert settled["head_sha"] == head
+        async with db._engine.connect() as conn:
+            settled_stage = (
+                await conn.execute(select(integration_repair_stages))
+            ).mappings().one()
+            ready = (
+                (
+                    await conn.execute(
+                        select(integration_outbox.c.payload).where(
+                            integration_outbox.c.event_type == "task.integration_ready",
+                            integration_outbox.c.payload["head_sha"].as_string() == head,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert settled_stage["state"] == "passed"
+        assert settled_stage["dossier"]["resolution_verification"]["intent_id"] == (
+            f"resolution-{resolving_child}"
+        )
+        assert len(ready) == 1
+        assert (await db.get_integration_checkpoint("parent"))["state"] == "integration_ready"
+    else:
+        assert [edge["after_sha"] for edge in dossier[EXTENSIONS]] == [head]
+        assert "receipt_covered_head" not in dossier
+        assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == head
+
+
 @pytest.mark.parametrize("mismatch", ["episode_id", "generation", "operation_id"])
 async def test_readiness_rejects_repair_edges_from_another_identity(db, tmp_path, mismatch):
     from src.integration.parent_repair_heads import EXTENSIONS
@@ -5290,6 +5598,38 @@ async def test_collector_to_parent_verifier_wake_advances_live_head(db):
     assert checkpoint["branch_owner_id"] == "parent"
     assert checkpoint["state"] == "verifying"
     assert (await db.get_task("parent")).status is TaskStatus.READY
+
+
+@pytest.mark.parametrize("checkpoint_state", ["integration_ready", "verifying"])
+async def test_manual_resume_allows_guarded_parent_verifier_wake(db, checkpoint_state):
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(state=checkpoint_state))
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    ownership = BranchOwnership(db)
+    owner = await ownership.get_owner(target)
+    worker = Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"])
+    collector = await ownership.transfer(worker, checkpointed["operation_id"], "collector")
+    verifier = await ownership.transfer(collector, "parent", "verifier")
+    snapshot = await db.pause_task("parent")
+    await db.finish_task_pause("parent", snapshot)
+
+    with pytest.raises(HierarchyError, match="operator manual pause is active"):
+        await hierarchy.wake_verifier("parent", verifier)
+    assert (await db.resume_task("parent")).status is TaskStatus.PAUSED
+    with pytest.raises(HierarchyError, match="guarded verifier wake"):
+        await db.transition_task("parent", TaskStatus.READY, force=True)
+
+    result = await hierarchy.wake_verifier("parent", verifier)
+
+    assert result["outcome"] == "woken"
+    assert (await db.get_task("parent")).status is TaskStatus.READY
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["checkpoint_sha"] == "d" * 40
+    assert checkpoint["state"] == "verifying"
 
 
 async def test_parent_prime_summary_uses_receipt_readiness_projection(db):

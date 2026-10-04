@@ -217,7 +217,7 @@ class PromotionService:
             created_at = float(int(self.clock()))
             # Authors are preserved from the source; the merge is committed
             # as the project's resolved identity, pinned in the intent so a
-            # retry rebuilds the identical commit (git-identity spec).
+            # retry uses the same commit metadata (git-identity spec).
             integrator = self.git.resolve_commit_identity(
                 await self.db.get_project(context["project_id"])
             ).as_dict()
@@ -270,62 +270,68 @@ class PromotionService:
             if intent["state"] == "conflict":
                 raise PromotionConflict(value, intent.get("conflict_diagnostics") or {})
 
-            # The origin remains part of the reviewed identity, but replaying
-            # inherited parent changes from it can produce false add/add conflicts.
-            merge_base = intent["source_base"]
-            if await self._is_ancestor(
-                repository.retained_git_dir, intent["expected_target"], intent["source_head"]
-            ):
-                merge_base = intent["expected_target"]
-
-            try:
-                tree_oid = await merge_generated_tree(
-                    self.git, repository.retained_git_dir,
-                    ["merge-tree", "--write-tree", f"--merge-base={merge_base}",
-                     intent["expected_target"], intent["source_head"]],
-                    command=self.regenerate_command,
-                    timeout_seconds=self.regenerate_timeout_seconds,
-                )
-            except GeneratedMergeConflict as exc:
-                diagnostics = self._conflict_diagnostics(intent, exc.stdout, exc.stderr)
-                if exc.reason:
-                    diagnostics["regeneration_failure"] = exc.reason
-                await self.db.mark_integration_promotion_conflict(intent["id"], diagnostics)
-                raise PromotionConflict(self._value(intent), diagnostics)
-            except GitError as exc:
-                raise PromotionRuntimeError(str(exc)) from exc
-            await self._assert_object_type(repository.retained_git_dir, tree_oid, "tree")
-
-            metadata = intent["commit_metadata"]
-            author = metadata["author"]
-            committer = metadata["committer"]
-            git_date = f"{int(metadata['timestamp'])} +0000"
-            commit = await self.git.arun_git_result(
-                [
-                    "commit-tree", tree_oid, "-p", intent["expected_target"],
-                    "-p", intent["source_head"],
-                ],
-                cwd=str(repository.retained_git_dir),
-                stdin=metadata["message"] + "\n",
-                env={
-                    "GIT_AUTHOR_NAME": author["name"],
-                    "GIT_AUTHOR_EMAIL": author["email"],
-                    "GIT_AUTHOR_DATE": git_date,
-                    "GIT_COMMITTER_NAME": committer["name"],
-                    "GIT_COMMITTER_EMAIL": committer["email"],
-                    "GIT_COMMITTER_DATE": git_date,
-                    "LC_ALL": "C",
-                },
-                lock_held=True,
-            )
-            if commit.returncode != 0 or not _OID_RE.fullmatch(commit.stdout.strip().lower()):
-                raise PromotionRuntimeError(
-                    (commit.stderr or commit.stdout or "git commit-tree failed").strip()
-                )
-            prepared_sha = commit.stdout.strip().lower()
-            await self._crash("after_object")
             recovery_ref = f"refs/aq/integration-intents/{intent['id']}"
-            await self._pin_recovery_ref(repository.retained_git_dir, recovery_ref, prepared_sha)
+            prepared_sha = await self._recover_prepared_commit(
+                repository.retained_git_dir, recovery_ref, intent
+            )
+            if prepared_sha is None:
+                # The origin remains part of the reviewed identity, but replaying
+                # inherited parent changes from it can produce false add/add conflicts.
+                merge_base = intent["source_base"]
+                if await self._is_ancestor(
+                    repository.retained_git_dir, intent["expected_target"], intent["source_head"]
+                ):
+                    merge_base = intent["expected_target"]
+
+                try:
+                    tree_oid = await merge_generated_tree(
+                        self.git, repository.retained_git_dir,
+                        ["merge-tree", "--write-tree", f"--merge-base={merge_base}",
+                         intent["expected_target"], intent["source_head"]],
+                        command=self.regenerate_command,
+                        timeout_seconds=self.regenerate_timeout_seconds,
+                    )
+                except GeneratedMergeConflict as exc:
+                    diagnostics = self._conflict_diagnostics(intent, exc.stdout, exc.stderr)
+                    if exc.reason:
+                        diagnostics["regeneration_failure"] = exc.reason
+                    await self.db.mark_integration_promotion_conflict(intent["id"], diagnostics)
+                    raise PromotionConflict(self._value(intent), diagnostics)
+                except GitError as exc:
+                    raise PromotionRuntimeError(str(exc)) from exc
+                await self._assert_object_type(repository.retained_git_dir, tree_oid, "tree")
+
+                metadata = intent["commit_metadata"]
+                author = metadata["author"]
+                committer = metadata["committer"]
+                git_date = f"{int(metadata['timestamp'])} +0000"
+                commit = await self.git.arun_git_result(
+                    [
+                        "commit-tree", tree_oid, "-p", intent["expected_target"],
+                        "-p", intent["source_head"],
+                    ],
+                    cwd=str(repository.retained_git_dir),
+                    stdin=metadata["message"] + "\n",
+                    env={
+                        "GIT_AUTHOR_NAME": author["name"],
+                        "GIT_AUTHOR_EMAIL": author["email"],
+                        "GIT_AUTHOR_DATE": git_date,
+                        "GIT_COMMITTER_NAME": committer["name"],
+                        "GIT_COMMITTER_EMAIL": committer["email"],
+                        "GIT_COMMITTER_DATE": git_date,
+                        "LC_ALL": "C",
+                    },
+                    lock_held=True,
+                )
+                if commit.returncode != 0 or not _OID_RE.fullmatch(commit.stdout.strip().lower()):
+                    raise PromotionRuntimeError(
+                        (commit.stderr or commit.stdout or "git commit-tree failed").strip()
+                    )
+                prepared_sha = commit.stdout.strip().lower()
+                await self._crash("after_object")
+                await self._pin_recovery_ref(
+                    repository.retained_git_dir, recovery_ref, prepared_sha
+                )
             await self._crash("after_recovery_ref")
             intent = await self.db.mark_integration_promotion_prepared(
                 intent["id"], prepared_sha=prepared_sha, recovery_ref=recovery_ref
@@ -880,7 +886,32 @@ class PromotionService:
                             {"kind": "prepared_reachable", "remote_sha": remote.oid},
                         )
                         return self._value(intent)
+                    evidence = None
                     if remote.oid != intent["expected_target"]:
+                        evidence = {
+                            "kind": "prepared_not_reachable", "remote_sha": remote.oid,
+                            "prepared_sha": intent["prepared_sha"],
+                        }
+                    elif intent["state"] == "reserved":
+                        # A continuation re-requests the frozen source head, so a
+                        # moved child branch would fail source_moved forever.
+                        source = await self.git.als_remote_ref(
+                            str(repository.retained_git_dir),
+                            intent["provenance"]["source_branch"],
+                        )
+                        if source.state is RemoteRefState.ERROR:
+                            raise PromotionRuntimeError(
+                                source.error or "source remote state is unknown"
+                            )
+                        if (
+                            source.state is not RemoteRefState.PRESENT
+                            or source.oid != intent["source_head"]
+                        ):
+                            evidence = {
+                                "kind": "source_moved", "remote_sha": remote.oid,
+                                "source_sha": source.oid, "prepared_sha": intent["prepared_sha"],
+                            }
+                    if evidence is not None:
                         if intent["remote_evidence"] is not None:
                             raise PromotionInvariantError("promotion already has push evidence")
                         domain_key = self._successor_domain(intent)
@@ -889,11 +920,7 @@ class PromotionService:
                             integration_promotion_intents.c.id == intent["id"],
                         ).values(
                             state="superseded", superseded_by_intent_id=successor_id,
-                            remote_evidence={
-                                "kind": "prepared_not_reachable", "remote_sha": remote.oid,
-                                "prepared_sha": intent["prepared_sha"],
-                                "fence": fence.model_dump(mode="json"),
-                            },
+                            remote_evidence={**evidence, "fence": fence.model_dump(mode="json")},
                             updated_at=self.clock(),
                         ))
                         outcome = "superseded"
@@ -1375,6 +1402,38 @@ class PromotionService:
         prefix = raw[:low].decode("utf-8", errors="ignore")
         diagnostics["output"] = f"{prefix}\n{marker}" if prefix else marker
         return diagnostics
+
+    async def _recover_prepared_commit(self, store: Path, ref: str, intent: dict) -> str | None:
+        # A crash can leave the commit pinned before its SHA reaches the DB.
+        # Regeneration may change across restarts, so reuse the durable result.
+        current = await self.git.arun_git_result(
+            ["rev-parse", "--verify", "--quiet", ref],
+            cwd=str(store), env={"LC_ALL": "C"}, lock_held=True,
+        )
+        if current.returncode == 1:
+            return None
+        if current.returncode != 0:
+            raise PromotionRuntimeError((current.stderr or "recovery ref lookup failed").strip())
+        prepared_sha = current.stdout.strip().lower()
+        object_type = await self.git.arun_git_result(
+            ["cat-file", "-t", prepared_sha],
+            cwd=str(store), env={"LC_ALL": "C"}, lock_held=True,
+        )
+        if object_type.returncode != 0 or object_type.stdout.strip() != "commit":
+            raise PromotionInvariantError("recovery ref does not point to a commit object")
+        parents = await self.git.arun_git_result(
+            ["show", "--no-patch", "--format=%P", prepared_sha],
+            cwd=str(store), env={"LC_ALL": "C"}, lock_held=True,
+        )
+        if parents.returncode != 0:
+            raise PromotionRuntimeError(
+                (parents.stderr or "recovery ref parent lookup failed").strip()
+            )
+        if parents.stdout.split() != [intent["expected_target"], intent["source_head"]]:
+            raise PromotionInvariantError(
+                "recovery ref commit parents do not match promotion inputs"
+            )
+        return prepared_sha
 
     async def _pin_recovery_ref(self, store: Path, ref: str, prepared_sha: str) -> None:
         current = await self.git.arun_git_result(

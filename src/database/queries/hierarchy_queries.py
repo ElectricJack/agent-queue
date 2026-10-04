@@ -1211,24 +1211,17 @@ class HierarchyQueryMixin:
                         )
                     )
                 ).scalar_one_or_none()
-        receipt_source = tasks.alias("integration_receipt_source")
-        delivered_stmt = (
-            select(task_delivery_receipts.c.source_task_id)
-            .select_from(
-                task_delivery_receipts.join(
-                    receipt_source,
-                    receipt_source.c.id == task_delivery_receipts.c.source_task_id,
-                )
-            )
-            .where(task_delivery_receipts.c.source_task_id.in_(ids))
+        delivered_stmt = select(task_delivery_receipts.c.source_task_id).where(
+            task_delivery_receipts.c.source_task_id.in_(ids)
         )
         if rollover_operation is not None:
+            # A completed aggregate can reverify without changing any
+            # delivery inside its subtree, including nested collections.
+            # Only receipts that leave the subtree fix an external identity.
             delivered_stmt = delivered_stmt.where(
                 or_(
                     task_delivery_receipts.c.target_task_id.is_(None),
-                    task_delivery_receipts.c.target_task_id != task_id,
-                    task_delivery_receipts.c.source_task_id == task_id,
-                    receipt_source.c.parent_task_id != task_id,
+                    task_delivery_receipts.c.target_task_id.not_in(ids),
                 )
             )
         delivered = (await conn.execute(delivered_stmt.limit(1))).first()

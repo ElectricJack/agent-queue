@@ -42,6 +42,7 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.models import CommandArgs
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
+    gates,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -53,6 +54,8 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
+    integration_subjects,
+    playbook_artifacts,
     workspaces,
 )
 from src.models import (
@@ -100,7 +103,7 @@ def _principal(project_id: str | None) -> ExecutionPrincipal:
 @pytest.fixture
 async def db(reuse_database):
     """Two projects, each with a task, a repo, a batch, a parent operation,
-    a candidate reservation and a branch owner row."""
+    a candidate reservation, a branch owner row and an integration subject/gate."""
     database = await reuse_database("target-scope")
     await database.create_project(Project(id="p", name="Project"))
     await database.create_project(Project(id="other", name="Other project"))
@@ -152,6 +155,49 @@ async def db(reuse_database):
             )
         )
     async with database._engine.begin() as conn:
+        artifact = "sha256:" + "5" * 64
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                artifact_sha256=artifact,
+                playbook_id="parent-integration",
+                source_digest="sha256:" + "6" * 64,
+                contract_fingerprint="sha256:" + "7" * 64,
+                compiler_build="test",
+                path="/test/parent.json",
+                created_at=1.0,
+            )
+        )
+        for project_id, task_id, repository_id in (
+            ("p", "own", "repo-p"),
+            ("other", "foreign", "repo-other"),
+        ):
+            await conn.execute(
+                insert(gates).values(
+                    id=f"gate-{project_id}",
+                    project_id=project_id,
+                    gate_type="human",
+                    title="Hold parent integration",
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_subjects).values(
+                    id=f"subject-{project_id}",
+                    project_id=project_id,
+                    repository_id=repository_id,
+                    kind="parent_episode",
+                    subject_key=task_id,
+                    phase="building",
+                    policy_playbook_id="parent-integration",
+                    policy_artifact_sha256=artifact,
+                    task_id=task_id,
+                    gate_id=f"gate-{project_id}",
+                    due_set_at=1.0,
+                    max_wait_seconds=3600,
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
         await conn.execute(
             insert(workspaces).values(
                 id="ws",
@@ -449,6 +495,8 @@ _FOREIGN_TARGETS = [
     ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
+    ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
+    ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
 ]
 _OWN_TARGETS = [
     ("integration_reserve_owner", {"task_id": "own"}),
@@ -458,6 +506,7 @@ _OWN_TARGETS = [
     ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
+    ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
 ]
 
 
@@ -472,6 +521,32 @@ async def test_a_foreign_target_is_refused_whichever_key_names_it(db, command, a
 @pytest.mark.parametrize(("command", "args"), _OWN_TARGETS)
 async def test_the_same_call_on_this_projects_target_is_admitted(db, command, args):
     assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
+
+
+async def test_held_gate_release_still_requires_a_human_after_project_scope_passes(
+    db, command_handler_factory, monkeypatch
+):
+    handler = await command_handler_factory()
+    handler.orchestrator.db = db
+    handler.config.security.capability_enforcement = "off"
+    release = AsyncMock()
+    monkeypatch.setattr("src.integration.gates.GatePrimitives.release_hold", release)
+    args = {"subject_id": "subject-p", "gate_id": "gate-p"}
+    before = await db.get_integration_subject("subject-p")
+    assert await check_request_scope(
+        "integration_release_held_gate", args, _scope("p"), db=db
+    ) is None
+
+    with principal_context(_principal("p")):
+        result = await handler.execute(
+            "integration_release_held_gate", {**args, "_scope": _elevated_scope_envelope("p")}
+        )
+
+    assert result["success"] is False
+    assert result["outcome"] == "unauthorized"
+    assert result["error"] == "a verified human operator is required"
+    release.assert_not_awaited()
+    assert await db.get_integration_subject("subject-p") == before
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +617,8 @@ def _plausible_args(command: str) -> dict:
         "intent_id": "intent-p",
         "session_id": SUPERVISOR,
         "repository_id": "repo-p",
+        "subject_id": "subject-p",
+        "gate_id": "gate-p",
     }
     model = CONTRACTS.get(command).contract.execution.args_model
     return {

@@ -510,6 +510,16 @@ class TrainService:
                 after = (page[-1]["task_id"], page[-1]["source_head"])
             edges = await dependencies_for(conn, list(ids))
             ids.update(dependency for dependencies in edges.values() for dependency in dependencies)
+            # Repair ancestry is also a prerequisite. Delivered sources may
+            # have left the frontier (or acquired a hold after delivery).
+            while ids:
+                sources = set((await conn.execute(select(integration_source_ci.c.task_id).where(
+                    integration_source_ci.c.repository_id == repository_id,
+                    integration_source_ci.c.repair_task_id.in_(ids),
+                ))).scalars())
+                if sources <= ids:
+                    break
+                ids.update(sources)
         return await self.delivery_observer.observe(ids)
 
     async def _git_delivered_roots_on(self, conn, view, project_id, repository):
@@ -1030,6 +1040,10 @@ class TrainService:
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
         git_delivered = git_delivered or set()
+        delivered = await self.db.delivered_root_task_ids_on(
+            conn, project_id=project_id, repository_id=repository_id
+        )
+        delivered |= git_delivered
         members = [member for member in members if member["task_id"] not in git_delivered]
         from src.integration.engine import current_admission
 
@@ -1066,7 +1080,14 @@ class TrainService:
             ))).mappings().all()
             # A repair cannot bypass a hold, rejected review or changed
             # generation on any source in its chain. Require every linked
-            # source to remain an exact eligible member at sealing time.
+            # source to remain an exact eligible member at sealing time, or
+            # to have already delivered that exact source to the default ref.
+            from src.integration.source_delivery import delivered_repair_sources_on
+
+            satisfied = await delivered_repair_sources_on(
+                self.db, conn, records, git_delivered=git_delivered,
+                repository_id=repository_id,
+            )
             eligible = {
                 (member["task_id"], member["source_base"], member["source_head"], member["generation"])
                 for member in members
@@ -1076,7 +1097,7 @@ class TrainService:
                     row["repair_task_id"] is not None and (
                         row["policy_generation"] != project["hierarchical_integration_generation"]
                         or (row["task_id"], row["source_base"], row["source_head"], row["generation"])
-                        not in eligible
+                        not in eligible | satisfied
                     )
                 )}
                 retained = {key for key in eligible if key[0] not in blocked}
@@ -1116,10 +1137,6 @@ class TrainService:
                     admitted.append(member)
             members = admitted
         edges = await dependencies_for(conn, [member["task_id"] for member in members])
-        delivered = await self.db.delivered_root_task_ids_on(
-            conn, project_id=project_id, repository_id=repository_id
-        )
-        delivered |= git_delivered
         ordered, deferred = order_members(members, edges, delivered)
         for member in deferred:
             logger.info(

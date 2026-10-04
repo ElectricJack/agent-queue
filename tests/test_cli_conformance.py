@@ -117,7 +117,12 @@ def test_every_generated_leaf_dispatches_required_and_omits_optional(path, comma
     """The historical help-only audit now executes every generated callback."""
     client = _client(SUCCESS_PAYLOAD)
     argv, supplied = _required_argv(command)
-    with patch("src.cli.app._get_client", return_value=client):
+    # This case exercises omitted options without a worker claim. Cover the
+    # knowledge proposal's inferred worker fence separately below.
+    with (
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.claim_epoch.read_claim_epoch", return_value=None),
+    ):
         result = CliRunner().invoke(command, argv, obj={})
     assert result.exit_code == 0, f"{path}: {result.output}\n{result.exception!r}"
     client.execute.assert_awaited_once()
@@ -128,6 +133,38 @@ def test_every_generated_leaf_dispatches_required_and_omits_optional(path, comma
     assert required <= set(payload)
     assert supplied <= set(payload)
     assert optional.isdisjoint(set(payload) - supplied)
+
+
+@pytest.mark.parametrize("ambient_epoch", [None, 37])
+@pytest.mark.parametrize("explicit_epoch", [None, 42])
+def test_knowledge_propose_infers_worker_claim_and_prefers_explicit_epoch(
+    ambient_epoch, explicit_epoch
+):
+    from src.cli.app import cli
+
+    command = cli.commands["knowledge"].commands["propose"]
+    argv, _supplied = _required_argv(command)
+    if explicit_epoch is not None:
+        argv.extend(["--claim-epoch", str(explicit_epoch)])
+    client = _client(SUCCESS_PAYLOAD)
+    with (
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.claim_epoch.read_claim_epoch", return_value=ambient_epoch) as infer,
+    ):
+        result = CliRunner().invoke(command, argv, obj={})
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once()
+    backend, payload = client.execute.await_args.args
+    assert backend == "knowledge_propose"
+    expected = explicit_epoch if explicit_epoch is not None else ambient_epoch
+    if expected is None:
+        assert "claim_epoch" not in payload
+    else:
+        assert payload["claim_epoch"] == expected
+    if explicit_epoch is None:
+        infer.assert_called_once_with()
+    else:
+        infer.assert_not_called()
 
 
 def test_required_structured_optional_and_explicit_null_reach_the_transport():

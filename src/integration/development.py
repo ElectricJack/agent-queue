@@ -155,6 +155,20 @@ def armed_for_branch_cleanup(evidence):
 #: ``finished`` and ``cancelled`` actions are over; neither answers delivery.
 OPEN_OPERATION_STATES = ("prepared", "publishing", "parked")
 
+#: A held dependency's skip reason, as its dependent's warning names it.  A
+#: dependent repeats any of these reasons, so its stall carries the dependency's
+#: own recovery advice; every other reason is an ``undelivered_dependency``.
+_DEPENDENCY_SKIP_DETAIL = {
+    "dependency_cycle": "dependency cycle with",
+    "missing_ref": "missing ref for dependency",
+    "missing_provenance": "missing git provenance for dependency",
+    "invalid_parent_completion": "invalid parent completion for dependency",
+    "parent_provenance_mismatch": "parent provenance mismatch for dependency",
+    "parent_adoption_provenance_mismatch": "parent adoption provenance mismatch for dependency",
+    "missing_or_ambiguous_source": "unresolvable source for dependency",
+    "undelivered_dependency": "undelivered dependency",
+}
+
 
 async def operation_rows_on(conn, project_ids=None, *, states=None):
     """Latest event revisions of real publisher actions, independent of git truth.
@@ -1948,20 +1962,9 @@ class DevelopmentIntegration:
                 if held:
                     for dependency_id in held:
                         dependency_reason = skipped.get(dependency_id, (None, None))[0]
-                        dependency_kind = (
-                            dependency_reason if dependency_reason in {
-                                "dependency_cycle", "missing_ref", "missing_provenance",
-                                "invalid_parent_completion", "parent_provenance_mismatch",
-                            } else "undelivered_dependency"
+                        detail = _DEPENDENCY_SKIP_DETAIL.get(
+                            dependency_reason, _DEPENDENCY_SKIP_DETAIL["undelivered_dependency"]
                         )
-                        detail = {
-                            "dependency_cycle": "dependency cycle with",
-                            "missing_ref": "missing ref for dependency",
-                            "missing_provenance": "missing git provenance for dependency",
-                            "invalid_parent_completion": "invalid parent completion for dependency",
-                            "parent_provenance_mismatch": "parent provenance mismatch for dependency",
-                            "undelivered_dependency": "undelivered dependency",
-                        }[dependency_kind]
                         logger.warning(
                             "development publisher: skipping %s: %s %s",
                             task["id"], detail, dependency_id,
@@ -1973,10 +1976,8 @@ class DevelopmentIntegration:
                         )
                     first_reason = skipped.get(held[0], (None, None))[0]
                     skipped[task["id"]] = (
-                        first_reason if first_reason in {
-                            "dependency_cycle", "missing_ref", "missing_provenance",
-                            "invalid_parent_completion", "parent_provenance_mismatch",
-                        } else "undelivered_dependency", held[0],
+                        first_reason if first_reason in _DEPENDENCY_SKIP_DETAIL
+                        else "undelivered_dependency", held[0],
                     )
                     continue
                 evidence = own_truth[task["id"]]

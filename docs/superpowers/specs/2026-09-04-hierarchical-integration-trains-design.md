@@ -188,6 +188,13 @@ parent; settlement emits `task.integration_ready` only after the current generat
 required delivery receipts and dispositions. The resumed parent or configured branchless-parent
 verifier must still record aggregate verification and pass guarded completion.
 
+In hierarchy and train modes, an operator may pause a managed parent at any checkpoint
+state. `aq task resume` removes the manual hold in the same transaction. If resume would
+restore READY, ASSIGNED or IN_PROGRESS, it instead keeps the parent PAUSED under integration
+ownership, including at `integration_ready` and `verifying`. Resume does not change the
+checkpoint or authorize a worker wake; the guarded verifier wake or explicit integration
+recovery remains responsible for advancing the parent.
+
 ### 6.4 Direct-to-parent collection
 
 Reviewed siblings remain isolated until promotion. A per-parent collector serializes mutations
@@ -1059,6 +1066,9 @@ source and checkpoint SHAs, repository-qualified target, expected old SHA, prepa
 ownership fence, and preparation/push/reconciliation state. Persist the intent before any push.
 Keep prepared commits reachable through a durable recovery ref until reconciliation completes;
 conflict resolutions must be recoverable without rerunning the agent.
+If a crash pins the recovery ref before recording the prepared SHA, preparation reuses that
+commit after verifying its exact ordered parents are the expected target and reviewed source
+head. It must not regenerate an already pinned result; a mismatched ref is an invariant error.
 
 After a push, atomically finalize the receipt and enqueue the delivery event in a transactional
 outbox. A crash before pushing leaves a retryable intent. A crash after pushing is reconciled by

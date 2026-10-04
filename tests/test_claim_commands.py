@@ -1412,10 +1412,11 @@ def elevated(handler):
 class TestSourceRepairDeliveryGate:
     """A queued source-CI repair is withheld only by a proof taken now.
 
-    Delivery truth is request-scoped (``src/integration/source_delivery.py``),
-    so nothing about this gate is persisted: the same queued delegate is
-    claimable again the moment a fresh proof stops saying ``contained``, and a
-    gate that cannot reach git withholds nothing at all.
+    Delivery truth is request-scoped (``src/integration/source_delivery.py``).
+    The command gate retires an unclaimed READY delegate after a fresh proof;
+    no recorded delivery answer authorizes retirement and an unreachable Git
+    observer withholds nothing. These tests isolate frontier exclusion; the
+    real proof and retirement checks live in test_epic_pr_review_evidence.py.
     """
 
     @staticmethod

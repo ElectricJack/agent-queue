@@ -31,11 +31,17 @@ REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
 
 class RegenerationFailure(RuntimeError):
-    """The scratch-worktree regeneration could not produce a safe tree."""
+    """The scratch-worktree regeneration could not produce a safe tree.
 
-    def __init__(self, reason: str) -> None:
+    ``retryable`` marks infrastructure failures (the regenerator could not
+    start, timed out or exited non-zero, or a git step failed) as opposed to a
+    content-level refusal such as a changed non-generated path.
+    """
+
+    def __init__(self, reason: str, *, retryable: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.retryable = retryable
 
 
 class GeneratedMergeConflict(RuntimeError):
@@ -118,6 +124,10 @@ async def merge_generated_tree(
             restore_from=current, restore_paths=tuple(sorted(conflicts)),
         )
     except RegenerationFailure as exc:
+        if exc.retryable and not merged.returncode:
+            # A clean merge has no conflict to record; an infrastructure
+            # failure must stay retryable instead of parking the member.
+            raise GitError(f"generated regeneration failed: {exc.reason}") from exc
         raise GeneratedMergeConflict(merged, f"generated regeneration failed: {exc.reason}") from exc
 
 
@@ -201,7 +211,9 @@ async def _run(
             cwd=str(worktree),
         )
         if restored.returncode:
-            raise RegenerationFailure(restored.stderr or "could not restore generated conflicts")
+            raise RegenerationFailure(
+                restored.stderr or "could not restore generated conflicts", retryable=True
+            )
 
     argv = shlex.split(command)
     if not argv:
@@ -217,25 +229,27 @@ async def _run(
             start_new_session=True,
         )
     except OSError as exc:
-        raise RegenerationFailure(f"could not start `{command}`: {exc}") from exc
+        raise RegenerationFailure(
+            f"could not start `{command}`: {exc}", retryable=True
+        ) from exc
     try:
         output, _ = await asyncio.wait_for(process.communicate(), timeout_seconds)
     except TimeoutError as exc:
         _kill_process_group(process)
         raise RegenerationFailure(
-            f"`{command}` timed out after {timeout_seconds}s"
+            f"`{command}` timed out after {timeout_seconds}s", retryable=True
         ) from exc
     except asyncio.CancelledError:
         _kill_process_group(process)
         raise
     if process.returncode != 0:
         tail = output.decode("utf-8", "replace")[-REGENERATION_OUTPUT_TAIL_CHARS:]
-        raise RegenerationFailure(f"`{command}` exited {process.returncode}: {tail}")
+        raise RegenerationFailure(
+            f"`{command}` exited {process.returncode}: {tail}", retryable=True
+        )
 
-    await git.arun_git_result(["add", "-A"], cwd=str(worktree))
-    new_tree = (await git.arun_git_result(
-        ["write-tree"], cwd=str(worktree)
-    )).stdout.strip()
+    await _checked(git, ["add", "-A"], worktree)
+    new_tree = (await _checked(git, ["write-tree"], worktree)).stdout.strip()
     # ``merge_tree_sha`` is already a tree SHA (``merge-tree --write-tree`` or
     # ``rev-parse HEAD^{tree}``), so it is the diff baseline directly.
     if new_tree == merge_tree_sha:
@@ -245,18 +259,14 @@ async def _run(
     changed = [
         line
         for line in (
-            await git.arun_git_result(
-                ["diff-tree", "--name-only", "-r", old_tree, new_tree],
-                cwd=str(worktree),
-            )
+            await _checked(git, ["diff-tree", "--name-only", "-r", old_tree, new_tree], worktree)
         ).stdout.splitlines()
         if line
     ]
     # ``check-attr -z --stdin`` emits ``<path>\0<attribute>\0<value>\0`` per path.
     attr_output = (
-        await git.arun_git_result(
-            ["check-attr", "-z", "--stdin", "merge"],
-            cwd=str(worktree),
+        await _checked(
+            git, ["check-attr", "-z", "--stdin", "merge"], worktree,
             stdin="\0".join(changed) + "\0",
         )
     ).stdout
@@ -272,6 +282,16 @@ async def _run(
         extra={"merge_tree": merge_tree_sha, "regenerated": changed},
     )
     return new_tree
+
+
+async def _checked(git: GitManager, args: list[str], worktree: Path, **kwargs):
+    result = await git.arun_git_result(args, cwd=str(worktree), **kwargs)
+    if result.returncode:
+        raise RegenerationFailure(
+            f"git {args[0]} failed during regeneration: {result.stderr.strip()}",
+            retryable=True,
+        )
+    return result
 
 
 def _kill_process_group(process) -> None:

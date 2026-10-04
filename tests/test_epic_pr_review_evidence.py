@@ -24,6 +24,7 @@ from src.database.tables import (
     repos,
     task_branch_origins,
     task_completion_records,
+    task_delivery_receipts,
     task_integration_checkpoints,
     task_labels,
     tasks,
@@ -510,6 +511,105 @@ async def test_an_open_delegate_is_never_ended_by_a_delivery_proof(case, tmp_pat
     assert repair_id in await _withheld(case, tmp_path)
 
 
+async def test_claim_retires_a_ready_repair_superseded_by_source_delivery(case, tmp_path):
+    handler, filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    created = await handler._cmd_observe_integration_source_ci(observation)
+    repair_id = created["repair_task_id"]
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+
+    assert repair_id in await handler._delivered_source_repairs("p")
+    assert (await case["db"].get_task(repair_id)).status is TaskStatus.COMPLETED
+    audit = await case["db"].get_task_meta(repair_id, "source_ci_retirement")
+    assert audit["disposition"] == "superseded_by_delivery"
+    assert audit["source_head"] == case["first"]
+    assert audit["delivery"]["target_ref"] == "refs/heads/main"
+    async with case["db"]._engine.connect() as conn:
+        closes = (await conn.execute(select(task_completion_records).where(
+            task_completion_records.c.task_id == repair_id))).mappings().all()
+    assert len(closes) == 1 and closes[0]["work_outcome"] == "abandoned"
+    assert json.loads(closes[0]["verification"])["disposition"] == "superseded_by_delivery"
+    # It has left the queue: no repeated Git proof, close or new repair.
+    assert await handler._delivered_source_repairs("p") == {}
+    assert (await handler._cmd_observe_integration_source_ci(observation))["outcome"] == "source_delivered"
+    assert filing.await_count == 1
+    # A later rewind requires a fresh repair, not resurrection of the obsolete one.
+    _publish(case, "main", case["base"])
+    again = await handler._cmd_observe_integration_source_ci(observation)
+    assert again["outcome"] == "repair_created"
+    assert again["repair_task_id"] != repair_id and filing.await_count == 2
+
+
+@pytest.mark.parametrize("change", [
+    "source", "target", "lineage", "claimed", "completed", "gate", "hold", "owner", "session",
+])
+async def test_ready_repair_retirement_rechecks_identity_and_preserves_writers(case, tmp_path, change):
+    from src.integration.source_delivery import retire_delivered_queued_repairs
+
+    handler, _filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    repair_id = (await handler._cmd_observe_integration_source_ci(observation))["repair_task_id"]
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    proofs = await _withheld(case, tmp_path)
+    assert repair_id in proofs
+    if change == "target":
+        await _set_default_branch(case, "release")
+    elif change == "gate":
+        await case["db"].create_gate("p", "human", "Keep repair", waiter_task_ids=[repair_id])
+    elif change == "session":
+        from src.models import SessionRecord
+
+        await case["db"].create_session(SessionRecord(
+            id="retained-writer", project_id="p", profile_id="worker", harness="codex",
+            provider="fake", name="retained-writer", lifecycle="pool", work_dir=str(tmp_path),
+            epoch="test", instance_token="test", started_at=1000.0, task_id=repair_id,
+            state="running"))
+    else:
+        async with case["db"].immediate() as conn:
+            if change == "source":
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "e1"
+                ).values(generation=2, verified_generation=2))
+            elif change == "lineage":
+                await conn.execute(update(integration_source_ci).where(
+                    integration_source_ci.c.task_id == "e1").values(repair_task_id=None))
+            elif change == "hold":
+                await conn.execute(insert(task_labels).values(task_id=repair_id, label="hold:product"))
+            elif change == "owner":
+                from src.database.tables import integration_branch_owners
+
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="retained-owner", repository_id="repo", ref="refs/heads/retained-repair",
+                    owner_id=repair_id, owner_role="repair", fence_token=1,
+                    handoff_state="reserved", created_at=1000.0, updated_at=1000.0))
+            else:
+                await conn.execute(update(tasks).where(tasks.c.id == repair_id).values(
+                    status="IN_PROGRESS" if change == "claimed" else "COMPLETED"))
+    result = await retire_delivered_queued_repairs(
+        case["db"], proofs, project_id="p", retired_by="test_claim")
+    assert await case["db"].get_task_meta(repair_id, "source_ci_retirement") is None
+    if change not in {"gate", "hold", "owner", "session"}:
+        assert result == {}
+
+
+async def test_claim_proof_does_not_cover_an_older_repair_source_generation(case, tmp_path):
+    handler, _filing = await _source_handler(case, tmp_path)
+    case["db"].set_delivery_observer(DeliveryObserver(
+        case["db"], git=GitManager(), data_dir=tmp_path / "observer"))
+    _source, observation = await _red_observation(case)
+    repair_id = (await handler._cmd_observe_integration_source_ci(observation))["repair_task_id"]
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    async with case["db"].immediate() as conn:
+        await conn.execute(update(integration_source_ci).where(
+            integration_source_ci.c.task_id == "e1").values(generation=0))
+    assert await handler._delivered_source_repairs("p") == {}
+    assert (await case["db"].get_task(repair_id)).status is TaskStatus.READY
+
+
 async def test_a_retargeted_default_target_is_answered_afresh(case, tmp_path):
     # Delivery truth is request-scoped: the same source, the same repair
     # attempt, and a target that moved. A recorded proof must never answer for
@@ -664,10 +764,7 @@ async def test_conflict_observation_files_no_source_repair(case, tmp_path):
     handler._cmd_ensure_task.assert_not_called()
 
 
-@pytest.mark.parametrize("source_blocker", [
-    "hold", "repair_hold", "gate", "rejected", "generation", "policy",
-])
-async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
+async def _pending_repair_source(case):
     await _continuous_policy(case)
     db = case["db"]
     branch = "aq/source-repair"
@@ -692,6 +789,84 @@ async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(c
             generation=0, policy_generation=0, state="pending", evidence={}, observed_at=1000.0))
     for task_id, head in (("e1", case["first"]), ("repair-source", case["second"])):
         assert await case["producer"].snapshot_authorized(task_id, reviewed_sha=head, policy_generation=0)
+
+
+@pytest.mark.parametrize("original_ci", ["red", "green"])
+@pytest.mark.parametrize("delivery", ["git", "receipt"])
+async def test_green_repair_remains_eligible_after_original_delivers(case, original_ci, delivery):
+    await _pending_repair_source(case)
+    db = case["db"]
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_source_ci).where(
+            integration_source_ci.c.task_id == "e1").values(state=original_ci))
+        if delivery == "receipt":
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="original-delivery", domain_key="original-delivery", source_task_id="e1",
+                repository_id="repo", target_branch="main", reviewed_head_sha=case["first"],
+                disposition="code", created_at=1000.0))
+        assert await TrainService(db)._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request",
+            git_delivered={"e1"} if delivery == "git" else set()) == []
+        await conn.execute(update(integration_source_ci).where(
+            integration_source_ci.c.task_id == "repair-source").values(state="green"))
+        members = await TrainService(db)._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request",
+            git_delivered={"e1"} if delivery == "git" else set())
+    assert {item["task_id"] for item in members} == {"repair-source"}
+    # The repair's own hold and the lineage's policy fence still bind.
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_labels).values(task_id="repair-source", label="hold:product"))
+        assert await TrainService(db)._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request",
+            git_delivered={"e1"} if delivery == "git" else set()) == []
+
+
+async def test_sealing_observes_delivered_repair_ancestor_outside_frontier(case, tmp_path):
+    await _pending_repair_source(case)
+    db = case["db"]
+    db.set_delivery_observer(DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer"))
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_source_ci).where(
+            integration_source_ci.c.task_id == "repair-source").values(state="green"))
+        await conn.execute(insert(task_labels).values(task_id="e1", label="hold:product"))
+    service = TrainService(db)
+    view = await service._observe_root_deliveries("p", "repair-delivery")
+    assert "e1" in view.evidence
+    async with db.immediate() as conn:
+        repository = (await conn.execute(select(repos).where(repos.c.id == "repo"))).mappings().one()
+        delivered = await service._git_delivered_roots_on(conn, view, "p", repository)
+        assert "e1" in delivered
+        members = await service._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request",
+            git_delivered=delivered)
+    assert {member["task_id"] for member in members} == {"repair-source"}
+
+
+async def test_retired_ready_repair_cannot_reenter_train_with_old_checkpoint(case, tmp_path):
+    await _pending_repair_source(case)
+    db = case["db"]
+    handler, _filing = await _source_handler(case, tmp_path)
+    db.set_delivery_observer(DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer"))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_source_ci).where(
+            integration_source_ci.c.task_id == "repair-source").values(state="green"))
+        await conn.execute(update(tasks).where(tasks.c.id == "repair-source").values(status="READY"))
+    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
+    assert "repair-source" in await handler._delivered_source_repairs("p")
+    assert (await db.get_task("repair-source")).status is TaskStatus.COMPLETED
+    async with db.immediate() as conn:
+        assert await TrainService(db)._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request",
+            git_delivered={"e1"}) == []
+
+
+@pytest.mark.parametrize("source_blocker", [
+    "hold", "repair_hold", "gate", "rejected", "generation", "policy",
+])
+async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
+    await _pending_repair_source(case)
+    db = case["db"]
     async def members():
         async with db.immediate() as conn:
             return await TrainService(db)._eligible_members(

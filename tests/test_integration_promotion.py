@@ -1861,6 +1861,99 @@ class CrashOnce:
             raise InjectedCrash(phase)
 
 
+async def test_prepare_retry_adopts_pinned_commit_when_regeneration_output_changes(
+    db, promotion_case, monkeypatch
+):
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_recovery_ref"),
+    )
+    with pytest.raises(InjectedCrash, match="after_recovery_ref"):
+        await crashing.prepare(case["request"])
+
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent["state"] == "reserved" and intent["prepared_sha"] is None
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    recovery_ref = f"refs/aq/integration-intents/{intent['id']}"
+    pinned_sha = _git(["rev-parse", recovery_ref], retained)
+
+    # A dependency update can change the generated tree across daemon restarts.
+    changed_tree = _git(["rev-parse", f"{case['base']}^{{tree}}"], retained)
+    assert changed_tree != _git(["rev-parse", f"{pinned_sha}^{{tree}}"], retained)
+    regenerate = AsyncMock(return_value=changed_tree)
+    monkeypatch.setattr("src.integration.promotion.merge_generated_tree", regenerate)
+    restarted = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await restarted.prepare(case["request"])
+
+    assert prepared.prepared_sha == pinned_sha
+    regenerate.assert_not_awaited()
+    persisted = await db.get_integration_promotion_intent(intent["id"])
+    assert persisted["state"] == "prepared"
+    assert persisted["prepared_sha"] == pinned_sha and persisted["recovery_ref"] == recovery_ref
+    assert _git(["rev-parse", recovery_ref], retained) == pinned_sha
+    await restarted.push(prepared.intent_id, case["fence"])
+    assert (await restarted.reconcile(prepared.intent_id)) == (
+        await restarted.prepare(case["request"])
+    )
+    assert _git(["rev-parse", "refs/heads/aq/parent"], case["origin"]) == pinned_sha
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
+
+
+@pytest.mark.parametrize(
+    "shape", ["wrong_target", "wrong_source", "reversed", "one_parent", "extra_parent", "tree"]
+)
+async def test_prepare_retry_refuses_invalid_recovery_ref(db, promotion_case, monkeypatch, shape):
+    from src.integration.promotion import PromotionInvariantError, PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_recovery_ref"),
+    )
+    with pytest.raises(InjectedCrash, match="after_recovery_ref"):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    recovery_ref = f"refs/aq/integration-intents/{intent['id']}"
+    other = _git(["rev-parse", f"{case['head']}^"], retained)
+    parents = [case["base"], case["head"]]
+    if shape == "wrong_target":
+        parents[0] = other
+    elif shape == "wrong_source":
+        parents[1] = other
+    elif shape == "reversed":
+        parents.reverse()
+    elif shape == "one_parent":
+        parents.pop()
+    elif shape == "extra_parent":
+        parents.append(other)
+    bad_sha = case["tree"] if shape == "tree" else _git(
+        ["-c", "user.name=Recovery Test", "-c", "user.email=recovery@example.test",
+         "commit-tree", case["tree"], *[arg for parent in parents for arg in ("-p", parent)],
+         "-m", "invalid recovery commit"],
+        retained,
+    )
+    _git(["update-ref", recovery_ref, bad_sha], retained)
+    regenerate = AsyncMock()
+    monkeypatch.setattr("src.integration.promotion.merge_generated_tree", regenerate)
+    restarted = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with pytest.raises(PromotionInvariantError, match="recovery ref"):
+        await restarted.prepare(case["request"])
+    regenerate.assert_not_awaited()
+    assert _git(["rev-parse", recovery_ref], retained) == bad_sha
+    persisted = await db.get_integration_promotion_intent(intent["id"])
+    assert persisted["state"] == "reserved" and persisted["prepared_sha"] is None
+    assert _git(["rev-parse", "refs/heads/aq/parent"], case["origin"]) == case["base"]
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+
 @pytest.mark.parametrize(
     "phase",
     [
@@ -4131,6 +4224,49 @@ async def test_parent_intent_pass_supersedes_diverged_attempt_and_collects_again
     assert successor["supersedes_intent_id"] == intent["id"]
     assert successor["receipt_id"] == intent["receipt_id"]
     assert successor["expected_target"] == competing
+
+
+async def test_parent_intent_pass_supersedes_reserved_intent_after_source_moves(
+    db, promotion_case
+):
+    """A continuation re-requests the frozen head, so a moved child must retire it."""
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent["state"] == "reserved"
+    work = case["work"]
+    _git(["switch", "aq/child"], work)
+    (work / "child.txt").write_text("one\ntwo\nthree\n")
+    _git(["commit", "-am", "rework"], work)
+    moved = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "aq/child"], work)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    handler = _intent_commands(db, service)
+    await _bump_collector_fence(db)
+
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "superseded"
+    retired = await db.get_integration_promotion_intent(intent["id"])
+    assert retired["state"] == "superseded"
+    assert retired["remote_evidence"]["kind"] == "source_moved"
+    assert retired["remote_evidence"]["source_sha"] == moved
+    assert retired["remote_evidence"]["remote_sha"] == case["base"]
+    async with db._engine.connect() as conn:
+        continuations = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "delivery.ready",
+        ))).all()
+    assert continuations == []
 
 
 async def test_parent_intent_pass_declines_root_intents():

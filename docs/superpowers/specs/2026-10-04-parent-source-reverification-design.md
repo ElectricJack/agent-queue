@@ -22,6 +22,11 @@ The transaction preserves the previous completed operation, verification,
 receipt and review evidence. It starts a new episode and generation, accepts
 the old receipts using the previous completed verification, clears current
 verification and transfers a detached branch reservation at a fresh fence.
+The reopen guard permits delivery receipts whose targets remain within the
+reopened subtree, including grandchild receipts into nested parents. Receipts
+that leave the subtree, including delivery to the default branch, still refuse
+the reopen. This exemption applies only to a completed episode rollover;
+ordinary reopens and other hierarchy mutations retain their delivery guards.
 The parent returns to PAUSED and the ordinary integration-ready handoff files
 a fresh verifier. Trusted CI and the existing playbook must verify and complete
 the new aggregate before its new parent review can be produced. Repeated head
@@ -34,7 +39,8 @@ delivery. They distinguish missing aggregate verification, missing or rejected
 parent review, unauthorized admission and awaiting train admission. These are
 read-only findings, including PRs whose remote state cannot be read.
 
-Validation includes a real Git and disposable PostgreSQL two-child scenario:
+Validation includes a real Git and disposable PostgreSQL two-child scenario
+with both flat and nested hierarchies:
 collect, verify, complete, produce parent evidence and admit; advance the PR
 head, preserve receipts, reverify, produce new evidence and admit again. Guards
 must refuse rewritten heads, active owners, holds, stale observations and

@@ -45,17 +45,19 @@ mode that matters is stranding real work:
 Only ``contained`` on the exact target, revalidated against the exact
 source identity the observation names, may withhold work.
 
-An already-filed repair delegate is never killed here.  Withholding one is
-:func:`delivered_queued_repairs`' decision at claim time, on a fresh proof,
-and a claimed delegate keeps its writer.
+An unclaimed READY delegate can be retired by the command handler after a
+fresh proof and a locked identity check. A claimed delegate keeps its writer;
+its completed repair remains deliverable even after the original lands.
 """
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from src.database.tables import integration_source_ci, tasks
 
@@ -69,6 +71,11 @@ DELIVERED = "delivered"
 UNDELIVERED = "undelivered"
 #: No canonical answer was obtainable; never a licence to skip.
 UNKNOWN = "unknown"
+RETIREMENT_KEY = "source_ci_retirement"
+
+
+def source_identity(task_id: str, source) -> tuple[str, str, str, str, int]:
+    return (task_id, source["repository_id"], source["base"], source["head"], source["generation"])
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,7 @@ class SourceDeliveryProof:
     target_ref: str | None = None
     target_oid: str | None = None
     source_oid: str | None = None
+    source_identity: tuple[str, str, str, str, int] | None = None
 
     @property
     def delivered(self) -> bool:
@@ -173,11 +181,12 @@ async def prove_source_delivered(db, observer, *, task_id: str, source) -> Sourc
         target_ref=target.target_ref,
         target_oid=proof.target_oid,
         source_oid=proof.source_oid,
+        source_identity=source_identity(task_id, source),
     )
 
 
-async def queued_source_repairs(db, *, project_id: str) -> list[tuple[str, str]]:
-    """``(repair_task_id, source_task_id)`` for queued delegates, oldest first.
+async def queued_source_repairs(db, *, project_id: str) -> list[dict]:
+    """Exact source observations for queued delegates, oldest first.
 
     A queued delegate is a READY repair root.  Nothing is read from a recorded
     proof here: this only finds which delegates a claim could still hand to an
@@ -187,7 +196,7 @@ async def queued_source_repairs(db, *, project_id: str) -> list[tuple[str, str]]
     async with db._engine.connect() as conn:
         rows = (
             await conn.execute(
-                select(integration_source_ci.c.repair_task_id, integration_source_ci.c.task_id)
+                select(integration_source_ci)
                 .select_from(
                     integration_source_ci.join(
                         tasks, tasks.c.id == integration_source_ci.c.repair_task_id
@@ -201,8 +210,8 @@ async def queued_source_repairs(db, *, project_id: str) -> list[tuple[str, str]]
                 .order_by(integration_source_ci.c.observed_at, integration_source_ci.c.task_id)
                 .limit(100)
             )
-        ).all()
-    return [(row[0], row[1]) for row in rows]
+        ).mappings().all()
+    return [dict(row) for row in rows]
 
 
 async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str, SourceDeliveryProof]:
@@ -223,12 +232,16 @@ async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str
     producer = ReviewEvidenceProducer(db, None)
     sources: list[tuple[str, str, dict]] = []
     async with db._engine.connect() as conn:
-        for repair_id, source_task_id in candidates:
+        for record in candidates:
+            repair_id, source_task_id = record["repair_task_id"], record["task_id"]
             # The identity is read before any git work, so the connection is
             # not held across a fetch, and a source that no longer resolves is
             # simply not a candidate.
             source = await producer._pull_request_source_on(conn, source_task_id)
-            if source is not None:
+            if source is not None and source_identity(source_task_id, source) == (
+                source_task_id, record["repository_id"], record["source_base"],
+                record["source_head"], record["generation"],
+            ):
                 sources.append((repair_id, source_task_id, source))
     proved: dict[str, SourceDeliveryProof] = {}
     for repair_id, source_task_id, source in sources:
@@ -237,6 +250,158 @@ async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str
         if proof.delivered:
             proved[repair_id] = proof
     return proved
+
+
+async def delivered_repair_sources_on(db, conn, records, *, git_delivered, repository_id):
+    """Exact repair ancestors already delivered by Git or a root receipt.
+
+    A task-id proof cannot satisfy an observation for another generation.
+    Receipts can also answer for an archived original, but must name its head
+    and the repository's current default target.
+    """
+    from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
+    from src.database.tables import repos, task_delivery_receipts
+    from src.integration.review_evidence import ReviewEvidenceProducer
+
+    receipts = set((await conn.execute(select(
+        task_delivery_receipts.c.source_task_id, task_delivery_receipts.c.reviewed_head_sha,
+    ).select_from(task_delivery_receipts.join(
+        repos, repos.c.id == task_delivery_receipts.c.repository_id,
+    )).where(
+        task_delivery_receipts.c.source_task_id.in_({row["task_id"] for row in records}),
+        *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
+    ))).all())
+    producer = ReviewEvidenceProducer(db, None)
+    satisfied = set()
+    for row in records:
+        key = (row["task_id"], row["source_base"], row["source_head"], row["generation"])
+        if (row["task_id"], row["source_head"]) in receipts:
+            satisfied.add(key)
+        elif row["task_id"] in git_delivered:
+            source = await producer._pull_request_source_on(conn, row["task_id"])
+            if source is not None and source_identity(row["task_id"], source) == (
+                row["task_id"], repository_id, *key[1:],
+            ):
+                satisfied.add(key)
+    return satisfied
+
+
+async def retire_delivered_queued_repairs(db, proofs, *, project_id: str, retired_by: str):
+    """Retire proven, still-unclaimed READY repairs on the command path.
+
+    Git runs before this transaction. Recheck lineage, completion identity and
+    target under the hierarchy lock, then lock the repair row against claim.
+    Holds, gates, children and any retained owner or writer remain binding.
+    Return only proofs still valid under the lock, for this claim's exclusion.
+    """
+    from src.database.queries.blocked_state import OBSOLETE_META_KEY
+    from src.database.queries.integration_state_queries import session_attached_clause
+    from src.database.tables import (
+        gates,
+        integration_branch_owners,
+        projects,
+        sessions,
+        task_completion_records,
+        task_gates,
+        task_labels,
+        workspaces,
+    )
+    from src.integration.delivery_observer import delivery_targets
+    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.models import TaskStatus
+
+    valid = {}
+    transitions = []
+    producer = ReviewEvidenceProducer(db, None)
+    if not proofs:
+        return valid
+    async with db.immediate() as conn:
+        await db.lock_hierarchy_project(conn, project_id)
+        policy_generation = await conn.scalar(select(
+            projects.c.hierarchical_integration_generation,
+        ).where(projects.c.id == project_id))
+        for repair_id, proof in proofs.items():
+            if not proof.delivered or proof.source_identity is None:
+                continue
+            task_id, repository_id, base, head, generation = proof.source_identity
+            source = await producer._pull_request_source_on(conn, task_id)
+            target = (await delivery_targets(conn, [task_id])).get(task_id)
+            if (source is None or source_identity(task_id, source) != proof.source_identity
+                    or source["project_id"] != project_id or target is None
+                    or target.repository_id != repository_id or target.target_ref != proof.target_ref):
+                continue
+            record = (await conn.execute(select(integration_source_ci).where(
+                integration_source_ci.c.task_id == task_id,
+                integration_source_ci.c.repository_id == repository_id,
+                integration_source_ci.c.source_base == base,
+                integration_source_ci.c.source_head == head,
+                integration_source_ci.c.generation == generation,
+                integration_source_ci.c.policy_generation == policy_generation,
+                integration_source_ci.c.repair_task_id == repair_id,
+            ))).mappings().one_or_none()
+            if record is None:
+                continue
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == repair_id, tasks.c.project_id == project_id,
+            ).with_for_update())).mappings().one_or_none()
+            if task is None or task["status"] != "READY":
+                continue
+            valid[repair_id] = proof
+            if task["assigned_agent_id"] is not None:
+                continue
+            blockers = [
+                select(sessions.c.id).where(sessions.c.task_id == repair_id, session_attached_clause()),
+                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == repair_id),
+                select(integration_branch_owners.c.id).where(
+                    integration_branch_owners.c.owner_id == repair_id,
+                    integration_branch_owners.c.handoff_state != "released",
+                ),
+                select(tasks.c.id).where(tasks.c.parent_task_id == repair_id),
+                select(task_labels.c.task_id).where(
+                    task_labels.c.task_id == repair_id, task_labels.c.label.like("hold:%")),
+                select(task_gates.c.task_id).select_from(task_gates.join(
+                    gates, gates.c.id == task_gates.c.gate_id,
+                )).where(task_gates.c.task_id == repair_id, gates.c.status == "open"),
+            ]
+            blocked = False
+            for statement in blockers:
+                if await conn.scalar(statement.limit(1)) is not None:
+                    blocked = True
+                    break
+            if blocked:
+                continue
+            now = time.time()
+            reason = f"Source CI repair superseded by delivery of {task_id} ({head})"
+            retirement = {
+                "disposition": "superseded_by_delivery", "source_task_id": task_id,
+                "source_base": base, "source_head": head, "generation": generation,
+                "repository_id": repository_id, "delivery": proof.as_evidence(),
+                "reason": reason, "retired_by": retired_by, "retired_at": now,
+            }
+            await db._upsert_meta(repair_id, RETIREMENT_KEY, retirement, conn=conn)
+            await db._upsert_meta(repair_id, "work_outcome", "abandoned", conn=conn)
+            await db._upsert_meta(repair_id, OBSOLETE_META_KEY, {
+                "reason": reason, "closed_by": retired_by, "closed_at": now,
+                "previous_status": "READY", "cleanup": {"state": "clear"},
+            }, conn=conn)
+            transitions.append(await db._apply_transition(
+                conn, repair_id, TaskStatus.COMPLETED,
+                context="source_ci_repair_superseded", force=True,
+            ))
+            await conn.execute(insert(task_completion_records).values(
+                id=f"source-ci-retired:{repair_id}:{task['claim_epoch']}", task_id=repair_id,
+                outcome="pass", work_outcome="abandoned", summary=reason,
+                verification=json.dumps(retirement), completed_at=now,
+            ))
+            await db.log_event(
+                "integration.source_ci_repair_superseded", project_id=project_id,
+                task_id=repair_id, payload=json.dumps(retirement), conn=conn,
+            )
+    for transition in transitions:
+        await db.log_blocked_flips(transition.flipped)
+        await db._notify_settled(transition.settled)
+        await db._notify_ready(transition.ready)
+    return valid
 
 
 def record_delivery_evidence(
@@ -257,11 +422,14 @@ def record_delivery_evidence(
 __all__ = [
     "DELIVERED",
     "DELIVERY_KEY",
+    "RETIREMENT_KEY",
     "UNDELIVERED",
     "UNKNOWN",
     "SourceDeliveryProof",
     "delivered_queued_repairs",
+    "delivered_repair_sources_on",
     "prove_source_delivered",
     "queued_source_repairs",
     "record_delivery_evidence",
+    "retire_delivered_queued_repairs",
 ]

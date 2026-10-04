@@ -27,8 +27,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
-from src.integration.models import BranchKey, Fence
-from src.integration.parent_completion import AWAITING_TRUSTED_VERIFICATION
+from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence
 from src.git.manager import is_valid_git_oid
 
 
@@ -3317,6 +3316,27 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    name = "integration_release_held_gate"
+    if registry.get(name) is None:
+        contract = _operational_contract(
+            name, IntegrationReleaseHeldGateArgs, ("preview", "released", "refused"),
+            successes=frozenset({"preview", "released"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationReleaseHeldGateValue,
+        )
+        contract = contract.model_copy(update={
+            "presentation": contract.presentation.model_copy(update={
+                "title": "Release a held parent gate",
+                "summary": "A local human releases an exact parent hold with an audited reason.",
+            }),
+        })
+
+        async def release_held_gate(args, ctx):
+            return await _hierarchy_adapter(
+                "integration_release_held_gate", args, ctx, IntegrationReleaseHeldGateValue,
+                {"preview", "released", "refused"},
+            )
+
+        registry.register(CommandRegistration(name, contract, release_held_gate))
     name = "integration_engine_transfer"
     if registry.get(name) is None:
         contract = _operational_contract(name, IntegrationEngineTransferArgs,
@@ -3490,6 +3510,22 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     ):
         if registry.get(contract.name) is None:
             registry.register(CommandRegistration(contract.name, contract, adapter))
+
+class IntegrationReleaseHeldGateArgs(CommandArgs):
+    subject_id: str = Field(min_length=1)
+    gate_id: str = Field(min_length=1)
+    expected_version: StrictInt | None = Field(default=None, ge=0)
+    reason: str = ""
+    dry_run: bool = True
+
+
+class IntegrationReleaseHeldGateValue(CommandValue):
+    subject_id: str | None = None
+    gate_id: str | None = None
+    expected_version: int | None = None
+    subject_version: int | None = None
+    engine: Literal["legacy", "reconciler"] | None = None
+
 
 class IntegrationEngineTransferArgs(CommandArgs):
     parent_task_id: str | None = Field(default=None, min_length=1)
