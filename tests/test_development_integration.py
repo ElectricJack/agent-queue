@@ -4866,6 +4866,87 @@ async def test_legacy_parent_episode_uses_exact_contained_leaf_provenance(setup,
     assert git(remote, "rev-parse", "main") == head
 
 
+async def _legacy_parent_episode(db, task_id, head, *, operation=None, verified=False,
+                                 completed=False):
+    """An episode-only checkpoint, plus the parent-operation history named."""
+    from src.database.tables import (
+        integration_parent_episodes,
+        integration_parent_operation_completions,
+        integration_parent_verifications,
+        integration_repair_operations,
+        task_integration_checkpoints,
+    )
+
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="pre-train", parent_task_id=task_id, repository_id="r",
+            generation=1, pre_collection_checkpoint_sha=head, created_at=1,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=task_id, repository_id="r", branch=task_id,
+            generation=1, checkpoint_sha=head, episode_id="pre-train", updated_at=1,
+        ))
+        if operation is None:
+            return
+        await conn.execute(insert(integration_repair_operations).values(
+            id="abandoned", target_kind="parent", parent_task_id=task_id,
+            episode_id="pre-train", state=operation, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="focused", created_at=2, updated_at=3,
+        ))
+        if verified:
+            await conn.execute(insert(integration_parent_verifications).values(
+                id="verified-once", operation_id="abandoned", parent_task_id=task_id,
+                episode_id="pre-train", generation=1, head_sha=head,
+                required_check_version="focused", created_at=3,
+            ))
+        if completed:
+            await conn.execute(insert(integration_parent_operation_completions).values(
+                operation_id="abandoned", verification_id="verified-once", parent_task_id=task_id,
+                episode_id="pre-train", completed_at=4,
+            ))
+
+
+@pytest.mark.parametrize("history", ["operation", "verified", "completed"])
+async def test_only_a_cancelled_parent_operation_is_not_a_verified_binding(setup, history):
+    """grand-rapids-78: an abandoned operation never bound nimble-dune/smart-dune."""
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.provenance_migration import ProvenanceMigration
+
+    db, service, source, remote, _repo = setup
+    head = await feature(setup, "cancelled-parent", retain=False)
+    git(source, "push", "origin", f"{head}:main")
+    await _legacy_parent_episode(db, "cancelled-parent", head, operation="cancelled",
+                                 verified=history != "operation", completed=history == "completed")
+    migration = ProvenanceMigration(db, service.git)
+    proof = (await service.delivery_observer.observe(["cancelled-parent"])).get("cancelled-parent")
+    if history != "operation":
+        # A verification or completion exists, so the verified completion
+        # protocol still governs and nothing a leaf may attest can replace it.
+        assert proof.request.requires_parent_completion
+        assert (proof.state, proof.reason) == (DeliveryState.UNKNOWN, "invalid_parent_completion")
+        with pytest.raises(ValueError, match="current verified parent completion"):
+            await migration.run("p", task_id="cancelled-parent", source=head,
+                                reason="pre-train work delivered", apply=True)
+        assert git(remote, "rev-parse", "main") == head
+        return
+    # The operation was cancelled before it verified or completed, so the
+    # episode binds no more than a pre-train one: ordinary leaf provenance.
+    assert not proof.request.requires_parent_completion
+    assert (proof.state, proof.reason) == (DeliveryState.UNKNOWN, "missing_git_provenance")
+    await migration.run("p", task_id="cancelled-parent", source=head,
+                        reason="pre-train work delivered", apply=True)
+    assert await db.get_task_completion("cancelled-parent") is None
+    git(source, "push", "origin", "--delete", "cancelled-parent")
+    attested = (await service.delivery_observer.observe(["cancelled-parent"])).get(
+        "cancelled-parent")
+    assert (attested.state, attested.source_oid) == (DeliveryState.CONTAINED, head)
+    await service.sweep("p")
+    assert await db.get_task_meta("cancelled-parent", PUBLISHER_SKIP_KEY) is None
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.OK
+    assert git(remote, "rev-parse", "main") == head
+
+
 @pytest.mark.parametrize("reason", ["invalid_parent_completion", "parent_provenance_mismatch"])
 async def test_publisher_preserves_parent_faults_and_their_dependency_recovery(
     setup, monkeypatch, reason,
@@ -4895,7 +4976,10 @@ async def test_publisher_preserves_parent_faults_and_their_dependency_recovery(
     assert reason in body
     assert "push the branch again" not in body
     if reason == "invalid_parent_completion":
+        # A cancelled-only episode is no longer this reason, so the advice no
+        # longer offers a leaf attestation as the way out of a real binding.
         assert "migrate-provenance" in body and "parent verification" in body
+        assert "bare legacy episode" not in body
     else:
         assert "retained source disagrees" in body
 
