@@ -25,6 +25,7 @@ from src.models import TASK_TYPE_VALUES, TaskStatus
 from src.playbooks.invocation import current_invocation
 from src.routing.context import live_context, quota_observations, summarize_context
 from src.routing.planner import (
+    LOCAL_MODEL_PROVIDERS,
     ROUTABLE_SOURCES,
     ROUTED_SOURCES,
     Candidate,
@@ -65,6 +66,10 @@ REROUTABLE_STATUSES = frozenset(
 #: Workspace kinds a pool may prepare (``_claim_preparation_predicates``); a
 #: task needing any other kind is offered task-lifecycle profiles only.
 POOL_WORKSPACE_KINDS = frozenset({"project-repo", "vault"})
+#: ``projects.hierarchical_integration_mode`` values whose tasks deliver
+#: through an integration train (``development`` batches them; the other two
+#: collect them under their parents).
+TRAIN_INTEGRATION_MODES = frozenset({"hierarchy", "train", "development"})
 
 #: Stage profiles never offered as an ordinary worker route.
 _CONTROL_PROFILES = frozenset(
@@ -208,6 +213,7 @@ class RoutingCommandsMixin:
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),
                 needs_workspace=bool(getattr(profile, "needs_workspace", True)),
+                local=profile_provider(profile, registry, project_id) in LOCAL_MODEL_PROVIDERS,
             ))
             keys.add(key)
 
@@ -369,6 +375,11 @@ class RoutingCommandsMixin:
             needs_task_lifecycle=any(
                 row.kind_id not in POOL_WORKSPACE_KINDS for row in requirements
             ),
+            priority=getattr(task, "priority", None),
+            on_train=project is not None and getattr(
+                project, "hierarchical_integration_mode", None
+            ) in TRAIN_INTEGRATION_MODES,
+            blocks_work=await self.db.has_waiting_dependents(task.id),
         )
 
     async def _cmd_task_route_plan(self, args: dict) -> dict:

@@ -150,6 +150,24 @@ class Balance(_Strict):
         return float(self.harness_weights.get(harness, 1.0))
 
 
+class LocalModels(_Strict):
+    """``local_models``: the only work a self-hosted model may take (§6.4 step 2).
+
+    A profile is local when its harness declares a local provider
+    (:data:`src.routing.planner.LOCAL_MODEL_PROVIDERS`) or its harness is
+    named under ``harnesses``.  A local profile is a candidate only for a task
+    whose priority is below ``below_priority``, that is not one of the
+    ``train_kinds`` delivered through an integration train, and that no other
+    task waits on (unless ``allow_blocking``).  A policy without the block
+    gets these defaults.
+    """
+
+    harnesses: tuple[str, ...] = ()
+    below_priority: int = Field(default=150, ge=1)
+    train_kinds: tuple[str, ...] = ("bugfix",)
+    allow_blocking: bool = False
+
+
 class RoutingPolicy(_Strict):
     """The whole ``## Routing policy`` block."""
 
@@ -162,6 +180,7 @@ class RoutingPolicy(_Strict):
     reserved: tuple[Reserved, ...] = ()
     benchmark_arms: dict[str, BenchmarkArm] = Field(default_factory=dict)
     balance: Balance = Field(default_factory=Balance)
+    local_models: LocalModels = Field(default_factory=LocalModels)
 
     @model_validator(mode="after")
     def _references(self) -> RoutingPolicy:
@@ -269,6 +288,7 @@ __all__ = [
     "Balance",
     "KindRule",
     "Lane",
+    "LocalModels",
     "OriginRule",
     "PolicyError",
     "Reserved",

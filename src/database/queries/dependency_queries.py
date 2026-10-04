@@ -457,6 +457,29 @@ class DependencyQueryMixin:
             )
             return {r[0] for r in result.fetchall()}
 
+    async def has_waiting_dependents(self, task_id: str) -> bool:
+        """Whether an unfinished task waits on *task_id* through a blocking edge.
+
+        ``parent-child`` is not counted: a child waits on its container's
+        release, which is decomposition rather than one task holding up
+        another.  Archived dependents live in another table and never count.
+        """
+        dependent = tasks.alias("waiting_dependent")
+        stmt = (
+            select(task_dependencies.c.task_id)
+            .join(dependent, dependent.c.id == task_dependencies.c.task_id)
+            .where(
+                task_dependencies.c.depends_on_task_id == task_id,
+                _dep_type_filter(BLOCKING_DEP_TYPES - {DepType.PARENT_CHILD.value}),
+                dependent.c.status.not_in(
+                    [TaskStatus.COMPLETED.value, TaskStatus.FAILED.value]
+                ),
+            )
+            .limit(1)
+        )
+        async with self._engine.connect() as conn:
+            return (await conn.execute(stmt)).first() is not None
+
     async def get_dependency_map_for_tasks(
         self,
         task_ids: list[str],

@@ -21,6 +21,7 @@ from sqlalchemy import (
     literal,
     literal_column,
     null,
+    or_,
     select,
     update,
 )
@@ -500,8 +501,14 @@ class TaskQueryMixin:
         self,
         project_id: str | None = None,
         exclude_statuses: set[TaskStatus] | None = None,
+        *,
+        exclude_held_ready: bool = False,
     ) -> list[Task]:
-        """List non-terminal tasks, optionally filtered by project."""
+        """List non-terminal tasks, optionally filtered by project.
+
+        Scheduling excludes held READY work, while retaining in-flight rows
+        for concurrency and sync-task exclusivity. Ordinary listings show holds.
+        """
         if exclude_statuses is None:
             exclude_statuses = {TaskStatus.COMPLETED}
 
@@ -510,6 +517,9 @@ class TaskQueryMixin:
             conditions.append(tasks.c.status.notin_([s.value for s in exclude_statuses]))
         if project_id:
             conditions.append(tasks.c.project_id == project_id)
+        if exclude_held_ready:
+            unheld = apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause
+            conditions.append(or_(tasks.c.status != TaskStatus.READY.value, unheld))
 
         stmt = select(tasks)
         if conditions:
