@@ -188,6 +188,13 @@ parent; settlement emits `task.integration_ready` only after the current generat
 required delivery receipts and dispositions. The resumed parent or configured branchless-parent
 verifier must still record aggregate verification and pass guarded completion.
 
+In hierarchy and train modes, an operator may pause a managed parent at any checkpoint
+state. `aq task resume` removes the manual hold in the same transaction. If resume would
+restore READY, ASSIGNED or IN_PROGRESS, it instead keeps the parent PAUSED under integration
+ownership, including at `integration_ready` and `verifying`. Resume does not change the
+checkpoint or authorize a worker wake; the guarded verifier wake or explicit integration
+recovery remains responsible for advancing the parent.
+
 ### 6.4 Direct-to-parent collection
 
 Reviewed siblings remain isolated until promotion. A per-parent collector serializes mutations
