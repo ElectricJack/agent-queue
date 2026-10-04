@@ -777,7 +777,7 @@ class ExecutionMixin:
         profile = await self._resolve_profile(task)
         worker_profile = await self.db.get_profile(agent.profile_id)
         profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
-        from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
+        from src.sessions.provider import SessionDiedDuringStartup
 
         harness_name = getattr(profile, "harness", "") or ""
         harness = self.harness_registry.get(harness_name, task.project_id)
@@ -939,7 +939,8 @@ class ExecutionMixin:
         )
 
         launched_at = time.time()
-        from dataclasses import replace
+        from src.sessions.launch import SessionLaunchUncertain, launch_session
+
         launch_record = SessionRecord(
             id=session_id, task_id=task.id, agent_id=action.agent_id,
             last_claim_epoch=claim_epoch,
@@ -1005,19 +1006,11 @@ class ExecutionMixin:
 
         async def record_failed_launch(reason):
             try:
-                if hierarchy_enabled:
+                if await self.db.get_session(launch_record.id) is not None:
                     await self.db.update_session(
-                        launch_record.id,
-                        state="stopped",
-                        desired_state="stopped",
-                        ended_at=time.time(),
-                        end_reason=reason,
-                    )
-                else:
-                    await self.db.create_session(replace(
-                        launch_record, state="stopped", desired_state="stopped",
+                        launch_record.id, state="stopped", desired_state="stopped",
                         ended_at=time.time(), end_reason=reason,
-                    ))
+                    )
             except Exception:
                 # Recording failure must not prevent the existing resource
                 # cleanup and retry backoff from running.
@@ -1031,12 +1024,24 @@ class ExecutionMixin:
                 async with integration_ownership.mutation_exclusion(
                     integration_fence, state="attached", expected_role=integration_role
                 ) as conn:
-                    await provider.start(spec)
-                    await self.db.update_session(
-                        session_id, conn=conn, state="running", last_activity=time.time()
+                    await launch_session(
+                        self.db, provider, spec, launch_record, registered=True, conn=conn,
+                        bus=self.bus,
                     )
             else:
-                await provider.start(spec)
+                await launch_session(self.db, provider, spec, launch_record, bus=self.bus)
+        except SessionLaunchUncertain as exc:
+            logger.exception("Task %s: launch retained for session reconciliation", task.id)
+            release_canary()
+            if integration_ownership is not None:
+                # Keep the failed writer visible while the existing handoff
+                # protocol proves it stopped. Unknown termination retains
+                # the workspace/agent and records handoff_pending for retry.
+                await self.db.update_session(
+                    session_id, state="draining", desired_state="stopped",
+                )
+                await self._fail_session_launch(action, task, str(exc))
+            return
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
             failure = None
@@ -1075,43 +1080,6 @@ class ExecutionMixin:
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
-        # Legacy projects retain their original post-start insert. Enabled
-        # projects already moved STARTING -> RUNNING under ownership
-        # exclusion above, so a crash leaves a discoverable starting row.
-        if not hierarchy_enabled:
-            now = time.time()
-            try:
-                await self.db.create_session(
-                    replace(launch_record, state="running", last_activity=now)
-                )
-            except Exception as exc:
-            # The process is already running and now has no row, so nothing
-            # would ever reconcile it.  Kill what we just started before
-            # handing the task back to the scheduler -- otherwise the generic
-            # handler upstairs sets the task READY and releases the
-            # workspace while a live agent is still writing to it.
-                logger.error("Task %s: session row insert failed", task.id, exc_info=True)
-                try:
-                    await provider.stop(
-                        SessionHandle(
-                            name=spec.session_name,
-                            provider=provider.name,
-                            instance_token=instance_token,
-                        ),
-                        grace=2.0,
-                    )
-                except Exception:
-                    logger.error(
-                        "Task %s: could not stop the orphan session %s",
-                        task.id,
-                        spec.session_name,
-                        exc_info=True,
-                    )
-                release_canary()
-                await self._fail_session_launch(
-                    action, task, f"session started but its row could not be written: {exc}"
-                )
-                return
         await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
         # The operator-handoff checkpoint was applied by this launch's prepare;
         # keeping it would replay the handoff on every later prepare.
@@ -1124,18 +1092,19 @@ class ExecutionMixin:
             harness.id,
             work_dir,
         )
-        await self.bus.emit(
-            "session.started",
-            {
-                "session_id": session_id,
-                "name": spec.session_name,
-                "task_id": task.id,
-                "project_id": task.project_id,
-                "provider": provider.name,
-                "harness": harness.id,
-                "work_dir": work_dir,
-            },
-        )
+        if integration_ownership is not None:
+            await self.bus.emit(
+                "session.started",
+                {
+                    "session_id": session_id,
+                    "name": spec.session_name,
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "provider": provider.name,
+                    "harness": harness.id,
+                    "work_dir": work_dir,
+                },
+            )
 
     async def _fail_session_launch(
         self,

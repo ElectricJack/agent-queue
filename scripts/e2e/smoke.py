@@ -123,8 +123,10 @@ def _cli_env(
     """
     env = dict(os.environ)
     env["AQ_API_URL"] = API_URL
-    env.pop("AQ_API_TOKEN", None)
-    env.pop("AQ_SESSION_ID", None)
+    # A fixture session must resolve its own task and claim. Inheriting the
+    # caller's task makes `prime` address a task outside the disposable world.
+    for name in ("AQ_API_TOKEN", "AQ_SESSION_ID", "AQ_TASK_ID", "AQ_CLAIM_EPOCH"):
+        env.pop(name, None)
     if token:
         env["AQ_API_TOKEN"] = token
     if session_id:

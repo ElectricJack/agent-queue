@@ -164,9 +164,9 @@ async def test_an_hour_with_work_reserves_one_window_and_sends_one_message(db):
     assert len(transport.messages) == 1
     posted = next(iter(transport.messages.values())).content
     assert "finished the migration" in posted
-    assert MARKER_PREFIX in posted
-
     rows = await windows(db)
+    assert MARKER_PREFIX not in posted
+    assert posted.count(marker_for(rows[0]["id"])) == 1
     assert len(rows) == 1
     assert rows[0]["send_status"] == "sent"
     assert rows[0]["external_receipt_id"]

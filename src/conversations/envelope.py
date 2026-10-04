@@ -66,14 +66,12 @@ class ConversationEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def root_matches_top_level(self) -> ConversationEnvelope:
-        # A top-level message is its own conversation root. Whether it needs a
-        # bot mention is the P2 routing flag's decision (§2.2), made by the
-        # gateway router and re-checked at the command boundary, not by the
-        # shape of the envelope.
-        if self.external_thread_id is None and (
-            self.external_root_message_id != self.external_message_id
-        ):
-            raise ValueError("top-level intake requires the message to be its own root")
+        # Whether a top-level message may name a root other than itself is not
+        # this model's call: a follow-up in the channel's one conversation
+        # answers to that conversation's root, while a message that opens one
+        # must be its own root (naming someone else's message would open its
+        # thread on theirs).  ``supervisor_inbox_post`` knows which of the two
+        # it has after resolving the durable row, and checks it there.
         if self.guild_id == DM_GUILD and not str(self.external_thread_id or "").startswith(
             DM_THREAD_PREFIX
         ):

@@ -1020,6 +1020,17 @@ _CANONICAL_PAYLOADS["formula.cooked"] = {
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(
     {
+        "session.registered": {
+            "session_id": "sess-1", "name": "s-t-1",
+            "task_id": "t-1", "project_id": "proj-1",
+        },
+        "session.launch_failed": {
+            "session_id": "sess-1", "name": "s-t-1",
+            "task_id": None, "project_id": None,
+        },
+        "session.pruned": {
+            "session_id": "sess-1", "project_id": "proj-1",
+        },
         "session.started": {
             "session_id": "sess-1",
             "name": "s-t-1",

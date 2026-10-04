@@ -510,3 +510,36 @@ phase order; P0 may ship as a single batch.
 | 10 | Supervisor digest: facts command, `digest post`, playbook bundle, fallback, quiet hours | `src/digest/`, `src/prompts/reviewed_playbooks/supervisor-digest/` | digest tests; one real window observed |
 | 11 | Config doctor fix: retire `discord.channels`, write the new keys; `dashboard.public_url` check | `src/config.py`, `src/doctor/` | doctor tests; this box migrated |
 | 12 | Delete dead `notifications.py`, `embeds.py`, `views.py` after 1-7 land | `src/discord/` | import graph clean, ruff clean |
+
+---
+
+## 10. Amendment (2026-10-04): the channel is the chat; no threads for conversations
+
+Two parts of §2 that this spec left open are now decided, both from Jack's
+objection that "we have to use threads to do it".
+
+**§2.2/§2.3 — a `kind = channel` conversation never creates a thread.** Its
+acknowledgement, answer, status line, delay notice and every other notice are
+ordinary posts in the channel, each carrying a Discord reply reference to the
+conversation's first message so the exchange stays legible without a thread.
+`ensure_thread` is reachable only for `kind = thread` (a mention-created or
+operator-created thread) and, unchanged, for an escalation incident's own
+thread. The reference degrades to a plain post if the referenced message was
+deleted; it never fails the send. A top-level message naming the channel's
+conversation continues it — the durable row, not the caller, proves the root,
+which is why the "a top-level message is its own root" rule moved from the
+envelope to the command boundary where the conversation is known.
+
+**§2.3 — `discord.project_id` is no longer required on a multi-project
+install.** The recipient order is unchanged (live project supervisor, then live
+global supervisor, then queued), but with several projects and no
+`discord.project_id` the resolution now falls through to the global supervisor
+instead of returning `(None, None)` before the fallback was ever consulted. That
+early return was the 2026-10-04 shared-channel stall: every input sat on
+`session:conversation-queued` and nothing could drain it, because the drain
+calls the same resolver. **§2.4** gains the other half: when no supervisor is
+live, the channel says so once per conversation (`No supervisor is running, so
+nothing is watching this channel. Your message is queued.`) and
+`aq doctor --check stall.sweep` reports one `conversation_unowned` line naming
+how many inputs no supervisor is live to answer and how old the oldest is.
+Nothing else in §2 changes.

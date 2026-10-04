@@ -225,6 +225,41 @@ async def test_output_write_failure_cancels_and_cannot_pass(tmp_path, monkeypatc
     assert result["infra_reason"] == "output_store_failed"
 
 
+async def test_e2e_setup_failure_stops_before_smoke_and_retains_box_lock(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    setup = scripts / "e2e-env.sh"
+    setup.write_text(
+        "#!/bin/sh\n"
+        "touch setup-started\n"
+        "while [ ! -f release ]; do sleep .02; done\n"
+        "exit 6\n"
+    )
+    setup.chmod(0o755)
+    smoke = scripts / "e2e-smoke.sh"
+    smoke.write_text("#!/bin/sh\ntouch smoke-started\n")
+    smoke.chmod(0o755)
+    job = request(tmp_path, "")
+    job["preset"] = "e2e"
+    job["job_class"] = "exclusive"
+    job["argv"] = [sys.executable, str(ROOT / "src/jobs/e2e.py")]
+    atomic_json(tmp_path / "request.json", job)
+    proc = await launch(tmp_path, job)
+    try:
+        await barrier(tmp_path / "setup-started")
+        with pytest.raises(SlotTimeout):
+            with BoxLock(tmp_path / "locks", 1).acquire(timeout=0):
+                pytest.fail("E2E setup must retain exclusive capacity")
+        (tmp_path / "release").touch()
+        receipt = await finish(proc, tmp_path)
+        assert receipt["exit_code"] == 6
+        assert read_json(tmp_path / "result.json")["outcome"] == "failed"
+        assert not (tmp_path / "smoke-started").exists()
+    finally:
+        await stop_tree(job["runner_nonce"], grace=0.1)
+        await proc.wait()
+
+
 @pytest.mark.parametrize("kind", ["pass", "fail", "empty"])
 async def test_pytest_junit_custom_path_and_observed_exit(tmp_path, kind):
     content = {

@@ -5,21 +5,21 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.list_agents_request import ListAgentsRequest
-from ...models.list_agents_response import ListAgentsResponse
-from ...models.list_agents_response_422 import ListAgentsResponse422
+from ...models.session_kill_response import SessionKillResponse
+from ...models.session_prune_request import SessionPruneRequest
+from ...models.session_prune_response_422 import SessionPruneResponse422
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: ListAgentsRequest,
+    body: SessionPruneRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/agent/list",
+        "url": "/api/system/session-prune",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -32,14 +32,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ListAgentsResponse | ListAgentsResponse422 | None:
+) -> SessionKillResponse | SessionPruneResponse422 | None:
     if response.status_code == 200:
-        response_200 = ListAgentsResponse.from_dict(response.json())
+        response_200 = SessionKillResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 422:
-        response_422 = ListAgentsResponse422.from_dict(response.json())
+        response_422 = SessionPruneResponse422.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ListAgentsResponse | ListAgentsResponse422]:
+) -> Response[SessionKillResponse | SessionPruneResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,23 +63,23 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: ListAgentsRequest,
-) -> Response[ListAgentsResponse | ListAgentsResponse422]:
-    """List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+    body: SessionPruneRequest,
+) -> Response[SessionKillResponse | SessionPruneResponse422]:
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
-        body (ListAgentsRequest):
+        body (SessionPruneRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ListAgentsResponse | ListAgentsResponse422]
+        Response[SessionKillResponse | SessionPruneResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -96,23 +96,23 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: ListAgentsRequest,
-) -> ListAgentsResponse | ListAgentsResponse422 | None:
-    """List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+    body: SessionPruneRequest,
+) -> SessionKillResponse | SessionPruneResponse422 | None:
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
-        body (ListAgentsRequest):
+        body (SessionPruneRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ListAgentsResponse | ListAgentsResponse422
+        SessionKillResponse | SessionPruneResponse422
     """
 
     return sync_detailed(
@@ -124,23 +124,23 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: ListAgentsRequest,
-) -> Response[ListAgentsResponse | ListAgentsResponse422]:
-    """List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+    body: SessionPruneRequest,
+) -> Response[SessionKillResponse | SessionPruneResponse422]:
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
-        body (ListAgentsRequest):
+        body (SessionPruneRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ListAgentsResponse | ListAgentsResponse422]
+        Response[SessionKillResponse | SessionPruneResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -155,23 +155,23 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: ListAgentsRequest,
-) -> ListAgentsResponse | ListAgentsResponse422 | None:
-    """List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+    body: SessionPruneRequest,
+) -> SessionKillResponse | SessionPruneResponse422 | None:
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     List shared agents and every starting, running, draining or sleeping session. Includes
-    project/global supervisors and delegates. No project is required.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
-        body (ListAgentsRequest):
+        body (SessionPruneRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ListAgentsResponse | ListAgentsResponse422
+        SessionKillResponse | SessionPruneResponse422
     """
 
     return (

@@ -206,6 +206,7 @@ areas:
     description: "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol."
     match:
       - tests/test_session_spec.py
+      - tests/test_session_launch.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py

@@ -331,6 +331,7 @@ class SessionReconciler:
 
         live = await self._step_observe(now)
         for step in (
+            self._step_flock_audit,
             self._step_drain_ack,
             self._step_prepare_timeout,
             self._step_exits,
@@ -345,6 +346,17 @@ class SessionReconciler:
                 await step(live, now)
             except Exception:
                 logger.exception("Session reconciler step %s failed", step.__name__)
+
+    async def _step_flock_audit(self, live, now: float) -> None:
+        """Report hidden executions at least every thirty seconds."""
+        if now - getattr(self, "_last_flock_audit", 0) < 30:
+            return
+        self._last_flock_audit = now
+        from src.sessions.flock_audit import audit_flock
+
+        findings = await audit_flock(self.db, self.providers, self.config)
+        for finding in findings:
+            logger.error("Flock invariant: %s", finding)
 
     async def adopt_on_start(self) -> AdoptReport:
         """Boot-time pass: re-bind live sessions, classify dead ones.
@@ -411,8 +423,8 @@ class SessionReconciler:
             else:
                 report.dead.append(row.id)
 
-        # Live sessions with no row at all: a daemon that died between
-        # ``provider.start()`` and the row insert.  Design §8 asks for
+        # Live sessions with no row at all come from a legacy/bypassed spawn.
+        # New launches commit a registration before spawning. Design §8 asks for
         # "adopt if the markers match, else quarantine-kill"; with no row
         # there is nothing to match *against* — no task, no profile, no
         # instance token to fence on — so the reachable half is the kill.
@@ -1028,13 +1040,18 @@ class SessionReconciler:
 
     async def _claim_starting_reconciliation(self, row: SessionRecord, now: float) -> bool:
         """Fence an enabled stale STARTING row, or defer a concurrent launch."""
+        from src.sessions.launch import launch_in_progress
+
+        current = await self.db.get_session(row.id)
+        if current is None or current.state != "starting":
+            return False
         task = await self.db.get_task(row.task_id) if row.task_id else None
         project = await self.db.get_project(row.project_id) if row.project_id else None
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
             "hierarchy",
             "train",
         }:
-            return True
+            return not launch_in_progress(self.db, row.id)
         repository_id = getattr(project, "integration_repository_id", None)
         if (
             task is None

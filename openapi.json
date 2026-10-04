@@ -3002,8 +3002,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "List globally defined shared agents, including the supervisor. No project is required. Optional project_id filters current assignments.",
-        "description": "List globally defined shared agents, including the supervisor. No project is required. Optional project_id filters current assignments.",
+        "summary": "List shared agents and every starting, running, draining or sleeping session. Includes project/global supervisors and delegates. No project is required.",
+        "description": "List shared agents and every starting, running, draining or sleeping session. Includes project/global supervisors and delegates. No project is required.",
         "operationId": "list_agents",
         "requestBody": {
           "content": {
@@ -16008,6 +16008,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionPeekResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/session-prune": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Remove a sleeping or stopped named session after confirming its terminal and marked processes are inactive. Refuses sessions with a task or claim.",
+        "description": "Remove a sleeping or stopped named session after confirming its terminal and marked processes are inactive. Refuses sessions with a task or claim.",
+        "operationId": "session_prune",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionPruneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionKillResponse"
                 }
               }
             }
@@ -31757,6 +31804,146 @@
         ],
         "title": "FindMergeConflictWorkspacesResponse"
       },
+      "FlockSession": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "harness": {
+            "type": "string",
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "desired_state": {
+            "type": "string",
+            "title": "Desired State"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity"
+          },
+          "uptime_seconds": {
+            "type": "number",
+            "title": "Uptime Seconds"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "name",
+          "role",
+          "scope",
+          "harness",
+          "profile_id",
+          "state",
+          "desired_state",
+          "started_at",
+          "uptime_seconds",
+          "lifecycle"
+        ],
+        "title": "FlockSession"
+      },
       "FormulaCookRequest": {
         "properties": {
           "name": {
@@ -42291,6 +42478,18 @@
             ],
             "title": "Project Id",
             "description": "Only agents currently working in this project"
+          },
+          "include_stopped": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Stopped",
+            "description": "Also include stopped and quarantined session history"
           }
         },
         "type": "object",
@@ -42309,6 +42508,18 @@
           "count": {
             "type": "integer",
             "title": "Count",
+            "default": 0
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/FlockSession"
+            },
+            "type": "array",
+            "title": "Sessions"
+          },
+          "session_count": {
+            "type": "integer",
+            "title": "Session Count",
             "default": 0
           },
           "project_id": {
@@ -62188,6 +62399,20 @@
           "session_id"
         ],
         "title": "SessionPeekResponse"
+      },
+      "SessionPruneRequest": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Inactive named session to forget"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionPruneRequest"
       },
       "SessionShowRequest": {
         "properties": {

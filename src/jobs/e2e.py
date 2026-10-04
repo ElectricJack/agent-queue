@@ -7,7 +7,10 @@ from pathlib import Path
 
 
 async def main():
-    root = Path(__file__).resolve().parents[2]
+    # The server owns this wrapper; the runner's cwd owns the submitted input.
+    # __file__ may be in a different checkout from the live tree or snapshot
+    # whose identity the runner records.
+    root = Path.cwd()
     inherited = []
     for name in os.listdir("/proc/self/fd"):
         try:
@@ -18,7 +21,7 @@ async def main():
             continue
     for script, args in (("e2e-env.sh", ["--reset"]), ("e2e-smoke.sh", [])):
         child = await asyncio.create_subprocess_exec(
-            str(root / "scripts" / script), *args, pass_fds=tuple(inherited)
+            str(root / "scripts" / script), *args, cwd=root, pass_fds=tuple(inherited)
         )
         code = await child.wait()
         if code:

@@ -148,9 +148,32 @@ class ProfileSubagentRollup(SubagentRollup):
     profile_id: str = ""
 
 
+class FlockSession(BaseModel):
+    session_id: str
+    name: str
+    agent_id: str | None = None
+    role: str
+    project_id: str | None = None
+    scope: str
+    provider: str | None = None
+    harness: str
+    model: str | None = None
+    intelligence_class: str | None = None
+    profile_id: str
+    task_id: str | None = None
+    state: str
+    desired_state: str
+    started_at: float
+    last_activity: float | None = None
+    uptime_seconds: float
+    lifecycle: str
+
+
 class ListAgentsResponse(BaseModel):
     agents: list[AgentSummary] = []
     count: int = 0
+    sessions: list[FlockSession] = Field(default_factory=list)
+    session_count: int = 0
     project_id: str | None = None
     subagents: SubagentRollup | None = None
     subagents_by_profile: list[ProfileSubagentRollup] = []

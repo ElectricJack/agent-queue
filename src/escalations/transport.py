@@ -149,8 +149,21 @@ class EscalationTransport(Protocol):
     """
 
     async def post_root(
-        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
-    ) -> SendOutcome: ...
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
+    ) -> SendOutcome:
+        """Post one ordinary message in *channel_id*.
+
+        ``reference_message_id`` renders the post as a reply to an existing
+        message in the same channel, which is how a channel conversation keeps
+        its context without a thread.  It never pings: the allowed-mention
+        policy decides that, and it declines to notify.
+        """
+        ...
 
     async def ensure_thread(
         self, *, channel_id: str, root_message_id: str, name: str
@@ -207,6 +220,8 @@ class SinkMessage:
     #: The §5.3 buttons currently attached, by custom id.  An edit replaces the
     #: set, so a post that stopped offering choices carries none.
     buttons: tuple[str, ...] = ()
+    #: The message this one replies to, when the caller asked for a reference.
+    reference_message_id: str | None = None
 
 
 @dataclass
@@ -243,6 +258,7 @@ class SinkTransport:
         *,
         thread_id: str | None = None,
         buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
     ) -> SinkMessage:
         message = SinkMessage(
             id=self._next_id("msg"),
@@ -250,16 +266,24 @@ class SinkTransport:
             content=content,
             thread_id=thread_id,
             buttons=tuple(spec.custom_id for spec in buttons),
+            reference_message_id=reference_message_id,
         )
         self.messages[message.id] = message
         return message
 
     async def post_root(
-        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
     ) -> SendOutcome:
         self.calls.append("post_root")
         self._maybe_fail("post_root")
-        message = self.record(channel_id, content, buttons=buttons)
+        message = self.record(
+            channel_id, content, buttons=buttons, reference_message_id=reference_message_id
+        )
         return SendOutcome(receipt_id=message.id, channel_id=channel_id, root_message_id=message.id)
 
     async def ensure_thread(
