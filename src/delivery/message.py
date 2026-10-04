@@ -21,9 +21,23 @@ from src.escalations.transport import (
 logger = logging.getLogger(__name__)
 
 
+_ZW_BITS = ("\u200b", "\u200c")  # zero-width space / non-joiner
+_ZW_START = "\u2063"  # invisible separator
+
+
+def invisible(marker: str) -> str:
+    """Encode a reconciliation marker as zero-width characters.
+
+    Discord keeps these characters, so a marker search still matches, but a
+    reader never sees the marker.
+    """
+    bits = "".join(f"{ord(ch):08b}" for ch in marker)
+    return _ZW_START + "".join(_ZW_BITS[int(b)] for b in bits)
+
+
 def operation_marker(owner_id: str, *, prefix: str) -> str:
     fold = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:16]
-    return f"{prefix}:{fold}"
+    return invisible(f"{prefix}:{fold}")
 
 
 @dataclass(frozen=True)
@@ -89,7 +103,7 @@ class MessageDelivery:
                     ),
                 )
         try:
-            content = f"{message.text}\n{message.marker}"
+            content = f"{message.text}{message.marker}"
             if message.thread_id:
                 outcome = await self.transport.post_thread_message(
                     thread_id=message.thread_id, content=content
