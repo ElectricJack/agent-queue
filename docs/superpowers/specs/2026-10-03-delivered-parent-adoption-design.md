@@ -23,6 +23,15 @@ refuse recovery. Detached canonical reservations can be fenced and released.
 This includes a child's `worker` reservation only when it is writerless, belongs
 to that exact child's canonical branch in the designated repository, and the
 child's current completion passes the same default-branch delivery proof.
+A child's historical `confirmed_workspace_id` does not retain a recycled slot:
+the workspace must still be observable in the same project, be unlocked by the
+child, and its local child ref must carry no commits absent from both the fresh
+remote child branch and default branch. Any checkout of that ref with a retained
+workspace lock, live session or uncommitted changes refuses settlement. Work on
+an unrelated branch in the recycled slot is independent. Missing workspaces,
+failed Git observations and unpublished local divergence remain blockers; parent
+reservations with confirmed workspaces still require recovery. Workspace rows
+are fenced and the Git and writer checks repeat before settlement writes.
 Reservations on unrelated branches, the default branch, or owned by another
 task remain binding. Pending external writes on child branches also refuse.
 Dry runs name every owner and its fence proposed for release; apply releases
