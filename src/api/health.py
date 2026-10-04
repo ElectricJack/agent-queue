@@ -40,7 +40,10 @@ def _check_ok(value: Any) -> bool:
 
 
 async def _get_checks() -> dict[str, Any]:
-    """Invoke the health provider, returning an empty dict on failure."""
+    """Read the production snapshot; support standalone router providers too."""
+    monitor = deps._health_monitor
+    if monitor is not None and monitor.provider is deps._health_provider:
+        return monitor.checks()
     if deps._health_provider is None:
         return {}
     try:
@@ -60,7 +63,9 @@ async def health() -> JSONResponse:
     checks = await _get_checks()
 
     all_ok = all((c.get("ok", False) if isinstance(c, dict) else bool(c)) for c in checks.values())
-    status = "healthy" if all_ok else "degraded"
+    snapshot_reason = checks.get("health_snapshot", {}).get("reason")
+    busy = snapshot_reason in {"initializing", "stale", "timeout"}
+    status = "busy" if busy else ("healthy" if all_ok else "degraded")
 
     uptime = round(time.monotonic() - deps._started_at, 2) if deps._started_at is not None else 0
 
@@ -85,7 +90,8 @@ async def ready() -> JSONResponse:
     messaging_ok = _check_ok(checks.get("messaging"))
     database_ok = _check_ok(checks.get("database"))
     required_playbooks_ok = _check_ok(checks.get("required_playbooks", {"ok": True}))
-    is_ready = messaging_ok and database_ok and required_playbooks_ok
+    snapshot_ok = _check_ok(checks.get("health_snapshot", {"ok": True}))
+    is_ready = messaging_ok and database_ok and required_playbooks_ok and snapshot_ok
 
     body = {
         "ready": is_ready,
@@ -94,6 +100,7 @@ async def ready() -> JSONResponse:
             "messaging": checks.get("messaging", {"ok": False}),
             "database": checks.get("database", {"ok": False}),
             "required_playbooks": checks.get("required_playbooks", {"ok": True}),
+            "health_snapshot": checks.get("health_snapshot", {"ok": True}),
         },
     }
 

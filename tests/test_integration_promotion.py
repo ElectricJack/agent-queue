@@ -37,6 +37,7 @@ from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
+from tests.test_generated_artifacts import _catalogue_branches
 
 _DEFAULT_INSTANCE = object()
 
@@ -1727,6 +1728,78 @@ async def test_clean_promotion_preserves_independent_parent_changes(db, promotio
     assert _git(["show", f"{prepared.prepared_sha}:parent.txt"], retained) == "parent-only"
     assert _git(["show", f"{prepared.prepared_sha}:child.txt"], retained) == "one\ntwo"
     assert _git(["rev-list", "--first-parent", "--count", f"{target}..{prepared.prepared_sha}"], retained) == "1"
+
+
+@pytest.mark.parametrize("regeneration", ["success", "failed", "stray"])
+async def test_promotion_regenerates_conflicting_selection_catalogues(db, tmp_path, regeneration):
+    from src.integration.promotion import PromotionConflict, PromotionService
+    from src.test_selection.catalogue import CATALOGUE_PATH
+
+    work, base, target, source = _catalogue_branches(tmp_path)
+    origin = tmp_path / "catalogue-origin.git"
+    _git(["clone", "--bare", str(work), str(origin)])
+    _git(["update-ref", "refs/heads/aq/parent", target], origin)
+    _git(["update-ref", "refs/heads/aq/child", source], origin)
+    await db.update_repo("repo", url=str(origin))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="child", repository_id="repo", parent_task_id="parent",
+            parent_repository_id="repo", parent_ref="aq/parent", base_sha=base,
+            creation_generation=0, reserved=True, materialized=True,
+            created_at=1.0, materialized_at=1.0,
+        ))
+    review = _review(evidence_id="catalogue-review", generation=0)
+    review.update(
+        source_base=base, reviewed_head_sha=source,
+        reviewed_tree_sha=_git(["rev-parse", f"{source}^{{tree}}"], origin),
+        reviewer_session_attempt_id=None,
+    )
+    await db.append_integration_review_evidence(review)
+    fence = await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/parent"), "collector-op", "collector"
+    )
+    request = PromotionInput(
+        operation_key="collector-op", source_task_id="child", source_base=base,
+        source_head=source, expected_target=target, fence=fence,
+    )
+    command = "scripts/regenerate-generated.sh"
+    if regeneration != "success":
+        script = tmp_path / "regenerator.py"
+        script.write_text(
+            "raise SystemExit(1)\n" if regeneration == "failed" else
+            "from pathlib import Path\nPath('unexpected.txt').write_text('stray')\n"
+        )
+        command = f"{sys.executable} {script}"
+    service = PromotionService(
+        db, data_dir=tmp_path / "data", git_manager=GitManager(), regenerate_command=command,
+    )
+    if regeneration != "success":
+        with pytest.raises(PromotionConflict) as caught:
+            await service.prepare(request)
+        intent = await db.get_integration_promotion_intent(caught.value.value.intent_id)
+        assert intent["state"] == "conflict" and intent["prepared_sha"] is None
+        assert CATALOGUE_PATH in intent["conflict_diagnostics"]["paths"]
+        assert "regeneration_failure" in intent["conflict_diagnostics"]
+        assert _git(["rev-parse", "aq/parent"], origin) == target
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+        return
+
+    prepared = await service.prepare(request)
+    assert (await service.prepare(request)).prepared_sha == prepared.prepared_sha
+    retained = next((tmp_path / "data" / "integration-repositories").glob("*.git"))
+    catalogue = json.loads(_git(["show", f"{prepared.prepared_sha}:{CATALOGUE_PATH}"], retained))
+    assert set(catalogue["modules"]) == {
+        "tests/test_a.py", "tests/test_b.py", "tests/test_c.py",
+    }
+    assert _git(["show", f"{prepared.prepared_sha}:tests/test_b.py"], retained)
+    assert _git(["show", f"{prepared.prepared_sha}:tests/test_c.py"], retained)
+    assert _git(["show", "-s", "--format=%P", prepared.prepared_sha], retained) == f"{target} {source}"
+    await service.push(prepared.intent_id, fence)
+    assert (await service.reconcile(prepared.intent_id)).receipt_id == prepared.receipt_id
+    assert _git(["rev-parse", "aq/parent"], origin) == prepared.prepared_sha
+    assert _git(["rev-parse", "aq/child"], origin) == source
+    assert not list(retained.parent.glob("aq-regen-*"))
 
 
 async def test_promotion_uses_inherited_parent_tip_without_changing_review_base(db, promotion_case):

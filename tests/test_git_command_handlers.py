@@ -628,9 +628,97 @@ class TestLegacyGitProvenanceMigration:
         await self._completed(db, "failed-close")
         await db.save_task_completion(TaskCompletion(
             id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=4))
-        failed = await migration.run("p", task_id="failed-close", source=source)
-        assert failed["ambiguous"] == [{"task_id": "failed-close", "generation": "failed-g",
-                                        "reason": "current completion is missing or did not pass"}]
+        # A close that did not pass is attested on its own reasoned path.
+        with pytest.raises(ValueError, match="did not pass requires a reason"):
+            await migration.run("p", task_id="failed-close", source=source)
+
+    @pytest.mark.parametrize("no_artifact", [False, True])
+    async def test_operator_attests_a_completion_that_did_not_pass(
+        self, provenance_repo, db, no_artifact,
+    ):
+        """grand-rapids-78: solid-rapids-21 was closed COMPLETED over a failed close."""
+        import json
+
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import TaskCompletion
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "failed-close", branch=False)
+        # The audited base it read, not an artifact of its own, and no pass.
+        await db.save_task_completion(TaskCompletion(
+            id="failed-g", task_id="failed-close", outcome="fail", commits=[base], completed_at=2))
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        before = (await observer.observe(["failed-close"])).get("failed-close")
+        assert (before.state, before.reason) == (
+            DeliveryState.UNKNOWN, "missing_git_provenance")
+        migration = ProvenanceMigration(db, git)
+        with pytest.raises(ValueError, match="requires --task-id and a reason"):
+            await migration.run("p", task_id="failed-close", no_artifact=True, apply=True)
+        if not no_artifact:
+            with pytest.raises(ValueError, match="did not pass requires a reason"):
+                await migration.run("p", task_id="failed-close", source=base, apply=True)
+        applied = await migration.run(
+            "p", task_id="failed-close", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="research close, no code delivered",
+            apply=True, operator_id="supervisor-p",
+        )
+        assert [(i["generation"], i["action"], i["authority"], i["artifact"],
+                 i["completion_outcome"]) for i in applied["inventory"]] == [
+            ("failed-g", "written", "operator", not no_artifact, "fail")]
+        proof = (await observer.observe(["failed-close"])).get("failed-close")
+        assert proof.state == (DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED)
+        assert proof.source_oid == base
+        # No pass is fabricated: the failed close is retained verbatim.
+        assert (await db.get_task_completion("failed-close")).outcome == "fail"
+        assert (await db.get_task("failed-close")).status == TaskStatus.COMPLETED
+        again = await migration.run(
+            "p", task_id="failed-close", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="research close, no code delivered", apply=True,
+        )
+        assert again["inventory"][0]["action"] == "present"
+        audit = await db.get_recent_events(event_type="development.provenance_attested")
+        assert json.loads(audit[-1]["payload"])["results"][0]["completion_outcome"] == "fail"
+
+    @pytest.mark.parametrize("refusal", ["uncontained", "manifest"])
+    async def test_a_failed_completion_attestation_refuses_what_it_cannot_prove(
+        self, provenance_repo, db, refusal,
+    ):
+        from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import TaskCompletion
+
+        git, store, _path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "failed-close", branch=False)
+        await db.save_task_completion(TaskCompletion(
+            id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=2))
+        migration = ProvenanceMigration(db, git)
+        if refusal == "uncontained":
+            # Work the target does not hold is never cleared by an attestation.
+            elsewhere = await _provenance_commit(provenance_repo, "elsewhere")
+            await git.apush_branch(store.checkout, "aq/task")
+            refs = await store.run("ls-remote", "origin")
+            result = await migration.run(
+                "p", task_id="failed-close", source=elsewhere,
+                reason="delivered elsewhere", apply=True)
+            assert result["inventory"] == []
+            assert "not contained in the target branch" in result["ambiguous"][0]["reason"]
+        else:
+            await self._retain(db, [self._delivery("proven", [], created_at=5, evidence={
+                "completion_sources": [{"task_id": "failed-close", "completion_id": "failed-g",
+                                        "source_sha": base}]})])
+            refs = await store.run("ls-remote", "origin")
+            result = await migration.run(
+                "p", task_id="failed-close", no_artifact=True,
+                reason="claimed artifact-free", apply=True)
+            assert result["inventory"] == []
+            assert "conflicts with recorded source" in result["ambiguous"][0]["reason"]
+        assert await store.run("ls-remote", "origin") == refs
+        completion = await db.get_task_completion("failed-close")
+        assert completion is None or completion.outcome == "fail"
+        assert not (await migration.run("p", task_id="failed-close"))["inventory"]
 
     async def test_cli_waits_longer_than_a_page_may_run(self):
         from src.cli.client import _COMMAND_TIMEOUTS
@@ -639,6 +727,170 @@ class TestLegacyGitProvenanceMigration:
         # The budget bounds when the last batch may start; a batch's transfer
         # and the page's clone still need room inside the client's wait.
         assert _COMMAND_TIMEOUTS["integration_migrate_provenance"] >= PAGE_TIME_BUDGET * 4
+        assert _COMMAND_TIMEOUTS["integration_adopt_legacy_deliveries"] == 600.0
+
+    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
+    async def test_operator_attests_a_completed_task_without_a_completion_row(
+        self, provenance_repo, db, recorded_id,
+    ):
+        import json
+
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "missing-row")
+        if recorded_id:
+            await db.set_task_meta("missing-row", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        before = (await observer.observe(["missing-row"])).get("missing-row")
+        assert before.state == DeliveryState.UNKNOWN
+        generation = before.request.completion_id
+        assert generation == recorded_id if recorded_id else generation.startswith("legacy:")
+        migration = ProvenanceMigration(db, git)
+        with pytest.raises(ValueError, match="requires a reason"):
+            await migration.run("p", task_id="missing-row", source=base, apply=True)
+        refs = await store.run("ls-remote", "origin")
+        preview = await migration.run("p", task_id="missing-row", source=base, reason="already delivered")
+        assert preview["inventory"][0]["action"] == "would_write"
+        assert await store.run("ls-remote", "origin") == refs
+        applied = await migration.run(
+            "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
+            operator_id="supervisor-p",
+        )
+        assert applied["counts"]["written"] == 1
+        proof = (await observer.observe(["missing-row"])).get("missing-row")
+        assert (proof.state, proof.source_oid) == (DeliveryState.CONTAINED, base)
+        assert await db.get_task_completion("missing-row") is None
+        assert (await db.get_task("missing-row")).status == TaskStatus.COMPLETED
+        repeated = await migration.run(
+            "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
+        )
+        assert repeated["inventory"][0]["action"] == "present"
+        audit = await db.get_recent_events(event_type="development.provenance_attested")
+        assert any(json.loads(event["payload"])["operator_id"] == "supervisor-p" for event in audit)
+        await db.transition_task("missing-row", TaskStatus.READY)
+        await db.transition_task("missing-row", TaskStatus.COMPLETED)
+        reopened = (await observer.observe(["missing-row"])).get("missing-row")
+        assert reopened.request.completion_id != generation
+        assert reopened.state == DeliveryState.UNKNOWN
+
+    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
+    @pytest.mark.parametrize("no_artifact", [False, True])
+    async def test_missing_row_attestation_survives_archival(
+        self, provenance_repo, db, recorded_id, no_artifact,
+    ):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "legacy")
+        await db.update_task("legacy", claim_epoch=7)
+        if recorded_id:
+            await db.set_task_meta("legacy", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        db.set_delivery_observer(observer)
+        await ProvenanceMigration(db, git).run(
+            "p", task_id="legacy", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="legacy work reviewed", apply=True,
+        )
+        assert await db.archive_task("legacy")
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        assert proof.request.archived
+        assert proof.request.claim_epoch == 0
+        assert proof.state == (DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED)
+        assert proof.source_oid == base
+        assert await db.get_task_completion("legacy") is None
+
+    async def test_operator_attests_artifact_free_research_without_a_completion_row(
+        self, provenance_repo, db,
+    ):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "research", branch=False)
+        await db.set_task_meta("research", DEVELOPMENT_COMPLETION_ID_KEY, "missing-research-close")
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        assert (await observer.observe(["research"])).get("research").state == DeliveryState.UNKNOWN
+        migration = ProvenanceMigration(db, git)
+        with pytest.raises(ValueError, match="requires --task-id and a reason"):
+            await migration.run("p", task_id="research", no_artifact=True, apply=True)
+        result = await migration.run(
+            "p", task_id="research", no_artifact=True, reason="research only; no code", apply=True,
+        )
+        assert result["inventory"][0]["artifact"] is False
+        assert (await observer.observe(["research"])).get("research").state == DeliveryState.NO_ARTIFACT
+        assert await db.get_task_completion("research") is None
+        rejected = await migration.run(
+            "p", task_id="task", no_artifact=True, reason="incorrect declaration", apply=True,
+        )
+        assert "conflicts with recorded source" in rejected["ambiguous"][0]["reason"]
+        await self._completed(db, "recorded-code", commits=[])
+        await self._retain(db, [self._delivery("evidence-only", [], created_at=5, evidence={
+            "completion_sources": [{"task_id": "recorded-code", "completion_id": "recorded-code-g",
+                                    "source_sha": base}],
+        })])
+        rejected = await migration.run(
+            "p", task_id="recorded-code", no_artifact=True, reason="incorrect declaration", apply=True,
+        )
+        assert "conflicts with recorded source" in rejected["ambiguous"][0]["reason"]
+
+    @pytest.mark.parametrize("change", ["reopen", "repair_contract"])
+    async def test_missing_row_attestation_refuses_a_generation_changed_during_git_observation(
+        self, provenance_repo, db, monkeypatch, change,
+    ):
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, _path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "missing-row")
+        refs = await store.run("ls-remote", "origin")
+        create = git.acreate_checkout
+
+        async def reopen(*args, **kwargs):
+            await create(*args, **kwargs)
+            if change == "reopen":
+                await db.transition_task("missing-row", TaskStatus.READY)
+            else:
+                await db.set_task_meta("missing-row", "development_repair_sources", [
+                    {"task_id": "task", "source_sha": base},
+                ])
+
+        monkeypatch.setattr(git, "acreate_checkout", reopen)
+        with pytest.raises(ValueError, match="completion changed|acquired a repair contract"):
+            await ProvenanceMigration(db, git).run(
+                "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
+            )
+        assert await store.run("ls-remote", "origin") == refs
+
+    async def test_missing_row_attestation_refuses_an_active_writer(self, provenance_repo, db):
+        from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import SessionRecord
+
+        git, store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "missing-row")
+        await db.create_session(SessionRecord(
+            id="writer", task_id="missing-row", project_id="p", profile_id="worker-codex",
+            harness="codex", provider="tmux", name="writer", lifecycle="pool", state="running",
+            work_dir=str(path), epoch="test", instance_token="test", started_at=1,
+        ))
+        refs = await store.run("ls-remote", "origin")
+        with pytest.raises(ValueError, match="live session"):
+            await ProvenanceMigration(db, git).run(
+                "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
+            )
+        assert await store.run("ls-remote", "origin") == refs
 
     async def test_command_handler_migration_uses_registered_typed_contract(self, provenance_repo, db, handler):
         from src.commands.contracts.integration import IntegrationMigrateProvenanceArgs
@@ -665,7 +917,7 @@ class TestLegacyGitProvenanceMigration:
             result = await registration.invoke(IntegrationMigrateProvenanceArgs(project_id="p"), None)
             factory.return_value.execute.assert_awaited_once_with("integration_migrate_provenance",
                 {"project_id": "p", "apply": False, "limit": 500, "offset": 0, "task_id": None,
-                 "source": None})
+                 "source": None, "no_artifact": False, "reason": None})
             assert result.value.inventory == [{"task_id": "task"}]
             assert result.value.ambiguous[0]["task_id"] == "old"
             assert result.value.fallback_generations[0]["generation"] == "g"

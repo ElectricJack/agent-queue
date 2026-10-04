@@ -24,6 +24,7 @@ from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.parent_engine import parent_engine_guard
 from src.integration.ownership import BranchOwnership
+from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
 from src.models import RepoConfig, RepoSourceType
 from src.playbooks.invocation import current_invocation
 
@@ -104,6 +105,8 @@ class PromotionService:
         repository_resolver: RepositoryResolver | None = None,
         ownership: BranchOwnership | None = None,
         crash_hook: CrashHook | None = None,
+        regenerate_command: str = "scripts/regenerate-generated.sh",
+        regenerate_timeout_seconds: int = 600,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
@@ -112,6 +115,8 @@ class PromotionService:
         self.repository_resolver = repository_resolver
         self.ownership = ownership or BranchOwnership(db)
         self.crash_hook = crash_hook
+        self.regenerate_command = regenerate_command
+        self.regenerate_timeout_seconds = regenerate_timeout_seconds
         self.clock = clock
 
     async def observe_legacy_resolution_target(self, intent: dict[str, Any]) -> str | None:
@@ -273,27 +278,22 @@ class PromotionService:
             ):
                 merge_base = intent["expected_target"]
 
-            result = await self.git.arun_git_result(
-                [
-                    "merge-tree",
-                    "--write-tree",
-                    f"--merge-base={merge_base}",
-                    intent["expected_target"],
-                    intent["source_head"],
-                ],
-                cwd=str(repository.retained_git_dir),
-                env={"LC_ALL": "C"},
-                lock_held=True,
-            )
-            if result.returncode == 1:
-                diagnostics = self._conflict_diagnostics(intent, result.stdout, result.stderr)
+            try:
+                tree_oid = await merge_generated_tree(
+                    self.git, repository.retained_git_dir,
+                    ["merge-tree", "--write-tree", f"--merge-base={merge_base}",
+                     intent["expected_target"], intent["source_head"]],
+                    command=self.regenerate_command,
+                    timeout_seconds=self.regenerate_timeout_seconds,
+                )
+            except GeneratedMergeConflict as exc:
+                diagnostics = self._conflict_diagnostics(intent, exc.stdout, exc.stderr)
+                if exc.reason:
+                    diagnostics["regeneration_failure"] = exc.reason
                 await self.db.mark_integration_promotion_conflict(intent["id"], diagnostics)
                 raise PromotionConflict(self._value(intent), diagnostics)
-            if result.returncode != 0:
-                raise PromotionRuntimeError(
-                    (result.stderr or result.stdout or "git merge-tree failed").strip()
-                )
-            tree_oid = self._clean_tree_oid(result.stdout)
+            except GitError as exc:
+                raise PromotionRuntimeError(str(exc)) from exc
             await self._assert_object_type(repository.retained_git_dir, tree_oid, "tree")
 
             metadata = intent["commit_metadata"]

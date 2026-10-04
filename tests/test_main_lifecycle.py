@@ -231,17 +231,14 @@ def test_parse_args_preserves_path_and_profile_precedence(monkeypatch):
 
 
 async def test_health_checks_reports_each_failed_dependency_independently(tmp_path):
-    """One failing DB call marks only its own check unhealthy; healthy
-    subsystems and the messaging status stay present alongside it."""
+    """Database/agent checks share a query; unrelated subsystem checks survive."""
     config = _postgres_config(tmp_path)
     orch = SimpleNamespace(
         config=config,
         _paused=False,
         _running_tasks={},
         db=SimpleNamespace(
-            # First call (database check) fails; second (agents check) is
-            # healthy — proving the checks are independent.
-            list_agents=AsyncMock(side_effect=[RuntimeError("db down"), []]),
+            list_agents=AsyncMock(side_effect=RuntimeError("db down")),
             count_tasks_by_status=AsyncMock(side_effect=RuntimeError("query timeout")),
         ),
     )
@@ -250,8 +247,8 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     checks = await main_mod._health_checks(orch, adapter)
 
     assert checks["database"] == {"ok": False, "error": "db down"}
-    assert checks["agents"]["ok"] is True
-    assert checks["agents"]["total"] == 0
+    assert checks["agents"] == {"ok": False, "error": "db down"}
+    orch.db.list_agents.assert_awaited_once()
     assert checks["tasks"]["ok"] is False
     assert "query timeout" in checks["tasks"]["error"]
     assert checks["orchestrator"]["ok"] is True

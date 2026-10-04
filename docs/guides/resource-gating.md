@@ -535,6 +535,18 @@ session, nice +10, 2 global test slot(s)
 
 ## Diagnosing a saturated box
 
+For a responsive daemon with slow probes, `aq doctor --check perf.health_latency`
+reports `/health` p95 over three minutes of completed requests (at least ten
+probes; warns above two seconds). `perf.sustained_loop_lag` covers scheduling
+delays that occur before HTTP dispatch. With `metrics.perf_enabled` on, an
+independent watchdog logs the loop thread's sampled stack after a heartbeat
+is more than one second late, then at most once per 30 seconds until recovery.
+Look for `Event loop heartbeat` and `Event loop recovered` in daemon logs; no
+ptrace permissions are needed. These sampled locations can indicate synchronous
+Python, blocking I/O or host starvation. See the
+[responsiveness contract](../specs/design/event-loop-responsiveness.md) and the
+[repeatable transcript profile](../analysis/2026-10-03-transcript-loop-profile.md).
+
 ```bash
 aq doctor --check resources.load
 aq doctor --check resources.test_pressure

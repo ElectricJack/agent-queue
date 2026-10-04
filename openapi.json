@@ -19623,6 +19623,79 @@
           }
         }
       }
+    },
+    "/api/host-shell": {
+      "get": {
+        "summary": "Host Shell List",
+        "operationId": "host_shell_list",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Host Shell Open",
+        "operationId": "host_shell_open",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellOpenResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/host-shell/{name}/close": {
+      "post": {
+        "summary": "Host Shell Close",
+        "operationId": "host_shell_close",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostShellCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -36225,6 +36298,80 @@
         "title": "HostPerf",
         "description": "Slow-tier HostSampler snapshot, including its cost and staleness."
       },
+      "HostShellCloseResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "closed"
+        ],
+        "title": "HostShellCloseResponse"
+      },
+      "HostShellInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "attached_clients": {
+            "type": "integer",
+            "title": "Attached Clients"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "created_at",
+          "attached_clients"
+        ],
+        "title": "HostShellInfo"
+      },
+      "HostShellListResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "shells": {
+            "items": {
+              "$ref": "#/components/schemas/HostShellInfo"
+            },
+            "type": "array",
+            "title": "Shells"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "shells"
+        ],
+        "title": "HostShellListResponse"
+      },
+      "HostShellOpenResponse": {
+        "properties": {
+          "shell": {
+            "$ref": "#/components/schemas/HostShellInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "shell"
+        ],
+        "title": "HostShellOpenResponse"
+      },
       "IdempotencyDTO": {
         "properties": {
           "supported": {
@@ -40228,6 +40375,13 @@
                 "type": "null"
               }
             ]
+          },
+          "review_waits": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewWait"
+            },
+            "type": "array",
+            "title": "Review Waits"
           }
         },
         "type": "object",
@@ -58961,6 +59115,55 @@
           "vault_path"
         ],
         "title": "ReviewSubmitResponse"
+      },
+      "ReviewWait": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "review_state": {
+            "type": "string",
+            "title": "Review State"
+          },
+          "review_kind": {
+            "type": "string",
+            "title": "Review Kind"
+          },
+          "review_title": {
+            "type": "string",
+            "title": "Review Title"
+          },
+          "gate_id": {
+            "type": "string",
+            "title": "Gate Id"
+          },
+          "gate_type": {
+            "type": "string",
+            "title": "Gate Type"
+          },
+          "gate_status": {
+            "type": "string",
+            "title": "Gate Status"
+          },
+          "blocking": {
+            "type": "boolean",
+            "title": "Blocking"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "review_state",
+          "review_kind",
+          "review_title",
+          "gate_id",
+          "gate_type",
+          "gate_status",
+          "blocking"
+        ],
+        "title": "ReviewWait",
+        "description": "A document review one of this task's gates is tied to.\n\n``blocking`` is the ``blocked_gate`` test ``aq task explain`` applies: the\nreview's gate is attached to the task and not resolved (open or expired).\nA review gate is resolved only by an approval, so a rejected or withdrawn\nreview still blocks.  A non-blocking entry is an approved review whose\ngate released the task, reported while the task is not yet completed so\nthe card can still link to the design it was gated on."
       },
       "ReviewWithdrawRequest": {
         "properties": {

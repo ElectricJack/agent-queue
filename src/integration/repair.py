@@ -1141,10 +1141,25 @@ class RepairService:
                 return self._result_value(
                     "budget_exhausted", "supervisor_recovery", int(stage["attempts"])
                 )
-            if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
-                return self._result_value(
-                    "continue", "stale", int(stage["attempts"]) if stage else 0
+            if stage is None:
+                # A parent's first aggregate verification has no stage yet:
+                # batches open stage 0 when the candidate is built, parents
+                # only on a merge conflict. A trusted red on the current
+                # generation and head therefore used to land here and finish
+                # green, leaving the held verifier waiting on a subject that
+                # could never verify. Open the stage instead; the dispatch
+                # drain source finds a writerless active stage on its own.
+                opened = await self._open_red_parent_stage_on(
+                    conn,
+                    operation=dict(operation),
+                    evidence_id=evidence_id,
+                    now=recorded_at,
                 )
+                if opened is not None:
+                    return opened
+                return self._result_value("continue", "stale", 0)
+            if stage["state"] not in {"active", "awaiting_completion"}:
+                return self._result_value("continue", "stale", int(stage["attempts"]))
             evidence = (
                 await conn.execute(
                     select(integration_check_evidence).where(
@@ -1273,6 +1288,205 @@ class RepairService:
             await self.db._notify_ready(post_transition.ready)
         return result
 
+    async def _open_red_parent_stage_on(
+        self, conn, *, operation: dict[str, Any], evidence_id: str, now: float
+    ) -> dict[str, Any] | None:
+        """Stage a trusted red on a parent's current generation and head.
+
+        ``None`` means the evidence is about a generation or head the parent
+        has already moved past: that, and only that, is what ``stale`` reports.
+        A red on the live subject that cannot be staged blocks for a human
+        rather than reporting a no-op the playbook would complete green.
+        """
+        if (
+            operation["target_kind"] != "parent"
+            or operation["state"] != "active"
+            or int(operation["active_stage"]) != 0
+        ):
+            return None
+        evidence = (
+            await conn.execute(
+                select(integration_check_evidence).where(
+                    integration_check_evidence.c.id == evidence_id
+                )
+            )
+        ).mappings().one_or_none()
+        if (
+            evidence is None
+            or evidence["operation_id"] != operation["id"]
+            or evidence["parent_task_id"] != operation["parent_task_id"]
+            or evidence["conclusion"] != "failure"
+            or evidence["classification"] != "conclusive"
+            or evidence["required_check_version"] != operation["required_check_version"]
+        ):
+            return None
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == operation["parent_task_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        head = evidence["parent_head_sha"]
+        if (
+            checkpoint is None
+            or checkpoint["episode_id"] != operation["episode_id"]
+            or not head
+            or head != checkpoint["checkpoint_sha"]
+            or evidence["parent_generation"] is None
+            or int(evidence["parent_generation"]) != int(checkpoint["generation"])
+        ):
+            return None
+        try:
+            context = await self._start_context_on(
+                conn, operation, starting_sha=head, trigger_id=evidence_id
+            )
+        except _RepairInvariant:
+            context = None
+        if context is None:
+            await self._escalate_unstaged_parent_red_on(
+                conn, operation=operation, evidence=dict(evidence), now=now
+            )
+            return self._result_value("human_required", "no_stage_blocked", 0)
+        _policy, boundary, subject = context
+        deadline_at = now + boundary.repair.primary_seconds
+        row = {
+            "operation_id": operation["id"],
+            "ordinal": 0,
+            "policy": boundary.repair.model_dump(mode="json"),
+            "intelligence_class": boundary.primary_intelligence_class,
+            # Deprecated column: routes come from the router, never the policy.
+            "profile_id": None,
+            "repair_task_id": None,
+            "writer_kind": None,
+            "starting_sha": head,
+            "trigger_id": evidence_id,
+            "current_subject": subject,
+            "deadline_event_id": f"repair-deadline-{operation['id']}-0",
+            "started_at": now,
+            "deadline_at": deadline_at,
+            "attempts": 0,
+            "dossier": await self._initial_dossier_on(
+                conn,
+                operation=operation,
+                subject=subject,
+                starting_sha=head,
+                trigger_id=evidence_id,
+                boundary=boundary,
+                started_at=now,
+                deadline_at=deadline_at,
+            ),
+            "state": "active",
+        }
+        await conn.execute(insert(integration_repair_stages).values(**row))
+        # The triggering red opens the stage exactly as a merge conflict does,
+        # so it spends no attempt. Recording it keeps a redelivery idempotent
+        # through ``record_result``'s duplicate branch.
+        await conn.execute(
+            insert(integration_repair_stage_evidence).values(
+                operation_id=operation["id"],
+                ordinal=0,
+                evidence_id=evidence_id,
+                counted_attempt=False,
+                result_outcome="started",
+                result_action="stage_opened",
+                recorded_at=now,
+            )
+        )
+        await self._notify_verifier_of_red_on(
+            conn, operation=operation, evidence=dict(evidence), now=now
+        )
+        return self._result_value("started", "stage_opened", 0) | {"stage": 0}
+
+    @staticmethod
+    async def _notify_verifier_of_red_on(
+        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+    ) -> None:
+        """Tell the held aggregate verifier its subject was recorded red.
+
+        The verifier waits on a handoff for a head that will never verify, so
+        without this it holds its claim until an operator notices. The stable
+        primary key keeps a redelivery from sending the message twice.
+        """
+        verifier_task_id = operation.get("verifier_task_id")
+        if not verifier_task_id:
+            return
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"])
+            )
+        ).mappings().one_or_none()
+        if parent is None:
+            return
+        head = evidence["parent_head_sha"]
+        await conn.execute(
+            pg_insert(messages)
+            .values(
+                id=f"msg-parent-red-{operation['id']}-{evidence['id']}",
+                project_id=parent["project_id"],
+                from_kind="system",
+                from_id="integration-repair",
+                to_kind="task",
+                to_id=verifier_task_id,
+                subject=f"Aggregate {head[:12]} failed its required checks",
+                body=(
+                    f"The collected aggregate you hold for {operation['parent_task_id']} "
+                    f"(generation {evidence['parent_generation']}, head {head}) was "
+                    f"recorded red by run {evidence['run_id']}. A repair stage is open "
+                    f"on this operation; stop waiting for this head to verify."
+                ),
+                created_at=now,
+                priority=50,
+                archive_after_inject=1,
+                body_kind="integration_parent_red",
+            )
+            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        )
+
+    @staticmethod
+    async def _escalate_unstaged_parent_red_on(
+        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+    ) -> None:
+        """Surface a live red the mechanism refused to stage.
+
+        Reaching here means the evidence is about the parent's current
+        generation and head and still could not open a stage, which is an
+        identity or policy problem no retry resolves.
+        """
+        parent = (
+            await conn.execute(
+                select(tasks).where(tasks.c.id == operation["parent_task_id"])
+            )
+        ).mappings().one_or_none()
+        if parent is None:
+            return
+        await conn.execute(
+            pg_insert(messages)
+            .values(
+                id=f"msg-unstaged-parent-red-{operation['id']}-{evidence['id']}",
+                project_id=parent["project_id"],
+                from_kind="system",
+                from_id="integration-repair",
+                to_kind="session",
+                to_id=f"supervisor-{parent['project_id']}",
+                subject=(
+                    f"Parent {operation['parent_task_id']} is red with no repair stage"
+                ),
+                body=(
+                    f"Run {evidence['run_id']} failed the required checks for "
+                    f"{operation['parent_task_id']} at generation "
+                    f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
+                    f"and operation {operation['id']} could not open a repair stage for it. "
+                    f"No writer is scheduled; this needs an operator."
+                ),
+                created_at=now,
+                priority=80,
+                archive_after_inject=1,
+                body_kind="integration_unstaged_parent_red",
+            )
+            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        )
+
     @staticmethod
     async def _escalate_stuck_batch_on(
         conn, operation, *, failures: int, now: float
@@ -1320,6 +1534,185 @@ class RepairService:
             )
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
+
+    async def _settle_resolved_parent_dispatch(self, operation_id):
+        """Refuse a dispatch whose stage already recorded its own resolution.
+
+        A parent conflict repair ends with one frozen, fenced and pushed
+        resolution on its promotion intent. Once the stage's subject has
+        advanced to exactly that head, the remaining work is verification of the
+        new aggregate: the closed delegate's bookkeeping is not a demand for
+        another writer, and no successor stage may be allocated with nothing to
+        repair.
+        """
+        async with self.db.immediate() as conn:
+            operation = (await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+            )).mappings().one_or_none()
+            if operation is None or operation["target_kind"] != "parent":
+                return None
+            try:
+                project_id = await self._operation_project_id_on(conn, dict(operation))
+            except ValueError:
+                return None
+            await self.db.lock_hierarchy_project(conn, project_id)
+            locked = (await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+                .with_for_update()
+            )).mappings().one_or_none()
+            if locked is None or locked["target_kind"] != "parent":
+                return None
+            current = (await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == locked["active_stage"],
+                )
+            )).mappings().one_or_none()
+            if current is None or not await self._settle_resolved_parent_on(
+                conn, dict(locked), dict(current), now=self.clock()
+            ):
+                return None
+            head = self._subject_sha(current["current_subject"])
+            return self._dispatch_value(
+                "already_dispatched", operation_id, int(current["ordinal"]),
+                repair_task_id=current["repair_task_id"], writer_kind="repair_delegate",
+            ) | {
+                "reason": "resolution_recorded_for_subject",
+                "head_sha": head,
+            }
+
+    async def _recorded_parent_resolution_on(self, conn, operation, stage):
+        """Return the committed resolution whose recorded head is this subject."""
+        head = self._subject_sha(stage["current_subject"])
+        subject = stage["current_subject"] or {}
+        if (
+            operation["target_kind"] != "parent"
+            or subject.get("kind") != "parent"
+            or stage["repair_task_id"] is None
+            or not is_valid_git_oid(head)
+        ):
+            return None
+        intents = (
+            await conn.execute(
+                select(integration_promotion_intents)
+                .where(
+                    integration_promotion_intents.c.operation_key == operation["id"],
+                    integration_promotion_intents.c.state == "committed",
+                    integration_promotion_intents.c.resolution_operation_id == operation["id"],
+                    integration_promotion_intents.c.resolution_head_sha == head,
+                )
+                .order_by(integration_promotion_intents.c.id)
+                .limit(2)
+            )
+        ).mappings().all()
+        if len(intents) != 1:
+            # A recorded resolution is one immutable fact; an ambiguous set is
+            # an operator question, never an inferred handback.
+            return None
+        intent = dict(intents[0])
+        evidence = intent["resolution_push_evidence"] or {}
+        if (
+            evidence.get("kind") != "exact_resolution_push_observed"
+            or evidence.get("remote_sha") != head
+        ):
+            return None
+        return intent
+
+    async def _settle_resolved_parent_on(
+        self, conn, operation: dict[str, Any], stage: dict[str, Any], *, now: float
+    ) -> bool:
+        """End a parent stage whose recorded conflict resolution is its subject.
+
+        A successor stage is legitimately needed only for a concrete failure.
+        Once the subject is this operation's own committed resolution head and no
+        conclusive failure is recorded there, the stage ends as passed: the
+        operation stays live for verification of that head, the parent goes back
+        to its collector, and no repair writer and no no-progress incident are
+        created.
+        """
+        if operation["state"] not in {"active", "escalated"} or (
+            stage["state"] not in {"active", "awaiting_completion"}
+        ):
+            return False
+        if stage["repair_task_id"] is not None:
+            # Only a closed writer's bookkeeping is settled here. A delegate
+            # that has not closed keeps its own deadline classification.
+            delegate = (await conn.execute(
+                select(tasks.c.status).where(tasks.c.id == stage["repair_task_id"])
+            )).scalar_one_or_none()
+            if delegate != TaskStatus.COMPLETED.value:
+                return False
+        intent = await self._recorded_parent_resolution_on(conn, operation, stage)
+        if intent is None:
+            return False
+        head = intent["resolution_head_sha"]
+        subject = stage["current_subject"] or {}
+        owed = await conn.scalar(
+            select(integration_check_evidence.c.id)
+            .where(
+                integration_check_evidence.c.operation_id == operation["id"],
+                integration_check_evidence.c.parent_task_id == operation["parent_task_id"],
+                integration_check_evidence.c.parent_generation == int(subject["generation"]),
+                integration_check_evidence.c.parent_head_sha == head,
+                integration_check_evidence.c.conclusion == "failure",
+                integration_check_evidence.c.classification != "infrastructure",
+                integration_check_evidence.c.observed_at >= float(intent["committed_at"] or 0.0),
+            )
+            .limit(1)
+        )
+        if owed is not None:
+            # Exact-head CI already failed the resolution: the successor owes a
+            # repair for that failure, not a resolution.
+            return False
+        dossier = dict(stage["dossier"] or {})
+        dossier["resolution_verification"] = {
+            "intent_id": intent["id"],
+            "resolution_head_sha": head,
+            "stage": int(stage["ordinal"]),
+            "recorded_at": now,
+        }
+        ended = await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == stage["ordinal"],
+                integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
+            )
+            .values(state="passed", completed_at=now, dossier=dossier)
+        )
+        if ended.rowcount != 1:
+            return False
+        await self._verify_resolved_parent_on(conn, operation)
+        return True
+
+    async def _verify_resolved_parent_on(
+        self, conn, operation: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Hand the resolved parent back to its collector for verification.
+
+        The projection is the ordinary one: readiness, the verifier handoff and
+        the checkpoint's verification state. It stays the parent's own lifecycle
+        — a head that is not ready yet simply keeps collecting.
+        """
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.integration.parent_completion import ParentCompletion
+
+        try:
+            return await ParentCompletion(self.db).mark_ready_on(
+                conn, operation["parent_task_id"]
+            )
+        except (HierarchyError, ValueError):
+            # Readiness projection never fails the stage that resolved the
+            # conflict; the collector revisits the parent on its next pass and
+            # the operator keeps the named invariant.
+            logger.warning(
+                "parent %s readiness projection refused after repair resolution",
+                operation["parent_task_id"],
+                exc_info=True,
+            )
+            return {"outcome": "waiting"}
 
     async def _successor_for_closed_writer(self, operation_id, stage):
         async with self.db.immediate() as conn:
@@ -1442,6 +1835,9 @@ class RepairService:
                         "already_dispatched", operation_id, int(current["ordinal"]),
                         repair_task_id=current["repair_task_id"], writer_kind="repair_delegate",
                     )
+        resolved = await self._settle_resolved_parent_dispatch(operation_id)
+        if resolved is not None:
+            return resolved
         stage = await self._successor_for_closed_writer(operation_id, stage)
 
         # The durable relationship and paused task are committed before the
@@ -2123,6 +2519,14 @@ class RepairService:
                 stage == 0
                 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
             )
+            if continues and await self._settle_resolved_parent_on(
+                conn, dict(operation), dict(row), now=observed_at
+            ):
+                # This subject is the head of the operation's own recorded
+                # conflict resolution and nothing is owed to a repair writer:
+                # the stage ends for verification instead of escalating an
+                # unchanged-head successor.
+                return self._timeout_value("expired", "none", operation_id, stage)
             if continues and classify:
                 writer = await self._expiring_writer_on(conn, dict(operation), dict(row))
                 disposition = writer["disposition"] if writer is not None else "ladder"
@@ -4269,6 +4673,8 @@ class RepairService:
 
     async def _delegate_description_on(self, conn, operation, repair_stage) -> str:
         conflict = None
+        batch = None
+        revision = None
         if operation["target_kind"] == "batch" and operation.get("batch_id"):
             batch = (
                 await conn.execute(
@@ -4315,10 +4721,108 @@ class RepairService:
                         ).where(integration_batch_members.c.batch_id == batch["id"])
                         .order_by(integration_batch_members.c.ordinal)
                     )).mappings()]
-        return self._delegate_description(operation, repair_stage, conflict=conflict)
+        # A stage is dispatched as soon as the batch has a candidate revision, so
+        # the revision is usually still ``constructing`` or ``built`` and its
+        # CI has not been observed yet. The candidate-CI section is therefore
+        # derived from the current revision in every live state, never from the
+        # testing state alone; only a superseded revision (never current) and a
+        # recorded conflict, which has its own section, drop it.
+        candidate_ci = None
+        if (
+            conflict is None
+            and batch is not None
+            and revision is not None
+            and revision["state"] != "superseded"
+        ):
+            evidence = (
+                await conn.execute(
+                    select(integration_check_evidence)
+                    .where(
+                        integration_check_evidence.c.batch_id == batch["id"],
+                        integration_check_evidence.c.candidate_revision
+                        == revision["revision"],
+                    )
+                    .order_by(integration_check_evidence.c.observed_at.desc())
+                    .limit(1)
+                )
+            ).mappings().first()
+            candidate_ci = {
+                # Before the candidate head exists the subject is the
+                # construction base, exactly as ``_batch_subject`` resolves it.
+                "candidate_sha": revision["head_sha"] or revision["construction_base_sha"],
+                "candidate_built": bool(revision["head_sha"]),
+                "construction_base_sha": revision["construction_base_sha"],
+                "batch_id": batch["id"],
+                "revision": revision["revision"],
+                "state": revision["state"],
+                "run_id": evidence["run_id"] if evidence is not None else None,
+                "conclusion": evidence["conclusion"] if evidence is not None else None,
+            }
+        return self._delegate_description(
+            operation, repair_stage, conflict=conflict, candidate_ci=candidate_ci
+        )
 
     @staticmethod
-    def _delegate_description(operation, repair_stage, *, conflict=None) -> str:
+    def _candidate_ci_section(candidate_ci: dict[str, Any] | None) -> str:
+        """Tell a delegate the candidate CI it has no evidence for yet.
+
+        The batch's candidate revision exists from the moment the batch is
+        sealed, so a stage can be dispatched while the candidate is still
+        ``constructing`` or ``built`` and CI has never reported.  The dossier is
+        then legitimately empty and the writer must hold instead of inventing a
+        failure.  A revision whose latest observation is conclusive and has
+        left ``testing`` needs no hold: the dossier's failed checks are the
+        recorded work.
+        """
+        if candidate_ci is None:
+            return ""
+        if candidate_ci["conclusion"] is not None and candidate_ci["state"] != "testing":
+            return ""
+        run_line = (
+            f"CI run: {candidate_ci['run_id']} ({candidate_ci['conclusion']})"
+            if candidate_ci["run_id"]
+            else "CI run: not yet visible"
+        )
+        candidate_line = (
+            f"Candidate SHA: {candidate_ci['candidate_sha']}"
+            if candidate_ci["candidate_built"]
+            else "Candidate SHA: not built yet (the candidate is still being constructed)"
+        )
+        cause = (
+            "The frozen dossier's failed checks, logs and attempted commands are empty "
+            "BECAUSE candidate CI has not reported yet. There is nothing on record to "
+            "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+            if candidate_ci["conclusion"] is None
+            else "The frozen dossier records no required-check failure for this exact "
+            "candidate. There is nothing on record to repair beyond the observation "
+            "above. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+        )
+        return (
+            "\n\n## Awaiting candidate CI — no failure evidence exists yet\n\n"
+            f"Batch: {candidate_ci['batch_id']}\n"
+            f"Candidate revision: {candidate_ci['revision']} "
+            f"(revision state: {candidate_ci['state']})\n"
+            f"{candidate_line}\n"
+            f"Construction base: {candidate_ci['construction_base_sha']}\n"
+            f"{run_line}\n\n"
+            f"{cause}"
+            "Protocol:\n"
+            "1. Check the candidate CI status for the revision above before acting "
+            "(read the run above with your CI read; `aq git ci-baseline-status` covers "
+            "branch baselines, not this candidate).\n"
+            "2. While the candidate is still being built or the run is pending or "
+            "missing: push nothing at all to the batch branch, and close this stage "
+            "pass-unchanged when CI turns green; the daemon publishes under its fence.\n"
+            "3. If and only if a required check on the exact candidate SHA fails: "
+            "then repair, record the failed checks, and submit through "
+            "aq integration resolve-candidate-member as usual.\n"
+            "A fix after a green result cannot be bound to this candidate; it would "
+            "force a superseding revision instead. Ask the supervisor only if the "
+            "candidate CI run for this exact SHA cannot be read at all."
+        )
+
+    @staticmethod
+    def _delegate_description(operation, repair_stage, *, conflict=None, candidate_ci=None) -> str:
         description = (
             "Execute the frozen hierarchical-integration repair stage.\n\n"
             f"Operation: {operation['id']}\n"
@@ -4344,6 +4848,7 @@ class RepairService:
                 "Preservation is not candidate acceptance: exact candidate CI and publication "
                 "still use the frozen subject, manifest, and current delegate fence."
             )
+        description += RepairService._candidate_ci_section(candidate_ci)
         if not conflict:
             return description
         if conflict.get("members"):

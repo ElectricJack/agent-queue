@@ -346,16 +346,41 @@ class SessionReconciler:
    (`stall_nudges`, `stall_last_action_at`); events `task.stalled/nudged/restarted/quarantined`.
    A nudge the composer guard defers spends no rung — unless the refusal carries an
    escalating `NudgeReason` (`stale_frame`, `unreadable`) *and* progress evidence independent
-   of the composer corroborates the stall: the harness's own transcript older than the lease.
-   The rung is then spent without a nudge and `task.stalled` carries `deferred_reason`. With
-   no such evidence to offer (an `opencode` holder, whose conversation AQ cannot read at all),
+   of the composer corroborates the stall: the harness's own transcript older than the lease,
+   or a CLI's own store (`harness_progress`; `src/sessions/opencode_store.py` for a harness
+   whose CLI keeps one). The rung is then spent without a nudge and `task.stalled` carries
+   `deferred_reason`. With no such evidence to offer (a harness with neither reader nor store),
    the stall is announced with `evidence="unverified"` and how long the pane has held still,
    and nothing is spent — a terminal read is never the decision (design spec §4.3).
+4a. **Wedged-turn override** — the gate above is `window_activity`, and a TUI that repaints
+   its in-turn spinner keeps it fresh forever (`crisp-horizon-90.10`: 42 minutes, zero rungs,
+   zero events, task held). When the pane claims activity, the reconciler asks the CLI's own
+   store and the provider's residency (`GET <local endpoint>/api/ps`) before believing it: no
+   store row for longer than the lease, no tool call still open, and nothing resident or in
+   flight. All four readings positive → the store's clock becomes the session's `last` and the
+   ordinary ladder runs, `task.stalled` carrying `evidence="store_stalled"`. Every unknown —
+   no store, no rows, an unreadable store, a gateway provider, an unreachable endpoint, a
+   model merely held warm — holds the ladder (design spec §4.3.1).
 5. **Named desired-state** — build desired set from profiles with `lifecycle: named`;
    start/wake missing (respecting `wake_mode`), drain idle past `idle_timeout`
    (state `sleeping`), recycle past `max_session_age + jitter` via handoff (invoke
    `aq handoff` semantics through CommandHandler, then kill + relaunch with resume).
 6. **Backstop** — `stuck_timeout_seconds` exceeded end-to-end → force-kill + exit-classify.
+
+Between the orphan sweep and the ladder sits the **idle stop intent**
+(`_step_idle_stop_intent`, azure-dune-51): a live session with a recorded stop
+intent (`desired_state='stopped'`) or a spent claim budget, holding no open task,
+inside no claim and blocked on no agent question, is stopped after
+`idle_stop_grace_seconds` with the fenced stop `aq session kill` uses — a pool
+worker through `_terminate_pool_session`, so the slot, claim and worktree are
+released. The grace is measured from the first tick the shape was *observed*,
+keyed by instance token, never from `last_activity`: tmux's `window_activity`
+advances on any pane output, so an OpenCode TUI at its final summary keeps the
+activity stamp fresh and no pane-derived idle bound can fire on one (which is
+also why such a worker counted as idle *supply* and the abandoned-claim-loop
+recycle never saw it). `aq doctor --check sessions.stop_intent_pending` reports
+anything that outlives `stop_intent_report_seconds`, aged from the session's own
+`task_session_attempts.ended_at` when it has one.
 
 `adopt_on_start()`: `list_running("s-") + list_running("n-")`, cross-checked with
 `proctable.scan_by_env_marker("AQ_SESSION_ID")`; live matches → rebind (update `epoch`,

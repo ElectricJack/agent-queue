@@ -613,7 +613,17 @@ class IntegrationAdoptArgs(CommandArgs):
     target_ref: str = Field(min_length=1)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     accept_equivalent: bool = False
+    settle_delivered_children: bool = False
+    dry_run: bool = False
     reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def delivered_children_names_one_parent(self):
+        if self.settle_delivered_children and len(set(self.task_ids)) != 1:
+            raise ValueError("delivered-child adoption requires exactly one parent")
+        if self.dry_run and not self.settle_delivered_children:
+            raise ValueError("dry-run requires settle_delivered_children")
+        return self
 
 
 class IntegrationMigrateProvenanceArgs(CommandArgs):
@@ -626,6 +636,8 @@ class IntegrationMigrateProvenanceArgs(CommandArgs):
     # Operator attestation of task_id's current completion source, for a
     # legacy close that retained no source Git can verify.
     source: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    no_artifact: bool = False
+    reason: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationMigrateProvenanceValue(CommandValue):
@@ -730,6 +742,10 @@ class IntegrationOperationalValue(CommandValue):
     leases: tuple[dict[str, Any], ...] = ()
     bound: tuple[dict[str, Any], ...] = ()
     unproven: tuple[str, ...] = ()
+    verifier_task_id: str | None = None
+    children: tuple[dict[str, Any], ...] = ()
+    retire_delegates: tuple[str, ...] = ()
+    conclusion: str | None = None
 
 
 class IntegrationStatusValue(IntegrationOperationalValue):
@@ -1209,6 +1225,8 @@ class IntegrationRecordRepairValue(CommandValue):
         "block_for_human",
         "supervisor_recovery",
         "duplicate",
+        "stage_opened",
+        "no_stage_blocked",
         "stale",
     ] | None = None
     attempts: int | None = None
@@ -1849,7 +1867,7 @@ INTEGRATION_RECORD_REPAIR = _repair_contract(
     "integration_record_repair",
     IntegrationRecordRepairArgs,
     IntegrationRecordRepairValue,
-    ("continue", "escalate", "human_required", "budget_exhausted"),
+    ("continue", "started", "escalate", "human_required", "budget_exhausted"),
     summary="Record one exact repair check attempt against the current stage budget.",
     effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
 )
@@ -3283,7 +3301,7 @@ _DEVELOPMENT_CONTRACT_ARGS = (
     ("integration_development_sweep", IntegrationDevelopmentSweepArgs),
     ("integration_cancel_preserving", IntegrationAbortArgs),
 )
-_DEVELOPMENT_OUTCOMES = ("configured", "adopted", "delivered", "idle", "parked", "base_moved",
+_DEVELOPMENT_OUTCOMES = ("configured", "adopted", "would_adopt_parent", "delivered", "idle", "parked", "base_moved",
                          "cancelled", "already_terminal", "blocked")
 
 
@@ -3376,7 +3394,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
         if registry.get(name) is None:
             contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,
-                successes=frozenset({"configured", "adopted", "delivered", "idle", "cancelled", "already_terminal"}),
+                successes=frozenset({"configured", "adopted", "would_adopt_parent", "delivered", "idle", "cancelled", "already_terminal"}),
                 side_effect=SideEffectClass.COMPOSITE)
             registry.register(CommandRegistration(name, contract, _development_adapter(name)))
     if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:

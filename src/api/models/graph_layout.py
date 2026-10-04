@@ -31,6 +31,7 @@ __all__ = [
     "LocateRequest",
     "LocateResponse",
     "NodeResponse",
+    "ReviewWait",
     "RunningTargetResponse",
     "StubOverflow",
     "TidyRequest",
@@ -115,6 +116,30 @@ class ExtentResponse(BaseModel):
     job: LayoutJob | None = None
 
 
+class ReviewWait(BaseModel):
+    """A document review one of this task's gates is tied to.
+
+    ``blocking`` is the ``blocked_gate`` test ``aq task explain`` applies: the
+    review's gate is attached to the task and not resolved (open or expired).
+    A review gate is resolved only by an approval, so a rejected or withdrawn
+    review still blocks.  A non-blocking entry is an approved review whose
+    gate released the task, reported while the task is not yet completed so
+    the card can still link to the design it was gated on.
+    """
+
+    review_id: str
+    #: ``in_review`` | ``changes_requested`` | ``rejected`` | ``approved`` | ``withdrawn``
+    review_state: str
+    #: ``spec`` | ``plan`` | ``other``
+    review_kind: str
+    review_title: str
+    gate_id: str
+    gate_type: str
+    #: ``open`` | ``expired`` | ``resolved``
+    gate_status: str
+    blocking: bool
+
+
 class LayoutNode(GraphTaskNode):
     x: float
     y: float
@@ -137,6 +162,8 @@ class LayoutNode(GraphTaskNode):
     phase_hold: PhaseHoldDetail | None = None
     # Implementation vs delivery for a node with children (``None`` for a leaf).
     delivery: EpicDeliveryStatus | None = None
+    # Reviews this task waits on (blocking first), linked from the card.
+    review_waits: list[ReviewWait] = Field(default_factory=list)
 
 
 class LayoutEdge(BaseModel):

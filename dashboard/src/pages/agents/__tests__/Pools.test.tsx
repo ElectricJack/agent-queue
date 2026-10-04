@@ -685,8 +685,17 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
-    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
-    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+    // Settings is reachable from the header; no disclosure round trip first.
+    const header = window.querySelector("header")!;
+    fireEvent.click(within(header).getByRole("tab", { name: "Settings" }));
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(header).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    // The pool disclosure keeps its own picker and carries no second copy of the switch.
+    const dialog = within(window).getByRole("dialog");
+    expect(within(dialog).queryByRole("tab")).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Instance")).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Dismiss / }));
 
     const min = await within(window).findByLabelText("Minimum active workers", undefined, SLOW);
     expect(min).toHaveValue(1);
