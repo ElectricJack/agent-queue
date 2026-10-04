@@ -917,6 +917,15 @@ operation stays blocked for a human: reconcile it through
 `aq integration recover-parent-head OPERATION_ID --head SHA`, never by
 dispatching another repair stage.
 
+An older repair close can have `commits: []` because its base checkout lacks the
+parent ref. Recovery accepts that record only when accepted-close metadata binds
+its completion ID, original session and current claim epoch to the fenced close
+audit. The exact stage subject, recorded commit range and actual published head
+must still agree; a summary naming the head supplies no proof. Apply preserves
+the empty completion and original receipts, clears stale verification, and files
+the normal verifier handoff if no verifier exists. Run the preview's exact apply
+command and require fresh checks for the recovered head before completion.
+
 `integration_repair_dispatch` answers `unknown` (with `reason` and
 `reason_code`) for a state it did not expect — a missing or mismatched delegate,
 an id collision, a missing or non-predecessor owner, an incoherent handoff.
@@ -1065,6 +1074,10 @@ Every current child must be COMPLETED with retained Git proof of containment,
 an immutable equivalent replacement, or an explicit no-artifact completion.
 Add `--accept-equivalent` when a contained child uses an immutable equivalent
 replacement rather than ancestry; it does not waive missing or pending proof.
+`ownership` lists the detached reservations and current fences the
+settlement will retire. A child's writerless `worker` reservation on its exact
+canonical branch can be retired here once its current completion is proven.
+It does not need a separate `release-owner` or `release-stale-owners` command.
 Resolve any manual hold, open
 gate, retained session/claim/workspace, attached writer or uncertain external
 write the preview names, then preview again. Reconciler-owned parents require
