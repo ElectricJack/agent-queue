@@ -257,6 +257,22 @@ def test_disposable_daemon_scenario(e2e_world, scenario_key):
     e2e_world.run(scenario_key)
 
 
+@pytest.mark.integration
+@pytest.mark.timeout(E2E_TEST_TIMEOUT_SECONDS)
+def test_dashboard_pool_toggle(tmp_path):
+    """Real browser enable/disable persists across reload, even with slow reads."""
+    env = world_env(tmp_path / "aq-e2e")
+    env["AQ_E2E_DASHBOARD_PORT"] = str(_unused_loopback_port())
+    with disposable_world("dashboard-pool-toggle", env) as world:
+        result = subprocess.run(
+            ["node", "scripts/e2e/pool-toggle.mjs"],
+            cwd=REPO_ROOT, env=world.env, capture_output=True, text=True,
+            check=False, timeout=120,
+        )
+        assert result.returncode == 0, f"browser toggle failed: {result.stdout}\n{result.stderr}"
+        print(result.stdout)
+
+
 @pytest.mark.perf
 def test_backend_responsiveness_benchmark(tmp_path, perf_strict):
     """Opt-in matched production cadence, CPU/DB idle load and transition samples."""
