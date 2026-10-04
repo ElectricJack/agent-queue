@@ -18,6 +18,7 @@ from src.commands.principal import (
 )
 from src.config import AppConfig
 from src.conversations.outbox import RecordingOutbox
+from src.conversations.render import conversation_marker
 from src.database import Database
 from src.database.tables import conversation_inputs, messages, supervisor_conversations
 from src.profiles.capabilities import DENY_ALL
@@ -591,7 +592,7 @@ async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
         "conversation_id": first["conversation_id"],
         "input_id": first["input_id"],
         "reply_message_id": result["reply_message_id"],
-        "text": f"Answer from the supervisor (aq-conv:{result['delivery_dedup_key']})",
+        "text": "Answer from the supervisor" + conversation_marker(result["delivery_dedup_key"]),
     }
     assert result["discord_text_chars"] == len(rows[-1]["payload"]["text"])
     # The first durable text wins even when a retry carries a changed body.

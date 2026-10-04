@@ -1084,6 +1084,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_launch.py",
         "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
@@ -1414,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:cd7bb8c29b8dd798549eac93cb863bf8a68789b83ae0b78f0de24f711b340fad",
+  "digest": "sha256:882e9ce675a321c494e69c583046b4ab84ba0177475a45022b45436015eb972a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4314,7 +4315,8 @@
       "imports": [
         "src.database",
         "src.database.queries.conversation_queries",
-        "src.database.tables"
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
@@ -4326,7 +4328,8 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.conversations.render"
+        "src.conversations.render",
+        "src.delivery.message"
       ],
       "markers": [],
       "summary": "Explicit replies are bounded, mention-free and link-filtered."
@@ -4837,6 +4840,7 @@
         "src.orchestrator",
         "src.runtimes.base",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider",
         "src.sessions.spec"
       ],
@@ -8276,7 +8280,6 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration",
-        "src.integration.candidate_ci",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.published_repair_handoff",
@@ -9013,6 +9016,8 @@
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.jobs.artifacts",
+        "src.jobs.identity",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
@@ -12635,6 +12640,7 @@
         "src.providers.intent",
         "src.scheduler",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider"
       ],
       "markers": [],
@@ -14072,6 +14078,7 @@
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.spec",
@@ -14156,6 +14163,31 @@
       ],
       "markers": [],
       "summary": "Session launch consumes intelligence class → provider → model."
+    },
+    "tests/test_session_launch.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agents.sessions",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.event_bus",
+        "src.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.flock_audit",
+        "src.sessions.launch",
+        "src.sessions.proctable",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The flock registration invariant, including failure and concurrent observation."
     },
     "tests/test_session_lens.py": {
       "areas": [
@@ -14677,6 +14709,7 @@
         "src.commands.principal",
         "src.config",
         "src.conversations.outbox",
+        "src.conversations.render",
         "src.database",
         "src.database.tables",
         "src.discord.intake_diagnostics",
