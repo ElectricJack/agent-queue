@@ -7,15 +7,15 @@ Adds ``knowledge_extraction_jobs``, ``knowledge_extraction_inputs``,
 ``src/database/tables.py``; this revision only creates and drops them so the
 DDL order for the cross-referencing reservation pointer stays under Alembic.
 
-Revision ID: a00000000063
-Revises: a00000000062
+Revision ID: a00000000064
+Revises: a00000000063
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000063"
-down_revision = "a00000000062"
+revision = "a00000000064"
+down_revision = "a00000000063"
 branch_labels = None
 depends_on = None
 

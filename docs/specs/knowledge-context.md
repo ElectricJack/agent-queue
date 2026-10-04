@@ -51,7 +51,7 @@ revision and an idempotency key. Search and ordinary show do not imply usage.
 These citations work independently of context/memory injection flags. Neither
 delivery nor a citation proves model comprehension, obedience or approval.
 
-Migration `a00000000062` adds the three context tables idempotently, including
+Migration `a00000000063` adds the three context tables idempotently, including
 exact record/revision foreign keys and exclusive execution-owner constraints.
 Execution references remain soft for archival. Downgrade refuses any retained
 bundle, receipt or citation; populated installations use read-only rollback.

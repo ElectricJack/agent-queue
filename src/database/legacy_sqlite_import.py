@@ -223,13 +223,16 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_import_runs",
         "record_legacy_mappings",
         "record_import_items",
+        # K08 prepared context, observed delivery and citations shipped in
+        # revision 63, not in the legacy SQLite format.
         "knowledge_context_bundles",
         "knowledge_context_deliveries",
         "knowledge_citations",
-        # K12 derived provider index receipts shipped in revision 61. A legacy
+        # K12 derived provider index receipts shipped in revision 66. A legacy
         # SQLite file predates every record revision, so it has no index state;
         # the derived index is rebuilt by reindexing authorized records.
         "record_index_state",
+        # K13 durable extraction jobs, receipts and budgets shipped in revision 64.
         "knowledge_extraction_jobs",
         "knowledge_extraction_inputs",
         "knowledge_capture_checkpoints",

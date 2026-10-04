@@ -532,7 +532,7 @@ async def test_direct_database_checks_reject_wrong_scope_and_invalid_counters(db
 
 @pytest.mark.migration
 async def test_migration_baseline_replay_empty_rollback_and_data_guard(db, store):
-    migration = importlib.import_module("migrations.versions.a00000000063_knowledge_extraction")
+    migration = importlib.import_module("migrations.versions.a00000000064_knowledge_extraction")
 
     def run(sync, action):
         with Operations.context(MigrationContext.configure(sync)):

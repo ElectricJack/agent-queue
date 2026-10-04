@@ -4221,7 +4221,7 @@ be downgraded in dependency order. A populated inventory refuses destructive rol
 
 ## Prepared knowledge context, delivery and citations (K08)
 
-Migration `a00000000062` adds the prepared evidence bundle, its observed transport
+Migration `a00000000063` adds the prepared evidence bundle, its observed transport
 delivery and the exact-revision citation ledger. Preparation, delivery and usage
 evidence are three separate facts: a bundle is what the service selected and sealed,
 a delivery is what a transport acknowledged, and a citation is that a specific
@@ -4314,9 +4314,9 @@ link to the bundle that carried the selection, and redaction leaves the row inta
 
 ## Durable extraction jobs, receipts and budgets (K13)
 
-Migration `a00000000063` adds the durable generation work ledger, its exact input
+Migration `a00000000064` adds the durable generation work ledger, its exact input
 receipts, the capture cursor, the per-feature daily allowance and the pre-charge
-reservation; `a00000000064` adds `knowledge_feature_budgets.consecutive_failures` for
+reservation; `a00000000065` adds `knowledge_feature_budgets.consecutive_failures` for
 the persistent failure circuit. Generation is separately gated on
 `knowledge.extraction.enabled` and `knowledge.consolidation.enabled` (both default
 false, and also `knowledge.enabled`, `knowledge.writes_enabled`, `memory.enabled` and
