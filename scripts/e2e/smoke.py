@@ -1075,9 +1075,31 @@ def _close_next_child(container: str) -> None:
 def s5_fence_and_scope(state: dict) -> str:
     """A token is an identity, not a key to the daemon."""
     holder, intruder = fresh_workers(2)
-    create_task("S5 task for the holder", profile=POOL_PROFILE)
-    claimed = holder.claim_next()
-    check(claimed["result"] == "claimed", f"S5 needs a held task: {claimed}")
+    fixture = create_task("S5 task for the holder", profile=POOL_PROFILE)
+    last_claim = None
+
+    def claim_holder():
+        nonlocal last_claim
+        last_claim = holder.claim_next()
+        # READY and routed does not imply available to this single attempt:
+        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
+        # Releasing that lock emits no task.ready event, so retry explicitly.
+        if last_claim.get("result") == "no_ready_work":
+            return None
+        check(last_claim.get("result") == "claimed", f"S5 needs a held task: {last_claim}")
+        check(holder.task_id == fixture, f"S5 expected fixture {fixture}, held {holder.task_id}")
+        return last_claim
+
+    def claim_diagnostic():
+        task = task_show(fixture)
+        keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
+        fixture_state = {key: task.get(key) for key in keys}
+        return f"last_claim={last_claim}; fixture={fixture_state}"
+
+    wait_for(
+        claim_holder, what=f"S5 holder to claim fixture {fixture}",
+        timeout=CONVERGE_TIMEOUT, diagnostic=claim_diagnostic,
+    )
     held, epoch = holder.task_id, holder.claim_epoch
 
     # A second, *different* pool session's token must not touch it.
