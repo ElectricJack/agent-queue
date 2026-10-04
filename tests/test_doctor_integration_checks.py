@@ -45,6 +45,25 @@ async def _age(db, task_id: str, age_s: float) -> None:
         )
 
 
+async def test_orphaned_pr_check_is_registered_and_reports_inventory_failures(db, monkeypatch):
+    from importlib import import_module
+
+    module = import_module("src.doctor.integration_checks")
+
+    finding = {"project_id": "p", "pr_url": "https://github.com/o/r/pull/91",
+               "branch": "aq/orphan", "age_seconds": 25 * 3600}
+    monkeypatch.setattr(module, "_find_orphaned_prs", AsyncMock(return_value=(
+        [finding], [{"project_id": "other", "error": "GitHub unavailable"}],
+    )))
+    result = await run_check(db, "integration.orphaned_prs")
+    assert result.severity is Severity.WARN and result.data["count"] == 1
+    assert "pull/91" in result.detail and "25h" in result.detail
+    assert "no live task or train owner" in result.detail
+    assert "GitHub unavailable" in result.detail
+    check = next(check for check in module.integration_checks() if check.id == result.id)
+    assert check.fix is None
+
+
 @pytest.mark.parametrize(
     "lifecycle, guard_revision, expected",
     [

@@ -291,3 +291,19 @@ async def test_reviewed_file_guard_stall_names_batch_and_recovery(context, monke
     assert len(findings) == 1
     assert findings[0]["kind"] == "reviewed_file_guard"
     assert "batch-one" in findings[0]["detail"] and "eject" in findings[0]["detail"]
+
+
+async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    finder = AsyncMock(return_value=(
+        [{"project_id": "one", "pr_url": "https://github.com/o/r/pull/92",
+          "branch": "aq/orphan", "age_seconds": 26 * 3600}],
+        [{"project_id": "two", "error": "offline"}],
+    ))
+    monkeypatch.setattr(import_module("src.doctor.integration_checks"), "_find_orphaned_prs", finder)
+    findings = await module._orphaned_pr_findings(context, {"one", "two"}, NOW)
+    finder.assert_awaited_once_with(context, {"one", "two"}, now=NOW)
+    assert [item["kind"] for item in findings] == ["orphaned_pr", "pr_inventory_failed"]
+    assert "pull/92" in findings[0]["detail"] and "26h" in findings[0]["detail"]
+    assert findings[1]["detail"] == "offline"

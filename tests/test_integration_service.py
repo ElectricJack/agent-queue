@@ -60,6 +60,22 @@ async def test_tick_retires_terminal_delegates_without_a_new_completion_event(db
     repair.retire_terminal_delegates.assert_awaited_once_with(100.0)
 
 
+async def test_remote_reconciliation_sweeps_prs_and_backfills_aborted_cleanup(db):
+    proof = AsyncMock(side_effect=RuntimeError("temporary GitHub failure"))
+    aborted = AsyncMock()
+    cleanup = AsyncMock()
+    service = IntegrationService(
+        db, SimpleNamespace(), SimpleNamespace(), SimpleNamespace(dispatch_due=AsyncMock()),
+        pr_cleanup_handler=proof, aborted_cleanup_handler=aborted, cleanup_handler=cleanup,
+    )
+    service._tick_cleanup = cleanup
+    await service._reconcile()
+    proof.assert_awaited_once()
+    aborted.assert_awaited_once()
+    # A failed proof sweep does not stop independent durable cleanup.
+    cleanup.assert_awaited_once()
+
+
 async def test_tick_retries_repair_reservations_after_owner_recovery(db):
     calls = []
 

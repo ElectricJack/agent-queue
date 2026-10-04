@@ -456,7 +456,8 @@ class RootEngineOwnership:
 
 
 def root_engine_guard(
-    resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False
+    resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False,
+    aborted_pr_cleanup=False,
 ):
     """Cover legacy service entry points, including autonomous/restart callers.
 
@@ -500,6 +501,12 @@ def root_engine_guard(
                     batch = await db.get_integration_batch(identity)
                 repository_id = batch["repository_id"] if batch else None
             if repository_id is None:
+                return await method(self, *args, **kwargs)
+            # Retiring a terminal batch's audit PR does not mutate source refs,
+            # candidate construction or publication. A repository's new root
+            # owner must not strand this independent, immutable cleanup work.
+            if (aborted_pr_cleanup and batch is not None and batch["lifecycle"] == "aborted"
+                    and bound.get("kind", "audit_pr") == "audit_pr"):
                 return await method(self, *args, **kwargs)
             try:
                 async with RootEngineOwnership(db).operation(repository_id, publisher=publisher):

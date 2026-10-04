@@ -405,6 +405,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _unmaterialized_pr_findings(ctx, active),
         _unadmitted_parent_findings(ctx, active),
         _reviewed_file_guard_findings(ctx, active),
+        _orphaned_pr_findings(ctx, active, now),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
     )
@@ -439,6 +440,23 @@ async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) ->
         )
         for row in await _find_reviewed_file_blocked_batches(ctx)
         if row["project_id"] in active
+    ]
+
+
+async def _orphaned_pr_findings(ctx: DoctorContext, active: set[str], now: float) -> list[dict]:
+    from src.doctor.integration_checks import _find_orphaned_prs
+
+    pulls, errors = await _find_orphaned_prs(ctx, active, now=now)
+    return [
+        _finding("orphaned_pr", pull["project_id"],
+                 f"{pull['pr_url']} ({pull['branch']}) is {int(pull['age_seconds'] / 3600)}h "
+                 "old with no live task or train owner", **{
+                     key: value for key, value in pull.items() if key != "project_id"
+                 })
+        for pull in pulls
+    ] + [
+        _finding("pr_inventory_failed", item["project_id"], item["error"])
+        for item in errors
     ]
 
 

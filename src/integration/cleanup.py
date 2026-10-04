@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import os
 import time
 import uuid
@@ -37,6 +38,9 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
 from src.integration.delivery_branches import branch_of, deletable
+
+
+logger = logging.getLogger(__name__)
 
 
 class CleanupMaterializationResult(BaseModel):
@@ -117,7 +121,9 @@ class IntegrationCleanupService:
     async def handle_item(self, row: dict[str, Any], now: float) -> CleanupExecutionResult:
         return await self.execute(row["batch_id"], row["kind"], row["identity"], now=now)
 
-    @root_engine_guard("batch", outcome="wait", result_model=CleanupExecutionResult)
+    @root_engine_guard(
+        "batch", outcome="wait", result_model=CleanupExecutionResult, aborted_pr_cleanup=True,
+    )
     async def execute(
         self, batch_id: str, kind: str, identity: str, *, now: float | None = None
     ) -> CleanupExecutionResult:
@@ -238,6 +244,30 @@ class IntegrationCleanupService:
                         + summary
                     ),
                 )
+        else:
+            batch = await self.db.get_integration_batch(row["batch_id"])
+            if batch is not None and batch["lifecycle"] == "aborted":
+                marker = f"<!-- aq-aborted-batch:{row['batch_id']}:{row['expected_sha']} -->"
+                if not await provider.has_comment_marker(
+                    number=int(row["target_pr_number"]), marker=marker
+                ):
+                    if await self._mark_irreversible_prewrite(row) != "owner":
+                        return "retryable", "abort comment publication is unresolved"
+                    await provider.comment_pull_request(
+                        number=int(row["target_pr_number"]), marker=marker,
+                        body=(f"{marker}\nClosing integration batch `{row['batch_id']}`: "
+                              f"outcome **aborted**. {batch['human_abort_reason'] or ''}"),
+                    )
+        # A comment can race a new push. Re-read before closing the bound head.
+        current = await provider.exact_pull_request(number=int(row["target_pr_number"]))
+        if current is None:
+            return "complete", None
+        if (
+            current.get("repository_numeric_id") != int(row["repository_numeric_id"])
+            or current.get("repository_full_name") != row["repository_full_name"]
+            or current.get("head_sha") != row["expected_sha"]
+        ):
+            return "conflict", "pull request repository or head changed before closure"
         if current.get("state") != "closed":
             await provider.close_pull_request(number=int(row["target_pr_number"]))
         return "complete", None
@@ -668,7 +698,7 @@ class IntegrationCleanupService:
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch_id,
-                integration_batches.c.lifecycle == "promoted",
+                integration_batches.c.lifecycle.in_(("promoted", "aborted")),
                 integration_batches.c.cleanup_state == "pending",
             )
             .values(cleanup_state=aggregate, updated_at=now)
@@ -711,7 +741,9 @@ class IntegrationCleanupService:
             attempts=int(row["attempts"]),
         )
 
-    @root_engine_guard("batch", outcome="stale", result_model=CleanupMaterializationResult)
+    @root_engine_guard(
+        "batch", outcome="stale", result_model=CleanupMaterializationResult, aborted_pr_cleanup=True,
+    )
     async def materialize(self, batch_id: str, *, now: float | None = None):
         observed_at = self.clock() if now is None else now
         async with self.db._engine.connect() as conn:
@@ -737,6 +769,8 @@ class IntegrationCleanupService:
                 .mappings()
                 .one_or_none()
             )
+            if batch is not None and batch["lifecycle"] == "aborted":
+                return await self.materialize_aborted_on(conn, batch, observed_at)
             publication = (
                 (
                     await conn.execute(
@@ -857,6 +891,66 @@ class IntegrationCleanupService:
                 batch_id=batch_id,
                 item_count=len(persisted),
             )
+
+    @classmethod
+    async def materialize_aborted_on(cls, conn, batch, now):
+        """Queue audit PR retirement atomically with abort; retain all source work."""
+        publications = (await conn.execute(
+            select(integration_candidate_publications).where(
+                integration_candidate_publications.c.batch_id == batch["id"],
+                integration_candidate_publications.c.state == "pr_published",
+            ).order_by(integration_candidate_publications.c.revision.desc())
+        )).mappings().all()
+        seen = set()
+        for publication in publications:
+            identity = f"{publication['repository_numeric_id']}#{publication['pr_number']}"
+            if identity in seen:
+                continue
+            seen.add(identity)
+            number = cls._pr_number(publication["pr_url"], publication["repository_full_name"])
+            if number != publication["pr_number"] or publication["repository_id"] != batch[
+                "repository_id"
+            ]:
+                raise ValueError("aborted batch PR identity is inconsistent")
+            await conn.execute(pg_insert(integration_cleanup_items).values(
+                batch_id=batch["id"], project_id=batch["project_id"],
+                repository_id=publication["repository_id"],
+                repository_numeric_id=publication["repository_numeric_id"],
+                repository_full_name=publication["repository_full_name"],
+                revision=publication["revision"], kind="audit_pr", identity=identity,
+                domain_key=f"cleanup:{batch['id']}:audit_pr:{identity}",
+                target_pr_number=number, target_pr_url=publication["pr_url"],
+                expected_sha=publication["head_sha"], state="pending", attempts=0,
+                next_attempt_at=now, created_at=now, updated_at=now,
+            ).on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"]))
+        if not seen:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch["id"],
+                integration_batches.c.lifecycle == "aborted",
+                integration_batches.c.cleanup_state == "pending",
+            ).values(cleanup_state="complete", updated_at=now))
+        return CleanupMaterializationResult(
+            outcome="materialized", batch_id=batch["id"], item_count=len(seen),
+        )
+
+    async def reconcile_aborted(self, now: float) -> None:
+        """Backfill audit PR cleanup after a restart or an older daemon's abort."""
+        async with self.db._engine.connect() as conn:
+            batch_ids = list((await conn.execute(select(integration_batches.c.id).where(
+                integration_batches.c.lifecycle == "aborted",
+                integration_batches.c.cleanup_state == "pending",
+                ~select(integration_cleanup_items.c.domain_key).where(
+                    integration_cleanup_items.c.batch_id == integration_batches.c.id,
+                ).exists(),
+            ).order_by(integration_batches.c.id).limit(100))).scalars())
+        for batch_id in batch_ids:
+            try:
+                result = await self.materialize(batch_id, now=now)
+                if result.outcome not in {"materialized", "already_materialized"}:
+                    logger.warning("Aborted batch PR cleanup %s: %s", batch_id, result.outcome)
+            except Exception:
+                logger.warning("Could not queue aborted batch PR cleanup %s", batch_id,
+                               exc_info=True)
 
     async def _descendant_ref_items(
         self, conn, batch, publication, members, now, *, existing_refs: set[str]

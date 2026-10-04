@@ -764,8 +764,20 @@ class DeliveredParentAdoption:
                     )
                     if not await truth.is_fresh():
                         raise ValueError("target moved during adoption; repeat the dry run")
+                    from src.integration.pr_cleanup import queue_settled_task_prs_on
+
+                    await queue_settled_task_prs_on(
+                        self.db, conn, [task_id, *[proof["task_id"] for proof in proofs]],
+                        reason=(f"Superseded by delivered children adopted at `{head_sha}`. "
+                                f"{reason}"), principal=operator_id,
+                    )
         for transition in transitions:
             await self.db.log_blocked_flips(transition.flipped)
             await self.db._notify_settled(transition.settled)
             await self.db._notify_ready(transition.ready)
-        return {"outcome": "adopted", "id": identity, **report}
+        from src.integration.pr_cleanup import retry_settled_task_prs
+
+        pr_cleanup = await retry_settled_task_prs(
+            self.db, self.service.git, [task_id, *[proof["task_id"] for proof in proofs]],
+        )
+        return {"outcome": "adopted", "id": identity, **report, "pr_cleanup": pr_cleanup}

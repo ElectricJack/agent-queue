@@ -1597,15 +1597,26 @@ class DevelopmentIntegration:
                         _manual_pause_control=True,
                     )
                 )
+            from src.integration.pr_cleanup import queue_settled_task_prs_on
+
+            if target_ref == "refs/heads/" + repo.default_branch:
+                await queue_settled_task_prs_on(
+                    self.db, conn, task_ids, reason=f"Adopted at `{head_sha}`. {reason}",
+                    principal=operator_id,
+                )
         for result in results:
             await self.db.log_blocked_flips(result.flipped)
             await self.db._notify_settled(result.settled)
             await self.db._notify_ready(result.ready)
+        from src.integration.pr_cleanup import retry_settled_task_prs
+
+        pr_cleanup = await retry_settled_task_prs(self.db, self.git, task_ids)
         return {
             "outcome": "adopted",
             "id": identity,
             "head_sha": head_sha,
             "manifest": manifest,
+            "pr_cleanup": pr_cleanup,
         }
 
     async def sweep(self, project_id, *, retry=False, recover_child_id=None, _moved=None):
