@@ -832,6 +832,109 @@ async def test_parent_adoption_cannot_be_borrowed_after_binding_changes(incident
     assert proof.reason == "invalid_parent_completion"
 
 
+async def seal_dependent_of(setup, dependency):
+    """Seal a root train whose one reviewed candidate declares *dependency*."""
+    from unittest.mock import AsyncMock
+
+    from src.integration.epic_dependencies import declare
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+    from tests.test_integration_sealing import _artifact, _policy, _review_row
+
+    db, _service, source, _remote, repo = setup
+    base = git(source, "rev-parse", "main")
+    head = await feature(setup, "dependent")
+    await db.update_project(
+        "p", hierarchical_integration_policy=_policy(), integration_mode="pull_request",
+    )
+    async with db.immediate() as conn:
+        await conn.execute(insert(t.playbook_artifacts).values(
+            **_artifact().model_dump(), scope="project", scope_identifier="p",
+            profile_fingerprint="", path="/tmp/adopted-parent-artifact", size_bytes=1,
+            validation="{}", created_at=1.0,
+        ))
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == "dependent").values(
+            pr_url="https://example.test/pull/dependent",
+        ))
+        await conn.execute(insert(t.task_branch_origins).values(
+            id="origin-dependent", task_id="dependent", repository_id=repo.id,
+            branch_name="dependent", base_sha=base, creation_generation=0, reserved=True,
+            materialized=True, created_at=1.0,
+        ))
+        await conn.execute(insert(t.task_integration_checkpoints).values(
+            task_id="dependent", repository_id=repo.id, branch="dependent", generation=1,
+            checkpoint_sha=head, state="working", version=1, updated_at=1.0,
+        ))
+        await conn.execute(insert(t.integration_review_evidence).values(**_review_row(
+            "dependent", head, evidence_id="review-dependent", repository_id=repo.id,
+            source_base=base,
+        )))
+        await declare(conn, dependent_task_id="dependent", dependency_task_id=dependency, now=1.0)
+    request = await IntegrationScheduler(db).mark_due("p", 10.0, "manual")
+    # Production inspects migrations first, so the preview must see the
+    # dependent too, not only the sealing transaction.
+    result = await TrainService(db, migration_inspector=AsyncMock(return_value=())).seal(
+        "p", request["request_id"], 20.0
+    )
+    async with db._engine.connect() as conn:
+        members = (await conn.execute(select(t.integration_batch_members.c.task_id))).scalars()
+        return result["outcome"], members.all()
+
+
+@pytest.mark.parametrize("change", [None, "checkpoint", "reopen"])
+async def test_adopted_parent_satisfies_a_dependent_epic_until_its_binding_changes(
+    incident, change
+):
+    """The adoption has no verified_sha and no root receipt; its fenced proof answers."""
+    setup, _children, _heads, _main = incident
+    db, *_ = setup
+    assert (await adopt(incident))["outcome"] == "adopted"
+    if change == "checkpoint":
+        async with db.immediate() as conn:
+            await conn.execute(update(t.task_integration_checkpoints).where(
+                t.task_integration_checkpoints.c.task_id == PARENT,
+            ).values(version=11))
+    elif change == "reopen":
+        await db.transition_task(PARENT, TaskStatus.READY, context="reopen for new work")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == PARENT).values(status="COMPLETED")
+            )
+    outcome, members = await seal_dependent_of(setup, PARENT)
+    assert (outcome, members) == (("empty", []) if change else ("sealed", ["dependent"]))
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(t.task_delivery_receipts))).all() == []
+
+
+@pytest.mark.parametrize("moved", [False, True])
+async def test_train_rechecks_the_adoption_fence_on_its_own_transaction(incident, moved):
+    """A proof observed before the checkpoint moved cannot vouch for the new binding."""
+    from types import SimpleNamespace
+
+    from src.integration.scheduler import TrainService
+
+    setup, _children, _heads, _main = incident
+    db, service, _source, _remote, repo = setup
+    await adopt(incident)
+    view = await service.delivery_observer.observe([PARENT])
+    assert view.get(PARENT).request.parent_adoption is not None
+    if moved:
+        async with db.immediate() as conn:
+            await conn.execute(update(t.task_integration_checkpoints).where(
+                t.task_integration_checkpoints.c.task_id == PARENT,
+            ).values(version=t.task_integration_checkpoints.c.version + 1))
+
+    async def stale_verified_on(conn, task_ids):
+        return {task_id: view.evidence[task_id] for task_id in task_ids}
+
+    stale = SimpleNamespace(
+        evidence=view.evidence, targets=view.targets, verified_on=stale_verified_on,
+    )
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(t.repos).where(t.repos.c.id == repo.id))).mappings().one()
+        delivered = await TrainService(db)._git_delivered_roots_on(conn, stale, "p", row)
+    assert delivered == (set() if moved else {PARENT})
+
+
 async def test_doctor_names_delivered_children_and_stale_verifier(incident):
     setup, _children, _heads, main = incident
     db, _service, *_ = setup

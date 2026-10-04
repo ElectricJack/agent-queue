@@ -517,8 +517,11 @@ class TrainService:
 
         A contained completion can answer a dependency without a checkpoint.
         When a checkpoint exists, it must name that same source; a previous
-        adoption cannot hide newly checkpointed work. Settlements and empty
-        artifacts are not code delivery to the default branch.
+        adoption cannot hide newly checkpointed work. An operator parent
+        adoption verifies nothing, so its checkpoint has no verified head:
+        it answers only while the checkpoint is still the exact binding the
+        audit fenced. Settlements and empty artifacts are not code delivery
+        to the default branch.
         """
         from src.integration.delivery_truth import DeliveryState
 
@@ -526,7 +529,7 @@ class TrainService:
             return set()
         verified = await view.verified_on(conn, view.evidence)
         target_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
-        sources = {task_id: proof.source_oid for task_id, proof in verified.items() if (
+        proofs = {task_id: proof for task_id, proof in verified.items() if (
             proof.state == DeliveryState.CONTAINED
             and proof.request.task_status == "COMPLETED"
             and (proof.request.project_id, proof.request.repository_id, proof.request.target_ref)
@@ -534,17 +537,28 @@ class TrainService:
             and view.targets[task_id].repository_url == repository["url"]
         )}
         checkpoint = task_integration_checkpoints
-        heads = dict((await conn.execute(
+        bindings = {row["task_id"]: row for row in (await conn.execute(
             select(checkpoint.c.task_id, case(
                 (checkpoint.c.episode_id.is_not(None), checkpoint.c.verified_sha),
                 else_=checkpoint.c.checkpoint_sha,
-            )).where(
-                checkpoint.c.task_id.in_(sources),
+            ).label("head"), checkpoint.c.episode_id, checkpoint.c.generation,
+                checkpoint.c.version).where(
+                checkpoint.c.task_id.in_(proofs),
                 checkpoint.c.repository_id == repository["id"],
             )
-        )).all())
-        return {task_id for task_id, source in sources.items()
-                if task_id not in heads or heads[task_id] == source}
+        )).mappings()}
+        delivered = set()
+        for task_id, proof in proofs.items():
+            binding = bindings.get(task_id)
+            adoption = proof.request.parent_adoption
+            if binding is None or binding["head"] == proof.source_oid or (
+                adoption is not None and binding["head"] is None
+                and adoption.source_oid == proof.source_oid
+                and (binding["episode_id"], binding["generation"], binding["version"])
+                == (adoption.episode_id, adoption.generation, adoption.checkpoint_version)
+            ):
+                delivered.add(task_id)
+        return delivered
 
     @root_engine_guard("project", outcome="busy")
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
