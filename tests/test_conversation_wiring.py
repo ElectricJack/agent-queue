@@ -54,7 +54,6 @@ from tests.test_tmux_integration import (
     _spec,
 )
 
-
 env = inbox_tests.env
 DM_CHANNEL = "999999999999999999"
 lifecycle_clock = lifecycle_tests.lifecycle_clock

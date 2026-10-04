@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:7001ab233cd14b48fe10153b0f4c1c64c1fe89825d4b6eb6e777e4b41b384691",
+  "digest": "sha256:8bc2427ac71f29e4362cce4040cab80750b0f96daa873f86fb53ddf99cb7384f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5077,7 +5077,9 @@
         "src.remote_links",
         "src.runtimes"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Scheduling and delivering the hourly digest (implementation spec §8)."
     },
     "tests/test_digest_queries.py": {
@@ -7912,6 +7914,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.models",
         "src.integration.observe",
         "src.integration.root_runtime",
@@ -8456,6 +8459,7 @@
         "src.integration.development",
         "src.integration.engine",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.repair",
         "src.integration.root_adapters",
         "src.integration.root_runtime",
@@ -8572,12 +8576,17 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.development",
+        "src.integration.engine",
         "src.integration.epic_dependencies",
         "src.integration.migration_heads",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.release",
+        "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.settling",
+        "src.integration.source_ci",
+        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities"
       ],

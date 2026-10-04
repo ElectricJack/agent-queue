@@ -148,8 +148,9 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert second.sent == 1
     posted = next(iter(transport.messages.values())).content
     assert "Completed t1; delivery to main is pending." in posted
+    marker = marker_for(window["id"])
+    assert posted.endswith(marker) and posted.count(marker) == 1
     assert "aq-dig:" not in posted
-    assert posted.count(marker_for(window["id"])) == 1
     assert len(posted) <= 1200
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
