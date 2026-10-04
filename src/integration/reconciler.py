@@ -163,7 +163,7 @@ class IntegrationReconciler:
         kinds: Sequence[SubjectKind] = (SubjectKind.ROOT_BATCH,),
         page_size: int = 100,
         interval_seconds: float = 5.0,
-        call_timeout_seconds: float = 30.0,
+        call_timeout_seconds: float = 180.0,
         bookkeeping_timeout_seconds: float = 60.0,
         backoff_seconds: float = 5.0,
         backoff_ceiling_seconds: float = 300.0,
