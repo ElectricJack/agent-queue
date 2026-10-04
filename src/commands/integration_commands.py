@@ -2229,6 +2229,26 @@ class IntegrationCommandsMixin:
                         )
                     )
                 ).scalar_one_or_none() is not None
+        if request.expected_base_sha is not None and not moved_main:
+            # A built revision whose construction base is not the caller's
+            # observed main is stale: ``build`` would answer ``already_built``
+            # for it forever (the reconciler's base-moved loop).
+            from sqlalchemy import select
+
+            from src.database.tables import integration_candidate_revisions
+
+            async with self.db._engine.connect() as conn:
+                built_base = (
+                    await conn.execute(
+                        select(integration_candidate_revisions.c.construction_base_sha).where(
+                            integration_candidate_revisions.c.batch_id == request.batch_id,
+                            integration_candidate_revisions.c.revision
+                            == batch["current_revision"],
+                            integration_candidate_revisions.c.head_sha.is_not(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+            moved_main = built_base is not None and built_base != request.expected_base_sha
         if moved_main and batch["policy_snapshot"].get("on_main_moved", "rebuild") != "rebuild":
             return {
                 "success": False,
@@ -2236,7 +2256,9 @@ class IntegrationCommandsMixin:
                 "batch_id": request.batch_id,
                 "revision": int(batch["current_revision"]),
             }
+        rebuilt = False
         if moved_main and getattr(service, "app_client", None) is not None:
+            rebuilt = True
             repository = await service._repository(batch["repository_id"])
             new_base = await service.app_client.exact_head_ref(repository.default_branch)
             result = (
@@ -2256,12 +2278,14 @@ class IntegrationCommandsMixin:
             repository = await service._repository(batch["repository_id"])
             new_base = await service.app_client.exact_head_ref(repository.default_branch)
             if new_base is not None:
+                rebuilt = True
                 result = await service.rebuild(
                     request.batch_id, int(batch["current_revision"]), new_base
                 )
         if (
             request.expected_revision is not None
             and result.revision != request.expected_revision
+            and not (rebuilt and result.outcome in {"built", "already_built"})
         ):
             return _failure("stale_revision", "candidate revision changed during build")
         return _with_reason(
