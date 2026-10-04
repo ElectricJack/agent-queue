@@ -195,9 +195,9 @@ class EventsMixin:
         """Check whether a project's token usage has crossed a warning threshold.
 
         Called after recording token usage for a task.  Queries the project's
-        ``budget_limit`` and current rolling-window usage, then sends a
-        ``format_budget_warning_embed`` notification if the usage percentage
-        has crossed one of the defined thresholds since the last notification.
+        ``budget_limit`` and current rolling-window usage, then emits a
+        ``notify.budget_warning`` event if the usage percentage has crossed
+        one of the defined thresholds since the last notification.
 
         Rate-limited: each threshold level is notified at most once per
         project until the budget resets (e.g. new rolling window).

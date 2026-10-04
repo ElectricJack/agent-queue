@@ -11,6 +11,31 @@ from src.jobs.policy import JobError
 from src.jobs.service import JobService
 from src.jobs.output import read_output
 from src.database.tables import workspaces
+from src.jobs.matter import candidate_document
+from src.object_loop.artifacts import ArtifactError, retain_document, retain_file
+from src.commands.contracts.job import JobRetainArgs
+
+
+def _capture_kind(relative: str) -> str:
+    """What a retained capture member is, by name.
+
+    The adapter's own transcript and its per-view completion markers stay out of
+    the store — ``aq job logs`` still serves them, and a receipt names evidence.
+    """
+    name = relative.rsplit("/", 1)[-1]
+    if name.endswith(".png.channels.bin"):
+        return "capture_channels"
+    if name.endswith(".png"):
+        return "capture_image"
+    if name == "capture.json":
+        return "capture_receipt"
+    return "capture_member"
+
+
+def _presented_frame(view: dict) -> str | None:
+    """The frame the adapter actually presented, when the receipt names it."""
+    presented = ((view.get("capture") or {}).get("result") or {}).get("presented") or {}
+    return presented.get("id")
 
 
 class JobCommandsMixin:
@@ -294,3 +319,125 @@ class JobCommandsMixin:
     async def _cmd_job_reconcile(self, args):
         await self._jobs().tick()
         return {"success": True}
+
+    async def _cmd_job_retain(self, args):
+        """Mint durable artifact identities for a completed capture.
+
+        A ``matter_render`` job keeps its capture under ``runs/<job>/capture``
+        until the sweeper reclaims it, while an object-loop ``ScoreReceipt``
+        names durable URIs and refuses local paths.  This is the step between
+        them: each retained member is copied into the artifact store, named by
+        its own digest, and refused if those bytes no longer hash to the digest
+        the completion receipt recorded.  What it copies is bounded by what the
+        job already admitted under its own artifact budget, so retention cannot
+        amplify what a run wrote.
+
+        What it does not invent: ``Capture.ready``/``decoded`` and the per-view
+        metrics are the external scorer's to measure.  The captures reported
+        here carry the image pointer and geometry, so a scorer can assemble a
+        receipt from them without AQ ever asserting a measurement.
+        """
+        try:
+            request = JobRetainArgs.model_validate(args)
+        except ValidationError as exc:
+            return {"success": False, "error": str(exc)}
+        job = await self._job_for_scope(request.job_id)
+        if not job:
+            return {"success": False, "error": "not_found"}
+        if job["preset"] != "matter_render":
+            return {"success": False, "error": "jobs.capture_unavailable"}
+        capture = (job["result"] or {}).get("capture") or {}
+        if (capture.get("receipt") or {}).get("status") != "complete":
+            return {"success": False, "error": "jobs.capture_unavailable"}
+        try:
+            response = await asyncio.to_thread(self._retain_capture, job, capture, request)
+        except (ArtifactError, OSError, ValueError, KeyError, TypeError) as exc:
+            return {"success": False, "error": str(exc)}
+        return {"success": True, **response}
+
+    def _retain_capture(self, job, capture, request):
+        data_dir = Path(self.config.data_dir)
+        origin = {"job_id": job["id"], "preset": job["preset"]}
+        receipt = capture.get("receipt") or {}
+        views = receipt.get("views") or {}
+        wanted = list(request.views) if request.views else sorted(views)
+        unknown = sorted(set(wanted) - set(views))
+        if unknown:
+            raise ValueError(f"unknown capture views: {', '.join(unknown)}")
+
+        recorded = {str(member["path"]): member for member in capture.get("artifacts") or []}
+        members = ["capture/capture.json"]
+        for name in wanted:
+            members.append(f"capture/{name}.png")
+            if request.include_channels:
+                members.append(f"capture/{name}.png.channels.bin")
+        artifacts = {}
+        for relative in members:
+            member = recorded.get(relative)
+            if member is None:
+                raise ArtifactError(f"{relative} was not retained by this job")
+            found = retain_file(
+                data_dir / "runs" / job["id"] / relative,
+                data_dir=data_dir,
+                kind=_capture_kind(relative),
+                origin={**origin, "member": relative},
+            )
+            if (found["sha256"], found["bytes"]) != (member["sha256"], member["bytes"]):
+                raise ArtifactError(f"{relative} changed since the job retained it")
+            artifacts[relative] = found
+
+        captures = [
+            {
+                "view_id": name,
+                "frame_id": _presented_frame(views[name]),
+                "image": {"uri": artifacts[f"capture/{name}.png"]["uri"],
+                          "sha256": artifacts[f"capture/{name}.png"]["sha256"]},
+                "width": (views[name].get("image") or {}).get("width"),
+                "height": (views[name].get("image") or {}).get("height"),
+            }
+            for name in wanted
+        ]
+        profile = (job["result"] or {}).get("render_profile") or {}
+        candidate = self._retain_candidate(job, receipt, origin)
+        if candidate.get("sha256"):
+            # Reported on its own and inside ``artifacts``, because that list is
+            # what becomes ScoreReceipt.artifacts and a receipt is refused
+            # unless its candidate digest appears there.
+            artifacts["candidate.json"] = candidate
+        return {
+            "job_id": job["id"],
+            "candidate_sha256": receipt.get("candidate_sha256"),
+            "rig_sha256": receipt.get("rig_sha256"),
+            "candidate_artifact": candidate,
+            "render_profile": profile or None,
+            "render_profile_sha256": profile.get("sha256"),
+            "artifacts": sorted(artifacts.values(), key=lambda a: a["uri"]),
+            "captures": captures,
+            "next_step": (
+                "Quote render_profile_sha256 as ObjectLoopStartArgs.render_profile_sha256, "
+                "the candidate artifact as ScoreReceipt.artifacts, and each capture image as "
+                "Capture.image; the scorer supplies ready/decoded and the view metrics."
+            ),
+        }
+
+    def _retain_candidate(self, job, receipt, origin):
+        """The candidate artifact: an identity whose digest *is* ``candidate_sha256``.
+
+        ``ScoreReceipt`` refuses a receipt whose candidate digest is absent from
+        its artifacts, and the declared identity is the digest of the canonical
+        candidate manifest, so minting that canonical form is what closes the
+        loop.  The bundle lives in the author's workspace, so a released
+        workspace reports why the artifact is missing instead of substituting a
+        near-miss identity.
+        """
+        argv = job.get("argv") or []
+        if not argv:
+            return {"error": "the job records no candidate bundle path"}
+        try:
+            document, declared = candidate_document(Path(argv[-1]) / "candidate.json")
+            return retain_document(
+                document, data_dir=Path(self.config.data_dir), kind="candidate",
+                origin={**origin, "member": "candidate.json"}, expect_sha256=declared,
+            )
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc)}

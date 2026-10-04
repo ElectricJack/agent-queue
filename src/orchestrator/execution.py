@@ -12,7 +12,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
 from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
-from src.discord.notifications import format_task_started
+from src.notifications.render import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
 from src.api.models.agent import AgentSettings, AgentSummary
 from src.notifications.events import (

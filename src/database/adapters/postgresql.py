@@ -36,7 +36,10 @@ from src.database.queries.collaboration_lifecycle_queries import CollaborationLi
 from src.database.queries.conversation_queries import ConversationQueriesMixin
 from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
-from src.database.queries.digest_queries import DigestQueryMixin
+from src.database.queries.digest_queries import (
+    DigestQueryMixin,
+    DigestSupervisorQueriesMixin,
+)
 from src.database.queries.escalation_queries import EscalationQueriesMixin
 from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
@@ -134,6 +137,7 @@ class PostgreSQLDatabaseAdapter(
     ActivityQueryMixin,
     DashboardStateQueriesMixin,
     DigestQueryMixin,
+    DigestSupervisorQueriesMixin,
     ReportQueriesMixin,
     OutboundQueriesMixin,
     TokenQueryMixin,

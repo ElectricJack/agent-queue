@@ -138,6 +138,35 @@ class PerProjectChannelsConfig:
     private: bool = True  # Make auto-created channels private (only bot + permitted users)
 
 
+_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass
+class ReportQuietHoursConfig:
+    """Local wall-clock interval during which an author wake is skipped.
+
+    Shared by the hourly report author (``reports.hourly.quiet_hours``) and the
+    supervisor-authored digest (``discord.digest.quiet_hours``, 2026-10-03 §4.1):
+    both suppress a *wake*, and both are evaluated in the daemon's report
+    timezone rather than UTC.
+    """
+
+    start: str = ""
+    end: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        if (
+            not isinstance(self.start, str)
+            or not isinstance(self.end, str)
+            or not _REPORT_CLOCK.fullmatch(self.start)
+            or not _REPORT_CLOCK.fullmatch(self.end)
+        ):
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
+        if self.start == self.end:
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
+        return []
+
+
 @dataclass
 class DiscordDigestConfig:
     """Hourly activity digest settings (discord-simplification §8, §9).
@@ -146,6 +175,14 @@ class DiscordDigestConfig:
     ``project_ids`` empty means every project the configured destination can
     see; a non-empty list is the destination's visibility, applied before any
     activity is read so one project's detail can never leak into another's.
+
+    ``supervisor_authored`` is phase P3 of the Discord-as-chat design
+    (2026-10-03 §4): the same window, written by the supervisor through
+    ``aq digest post`` instead of rendered only by the deterministic renderer.
+    It is off by default, so every field below it is inert until an operator
+    turns the flag on -- rollback is the flag, nothing else.  The cadence and
+    quiet hours are the spec's §8 Q4 proposal (two hours, 22:00-07:00 in the
+    daemon's report timezone), still gated on Jack's answer to that question.
     """
 
     enabled: bool = True
@@ -159,6 +196,19 @@ class DiscordDigestConfig:
     )
     catchup_hours: int = field(
         default=24, metadata={"json_schema": {"minimum": 1, "maximum": 168}}
+    )
+    supervisor_authored: bool = False
+    cadence_minutes: int = field(
+        default=120, metadata={"json_schema": {"minimum": 15, "maximum": 1440}}
+    )
+    quiet_hours: ReportQuietHoursConfig | None = field(
+        default_factory=lambda: ReportQuietHoursConfig(start="22:00", end="07:00")
+    )
+    author_fallback_minutes: int = field(
+        default=10, metadata={"json_schema": {"minimum": 1, "maximum": 60}}
+    )
+    quiet_line_after_skips: int = field(
+        default=3, metadata={"json_schema": {"minimum": 1, "maximum": 24}}
     )
 
     def validate(self) -> list[ConfigError]:
@@ -208,30 +258,35 @@ class DiscordDigestConfig:
                     )
                 )
                 break
-        return errors
-
-
-_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
-
-
-@dataclass
-class ReportQuietHoursConfig:
-    """Local wall-clock interval during which hourly author wakes are skipped."""
-
-    start: str = ""
-    end: str = ""
-
-    def validate(self) -> list[ConfigError]:
-        if (
-            not isinstance(self.start, str)
-            or not isinstance(self.end, str)
-            or not _REPORT_CLOCK.fullmatch(self.start)
-            or not _REPORT_CLOCK.fullmatch(self.end)
+        if not isinstance(self.supervisor_authored, bool):
+            errors.append(
+                ConfigError("discord.digest", "supervisor_authored", "must be a boolean")
+            )
+        if not MIN_DIGEST_INTERVAL_MINUTES <= self.cadence_minutes <= MAX_DIGEST_INTERVAL_MINUTES:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "cadence_minutes",
+                    f"cadence_minutes must be between {MIN_DIGEST_INTERVAL_MINUTES} and "
+                    f"{MAX_DIGEST_INTERVAL_MINUTES}; got {self.cadence_minutes}",
+                )
+            )
+        for name, upper in (
+            ("author_fallback_minutes", 60),
+            ("quiet_line_after_skips", 24),
         ):
-            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
-        if self.start == self.end:
-            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
-        return []
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("discord.digest", name, f"must be 1–{upper}"))
+        if self.quiet_hours is not None:
+            # The quiet-hours shape names the hourly report in its section; a
+            # digest window is the same policy in a different block, so the
+            # message is restated under the digest's own section.
+            errors.extend(
+                ConfigError("discord.digest.quiet_hours", error.field, error.message)
+                for error in self.quiet_hours.validate()
+            )
+        return errors
 
 
 @dataclass
@@ -379,19 +434,67 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordEscalationsConfig:
+    """The §5.2/§5.5 stateful-escalation phase, behind one rollback flag.
+
+    Distinct from :class:`DiscordEscalationConfig`, which holds the older
+    *post-delivery* switches.  This section is the phase the Discord design
+    spec §7.1 calls P1: the escalation state machine, edit-in-place posts and
+    the collapsed one-line form.  With ``stateful`` off, the behaviour is
+    exactly what shipped before the phase -- one root post per incident, edited
+    only when it is closed, no auto-resolution and no collapse bookkeeping.
+
+    There is deliberately **no** retention timer here.  Spec §5.2 sketched an
+    opt-in ``delete_collapsed_after_hours``, and Jack answered §8 Q3 on
+    2026-10-03 with "keep as one-line posts forever": a resolved or obsolete
+    post stays in the channel as the one-line form Discord can express, and
+    nothing in this code deletes it.  ``escalations.collapsed_at`` still
+    records when a post collapsed — that is the audit trail and the idempotency
+    check for a replayed edit, not a countdown.
+    """
+
+    stateful: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.stateful, bool):
+            return [ConfigError("discord.escalations", "stateful", "must be a boolean")]
+        return []
+
+
+@dataclass
 class DiscordConversationConfig:
-    """Opt-in @mention conversations with the global supervisor (mention-routing spec §4).
+    """Opt-in conversations with the addressed supervisor.
 
     Off by default.  Enabling means the ``discord.authorized_users`` identities
-    are trusted operator correspondents of the *elevated* global supervisor;
+    are trusted operator correspondents of the *elevated* addressed supervisor;
     there is no sandboxed chatbot.  Every numeric bound is fixed in
     :mod:`src.conversations.limits`, not configured here, and the runtime
     preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
+
+    ``require_mention`` and ``allow_dm`` are the P2 phase flags of the
+    2026-10-03 chat-extension spec (§7.1).  Both default to the routing the
+    mention-routing spec installed, so rollback is a flag change: setting
+    ``require_mention: true`` restores "only a top-level bot mention opens a
+    conversation", and leaving ``allow_dm`` off keeps direct messages ignored.
     """
 
     enabled: bool = False
+    #: Top-level messages open the channel's conversation without an
+    #: ``@agent-queue``.  ``True`` keeps mention-only routing.
+    require_mention: bool = True
+    #: Admit a direct message from an allow-listed user as its own channel
+    #: conversation (``thread_id = dm:<channel>``).  Off until asked.
+    allow_dm: bool = False
 
     def validate(self) -> list[ConfigError]:
+        if self.allow_dm and not self.enabled:
+            return [
+                ConfigError(
+                    "discord.conversation",
+                    "allow_dm",
+                    "discord.conversation.allow_dm requires discord.conversation.enabled",
+                )
+            ]
         return []
 
 
@@ -406,8 +509,13 @@ class DiscordConfig:
     #: single-channel model binds durable delivery to an ID that survives a
     #: rename (§1, §9).  Empty means "not configured yet".
     channel_id: str = ""
+    #: Conversation destination; inferred only when there is exactly one project.
+    project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
+    #: §7.1 P1: the stateful escalation phase.  Separate from ``escalation``
+    #: so one rollback flag turns the whole phase off and nothing else.
+    escalations: DiscordEscalationsConfig = field(default_factory=DiscordEscalationsConfig)
     conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
@@ -465,6 +573,7 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.escalations.validate())
         errors.extend(self.conversation.validate())
         if self.conversation.enabled and not (
             self.has_allowlist and self.guild_id and self.channel_id
@@ -495,10 +604,18 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.digest.enabled and self.digest.supervisor_authored:
+            notes.append(
+                f"The digest is supervisor-authored: one window every "
+                f"{self.digest.cadence_minutes} minutes, each held "
+                f"{self.digest.author_fallback_minutes} minutes for "
+                "`aq digest post` before the deterministic fallback posts."
+            )
         if self.conversation.enabled:
             notes.append(
                 "Discord conversations are enabled: an @mention from an authorized_users "
-                "identity reaches the elevated global supervisor. This is not a sandboxed "
+                "identity reaches the elevated project supervisor or elevated global supervisor. "
+                "This is not a sandboxed "
                 "chatbot; keep it off where chat must be read-only."
             )
         if self.legacy_destination_conflict and not self.channel_id:
@@ -4808,12 +4925,30 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         inventory_names = tuple(name for name in inventory_names if name)
         dg = d.get("digest", {}) or {}
+        digest_quiet_raw = dg.get("quiet_hours")
+        digest_quiet: ReportQuietHoursConfig | None = None
+        if digest_quiet_raw is not None:
+            if not isinstance(digest_quiet_raw, Mapping):
+                raise ConfigValidationError(["[discord.digest.quiet_hours] must be a mapping"])
+            digest_quiet = ReportQuietHoursConfig(
+                start=str(digest_quiet_raw.get("start", "") or ""),
+                end=str(digest_quiet_raw.get("end", "") or ""),
+            )
         digest_cfg = DiscordDigestConfig(
             enabled=bool(dg.get("enabled", True)),
             interval_minutes=int(dg.get("interval_minutes", 60)),
             project_ids=list(dg.get("project_ids", []) or []),
             categories=list(dg.get("categories", DIGEST_CATEGORIES) or []),
             catchup_hours=int(dg.get("catchup_hours", 24)),
+            supervisor_authored=bool(dg.get("supervisor_authored", False)),
+            cadence_minutes=int(dg.get("cadence_minutes", 120)),
+            quiet_hours=(
+                digest_quiet
+                if digest_quiet_raw is not None
+                else ReportQuietHoursConfig(start="22:00", end="07:00")
+            ),
+            author_fallback_minutes=int(dg.get("author_fallback_minutes", 10)),
+            quiet_line_after_skips=int(dg.get("quiet_line_after_skips", 3)),
         )
         esc = d.get("escalation", {}) or {}
         escalation_cfg = DiscordEscalationConfig(
@@ -4827,13 +4962,17 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         conv = d.get("conversation", {}) or {}
         conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
+        escs = d.get("escalations", {}) or {}
+        escalations_cfg = DiscordEscalationsConfig(stateful=bool(escs.get("stateful", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
             authorized_users=d.get("authorized_users", []),
             channel_id=str(d.get("channel_id", "") or ""),
+            project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
+            escalations=escalations_cfg,
             conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),

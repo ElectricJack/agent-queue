@@ -14,12 +14,14 @@ from dataclasses import asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
 from src.commands.helpers import (
+    STATUS_EMOJIS,
     _collect_tree_task_ids,
     _collect_tree_tasks,
     _count_subtree,
     _count_subtree_by_status,
     _format_task_tree,
     format_dependency_list,
+    progress_bar,
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import PHASE_KEY, STANDING_PARENT_KEY, HierarchyError
@@ -29,8 +31,7 @@ from src.database.queries.task_queries import (
     task_repository_id,
 )
 from src.deliverables import REVIEW_TARGETS
-from src.discord.embeds import STATUS_EMOJIS, progress_bar
-from src.discord.notifications import classify_error
+from src.notifications.render import classify_error
 from src.models import (
     BLOCKING_DEP_TYPES,
     DEP_TYPE_VALUES,

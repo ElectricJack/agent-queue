@@ -116,6 +116,21 @@ def job_result(ctx, **params):
     emit(ctx, _execute(ctx, "job_result", params))
 
 
+@job.command("retain")
+@click.argument("job_id")
+@click.option("--view", "views", multiple=True,
+              help="Retain only this view (repeatable; default is every captured view).")
+@click.option("--include-channels", is_flag=True,
+              help="Also retain the per-view identity planes (megabytes per view).")
+@click.pass_context
+@_handle_errors
+def job_retain(ctx, job_id, views, include_channels):
+    """Copy a completed capture into durable artifact identities."""
+    emit(ctx, _execute(ctx, "job_retain", {
+        "job_id": job_id, "views": list(views), "include_channels": include_channels,
+    }))
+
+
 @job.command("logs")
 @click.argument("job_id")
 @click.option("--after", type=click.IntRange(min=0), default=0)

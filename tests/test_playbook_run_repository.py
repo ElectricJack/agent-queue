@@ -340,6 +340,42 @@ async def test_list_runs_filters_by_playbook_lifecycle_and_artifact(db):
     assert await db.list_runs(playbook_id="nope") == []
 
 
+async def test_interrupted_run_pages_only_include_prior_process_drivers(db):
+    for run_id, lifecycle, updated_at, mode in [
+        ("old-a", RunLifecycle.RUNNING, NOW - 10, "live"),
+        ("old-b", RunLifecycle.CANCELLING, NOW - 10, "live"),
+        ("old-c", RunLifecycle.RUNNING, NOW - 5, "live"),
+        ("paused", RunLifecycle.PAUSED, NOW - 20, "live"),
+        ("done", RunLifecycle.COMPLETED, NOW - 20, "live"),
+        ("failed", RunLifecycle.FAILED, NOW - 20, "live"),
+        ("current", RunLifecycle.RUNNING, NOW, "live"),
+        ("preview", RunLifecycle.RUNNING, NOW - 20, "shadow"),
+    ]:
+        await db.create_run(make_snapshot(
+            run_id=run_id, lifecycle=lifecycle, updated_at=updated_at, mode=mode,
+        ))
+    first = await db.list_interrupted_runs(updated_before=NOW, limit=1)
+    assert [row.run_id for row in first] == ["old-a"]
+    second = await db.list_interrupted_runs(updated_before=NOW, after=first[-1].cursor, limit=1)
+    assert [row.run_id for row in second] == ["old-b"]
+    last = await db.list_interrupted_runs(updated_before=NOW, after=second[-1].cursor)
+    assert [row.run_id for row in last] == ["old-c"]
+    assert await db.list_interrupted_runs(updated_before=NOW, after=last[-1].cursor) == []
+    assert [row.run_id for row in await db.list_interrupted_runs(
+        updated_before=NOW, exclude_ids={"old-a", "old-c"},
+    )] == ["old-b"]
+    assert await db.list_interrupted_runs(updated_before=NOW, limit=0) == []
+
+
+async def test_interrupted_run_page_has_a_hard_bound(db):
+    for index in range(101):
+        await db.create_run(make_snapshot(run_id=f"old-{index:03}", updated_at=NOW - 10))
+    page = await db.list_interrupted_runs(updated_before=NOW, limit=10_000)
+    assert len(page) == 100
+    tail = await db.list_interrupted_runs(updated_before=NOW, after=page[-1].cursor)
+    assert [row.run_id for row in tail] == ["old-100"]
+
+
 async def test_latest_run_per_playbook_ranks_within_each_playbook(db):
     await db.create_run(make_snapshot(run_id="run-a", started_at=NOW))
     await db.create_run(

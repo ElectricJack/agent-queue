@@ -117,7 +117,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
   - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
   - { paths: ["scripts/generate-selection-catalogue.py", "scripts/replay-test-selection.py"], areas: ["test-selection"] }
-  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**"], areas: ["knowledge-evaluation"] }
+  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**", "tests/knowledge_fixture_adapter.py", "src/knowledge/delivery.py", "src/prime/hook_envelopes.py"], areas: ["knowledge-evaluation"] }
 
   # ---- test helpers, fixtures and the selection artifacts
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }
@@ -307,6 +307,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/capability_checks.py"], areas: ["capabilities"] }
   - { paths: ["src/doctor/dashboard_*.py"], areas: ["dashboard-server", "dashboard-state"] }
   - { paths: ["src/doctor/db_checks.py"], areas: ["migrations"] }
+  - { paths: ["src/doctor/escalation_checks.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/formula_checks.py"], areas: ["formulas"] }
   - { paths: ["src/doctor/git_checks.py", "src/doctor/integration_checks.py"], areas: ["integration-controls", "integration-ownership", "development-delivery"] }
   - { paths: ["src/doctor/hierarchy_checks.py"], areas: ["task-hierarchy"] }

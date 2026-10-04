@@ -299,9 +299,13 @@
         "bot_token": "",
         "channel_id": "",
         "conversation": {
-          "enabled": false
+          "allow_dm": false,
+          "enabled": false,
+          "require_mention": true
         },
         "digest": {
+          "author_fallback_minutes": 10,
+          "cadence_minutes": 120,
           "catchup_hours": 24,
           "categories": [
             "work",
@@ -311,7 +315,13 @@
           ],
           "enabled": true,
           "interval_minutes": 60,
-          "project_ids": []
+          "project_ids": [],
+          "quiet_hours": {
+            "end": "07:00",
+            "start": "22:00"
+          },
+          "quiet_line_after_skips": 3,
+          "supervisor_authored": false
         },
         "escalation": {
           "enabled": true,
@@ -320,7 +330,11 @@
           "reminder_minutes": 0,
           "supervisor_delivery_timeout_minutes": 15
         },
+        "escalations": {
+          "stateful": false
+        },
         "guild_id": "",
+        "project_id": "",
         "rate_guard_critical": 5000,
         "rate_guard_halt": 8000,
         "rate_guard_warn": 1000
@@ -344,11 +358,21 @@
         "conversation": {
           "additionalProperties": false,
           "default": {
-            "enabled": false
+            "allow_dm": false,
+            "enabled": false,
+            "require_mention": true
           },
           "properties": {
+            "allow_dm": {
+              "default": false,
+              "type": "boolean"
+            },
             "enabled": {
               "default": false,
+              "type": "boolean"
+            },
+            "require_mention": {
+              "default": true,
               "type": "boolean"
             }
           },
@@ -357,6 +381,8 @@
         "digest": {
           "additionalProperties": false,
           "default": {
+            "author_fallback_minutes": 10,
+            "cadence_minutes": 120,
             "catchup_hours": 24,
             "categories": [
               "work",
@@ -366,9 +392,27 @@
             ],
             "enabled": true,
             "interval_minutes": 60,
-            "project_ids": []
+            "project_ids": [],
+            "quiet_hours": {
+              "end": "07:00",
+              "start": "22:00"
+            },
+            "quiet_line_after_skips": 3,
+            "supervisor_authored": false
           },
           "properties": {
+            "author_fallback_minutes": {
+              "default": 10,
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "cadence_minutes": {
+              "default": 120,
+              "maximum": 1440,
+              "minimum": 15,
+              "type": "integer"
+            },
             "catchup_hours": {
               "default": 24,
               "maximum": 168,
@@ -408,6 +452,37 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": {
+                "end": "07:00",
+                "start": "22:00"
+              },
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "quiet_line_after_skips": {
+              "default": 3,
+              "maximum": 24,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "supervisor_authored": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -455,7 +530,24 @@
           },
           "type": "object"
         },
+        "escalations": {
+          "additionalProperties": false,
+          "default": {
+            "stateful": false
+          },
+          "properties": {
+            "stateful": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "guild_id": {
+          "default": "",
+          "type": "string"
+        },
+        "project_id": {
           "default": "",
           "type": "string"
         },

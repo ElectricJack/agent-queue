@@ -128,6 +128,30 @@ async def test_a_non_numeric_channel_is_an_actionable_configuration_fault():
         await transport.post_root(channel_id="agent-queue", content="x")
 
 
+async def test_posts_and_edits_share_one_budget_across_transport_instances():
+    from unittest.mock import AsyncMock
+
+    from src.discord.rate_guard import OutboundTokenBucket
+
+    transport, _ = make_transport()
+    now = [0.0]
+    transport._bot._outbound_bucket = OutboundTokenBucket(clock=lambda: now[0])
+    message = SimpleNamespace(id=7, edit=AsyncMock())
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=message), fetch_message=AsyncMock(return_value=message)
+    )
+    transport._bot.get_channel = lambda _id: channel
+    other = DiscordEscalationTransport(transport._bot, transport._config)
+    for _ in range(10):
+        await transport.post_root(channel_id="424242424242424242", content="post")
+        await other.edit_root(channel_id="424242424242424242", root_message_id="7", content="edit")
+    with pytest.raises(TransportRetryable, match="outbound budget"):
+        await other.post_root(channel_id="424242424242424242", content="held")
+    assert channel.send.await_count == message.edit.await_count == 10
+    now[0] = 3
+    await other.post_root(channel_id="424242424242424242", content="resumed")
+
+
 class FakeMessage:
     """A root post that may or may not already own a thread."""
 

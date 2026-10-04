@@ -174,13 +174,70 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
-| `conversation` | object | `enabled: false` | Opt-in bot-mention conversations with the existing elevated global supervisor. |
+| `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+#### 4.2.1 Supervisor-authored digest (phase P3, gated)
+
+`discord.digest.supervisor_authored` defaults to **false**, which is the whole
+deterministic digest described above. Turning it on replaces the deterministic
+window with one the supervisor writes; rollback is the flag and nothing else.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `supervisor_authored` | `bool` | `false` | Hold each window for the supervisor instead of posting it directly. |
+| `cadence_minutes` | `int` | `120` | Window length while supervisor-authored; 15–1440, replaces `interval_minutes`. |
+| `quiet_hours.start` / `.end` | `str` | `"22:00"` / `"07:00"` | Local `HH:MM` interval, may cross midnight, in `reports.timezone`. Suppresses the post, never the fact collection. |
+| `author_fallback_minutes` | `int` | `10` | Grace before the deterministic digest posts for an unanswered window; 1–60. |
+| `quiet_line_after_skips` | `int` | `3` | Consecutive unchanged windows before one "nothing needs you" line a day; 1–24. |
+
+With the flag on, each window is reserved on the cadence grid and held until
+`window_end + author_fallback_minutes`. The supervisor reads the frozen facts
+with `aq digest facts --since <window start>` and posts with
+`aq digest post --window <window start> --body "..."`, which the daemon renders
+inside the 600-character digest budget and appends the needs-you link to. A
+window with no new facts and nothing waiting on Jack is skipped; after
+`quiet_line_after_skips` such windows one line is posted per local day, so
+silence stays distinguishable from a dead bot. Authoring also requires the
+`supervisor-digest` playbook, which is shipped disabled and activated by the
+operator; without it every window falls back.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
+
+`discord.escalations` is the P1 phase of the Discord design spec (§5.2, §5.5,
+§7.1) and is the only rollback flag for it:
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `stateful` | `bool` | `false` | One channel post per incident, edited in place as it moves and collapsed to one line when it closes; incidents whose source went away close themselves. |
+
+There is no retention timer. Spec §5.2 sketched an opt-in
+`delete_collapsed_after_hours`, and the §8 Q3 decision (2026-10-03) was
+"keep as one-line posts forever": a closed incident's collapsed post stays in the
+channel permanently and nothing deletes it. `escalations.collapsed_at` records
+*when* a post collapsed — the audit trail and the idempotency check for a
+replayed edit, not a countdown.
+
+`discord.escalations.stateful: false` is not a degraded mode — it is exactly the
+behaviour that shipped before the phase: one root post per incident, edited only
+when it closes, no auto-resolution and no collapse bookkeeping. Turning it off
+also fences any state edit a daemon had already queued, so rollback never leaves
+half a phase running. The two keys are additive columns
+(`escalations.outcome`, `escalations.collapsed_at`), so an incident raised
+before the phase reads as unbacked and keeps the create-only post.
+`discord.escalation.reminder_minutes` remains the stale timer that decides when
+an open incident's post says it has been sitting unanswered; 0 disables it.
+
+`discord.conversation.require_mention` is the routing flag: true (the default)
+admits a top-level message only when the gateway saw a bot-user mention, while
+false makes the channel's one conversation answer any message from the
+allow-list. `allow_dm` admits a direct message from an allow-listed user as its
+own channel conversation and requires `enabled`; it is off by default. Both
+default to the mention-routing behaviour, so either is a rollback switch.
 
 `discord.conversation.enabled` is a boolean, false by default. Enabling it
 requires a non-empty `authorized_users` allowlist and configured `guild_id` and

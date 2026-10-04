@@ -47,6 +47,7 @@ __all__ = [
     "POOL_BOOTSTRAP_PROMPT",
     "WORKER_TOOL_ENV",
     "SessionSpecBuilder",
+    "knowledge_startup_delivery",
     "named_session_name",
     "pool_session_name",
     "sanitize_name",
@@ -86,6 +87,42 @@ WORKER_TOOL_ENV: dict[str, str] = {
 }
 
 _WORKER_LIFECYCLES = frozenset({"task", "pool"})
+
+
+def knowledge_startup_delivery(
+    *,
+    harness,
+    markdown: str,
+    bundle_id: str,
+    hooks_provisioned: bool = False,
+    prompt_mode: str = "arg",
+    session_id: str = "",
+    claim_epoch=None,
+    source: str | None = None,
+    env=None,
+):
+    """Classify and wrap the knowledge this launch is about to carry (design §9).
+
+    Thin by construction: the payload is already prepared and budgeted, so this
+    only decides *how* the bytes leave. A launch with neither a provisioned hook
+    nor a prompt channel cannot deliver them through argv, so the caller writes
+    the returned guidance through :data:`src.knowledge.delivery.STARTUP_GUIDANCE_FILE`
+    instead of dropping them.
+    """
+    from src.knowledge.delivery import plan
+
+    return plan(
+        markdown,
+        bundle_id=bundle_id,
+        harness=getattr(harness, "id", "") or getattr(harness, "command", "") or "",
+        supports_hooks=hooks_provisioned,
+        prompt_mode=getattr(harness, "prompt_mode", "arg"),
+        source=source,
+        env=env,
+        session_id=session_id,
+        claim_epoch=claim_epoch,
+    )
+
 
 #: The bootstrap prompt.  Deliberately tiny — see the module docstring.
 #: ``{}`` fields: task_id, work_dir.
@@ -322,6 +359,7 @@ class SessionSpecBuilder:
         workspace_source_type=None,
         extra_env: dict[str, str] | None = None,
         git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a one-task session (``lifecycle="task"``).
 
@@ -339,6 +377,10 @@ class SessionSpecBuilder:
         *git_identity* is the project's resolved commit identity
         (:func:`src.git.identity.resolve_git_identity`); it is injected as
         ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` and its digest recorded.
+
+        *knowledge* is an already-prepared
+        :class:`~src.knowledge.delivery.KnowledgeSelection`; it is wrapped for
+        this harness and never re-selected, ranked or budgeted here.
         """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
@@ -366,6 +408,7 @@ class SessionSpecBuilder:
             task_intelligence_class=getattr(task, "intelligence_class", None),
             extra_env=extra_env,
             git_identity=git_identity,
+            knowledge=knowledge,
         )
 
     def build_named_spec(
@@ -383,12 +426,17 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
 
         ``wake="resume"`` only takes effect when a *resume_key* is actually
         known; waking "resume" with no key is a fresh start, not an error —
         the first wake of a never-run session has nothing to resume.
+
+        A *knowledge* selection prepared before this launch is wrapped for the
+        harness and recorded on the spec; the bundle's delivery acknowledgment
+        still requires the persisted live session row.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -435,6 +483,7 @@ class SessionSpecBuilder:
             # Named sessions have no workspace, so only the profile's
             # explicit permission opt-in can grant the skip-permissions flag.
             allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
+            knowledge=knowledge,
         )
 
     def build_pool_spec(
@@ -455,6 +504,7 @@ class SessionSpecBuilder:
         prompt: str | None = None,
         workspace_source_type=None,
         git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a pool worker session (``lifecycle="pool"``, §11).
 
@@ -504,6 +554,7 @@ class SessionSpecBuilder:
             ),
             extra_env=extra_env,
             git_identity=git_identity,
+            knowledge=knowledge,
         )
 
     # -- internals ---------------------------------------------------------
@@ -530,6 +581,7 @@ class SessionSpecBuilder:
         task_intelligence_class: str | None = None,
         extra_env: dict[str, str] | None = None,
         git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
@@ -570,6 +622,39 @@ class SessionSpecBuilder:
             bool(harness.settings_flag)
             or (bool(harness.hook_trust_flag) and allow_skip_permissions)
         )
+
+        # Knowledge delivery is a wrap, never a selection: the bundle was
+        # prepared and budgeted before this call. A launch that cannot carry it
+        # through argv (no hook, no prompt channel) writes explicit guidance
+        # into the workspace instead of silently dropping the payload.
+        knowledge_transport = None
+        if knowledge is not None and knowledge.markdown:
+            from src.knowledge.delivery import (
+                STARTUP_GUIDANCE,
+                STARTUP_GUIDANCE_FILE,
+                startup_guidance,
+            )
+
+            delivery = knowledge_startup_delivery(
+                harness=harness,
+                markdown=knowledge.markdown,
+                bundle_id=knowledge.bundle_id,
+                hooks_provisioned=hooks_provisioned,
+                prompt_mode=harness.prompt_mode,
+                session_id=session_id,
+                claim_epoch=epoch,
+                source=knowledge.source,
+            )
+            knowledge_transport = delivery.transport
+            if delivery.transport == STARTUP_GUIDANCE and not delivery.suppressed:
+                files.append((
+                    STARTUP_GUIDANCE_FILE,
+                    startup_guidance(
+                        knowledge.markdown,
+                        harness=getattr(harness, "id", ""),
+                        bundle_id=knowledge.bundle_id,
+                    ),
+                ))
 
         launch_env = dict(extra_env or {})
         if git_identity is not None:
@@ -665,6 +750,7 @@ class SessionSpecBuilder:
             instance_token=instance_token,
             hooks_provisioned=hooks_provisioned,
             git_identity_digest=git_identity.digest if git_identity is not None else None,
+            knowledge_transport=knowledge_transport,
         )
 
     def _compose_argv(

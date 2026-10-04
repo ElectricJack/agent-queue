@@ -188,7 +188,9 @@ class TestPreview:
         config.health_check = HealthCheckConfig(base_url="http://100.99.1.2:8081")
         config.dashboard_server = DashboardServerConfig(public_url="https://queue.ts.example/")
         result = await handler.execute("digest_preview", {"now": NOW})
-        assert result["text"].rstrip().endswith("https://queue.ts.example")
+        # §6.1: the digest's one link is the needs-you inbox, on its own last
+        # line, so it is the same string a delivery carries.
+        assert result["text"].rstrip().endswith("<https://queue.ts.example/focus/inbox>")
         assert "8081" not in result["text"]
 
         service = DigestScheduleService(

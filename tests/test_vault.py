@@ -937,8 +937,9 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
     blocked-task escalation, provider failover, provider usage, and supervisor
     failure triage ship installed by default, as do the optional, disabled
-    `morning-report.md` and `supervisor-hourly-report.md` report sources
-    (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md). Retired
+    `morning-report.md`, `supervisor-hourly-report.md` and `supervisor-digest.md`
+    report sources (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md).
+    Retired
     playbooks must stay absent so bootstrap cannot recreate a catalog entry that
     an operator deleted.
     """
@@ -952,6 +953,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "morning-report.md",
         "provider-failover.md",
         "provider-usage-probe.md",
+        "supervisor-digest.md",
         "supervisor-failure-triage.md",
         "supervisor-hourly-report.md",
     ]

@@ -30,8 +30,10 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,7 @@ BUNDLE = "dashboard.server.bundle"
 PORT = "dashboard.server.port"
 EXPOSURE = "dashboard.server.exposure"
 REMOTE_LINK = "dashboard.remote_link"
+PUBLIC_URL = "dashboard.public_url"
 
 #: What the dashboard server's ``/__aq/health`` names itself
 #: (``src.dashboard_server.process.SERVICE_NAME``; a test keeps them equal).
@@ -467,6 +470,154 @@ async def _check_remote_link(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# dashboard.public_url
+# ---------------------------------------------------------------------------
+
+#: Spec 2026-10-03 §6.3 option 2, the answer to its §8 Q1: the dashboard server
+#: behind Tailscale Serve, so a phone on the tailnet gets HTTPS on a MagicDNS
+#: name that survives a port change, with nothing exposed publicly.
+TAILSCALE_SERVE_STEPS = (
+    "run `tailscale serve --bg --https=443 http://127.0.0.1:{port}`, set "
+    "dashboard.server.public_url to the https://<machine>.<tailnet>.ts.net origin it "
+    "prints, add that origin to api_auth.trusted_dashboard_origins, then restart the "
+    "daemon and `aq dashboard restart`"
+)
+
+
+def _reason(error: BaseException) -> str:
+    if isinstance(error, TimeoutError):
+        return "timed out"
+    if isinstance(error, ConnectionRefusedError):
+        return "connection refused"
+    return str(error) or type(error).__name__
+
+
+def _focus_shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str]:
+    """``(status, why)`` for ``GET <origin>/focus``; blocking.
+
+    ``why`` is empty when the dashboard shell answered (200, HTML).  A
+    host:port that is not listening is told apart from one that answers
+    wrongly: it is the first thing to fix, and a different fix.
+    """
+    host, port = "", 0
+    try:
+        parts = urllib.parse.urlsplit(origin)
+        host = parts.hostname or ""
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=timeout):
+            pass
+    except (OSError, ValueError) as error:
+        return 0, f"{host}:{port} is not listening ({_reason(error)})"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"{origin}/focus", timeout=timeout) as response:
+            status = response.getcode()
+            content_type = response.headers.get("Content-Type", "") or ""
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code, f"GET /focus answered {error.code}"
+    except (urllib.error.URLError, OSError) as error:
+        cause = getattr(error, "reason", None)
+        reason = _reason(cause if isinstance(cause, BaseException) else error)
+        return 0, f"GET /focus failed ({reason})"
+    if status != 200:
+        return status, f"GET /focus answered {status}"
+    if "html" not in content_type.lower():
+        return status, "GET /focus did not answer with the dashboard's HTML shell"
+    return status, ""
+
+
+async def _check_public_url(ctx: DoctorContext) -> CheckResult:
+    """Spec §6.3: set, HTTPS (Tailscale Serve) or a tailnet address, listening, and
+    ``GET /focus`` returns the shell.  Plain HTTP works on the tailnet but is not
+    the approach chosen in §8 Q1, so it warns with the steps to move."""
+    from src.remote_links import (
+        DashboardLink,
+        LinkSettings,
+        edge_compatibility,
+        is_tailnet_address,
+        normalise_public_origin,
+    )
+
+    settings = LinkSettings.from_config(ctx.config)
+    if not settings.enabled:
+        return _info(
+            PUBLIC_URL, "the dashboard server is disabled (dashboard.server.enabled: false)"
+        )
+    serve = TAILSCALE_SERVE_STEPS.format(port=settings.port)
+    if not settings.public_url.strip():
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                "dashboard.server.public_url is not set, so Discord posts carry no dashboard "
+                f"link. To open the dashboard from a phone on the tailnet: {serve}"
+            ),
+            data={"public_url": None},
+        )
+    origin, why = normalise_public_origin(settings.public_url)
+    if not origin:
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=f"dashboard.server.public_url {why}. {serve[0].upper()}{serve[1:]}",
+            data={"public_url": None, "why": why},
+        )
+    parts = urllib.parse.urlsplit(origin)
+    host = (parts.hostname or "").lower()
+    https = parts.scheme == "https"
+    tailnet = is_tailnet_address(host) or host.endswith(".ts.net")
+    data: dict[str, Any] = {"public_url": origin, "https": https, "tailnet": tailnet}
+
+    # An HTTPS origin is a proxy in front of the dashboard server, and an origin on
+    # the server's own port is the server itself: either way the edge's Host and
+    # Origin gates apply, and an origin they refuse answers 421 or 403.
+    if https or parts.port == settings.port:
+        edge = edge_compatibility(DashboardLink(url=origin), settings)
+        data["edge"] = edge
+        if not (edge["host_allowed"] and edge["origin_allowed"]):
+            return CheckResult(
+                id=PUBLIC_URL,
+                severity=Severity.WARN,
+                detail=(
+                    f"{origin}: the dashboard server's edge refuses this origin (421/403) "
+                    "until it is listed in api_auth.trusted_dashboard_origins; add it, "
+                    "restart the daemon and `aq dashboard restart`"
+                ),
+                data=data,
+            )
+
+    status, failure = await asyncio.to_thread(_focus_shell_probe, origin)
+    data["focus_status"] = status
+    if failure:
+        detail = f"dashboard.server.public_url {origin}: {failure}"
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=detail if https else f"{detail}. {serve[0].upper()}{serve[1:]}",
+            data=data,
+        )
+    if not https:
+        where = "a tailnet address" if tailnet else "a host outside the tailnet"
+        return CheckResult(
+            id=PUBLIC_URL,
+            severity=Severity.WARN,
+            detail=(
+                f"{origin} serves the dashboard over plain HTTP on {where}. Remote access "
+                f"is meant to go through Tailscale Serve HTTPS (spec §6.3): {serve}"
+            ),
+            data=data,
+        )
+    proxy = "" if tailnet else " (not a tailnet name: the proxy must authenticate)"
+    return CheckResult(
+        id=PUBLIC_URL,
+        severity=Severity.OK,
+        detail=f"{origin} serves the dashboard shell at /focus over HTTPS{proxy}",
+        data=data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -482,6 +633,10 @@ def dashboard_server_checks() -> list[DoctorCheck]:
         DoctorCheck(id=EXPOSURE, run=_check_exposure, owner=OWNER),
         # The Tailscale probe's 2 s deadline plus the health probe's 3 s.
         DoctorCheck(id=REMOTE_LINK, run=_check_remote_link, timeout_s=10.0, owner=OWNER),
+        # Connect, then GET /focus: two probe deadlines, plus slack.
+        DoctorCheck(
+            id=PUBLIC_URL, run=_check_public_url, timeout_s=_PROBE_SECONDS + 5, owner=OWNER
+        ),
     ]
 
 

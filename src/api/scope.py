@@ -42,6 +42,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "job_cancel",
         "job_result",
         "job_logs",
+        "job_retain",
         "wait_register",
         "wait_get",
         "wait_list",
