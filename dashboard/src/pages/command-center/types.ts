@@ -62,6 +62,9 @@ export interface TaskNodeData extends Record<string, unknown> {
   phase?: { order: number; label: string } | null;
   /** An epic's delivery, kept apart from its implementation progress. */
   delivery?: import("@aq/ts-client").EpicDeliveryStatus | null;
+  /** Reviews this task's gates are tied to, blocking first (`aq task explain`'s
+   *  `blocked_gate`); the card links the first to its review page. */
+  reviewWaits?: import("@aq/ts-client").ReviewWait[];
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {

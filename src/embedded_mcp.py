@@ -119,6 +119,10 @@ async def run_mcp_server(
         health_provider=health_provider,
         plan_content_provider=plan_content_provider,
     )
+    # Preserve API startup/shutdown (health collection, stream cleanup) when
+    # adding the MCP manager lifespan. Capture once, before supervision wraps
+    # it, so a server restart cannot recursively wrap its previous lifespan.
+    api_lifespan = fastapi_app.router.lifespan_context
 
     # --- Supervised uvicorn loop -------------------------------------------
 
@@ -150,8 +154,9 @@ async def run_mcp_server(
             # run the session manager ourselves via FastAPI's lifespan.
             @asynccontextmanager
             async def _combined_lifespan(app):
-                async with mcp.session_manager.run():
-                    yield
+                async with api_lifespan(app) as state:
+                    async with mcp.session_manager.run():
+                        yield state
 
             fastapi_app.router.lifespan_context = _combined_lifespan
 

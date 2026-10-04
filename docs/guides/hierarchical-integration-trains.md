@@ -682,6 +682,9 @@ project supervisor can use `aq integration adopt <project> --task <parent>
 to observe the exact child completion sources. Omit `--dry-run` to cancel the
 obsolete collection, retire detached delegates and record an audited operator
 completion. Equivalent replacements also require `--accept-equivalent`.
+The preview lists branch reservations it will release with their fence tokens.
+A writerless `worker` reservation on a proven child's canonical branch is
+released alongside the parent reservation in the same settlement transaction.
 The recovery refuses pending or unknown child sources, retained
 writers, manual holds, open gates and reconciler engine ownership. It records
 `not_ci_attested` without adding CI or parent-verification evidence.

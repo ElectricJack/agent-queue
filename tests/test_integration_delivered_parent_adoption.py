@@ -26,9 +26,13 @@ VERIFIER = "verify-stale-aggregate"
 
 @pytest.fixture
 async def incident(setup):
+    return await build_incident(setup, PARENT)
+
+
+async def build_incident(setup, parent):
     db, service, source, remote, repo = setup
     base = git(source, "rev-parse", "main")
-    children = [f"{PARENT}.{index}" for index in range(1, 5)]
+    children = [f"{parent}.{index}" for index in range(1, 5)]
     heads = {child: await feature(setup, child) for child in children}
     main = await _merge_on_main(source, *children)
     # The obsolete aggregate is deliberately not an ancestor of main.
@@ -40,7 +44,7 @@ async def incident(setup):
     git(source, "push", "origin", "HEAD:aq/epic/old-aggregate")
     await db.create_task(
         Task(
-            id=PARENT,
+            id=parent,
             project_id="p",
             repo_id=repo.id,
             title="Train refactor phase 3",
@@ -73,13 +77,13 @@ async def incident(setup):
             update(t.tasks)
             .where(t.tasks.c.id.in_(children))
             .values(
-                parent_task_id=PARENT,
+                parent_task_id=parent,
             )
         )
         await conn.execute(
             insert(t.integration_parent_episodes).values(
                 id="episode",
-                parent_task_id=PARENT,
+                parent_task_id=parent,
                 repository_id=repo.id,
                 generation=1,
                 pre_collection_checkpoint_sha=base,
@@ -90,7 +94,7 @@ async def incident(setup):
             insert(t.integration_repair_operations).values(
                 id="collection",
                 target_kind="parent",
-                parent_task_id=PARENT,
+                parent_task_id=parent,
                 episode_id="episode",
                 active_stage=0,
                 state="active",
@@ -104,7 +108,7 @@ async def incident(setup):
         )
         await conn.execute(
             insert(t.task_integration_checkpoints).values(
-                task_id=PARENT,
+                task_id=parent,
                 repository_id=repo.id,
                 branch="aq/epic/old-aggregate",
                 generation=6,
@@ -146,11 +150,11 @@ async def incident(setup):
 
 
 async def adopt(incident, **overrides):
-    setup, _children, _heads, main = incident
+    setup, children, _heads, main = incident
     _db, service, *_ = setup
     args = dict(
         project_id="p",
-        task_ids=[PARENT],
+        task_ids=[children[0].rsplit(".", 1)[0]],
         target_ref="refs/heads/main",
         head_sha=main,
         reason="all four children arrived through other routes",
@@ -158,6 +162,137 @@ async def adopt(incident, **overrides):
         settle_delivered_children=True,
     )
     return await service.adopt(**(args | overrides))
+
+
+async def reserve_children(incident):
+    setup, children, _heads, _main = incident
+    db, _service, source, _remote, repo = setup
+    async with db.immediate() as conn:
+        for child in children:
+            branch = "aq/" + child
+            git(source, "push", "origin", f"{child}:{branch}")
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == child).values(branch_name=branch)
+            )
+            await conn.execute(
+                insert(t.integration_branch_owners).values(
+                    id="owner-" + child,
+                    repository_id=repo.id,
+                    ref=branch,
+                    owner_id=child,
+                    owner_role="worker",
+                    fence_token=7,
+                    handoff_state="reserved",
+                    created_at=time.time(),
+                    updated_at=time.time(),
+                )
+            )
+
+
+@pytest.mark.parametrize("parent", [PARENT, "agile-impact-14", "vivid-quest-44"])
+async def test_settlement_retires_proven_writerless_child_reservations(setup, parent):
+    incident = await build_incident(setup, parent)
+    await reserve_children(incident)
+    db, _service, _source, remote, _repo = setup
+    refs = git(remote, "show-ref")
+    preview = await adopt(incident, dry_run=True)
+    owners = preview["ownership"]
+    assert {row["owner_id"] for row in owners} == {VERIFIER, *incident[1]}
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(t.integration_branch_owners))).mappings().all()
+    assert all(row["handoff_state"] == "reserved" for row in rows)
+    assert git(remote, "show-ref") == refs
+    result = await adopt(incident)
+    assert result["outcome"] == "adopted"
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(t.integration_branch_owners))).mappings().all()
+        audit = json.loads(await conn.scalar(select(t.events.c.payload).where(
+            t.events.c.event_type == "integration.parent_adopted"
+        )))
+    assert all(row["handoff_state"] == "released" for row in rows)
+    assert {row["owner_id"]: row["fence_token"] for row in rows} == {
+        VERIFIER: 5, **dict.fromkeys(incident[1], 8)
+    }
+    assert audit["ownership"] == owners
+    assert (await db.get_task(parent)).status == TaskStatus.COMPLETED
+    for child in incident[1]:
+        assert (await db.get_task(child)).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("blocker", [
+    "attached", "session", "workspace", "confirmed_workspace", "wrong_branch",
+    "wrong_role", "wrong_repository", "other_owner", "default_branch", "undelivered",
+    "pending_write",
+])
+async def test_child_reservations_cannot_waive_writer_or_delivery_proof(incident, blocker):
+    await reserve_children(incident)
+    setup, children, heads, _main = incident
+    db, _service, source, remote, _repo = setup
+    child = children[0]
+    changes = {
+        "attached": {"handoff_state": "attached"},
+        "session": {"session_id": "retained"},
+        "workspace": {"workspace_id": "retained"},
+        "confirmed_workspace": {"confirmed_workspace_id": "retained"},
+        "wrong_branch": {"ref": "aq/unrelated"},
+        "wrong_role": {"owner_role": "repair"},
+        "wrong_repository": {"repository_id": "another-repo"},
+        "other_owner": {"owner_id": "another-task"},
+        "default_branch": {"ref": "main"},
+    }
+    if blocker in changes:
+        async with db.immediate() as conn:
+            await conn.execute(update(t.integration_branch_owners).where(
+                t.integration_branch_owners.c.id == "owner-" + child
+            ).values(**changes[blocker]))
+    elif blocker == "undelivered":
+        git(source, "checkout", child)
+        git(source, "commit", "--allow-empty", "-m", "undelivered generation")
+        await complete_source(setup, child, "undelivered", git(source, "rev-parse", "HEAD"))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(insert(t.integration_promotion_intents).values(
+                id="pending-child-write", domain_key="child-write", operation_key="child-write",
+                receipt_id="pending-child-receipt", project_id="p", repository_id="r",
+                target_branch="refs/heads/aq/" + child, source_head=heads[child],
+                source_base=heads[child], expected_target=heads[child],
+                fence_owner_id=child, fence_token=7, state="prepared",
+                created_at=time.time(), updated_at=time.time(),
+            ))
+    refs = git(remote, "show-ref")
+    for dry_run in (True, False):
+        with pytest.raises(ValueError):
+            await adopt(incident, dry_run=dry_run)
+    assert git(remote, "show-ref") == refs
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner-" + child
+        ))).mappings().one()
+    assert owner["fence_token"] == 7
+    assert owner["handoff_state"] != "released"
+    assert await db.get_task_completion(PARENT) is None
+
+
+async def test_child_reservation_rechecks_the_fence_after_git_proof(incident, monkeypatch):
+    from src.integration.delivered_parent_adoption import DeliveredParentAdoption
+
+    await reserve_children(incident)
+    db, *_ = incident[0]
+    prove = DeliveredParentAdoption.prove
+
+    async def moved_fence(self, facts, truth, **kwargs):
+        result = await prove(self, facts, truth, **kwargs)
+        async with db.immediate() as conn:
+            await conn.execute(update(t.integration_branch_owners).where(
+                t.integration_branch_owners.c.id == "owner-" + incident[1][0]
+            ).values(fence_token=8))
+        return result
+
+    monkeypatch.setattr(DeliveredParentAdoption, "prove", moved_fence)
+    with pytest.raises(ValueError, match="generation changed"):
+        await adopt(incident)
+    assert await db.get_task_completion(PARENT) is None
+    assert (await db.get_task(VERIFIER)).status == TaskStatus.READY
 
 
 async def test_incident_dry_run_and_apply_retire_stale_verifier_without_ci(incident):

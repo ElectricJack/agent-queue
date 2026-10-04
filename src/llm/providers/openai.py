@@ -9,14 +9,13 @@ types and OpenAI format is handled by the shared ``openai_adapter`` module.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import time
-import urllib.request
 
 from src.llm.providers.adapters import openai_adapter
 from src.llm.providers.base import LLMProvider
+from src.llm.providers.local_probe import api_root, running_models
 from src.llm.types import ChatResponse
 
 
@@ -46,7 +45,7 @@ class OpenAIProvider(LLMProvider):
         self._keep_alive_seconds = self._parse_duration(keep_alive)
         self._last_request_at: float = 0.0  # monotonic timestamp of last successful response
         # Derive Ollama API root by stripping /v1 suffix
-        self._ollama_api_root = (base_url or "").rstrip("/").removesuffix("/v1")
+        self._ollama_api_root = api_root(base_url)
 
     @property
     def model_name(self) -> str:
@@ -79,18 +78,12 @@ class OpenAIProvider(LLMProvider):
                 return True
 
         def _probe() -> bool:
-            url = f"{self._ollama_api_root}/api/ps"
-            req = urllib.request.Request(url, method="GET")
-            req.add_header("Accept", "application/json")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
+            names = running_models(self._ollama_api_root)
+            if names is None:
+                return True  # Fail-open, as the outer handler is: unknown is loaded.
             # Model name in /api/ps may include tag — compare base names
             model_base = self._model.split(":")[0]
-            for entry in data.get("models", []):
-                entry_name = entry.get("name", "").split(":")[0]
-                if entry_name == model_base:
-                    return True
-            return False
+            return any(name.split(":")[0] == model_base for name in names)
 
         try:
             return await asyncio.to_thread(_probe)

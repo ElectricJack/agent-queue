@@ -138,6 +138,7 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     subtasks: { total: n.subtasks_total ?? 0, settled: n.subtasks_settled ?? 0 },
     phase: n.phase_order != null ? { order: n.phase_order, label: n.phase_label ?? "" } : null,
     delivery: n.delivery ?? null,
+    reviewWaits: n.review_waits ?? [],
   };
 }
 
@@ -157,6 +158,8 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
     n.phase_order, n.phase_label,
     // Only epics carry one; the canvas must repaint when its delivery moves.
     n.delivery ? JSON.stringify(n.delivery) : "",
+    // The review strip draws id, state, kind and title from every wait.
+    n.review_waits?.length ? JSON.stringify(n.review_waits) : "",
     gates.map((g) => `${g.id}:${g.status}:${g.gate_type}`).join(","),
   ].join(SEP);
 }

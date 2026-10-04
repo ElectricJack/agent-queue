@@ -19,7 +19,7 @@ from sqlalchemy import and_, exists, func, insert, or_, select, update
 
 from src.database.tables import (
     doc_review_attachments, doc_review_comments, doc_review_dispatches,
-    doc_review_revisions, doc_reviews, task_gates,
+    doc_review_revisions, doc_reviews, gates, task_gates, tasks,
 )
 from src.task_names import ADJECTIVES, NOUNS
 
@@ -159,6 +159,60 @@ class ReviewQueriesMixin:
             for review in reviews:
                 review["relation"] = "author" if review["author_task_id"] == task_id else "waiting"
         return reviews
+
+    async def list_review_waits_for_tasks(self, task_ids: list[str]) -> dict[str, list[dict]]:
+        """``task_id -> review waits`` for the reviews these tasks' gates are tied to.
+
+        One statement for any number of tasks: the layout endpoints call it
+        once per response, never once per node.  A gate is tied to a review
+        when it is the review's own gate (``doc_reviews.gate_id``, which a
+        submission and every ``--after-review`` hold share) or when it awaits
+        the review by id (``gates.await_id``, e.g. a human gate filed against
+        a review).
+
+        An entry is ``blocking`` while its gate is not resolved -- the
+        ``blocked_gate`` test ``aq task explain`` applies.  A resolved gate is
+        reported only for an approved review on a task that has not
+        completed.  Each task's entries list blocking ones first, then by
+        review id.
+        """
+        if not task_ids:
+            return {}
+        tied = or_(doc_reviews.c.gate_id == gates.c.id, gates.c.await_id == doc_reviews.c.id)
+        stmt = (
+            select(
+                task_gates.c.task_id,
+                doc_reviews.c.id.label("review_id"),
+                doc_reviews.c.state.label("review_state"),
+                doc_reviews.c.kind.label("review_kind"),
+                doc_reviews.c.title.label("review_title"),
+                gates.c.id.label("gate_id"),
+                gates.c.gate_type,
+                gates.c.status.label("gate_status"),
+            )
+            .select_from(
+                task_gates.join(gates, gates.c.id == task_gates.c.gate_id)
+                .join(doc_reviews, tied)
+                .join(tasks, tasks.c.id == task_gates.c.task_id)
+            )
+            .where(
+                task_gates.c.task_id.in_(list(task_ids)),
+                or_(
+                    gates.c.status != "resolved",
+                    and_(doc_reviews.c.state == "approved", tasks.c.status != "COMPLETED"),
+                ),
+            )
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        out: dict[str, list[dict]] = {}
+        for row in rows:
+            wait = {k: v for k, v in row.items() if k != "task_id"}
+            wait["blocking"] = row["gate_status"] != "resolved"
+            out.setdefault(row["task_id"], []).append(wait)
+        for waits in out.values():
+            waits.sort(key=lambda w: (not w["blocking"], w["review_id"], w["gate_id"]))
+        return out
 
     async def list_reviews_submitted_by_task(self, task_id: str) -> list[dict]:
         """Reviews *task_id* authored or submitted a revision of, oldest first.

@@ -1,6 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type React from "react";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
+import type { ReviewWait } from "@aq/ts-client";
 
 vi.mock("@xyflow/react", () => ({
   Handle: () => null,
@@ -8,6 +11,7 @@ vi.mock("@xyflow/react", () => ({
 }));
 
 import { TaskCard } from "../TaskNode";
+import { reviewHref, reviewStateLabel } from "../reviewWaitFormat";
 import type { TaskNodeData } from "../types";
 import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
@@ -157,3 +161,110 @@ describe("epic cards", () => {
     expect(screen.getByText("3/4 descendants completed")).toBeInTheDocument();
   });
 });
+
+describe("review waits", () => {
+  const wait = (over: Partial<ReviewWait> = {}): ReviewWait => ({
+    review_id: "brisk-lantern-7", review_state: "in_review", review_kind: "spec",
+    review_title: "Graph review badges", gate_id: "g-1", gate_type: "review", gate_status: "open",
+    blocking: true, ...over,
+  });
+  const reviewCard = (waits: ReviewWait[], extra: Partial<TaskNodeData> = {}) =>
+    card("DEFINED", { childCount: 0, descendantCount: 0 }, { reviewWaits: waits, ...extra });
+  const inRouter = (ui: React.ReactElement) => render(
+    <MemoryRouter initialEntries={["/graph"]}>
+      <Routes>
+        <Route path="/graph" element={ui} />
+        <Route path="/reviews/:reviewId" element={<ReviewProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  it("links a blocking review by id and state to its review page", () => {
+    inRouter(<TaskCard data={reviewCard([wait()])} />);
+    const link = screen.getByRole("link", { name: /Waiting on spec review brisk-lantern-7 \(pending\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
+    expect(link).toHaveTextContent("Awaiting review");
+    expect(link).toHaveTextContent("brisk-lantern-7");
+    expect(link).toHaveTextContent("pending");
+    expect(link).toHaveAttribute("data-review-wait", "blocking");
+  });
+
+  it("marks the card itself as held by a review, not as a generic block", () => {
+    const { container } = inRouter(<TaskCard data={reviewCard([wait()])} />);
+    const shell = container.querySelector("[data-task-card]")!;
+    expect(shell).toHaveAttribute("data-review-blocked");
+    expect(shell).toHaveClass("border-violet-400");
+    expect(shell).not.toHaveClass("border-yellow-300");
+    expect(screen.getByTitle("DEFINED · waiting on review brisk-lantern-7 (pending)")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["in_review", "pending"],
+    ["changes_requested", "changes requested"],
+    ["rejected", "rejected"],
+    ["withdrawn", "withdrawn"],
+  ])("names a blocking %s review %s", (state, label) => {
+    inRouter(<TaskCard data={reviewCard([wait({ review_state: state })])} />);
+    expect(screen.getByRole("link", { name: new RegExp(`\\(${label}\\)`) })).toHaveTextContent(label);
+  });
+
+  it("still links an approved review that released the task, without the review border", () => {
+    const { container } = inRouter(<TaskCard data={reviewCard([
+      wait({ review_state: "approved", gate_status: "resolved", blocking: false }),
+    ])} />);
+    const link = screen.getByRole("link", { name: /Gated on spec review brisk-lantern-7 \(approved\)/ });
+    expect(link).toHaveTextContent("Reviewed");
+    expect(link).toHaveTextContent("approved");
+    expect(link).toHaveAttribute("data-review-wait", "released");
+    const shell = container.querySelector("[data-task-card]")!;
+    expect(shell).not.toHaveAttribute("data-review-blocked");
+    expect(shell).not.toHaveClass("border-violet-400");
+  });
+
+  it("follows the link without opening the task or reaching the canvas node", async () => {
+    const onOpenTask = vi.fn();
+    const nodeClick = vi.fn();
+    inRouter(
+      <div onClick={nodeClick}>
+        <TaskCard data={reviewCard([wait()], { onOpenTask })} />
+      </div>,
+    );
+    await userEvent.click(screen.getByRole("link", { name: /brisk-lantern-7/ }));
+    expect(await screen.findByTestId("review-page")).toHaveTextContent("brisk-lantern-7");
+    expect(onOpenTask).not.toHaveBeenCalled();
+    expect(nodeClick).not.toHaveBeenCalled();
+  });
+
+  it("sits beside the card's open button, never inside it, and never starts a canvas drag", () => {
+    inRouter(<TaskCard data={reviewCard([wait()])} />);
+    const link = screen.getByRole("link", { name: /brisk-lantern-7/ });
+    expect(link.closest("[role=button]")).toBeNull();
+    expect(link).toHaveClass("nodrag", "nopan");
+  });
+
+  it("links the first wait and counts the rest", () => {
+    inRouter(<TaskCard data={reviewCard([
+      wait(),
+      wait({ review_id: "calm-harbor-2", review_kind: "plan", review_state: "changes_requested", gate_id: "g-2" }),
+    ])} />);
+    const link = screen.getByRole("link", { name: /brisk-lantern-7 \(pending\).*\(1 more\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
+    expect(link).toHaveTextContent("+1");
+    expect(link.getAttribute("title")).toContain("plan review calm-harbor-2 (changes requested)");
+  });
+
+  it("renders no review strip for a card with no review waits", () => {
+    inRouter(<TaskCard data={reviewCard([])} />);
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("encodes the review id into the route", () => {
+    expect(reviewHref("odd id/1")).toBe("/reviews/odd%20id%2F1");
+    expect(reviewStateLabel("some_new_state")).toBe("some new state");
+  });
+});
+
+function ReviewProbe() {
+  const { reviewId } = useParams();
+  return <p data-testid="review-page">{reviewId}</p>;
+}

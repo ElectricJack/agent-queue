@@ -174,9 +174,12 @@ class ClaudeTranscriptReader(TranscriptReader):
             return None
 
     async def read_new(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
-        # Run the blocking stat+read off the loop so a slow disk cannot
-        # stall the reconciler or a live SSE tail.
-        result = await asyncio.to_thread(self._read_sync, path, offset)
+        # Decoding a supervisor backlog is CPU-heavy too. Offload the whole
+        # operation, not just disk I/O, so reconcile and HTTP can keep running.
+        return await asyncio.to_thread(self._read_new_sync, path, offset)
+
+    def _read_new_sync(self, path: Path, offset: int) -> tuple[list[TranscriptEntry], int]:
+        result = self._read_sync(path, offset)
         if result is None:
             return [], offset
         buf, _size = result

@@ -88,9 +88,14 @@ parent verifier on the collected head.
 ## Rule: record-repair-result
 
 On `integration.ci_completed` where `conclusion` is `failure`, call
-`integration_record_repair` with `operation_id` and `evidence_id`. Outcomes `continue`
-and `escalate` complete; `human_required` and `budget_exhausted` fail. The typed result
-`action` carries escalation decisions; the event is not itself success evidence.
+`integration_record_repair` with `operation_id` and `evidence_id`. Outcomes `continue`,
+`started`, and `escalate` complete; `human_required` and `budget_exhausted` fail. Every
+outcome the contract declares is mapped here deliberately, so an outcome this rule does
+not name fails the run instead of completing it: a red that found no home is never
+reported green. `started` means the failure opened the parent's repair stage and the
+dispatcher owes it a writer. The typed result `action` carries escalation decisions, and
+`stale` there reports only evidence about a superseded generation or head; the event is
+not itself success evidence.
 
 ## Rule: verify-parent
 

@@ -2846,6 +2846,7 @@
         "dialog_settle_seconds": 1.5,
         "enabled": true,
         "fake_script_file": "",
+        "idle_stop_grace_seconds": 60,
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
         "nudge_debounce_ms": 500,
@@ -2858,6 +2859,7 @@
         "stall_backoff_seconds": 300,
         "stall_max_nudges": 3,
         "state_cache_ttl_seconds": 2,
+        "stop_intent_report_seconds": 600,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
         "transcript_startup_replay_limit": 100,
@@ -2886,6 +2888,10 @@
         "fake_script_file": {
           "default": "",
           "type": "string"
+        },
+        "idle_stop_grace_seconds": {
+          "default": 60,
+          "type": "integer"
         },
         "lease_ttl_seconds": {
           "default": 480,
@@ -2933,6 +2939,10 @@
         },
         "state_cache_ttl_seconds": {
           "default": 2,
+          "type": "integer"
+        },
+        "stop_intent_report_seconds": {
+          "default": 600,
           "type": "integer"
         },
         "tmux_socket": {
