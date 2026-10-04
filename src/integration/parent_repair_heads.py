@@ -7,6 +7,7 @@ import shlex
 
 from sqlalchemy import select, update
 
+from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     archived_tasks,
     gates,
@@ -18,6 +19,7 @@ from src.database.tables import (
     task_completion_records,
     task_gates,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -221,6 +223,17 @@ class ParentHeadRecovery:
             await advance_checkpoint_on(
                 conn, current["checkpoint"], request.head_sha, self.parent.clock()
             )
+            if current["operation"]["verifier_task_id"] is None:
+                # A legacy close can strand the aggregate before its first
+                # readiness event. Use the ordinary projection to file the
+                # verifier and queue its fenced handoff in this transaction.
+                ready = await self.parent.mark_ready_on(
+                    conn, current["operation"]["parent_task_id"]
+                )
+                if ready.get("state") != "integration_ready":
+                    raise ValueError(
+                        "recovered parent cannot project verifier readiness: " + str(ready)
+                    )
         return result | {"outcome": "recovered"}
 
     async def _proof_on(self, conn, request):
@@ -324,11 +337,15 @@ class ParentHeadRecovery:
             .mappings()
             .one_or_none()
         )
+        try:
+            commits = json.loads(completion["commits"]) if completion is not None else None
+        except (TypeError, ValueError):
+            commits = None
         if (
             completion is None
             or completion["outcome"] != "pass"
             or completion["branch"] != checkpoint["branch"]
-            or json.loads(completion["commits"]) != [request.head_sha]
+            or commits not in ([request.head_sha], [])
             or (stage["dossier"] or {}).get("branch_sha") != request.head_sha
         ):
             raise ValueError("latest repair completion does not prove this exact head")
@@ -367,6 +384,34 @@ class ParentHeadRecovery:
                 "fence_token",
             )
         }
+        # Older closes proved the attached repair head, then lost it while
+        # building the completion from a base checkout without the parent ref.
+        # An empty record is usable only when this exact completion belongs to
+        # the audited close. The stage lineage and remote Git proof below still
+        # establish the head; summary text and an unrelated passing close do not.
+        accepted_close = None
+        if commits == []:
+            accepted_value = await conn.scalar(
+                select(task_metadata.c.value)
+                .where(
+                    task_metadata.c.task_id == delegate["id"],
+                    task_metadata.c.key == ACCEPTED_CLOSE_KEY,
+                )
+                .with_for_update()
+            )
+            try:
+                accepted_close = json.loads(accepted_value) if accepted_value else None
+            except (TypeError, ValueError):
+                accepted_close = None
+            if (
+                not isinstance(accepted_close, dict)
+                or accepted_close.get("completion_id") != completion["id"]
+                or accepted_close.get("session_id") != authoring["session_id"]
+                or type(accepted_close.get("claim_epoch")) is not int
+                or accepted_close["claim_epoch"] != delegate.get("claim_epoch")
+            ):
+                raise ValueError("empty repair completion lacks its exact accepted-close identity")
+            authoring["accepted_close"] = accepted_close
         owner = (
             (
                 await conn.execute(
@@ -453,6 +498,7 @@ class ParentHeadRecovery:
             "receipts": readiness["receipts"],
             "existing": existing,
             "authoring": authoring,
+            "accepted_close": accepted_close,
         }
 
     async def _git_proof(self, proof, repository, head_sha):

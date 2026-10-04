@@ -4,6 +4,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { ProgressBar } from "../ProgressBar";
 import { EpicDeliveryBadge } from "../../../components/EpicDelivery";
+import { ReviewWaitBadge } from "../ReviewWaitBadge";
 import { UNIT_H } from "./units";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
@@ -73,6 +74,9 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
             )}
           </span>
         )}
+        {/* An epic gated by a review (`--after-review`) says so on its
+          * header even while expanded, as a link to the review. */}
+        <ReviewWaitBadge waits={node.review_waits ?? []} variant="chip" />
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
           onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>

@@ -2220,8 +2220,109 @@ async def _check_reviewed_file_blocked_batches(ctx: DoctorContext) -> CheckResul
     )
 
 
+async def _check_delivered_children_unsettled_parent(ctx: DoctorContext) -> CheckResult:
+    """Name obsolete aggregates and reuse adoption's read-only, exact Git proof."""
+    from sqlalchemy import select
+
+    from src.database import tables as t
+
+    check_id = "integration.delivered_children_unsettled_parent"
+    if ctx.db is None:
+        return CheckResult(check_id, Severity.INFO, "database required")
+    child = t.tasks.alias("child")
+    async with ctx.db._engine.connect() as conn:
+        candidates = (await conn.execute(select(
+            t.tasks.c.id, t.tasks.c.project_id, t.repos.c.default_branch,
+            t.integration_repair_operations.c.id.label("operation_id"),
+            t.integration_repair_operations.c.verifier_task_id,
+        ).join(t.task_integration_checkpoints,
+               t.task_integration_checkpoints.c.task_id == t.tasks.c.id).join(
+            t.integration_repair_operations,
+            (t.integration_repair_operations.c.parent_task_id == t.tasks.c.id)
+            & (t.integration_repair_operations.c.episode_id
+               == t.task_integration_checkpoints.c.episode_id),
+        ).join(t.projects, t.projects.c.id == t.tasks.c.project_id).join(
+            t.repos, t.repos.c.id == t.projects.c.integration_repository_id,
+        ).where(
+            t.tasks.c.status == "PAUSED",
+            t.projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            t.integration_repair_operations.c.state.in_(("active", "escalated", "cancelled")),
+            select(child.c.id).where(child.c.parent_task_id == t.tasks.c.id).exists(),
+            ~select(child.c.id).where(child.c.parent_task_id == t.tasks.c.id,
+                                     child.c.status != "COMPLETED").exists(),
+        ).order_by(t.tasks.c.id).limit(20))).mappings().all()
+    findings = []
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    for row in candidates:
+        item = dict(row)
+        item["state"] = "all_children_completed_parent_unsettled"
+        item["proof_status"] = "not_observed"
+        item["command"] = (
+            f"aq integration adopt {row['project_id']} --task {row['id']} "
+            f"--target-ref refs/heads/{row['default_branch']} --head-sha TARGET_SHA "
+            "--settle-delivered-children --dry-run --reason 'children delivered elsewhere'"
+        )
+        if observer is not None:
+            async with ctx.db._engine.connect() as conn:
+                child_ids = list((await conn.execute(select(t.tasks.c.id).where(
+                    t.tasks.c.parent_task_id == row["id"],
+                ))).scalars())
+            view = await observer.observe(child_ids)
+            async with ctx.db._engine.connect() as conn:
+                current_ids = list((await conn.execute(select(t.tasks.c.id).where(
+                    t.tasks.c.parent_task_id == row["id"],
+                ))).scalars())
+                verified = await view.verified_on(conn, child_ids)
+            from src.integration.delivery_truth import DeliveryState
+
+            item["children"] = [
+                {"task_id": identity, "state": view.get(identity).state.value,
+                 "reason": view.get(identity).reason, "source_sha": view.get(identity).source_oid}
+                for identity in child_ids if view.get(identity) is not None
+            ]
+            contained = bool(child_ids) and set(current_ids) == set(child_ids) and (
+                len(verified) == len(child_ids) and len(item["children"]) == len(child_ids)
+            ) and all(
+                child["state"] in {DeliveryState.CONTAINED.value, DeliveryState.NO_ARTIFACT.value}
+                and child["reason"] != "branchless_organization" for child in item["children"]
+            )
+            if contained and await view.fresh():
+                item["proof_status"] = "children_delivered"
+                item["state"] = "delivered_children_unsettled_parent"
+                head = view.get(child_ids[0]).target_oid
+                item["head_sha"] = head
+                item["command"] = item["command"].replace("TARGET_SHA", head)
+                if ctx.handler is not None:
+                    diagnosis = await ctx.handler.execute("integration_adopt", {
+                        "project_id": row["project_id"], "task_ids": [row["id"]],
+                        "target_ref": "refs/heads/" + row["default_branch"], "head_sha": head,
+                        "settle_delivered_children": True, "dry_run": True,
+                        "reason": "doctor child-delivery probe",
+                    })
+                    item["adoption"] = diagnosis
+            else:
+                item["proof_status"] = "delivery_not_proven"
+        findings.append(item)
+    confirmed = [item for item in findings if item["proof_status"] == "children_delivered"]
+    return CheckResult(
+        check_id, Severity.WARN if confirmed else Severity.INFO if findings else Severity.OK,
+        "\n".join(
+            f"Parent {item['id']} is PAUSED with all children completed; "
+            f"Git proof: {item['proof_status']}; stale verifier: {item['verifier_task_id']}. "
+            f"Inspect guarded adoption: {item['command']}" for item in findings
+        ) or "no unsettled managed parents with all children completed",
+        data={"count": len(confirmed), "parents": findings},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="integration.delivered_children_unsettled_parent",
+            run=_check_delivered_children_unsettled_parent,
+            owner=OWNER,
+            timeout_s=60.0,
+        ),
         DoctorCheck(
             id="integration.reviewed_file_guard",
             run=_check_reviewed_file_blocked_batches,

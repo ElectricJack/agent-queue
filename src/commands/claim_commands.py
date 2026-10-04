@@ -18,6 +18,7 @@ from src.claim_file import (
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.models import ClaimResult, TaskStatus
+from src.pool_claims import pool_claim_cap
 
 logger = logging.getLogger(__name__)
 
@@ -426,11 +427,10 @@ class ClaimCommandsMixin:
         )
 
     def _pool_context_claim_cap(self, profile):
-        # A reused global worker must not carry a previous task's conversation.
         # Same-task active/preparing claims remain idempotent in take_claim_slot.
-        if self.config.swarm.fresh_context_per_task:
-            return 1
-        return getattr(profile, "max_claims_per_session", None)
+        # The reconciler reads the same budget (src.pool_claims.pool_claim_cap)
+        # to recognise a spent session, so the two cannot drift.
+        return pool_claim_cap(self.config, profile)
 
     def _pool_claim_routing(self, session, profile) -> tuple[str | None, str | None, str | None]:
         """Restrict claims to the recorded live session, not next-launch settings.

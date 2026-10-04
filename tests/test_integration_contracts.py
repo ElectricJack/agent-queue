@@ -12,6 +12,7 @@ from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     DESIGN_INTEGRATION_COMMANDS,
+    IntegrationAdoptArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
@@ -52,6 +53,51 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("overrides", [
+    {"dry_run": True},
+    {"settle_delivered_children": True, "task_ids": ["first", "second"]},
+])
+def test_delivered_parent_adoption_contract_rejects_ambiguous_scope(overrides):
+    with pytest.raises(ValidationError):
+        IntegrationAdoptArgs(**(dict(
+            project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
+            head_sha="a" * 40, reason="children delivered",
+        ) | overrides))
+
+
+@pytest.mark.parametrize("outcome", ["would_adopt_parent", "adopted"])
+async def test_parent_adoption_adapter_retains_child_proof_and_delegate_plan(outcome):
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_adopt"
+            assert payload["settle_delivered_children"] is True
+            return {
+                "outcome": outcome, "task_id": "parent", "head_sha": "a" * 40,
+                "verifier_task_id": "stale", "retire_delegates": ["stale"],
+                "children": [{"task_id": "child", "state": "contained"}],
+                "ownership": [{"id": "child-owner", "owner_id": "child", "fence_token": 7}],
+                "conclusion": "not_ci_attested",
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_adopt")
+    args = IntegrationAdoptArgs(
+        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha="a" * 40,
+        settle_delivered_children=True, dry_run=outcome == "would_adopt_parent", reason="delivered",
+    )
+    set_handler_provider(Handler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == outcome
+    assert result.value.children == ({"task_id": "child", "state": "contained"},)
+    assert result.value.retire_delegates == ("stale",)
+    assert result.value.ownership == ({"id": "child-owner", "owner_id": "child", "fence_token": 7},)
+    assert result.value.conclusion == "not_ci_attested"
 
 
 def test_all_design_events_require_project_and_operation_identity():
@@ -429,6 +475,9 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     }
     assert {row.name for row in record.outcomes} == {
         "continue",
+        # A parent's first red arrives with no stage; opening one is its own
+        # outcome because playbook transitions key on the outcome alone.
+        "started",
         "escalate",
         "human_required",
         "budget_exhausted",
