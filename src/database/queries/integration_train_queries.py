@@ -25,6 +25,7 @@ from src.database.tables import (
     task_labels,
     tasks,
 )
+from src.database.queries.blocked_state import obsolete_marker
 from src.models import TaskStatus
 
 
@@ -208,6 +209,7 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.project_id == project_id,
                 tasks.c.parent_task_id.is_(None),
                 tasks.c.status == TaskStatus.COMPLETED.value,
+                ~obsolete_marker(tasks),
                 tasks.c.repo_id == repository_id,
                 tasks.c.pr_url.is_not(None),
                 func.trim(tasks.c.pr_url) != "",

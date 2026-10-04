@@ -289,11 +289,14 @@ class IntegrationCommandsMixin:
     async def _record_integration_source_ci(self, observation) -> dict:
         from sqlalchemy import select, update
         from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from src.database.tables import archived_tasks, integration_source_ci, projects, tasks
+        from src.database.tables import (
+            archived_tasks, integration_source_ci, projects, task_completion_records,
+            task_metadata, tasks,
+        )
         from src.integration.models import HierarchicalIntegrationPolicy
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.source_ci import SourceCIObservation, repair_description
-        from src.integration.source_delivery import prove_source_delivered
+        from src.integration.source_delivery import RETIREMENT_KEY, prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
@@ -335,9 +338,19 @@ class IntegrationCommandsMixin:
                 if status is None:
                     status = (await conn.execute(select(archived_tasks.c.status).where(
                         archived_tasks.c.id == existing_repair))).scalar_one_or_none()
-                if status != TaskStatus.FAILED.value:
+                retired = await conn.scalar(select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == existing_repair,
+                    task_metadata.c.key == RETIREMENT_KEY,
+                ))
+                if retired is None:
+                    # Completion audit survives archival of the obsolete task.
+                    retired = await conn.scalar(select(task_completion_records.c.task_id).where(
+                        task_completion_records.c.task_id == existing_repair,
+                        task_completion_records.c.id.like("source-ci-retired:%"),
+                    ).limit(1))
+                if status != TaskStatus.FAILED.value and retired is None:
                     delegate_open = True
-                elif policy.root.repair.on_exhausted != "continue":
+                elif status == TaskStatus.FAILED.value and policy.root.repair.on_exhausted != "continue":
                     return _failure("human_required", "source repair failed under finite policy")
             attempt = record["repair_attempt"] + (0 if delegate_open else 1)
         # Canonical delivery truth, asked of the same evidence the root
