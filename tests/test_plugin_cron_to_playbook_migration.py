@@ -310,6 +310,7 @@ class TestVaultInstallation:
             "morning-report.md",
             "provider-failover.md",
             "provider-usage-probe.md",
+            "supervisor-digest.md",
             "supervisor-failure-triage.md",
             "supervisor-hourly-report.md",
         }
@@ -318,6 +319,9 @@ class TestVaultInstallation:
             f"Missing playbooks: {expected - installed}, "
             f"Extra playbooks: {installed - expected}"
         )
+        digest = _read(str(tmp_path / "vault" / "system" / "playbooks"), "supervisor-digest.md")
+        frontmatter, _ = _parse_frontmatter(digest)
+        assert frontmatter["enabled"] is False
 
 
 # ===================================================================
