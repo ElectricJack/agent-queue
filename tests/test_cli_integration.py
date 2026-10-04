@@ -62,6 +62,22 @@ def _client(result):
          "integration_engine_transfer",
          {"repository_id": "repo", "engine": "reconciler", "expected_versions": {"root": 7},
           "reason": "reviewed cutover", "evidence": ["shadow-week"], "dry_run": False}),
+        (["development-engine-transfer", "p", "--engine", "reconciler"],
+         "integration_development_engine_transfer",
+         {"project_id": "p", "engine": "reconciler", "expected_versions": {},
+          "reason": "", "evidence": [], "dry_run": True}),
+        (["development-engine-transfer", "p", "--engine", "legacy", "--apply",
+          "--expected-subject", "root:7", "--reason", "rollback after cutover week"],
+         "integration_development_engine_transfer",
+         {"project_id": "p", "engine": "legacy", "expected_versions": {"root": 7},
+          "reason": "rollback after cutover week", "evidence": [], "dry_run": False}),
+        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply",
+          "--expected-subject", "root:7", "--reason", "reviewed cutover",
+          "--evidence", "shadow-week", "--evidence", "development-scenarios"],
+         "integration_development_engine_transfer",
+         {"project_id": "p", "engine": "reconciler", "expected_versions": {"root": 7},
+          "reason": "reviewed cutover",
+          "evidence": ["shadow-week", "development-scenarios"], "dry_run": False}),
         (["recover-parent-head", "op", "--head", "a" * 40],
          "integration_recover_parent_head",
          {"operation_id": "op", "head_sha": "a" * 40, "dry_run": True}),
@@ -556,6 +572,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
+        "development-engine-transfer",
     ):
         assert command in result.output
     assert "probe" not in result.output
@@ -751,4 +768,50 @@ def test_rebind_reused_identity_apply_needs_the_origins_and_a_reason(argv):
 
     assert result.exit_code != 0
     assert "--apply requires --origin-id and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    (
+        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply"],
+         "--apply needs exact subject versions, a reason and cutover evidence"),
+        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply",
+          "--expected-subject", "root:7"],
+         "--apply needs exact subject versions, a reason and cutover evidence"),
+        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply",
+          "--expected-subject", "root:7", "--reason", "reviewed cutover"],
+         "--apply needs exact subject versions, a reason and cutover evidence"),
+        (["development-engine-transfer", "p", "--engine", "legacy", "--apply", "--reason", "rollback"],
+         "--apply needs exact subject versions, a reason and cutover evidence"),
+    ),
+)
+def test_development_engine_transfer_apply_needs_the_previewed_fences(argv, message):
+    """A cutover or rollback is never sent with a partial preview."""
+    from src.cli.app import cli
+
+    client = _client({"outcome": "transferred"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+
+    assert result.exit_code != 0
+    assert message in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "expected", (["root"], ["root:-1"], ["root:seven"], ["root:7", "root:9"])
+)
+def test_every_engine_transfer_rejects_an_unusable_expected_subject(expected):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "preview"})
+    argv = ["integration", "development-engine-transfer", "p", "--engine", "legacy"]
+    for item in expected:
+        argv += ["--expected-subject", item]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code != 0
+    assert "SUBJECT_ID:VERSION" in result.output
     client.execute.assert_not_awaited()

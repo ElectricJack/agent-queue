@@ -125,6 +125,53 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_development_engine_transfer(self, args: dict) -> dict:
+        """The audited per-project Development cutover, and the way back.
+
+        This is the only supported route to
+        :func:`~src.integration.development_runtime.transfer_development_engine`:
+        it keeps the exclusive repository engine fence, the exact-version CAS,
+        the unresolved-publication refusal and the reversible journal row inside
+        the mechanism, so no operator is left calling the helper from Python.
+        Rollback is this same command with ``engine: legacy`` and the
+        then-current versions.
+        """
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import (
+            IntegrationDevelopmentEngineTransferArgs,
+        )
+        from src.integration.development_runtime import transfer_development_engine
+
+        try:
+            request = IntegrationDevelopmentEngineTransferArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        if await self.db.get_project(request.project_id) is None:
+            return _failure("refused", "project does not exist")
+        operator, error = await integration_operator(self.db, request.project_id)
+        if error:
+            return _failure("unauthorized", error)
+        if (not request.dry_run and request.engine == "reconciler"
+            and not self.config.integration.reconciler_active):
+            return _failure(
+                "refused", "enable the active loop before transferring development subjects"
+            )
+        try:
+            result = await transfer_development_engine(
+                self.db,
+                request.project_id,
+                engine=request.engine,
+                expected_versions=dict(request.expected_versions),
+                reason=request.reason,
+                evidence=tuple(request.evidence),
+                operator_id=operator,
+                dry_run=request.dry_run,
+            )
+        except ValueError as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_shadow_report(self, args: dict) -> dict:
         """One read-only shadow-versus-legacy comparison over an explicit window.
 

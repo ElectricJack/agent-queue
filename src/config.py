@@ -2467,6 +2467,9 @@ class IntegrationConfig:
     reconciler_shadow: bool = False
     #: Visit roots explicitly transferred to the reconciler. This setting
     #: never transfers ownership; disabling it requires an audited rollback.
+    #: A Development subject transfer to the reconciler is refused while this
+    #: is off, so the reconciler can never be handed a project it may only
+    #: mirror (``aq integration development-engine-transfer``).
     reconciler_active: bool = False
 
     #: Consecutive identical unsuccessful evaluations after which the
