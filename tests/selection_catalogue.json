@@ -242,11 +242,10 @@
       ]
     },
     "discord": {
-      "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle.",
+      "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle.",
       "modules": [
         "tests/test_discord_adapter.py",
         "tests/test_discord_bot_routing.py",
-        "tests/test_discord_commands.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
         "tests/test_discord_escalation_buttons.py",
@@ -258,8 +257,7 @@
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
         "tests/test_rate_guard.py",
-        "tests/test_slash_commands.py",
-        "tests/test_views.py"
+        "tests/test_slash_commands.py"
       ]
     },
     "discord-conversations": {
@@ -1398,7 +1396,7 @@
       ]
     }
   },
-  "digest": "sha256:56609971617b3ad3fe96cb5faedb8864b3ac1d61c310b336c0cf639a5cce3a6f",
+  "digest": "sha256:0cdec58170ddeaed277e8788875514814a3faee432ae621437b0795409b0c8a3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5081,18 +5079,6 @@
       ],
       "markers": [],
       "summary": "Discord inbound routing is escalation-only after cutover."
-    },
-    "tests/test_discord_commands.py": {
-      "areas": [
-        "discord"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.discord.notifications",
-        "src.models"
-      ],
-      "markers": [],
-      "summary": ""
     },
     "tests/test_discord_cutover.py": {
       "areas": [
@@ -10489,7 +10475,8 @@
         "src.event_bus",
         "src.models",
         "src.notifications.builder",
-        "src.notifications.events"
+        "src.notifications.events",
+        "src.notifications.render"
       ],
       "markers": [
         "asyncio"
@@ -15779,19 +15766,6 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
-    },
-    "tests/test_views.py": {
-      "areas": [
-        "discord"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.discord.views"
-      ],
-      "markers": [
-        "asyncio"
-      ],
-      "summary": "Tests for standalone Discord views."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
