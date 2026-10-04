@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import importlib
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +18,48 @@ from src.sessions.transcripts.codex import CodexTranscriptReader
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transcripts" / "claude"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+async def test_health_runs_while_transcript_decoding_is_blocked(tmp_path, monkeypatch, harness):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from src.api.health import router
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    decoding = asyncio.Event()
+    release = threading.Event()
+    module = importlib.import_module(f"src.sessions.transcripts.{harness}")
+    original = module._entry_from_line
+
+    def blocked_decoder(*args):
+        assert threading.get_ident() != loop_thread, "decoding must run outside the loop"
+        loop.call_soon_threadsafe(decoding.set)
+        assert release.wait(5), "test did not release the decoder"
+        return original(*args)
+
+    monkeypatch.setattr(module, "_entry_from_line", blocked_decoder)
+    row = ({"type": "user", "uuid": "u1", "message": {"content": "hello"}}
+           if harness == "claude" else
+           {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}})
+    path = tmp_path / "backlog.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    reader = resolve_reader(harness)
+    task = asyncio.create_task(reader.read_new(path, 0))
+    try:
+        await asyncio.wait_for(decoding.wait(), 5)
+        app = FastAPI()
+        app.include_router(router)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            response = await client.get("/health")
+        assert response.status_code in (200, 503)
+        assert not task.done(), "health must complete before decoding is released"
+    finally:
+        release.set()
+        entries, offset = await task
+    assert [entry.text for entry in entries] == ["hello"]
+    assert offset == path.stat().st_size
 
 
 def _slug(work_dir: str) -> str:

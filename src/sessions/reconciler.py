@@ -3,20 +3,25 @@
 One ``tick()`` per orchestrator cycle (~5 s), zero LLM calls, deterministic.
 The daemon does not *drive* agents — it observes them and converges.
 
-``tick()`` runs six steps in a fixed order, each isolated so a failure in
+``tick()`` runs a fixed order of steps, each isolated so a failure in
 one does not skip the rest:
 
 1. **Refresh observation** — who is actually alive.
 2. **Drain-ack** — the explicit end of the completion protocol.
-3. **Exit classifier** — dead process, task still open → typed verdict.
-4. **Orphans** — the two ways row and task can disagree: a live session
+3. **Prepare timeout** — a pool claim stuck mid-preparation is released.
+4. **Exit classifier** — dead process, task still open → typed verdict.
+5. **Abandoned claim loop** — an idle worker that stopped claiming is
+   recycled, behind a compare-and-set.
+6. **Orphans** — the two ways row and task can disagree: a live session
    whose task is no longer open (kill it), and an open task whose session
    row is not live (release it).
-5. **Stall ladder** — alive but silent: nudge → restart → quarantine.  A
-   CLI parked on its usage-limit screen leaves as a ``RATE_LIMIT`` exit.
-6. **Named desired-state** — converge persistent sessions (start/sleep).
-7. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
-   primary defense.
+7. **Idle stop intent** — a session that has nothing left to do is
+   stopped after a bounded grace, so a harness that never exits on its own
+   still gives its pool slot and worktree back.
+8. **Stall ladder** — alive but silent: nudge → restart → quarantine.
+9. **Named desired-state** — converge persistent sessions (start/sleep).
+10. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
+    primary defense.
 
 The single most important rule in this module: **unknown is not dead.**  A
 ``PartialListError`` from a provider, or a failed secondary probe, defers
@@ -26,6 +31,7 @@ evidence of death and on nothing else.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hashlib
 import logging
@@ -39,15 +45,18 @@ from src.models import SessionRecord, TaskStatus
 from src.pool_claims import (
     idle_pool_claim_loop_stalled,
     is_live_pool_claim_task_status,
+    pool_claim_budget_exhausted,
+    pool_claim_cap,
     pool_claim_loop_stall_seconds,
 )
-from src.sessions.context import harness_progress
+from src.sessions.context import harness_progress, store_lower_bound
 from src.sessions.exit_classifier import (
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     ExitVerdict,
     Verdict,
     classify_exit,
 )
+from src.sessions.opencode_store import OpenCodeActivity, resolve_liveness_store
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -56,6 +65,7 @@ from src.sessions.provider import (
     PartialListError,
     SessionHandle,
 )
+from src.sessions.provider_liveness import request_inflight
 from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_limit_screen
 
 logger = logging.getLogger(__name__)
@@ -151,6 +161,10 @@ _STALL_REPORT_INTERVAL_SECONDS = 900.0
 _SCREEN_PEEK_LINES = 40
 #: Bound on the in-memory screen digests and last reports.
 _PROGRESS_CACHE_MAX = 512
+#: How often the harness's own store is re-read for one session whose pane is
+#: still reporting activity.  The lease that decides is minutes, the store is
+#: tens of gigabytes, and every reading is a fresh read-only connection.
+_WEDGE_SCAN_SECONDS = 60.0
 
 
 @dataclass
@@ -223,6 +237,31 @@ class SessionReconciler:
         #: last announced, so the announcement repeats instead of either
         #: vanishing after one line or repeating every tick.
         self._stall_reports: dict[tuple[str, str], float] = {}
+        #: (session id, instance token) -> when its finished shape -- a
+        #: recorded stop intent, or a spent claim budget -- was first
+        #: observed.  The idle-stop grace runs from here, never from
+        #: ``last_activity``: tmux's ``window_activity`` advances on any
+        #: output, so an OpenCode pane at its final summary keeps that stamp
+        #: fresh and no pane-derived idle bound can ever fire on one.
+        #: Instance-token keyed, so a relaunched session starts its own
+        #: clock.  Cleared when the row leaves the live set or the shape
+        #: breaks; a daemon restart costs at most one more grace, which is
+        #: why ``sessions.stop_intent_pending`` exists.
+        self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
+        #: (session id, instance token) -> (read at, the harness store's
+        #: activity for that session, or ``None`` when unreadable).  The wedge
+        #: check's own cache: a wedged TUI repaints forever, so without it the
+        #: store would be re-read on every tick for every busy session.  Keyed
+        #: like the screen digests, so a relaunched session inherits nothing.
+        self._wedge_reads: dict[tuple[str, str], tuple[float, OpenCodeActivity | None]] = {}
+        #: ``harness`` -> a reader of that CLI's own store, or ``None``.
+        #: Resolved with this daemon's harness registry, so a harness that runs
+        #: another CLI's executable (``opencode-zen``) finds the store its CLI
+        #: writes.  One seam for both consumers of harness progress: the stall
+        #: gate and :func:`~src.sessions.context.harness_progress`.
+        self._liveness_store = lambda harness: resolve_liveness_store(
+            harness, registry=self.harnesses
+        )
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
         self._deferred_prefixes: set[str] = set()
@@ -297,6 +336,7 @@ class SessionReconciler:
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
+            self._step_idle_stop_intent,
             self._step_stall_ladder,
             self._step_named,
             self._step_backstop,
@@ -1671,9 +1711,11 @@ class SessionReconciler:
             has stopped moving is what an agent between two writes looks like
             as much as what a wedged TUI looks like, so the screen is
             reported (:meth:`_screen_unchanged_seconds`) and never acted on.
-            Closing the gap needs *scoped, per-session* activity evidence for
-            harnesses AQ cannot read, which is R7's missing OpenCode session
-            identity rather than a heuristic about panes.
+            A CLI that keeps its own store is the exception, and it is asked
+            there rather than here: ``harness_progress`` reads OpenCode's store
+            scoped to the session (:mod:`src.sessions.opencode_store`), so an
+            ``opencode`` holder with a refused nudge now escalates on its own
+            record instead of being reported as unmeasurable.
 
         The distinction is the whole fix.  Reading "cannot inspect" as
         "stalled" is how a wedged-but-live holder could be destroyed on the
@@ -1684,18 +1726,97 @@ class SessionReconciler:
             return StalledDeferral.HOLD
         if lease_ttl > 0 and idle_seconds <= lease_ttl:
             return StalledDeferral.HOLD
-        _, progress = await harness_progress(row, base_dir=self.transcript_base_dir)
+        source, progress = await harness_progress(
+            row, base_dir=self.transcript_base_dir, liveness=self._liveness_store
+        )
         if progress is not None:
             if lease_ttl > 0 and now - progress <= lease_ttl:
                 return StalledDeferral.HOLD  # It is still writing: alive.
             logger.warning(
                 "Session %s (%s) on task %s is idle %.0fs with a %s composer and no "
-                "transcript progress since %s — spending a stall rung",
-                row.id, row.name, row.task_id, idle_seconds, deferral.reason,
+                "%s progress since %s — spending a stall rung",
+                row.id, row.name, row.task_id, idle_seconds, deferral.reason, source,
                 time.strftime("%H:%M:%S", time.localtime(progress)),
             )
             return StalledDeferral.ESCALATE
         return StalledDeferral.REPORT
+
+    async def _store_activity(
+        self, row: SessionRecord, *, now: float
+    ) -> OpenCodeActivity | None:
+        """The harness's own record of what this session has written, cached.
+
+        ``None`` for a harness whose CLI keeps no store AQ reads, and ``None``
+        for a store that could not be read -- in both cases unknown, which the
+        caller must hold on rather than treat as "nothing happened".
+
+        Cached per holder instance for :data:`_WEDGE_SCAN_SECONDS`: this runs
+        for every session whose pane still looks busy, and the store is tens of
+        gigabytes.  A failed read is cached like a successful one so an
+        unreadable store cannot turn into a read on every tick either.
+        """
+        store = self._liveness_store(row.harness)
+        if store is None:
+            return None
+        key = (row.id, row.instance_token or "")
+        cached = self._wedge_reads.get(key)
+        if cached is not None and now - cached[0] < _WEDGE_SCAN_SECONDS:
+            return cached[1]
+        activity = await asyncio.to_thread(store.activity, row.work_dir, store_lower_bound(row))
+        self._prune_progress_cache(now)
+        self._wedge_reads[key] = (now, activity)
+        return activity
+
+    async def _wedged_mid_turn(
+        self, row: SessionRecord, *, now: float, lease_ttl: float
+    ) -> OpenCodeActivity | None:
+        """A session that reports itself busy while provably doing nothing.
+
+        The gap this closes is not the ladder's but its *gate*.  Everything
+        below the ``now - last_activity > lease_ttl`` check assumed the pane's
+        own clock meant the agent was alive; for a TUI that repaints its
+        in-turn spinner it does not.  ``crisp-horizon-90.10`` (2026-10-03) sat
+        like that for 42 minutes -- a byte-identical pane, an Ollama holding no
+        model, and zero stall events because the gate never opened.
+
+        So a stall is declared here from four independent readings, and
+        **all** of them must hold:
+
+        * the harness's own store has written nothing for this session for
+          longer than the lease (:meth:`_store_activity`) -- not a pane-derived
+          guess, and not an absence: the session must have written rows, or
+          there is nothing that could have stopped;
+        * that store says no tool call is still open, so the silence is not one
+          long build or one long ``bash``;
+        * the provider reports positively that nothing is resident or in flight
+          (:func:`~src.sessions.provider_liveness.request_inflight`), which is
+          the difference between "not writing" and "not generating";
+        * and the pane must have claimed otherwise -- the caller only asks once
+          the ordinary idle check has passed, so a genuinely quiet session
+          reaches this by its own path and not as a special case.
+
+        Anything unknown -- no store for the harness, an unreadable one, an
+        endpoint AQ cannot name or cannot reach -- is not a wedge.  The rest of
+        the ladder then applies unchanged, including the composer guard: a
+        person at the keyboard still holds it.
+        """
+        activity = await self._store_activity(row, now=now)
+        if activity is None or not activity.has_rows:
+            return None
+        if now - activity.progress_at <= lease_ttl:
+            return None  # Its own record says the turn is moving.
+        if activity.inflight:
+            return None  # A tool call is still running: silence is the work.
+        if await request_inflight(row, self.config) is not False:
+            return None  # A generation may be running, or nobody could say.
+        logger.warning(
+            "Session %s (%s) on task %s has been reporting activity for %.0fs while its "
+            "own record has not moved since %s and its provider holds no model — "
+            "declaring the turn stalled from its own record",
+            row.id, row.name, row.task_id, now - (row.last_activity or row.started_at or now),
+            time.strftime("%H:%M:%S", time.localtime(activity.progress_at)),
+        )
+        return activity
 
     async def _announce_unverified_stall(
         self, row: SessionRecord, task, deferral: NudgeDeferred, *, idle_seconds: float, now: float
@@ -1754,6 +1875,9 @@ class SessionReconciler:
         for key, seen_at in list(self._stall_reports.items()):
             if now - seen_at > 4 * _STALL_REPORT_INTERVAL_SECONDS:
                 del self._stall_reports[key]
+        for key, (read_at, _) in list(self._wedge_reads.items()):
+            if now - read_at > 4 * _STALL_REPORT_INTERVAL_SECONDS:
+                del self._wedge_reads[key]
 
     # -- step 4: stall ladder ---------------------------------------------
 
@@ -1830,6 +1954,11 @@ class SessionReconciler:
         provider's usage-limit screen: before every rung the ladder checks
         for that (:meth:`_exit_usage_limit_screen`) and, when it finds it,
         hands the session to the exit path instead of climbing.
+
+        The gate this ladder starts from is the pane's own clock, which a TUI
+        can keep fresh while doing nothing at all; :meth:`_wedged_mid_turn`
+        overrides it from the harness's record and the provider's, and then
+        every rung below behaves exactly as it does for any other stall.
         """
         ttl = float(self.sessions_config.lease_ttl_seconds)
         if ttl <= 0:
@@ -1845,8 +1974,17 @@ class SessionReconciler:
             if waiting:
                 continue
             last = max(row.last_activity or row.started_at or 0.0, resumed)
+            wedged: OpenCodeActivity | None = None
             if now - last <= ttl:
-                continue
+                # A pane that keeps painting is not evidence that anything is
+                # working: an OpenCode TUI repaints its in-turn spinner forever,
+                # so this gate never opened for crisp-horizon-90.10 and the
+                # holder was never even announced.  Ask the session's own
+                # record and its provider before believing the pane.
+                wedged = await self._wedged_mid_turn(row, now=now, lease_ttl=ttl)
+                if wedged is None:
+                    continue
+                last = min(last, wedged.progress_at)
             if await self._still_live(row) is None:
                 continue  # already stopped/slept/quarantined this tick
 
@@ -1920,6 +2058,7 @@ class SessionReconciler:
                     title=task.title,
                     session_id=row.id,
                     idle_seconds=now - last,
+                    **({"evidence": "store_stalled"} if wedged is not None else {}),
                     **({"deferred_reason": str(deferral.reason)} if deferral else {}),
                 )
 
@@ -2196,6 +2335,180 @@ class SessionReconciler:
                 context="session_not_live",
                 error=f"session {row.id} is {row.state}; task has no live session",
             )
+
+    # -- idle stop intent --------------------------------------------------
+
+    def _idle_stop_grace(self) -> float:
+        """Seconds a finished session may keep its process before it is stopped."""
+        return max(0.0, float(getattr(self.sessions_config, "idle_stop_grace_seconds", 0) or 0))
+
+    async def _step_idle_stop_intent(
+        self, live: list[SessionRecord], now: float
+    ) -> None:
+        """Stop a finished session's process once a bounded grace expires.
+
+        The completion protocol asks an agent to *leave*: ``aq task close``
+        releases the claim with ``drain_after_release``, and a claim over a
+        spent budget answers ``session_exhausted``.  Both leave the durable
+        intent that the session is done -- ``desired_state='stopped'``, or a
+        claim budget nothing can extend -- and both say so in the worker
+        prompt's exit instruction.  A harness that honours it exits and
+        :meth:`_step_exits` classifies the death as it always did.
+
+        An OpenCode worker does not.  Its turn ends, the pane stays, and the
+        session keeps its pool slot, its agent and its worktree until someone
+        runs ``aq session kill`` by hand: on 2026-10-03 two verifiers sat in
+        exactly this state for 18 and 26 minutes after a passing and a failing
+        close.  The daemon does not drive agents, but it may enforce a stop
+        somebody already asked for.
+
+        **Why the clock is the observation, not the pane.**  tmux's
+        ``window_activity`` advances on *any* output, and an OpenCode TUI at
+        its final summary keeps painting, so ``sessions.last_activity`` --
+        which every other idle bound here reads -- never goes stale.  (That is
+        also why ``_step_abandoned_pool_claim_loop`` never saw these workers:
+        they counted as idle *supply*.)  So the grace runs from the first tick
+        this step *observed* the finished shape, keyed by the instance token
+        so a relaunched session starts its own clock.  A daemon restart costs
+        at most one more grace, and ``sessions.stop_intent_pending`` reports
+        anything that outlives several of them.
+
+        Every exemption the other idle steps honour is honoured here too: an
+        unlisted provider prefix, a task this daemon is still writing under
+        its control lock, and a pending agent question, which a
+        stopped-intent session can still be blocked on.  A durable wait needs
+        no separate gate: one can only be registered against a session still
+        holding its task ``running``, so the open-task shape below already
+        covers it.
+
+        The stop is the one ``aq session kill`` performs -- ``provider.stop``
+        behind the instance-token fence -- and the pool teardown is
+        ``_terminate_pool_session``, so the slot, the claim and the worktree
+        come back the same way an operator's kill returns them.
+        """
+        grace = self._idle_stop_grace()
+        if grace <= 0:
+            return
+        seen_at = self._idle_stop_intent_seen
+        live_keys = set()
+        for row in live:
+            key = (row.id, row.instance_token)
+            live_keys.add(key)
+            if not await self._idle_stop_candidate(row, now=now):
+                seen_at.pop(key, None)
+                continue
+            first = seen_at.setdefault(key, now)
+            if now - first < grace:
+                continue
+            seen_at.pop(key, None)
+            fresh = await self._still_live(row)
+            if fresh is None or (fresh.id, fresh.instance_token) != key:
+                continue
+            if not await self._idle_stop_candidate(fresh, now=now):
+                continue
+            await self._stop_finished_session(fresh, now=now)
+        # A relaunched session gets a new instance token, and a stopped row
+        # leaves ``live``: both must not leave the map growing forever.
+        for key in [k for k in seen_at if k not in live_keys]:
+            seen_at.pop(key, None)
+
+    async def _idle_stop_candidate(self, row: SessionRecord, *, now: float) -> bool:
+        """Whether *row* has nothing left to do at all.
+
+        The shape is the safety proof, and it never consults a clock a
+        painting pane can keep fresh: a session that still holds an open task,
+        or is inside a claim, still has work -- and one with neither is
+        mid-turn on nothing AQ can act on.  Ordered cheapest gate first, so
+        the one lookup a *running* worker cannot avoid (``get_profile``, for
+        the claim budget) is only reached by a worker that has claimed at
+        least once and holds nothing.
+        """
+        if row.claim_phase is not None:
+            return False
+        if self._is_deferred(row.name):
+            return False
+        if row.task_id:
+            task = await self.db.get_task(row.task_id)
+            if task is not None and is_live_pool_claim_task_status(task.status):
+                return False
+            # A close that has committed but not finished its tail (branch
+            # handoff under the task's control lock) still owns this process.
+            if self._task_control_held(row.task_id):
+                return False
+        if row.desired_state == "stopped":
+            finished = True
+        elif row.lifecycle == "pool" and row.claims:
+            # ``session_exhausted``: the budget ``take_claim_slot`` enforces
+            # is spent, so the worker protocol's answer is to leave.
+            profile = await self._profile_for(row)
+            finished = profile is not None and pool_claim_budget_exhausted(
+                row, pool_claim_cap(self.config, profile)
+            )
+        else:
+            finished = False
+        if not finished:
+            return False
+        return not await self._waiting_for_question(row, now)
+
+    def _task_control_held(self, task_id: str) -> bool:
+        """Whether this daemon is still writing *task_id* under its control lock."""
+        held = getattr(self.orchestrator, "_task_control_held", None)
+        if held is None:
+            return False
+        try:
+            return bool(held(task_id))
+        except Exception:
+            logger.debug("task control probe failed for %s", task_id, exc_info=True)
+            return True
+
+    async def _stop_finished_session(self, row: SessionRecord, *, now: float) -> None:
+        """The fenced stop ``aq session kill`` performs, then the slot release."""
+        logger.warning(
+            "Session %s (%s) holds a finished %s task and has been idle with a recorded "
+            "stop intent; stopping its process",
+            row.id,
+            row.name,
+            row.lifecycle,
+        )
+        if row.lifecycle == "pool":
+            if self.orchestrator is None:
+                logger.warning(
+                    "Pool session %s has a stop intent but no orchestrator is wired "
+                    "— skipping", row.id,
+                )
+                return
+            await self.orchestrator._terminate_pool_session(row, reason="stop_intent_idle")
+            await self._emit(
+                "session.stop_intent_stopped",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                lifecycle=row.lifecycle,
+                idle_seconds=int(now - (row.last_activity or row.started_at or now)),
+            )
+            return
+        provider = self._provider_for(row)
+        if provider is None:
+            return
+        try:
+            await provider.stop(self._handle(row), grace=2.0)
+        except Exception:
+            logger.warning("Stopping session %s failed", row.id, exc_info=True)
+            return
+        # ``state`` is deliberately left alone: ``_step_exits`` iterates live
+        # rows and classifies the death, releasing the task and the agent.  A
+        # database write here would be a claim about a process only a fresh
+        # probe can support.
+        await self._emit(
+            "session.stop_intent_stopped",
+            session_id=row.id,
+            name=row.name,
+            task_id=row.task_id,
+            project_id=row.project_id,
+            lifecycle=row.lifecycle,
+            idle_seconds=int(now - (row.last_activity or row.started_at or now)),
+        )
 
     # -- step 5: named desired-state ---------------------------------------
 

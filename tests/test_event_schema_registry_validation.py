@@ -1059,6 +1059,12 @@ _CANONICAL_PAYLOADS.update(
         "session.claim_timeout": {
             "session_id": "sess-1",
         },
+        "session.stop_intent_stopped": {
+            "session_id": "sess-1",
+            "name": "p-worker--p1--abc",
+            "lifecycle": "pool",
+            "idle_seconds": 61,
+        },
         "session.sleeping": {
             "session_id": "sess-1",
             "name": "n-supervisor",

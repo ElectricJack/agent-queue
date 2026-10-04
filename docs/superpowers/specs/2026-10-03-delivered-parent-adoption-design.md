@@ -20,6 +20,13 @@ and operation. Its aggregate verifier and repair delegates must be detached;
 live sessions, retained claims, workspace locks, attached or uncertain owners,
 unresolved writes, manual holds, open human gates and reconciler engine ownership
 refuse recovery. Detached canonical reservations can be fenced and released.
+This includes a child's `worker` reservation only when it is writerless, belongs
+to that exact child's canonical branch in the designated repository, and the
+child's current completion passes the same default-branch delivery proof.
+Reservations on unrelated branches, the default branch, or owned by another
+task remain binding. Pending external writes on child branches also refuse.
+Dry runs name every owner and its fence proposed for release; apply releases
+them in the settlement transaction and retains those identities in its audit.
 The project hierarchy lock excludes claims while the complete task, child,
 checkpoint, operation, delegate and owner identities are rechecked. Git target
 freshness is rechecked before the transaction commits.

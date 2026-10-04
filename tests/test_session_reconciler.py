@@ -39,6 +39,7 @@ from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
+from src.sessions.opencode_store import OpenCodeActivity
 from src.sessions.provider import NudgeDeferred, NudgeReason, SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     _STALL_REPORT_INTERVAL_SECONDS,
@@ -257,7 +258,7 @@ async def _session(
         id=sid,
         project_id=overrides.pop("project_id", "p1"),
         profile_id=overrides.pop("profile_id", "claude-opus"),
-        harness="claude",
+        harness=overrides.pop("harness", "claude"),
         provider="fake",
         name=name,
         lifecycle=overrides.pop("lifecycle", "task"),
@@ -1034,6 +1035,261 @@ class TestAbandonedPoolClaimLoop:
         assert "session.claim_timeout" not in bus.types()
 
 
+class TestIdleStopIntent:
+    """azure-dune-51: an OpenCode pool session outlived its own close.
+
+    The worker protocol asks an agent to leave when its task is closed or its
+    claim budget is spent, and the harness is expected to exit.  OpenCode's
+    turn ends and its pane stays: on 2026-10-03 two verifiers sat in
+    ``state=running, desired_state=stopped`` for 18 and 26 minutes, each
+    holding a pool slot and a worktree until someone ran ``aq session kill``.
+    """
+
+    async def _finished_worker(self, db, provider, tmp_path, **overrides):
+        """A pool worker whose task closed and whose claim was released."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await db.transition_task(
+            "t1", TaskStatus.COMPLETED, context="pool_test_close", force=True
+        )
+        task = await db.get_task("t1")
+        defaults = {
+            "sid": "p-done",
+            "task_id": None,
+            "name": "p-done",
+            "lifecycle": "pool",
+            "agent_id": "a1",
+            "desired_state": "stopped",
+            "claims": 1,
+            "last_claim_epoch": task.claim_epoch,
+            "started_at": NOW - 5_000,
+            "last_activity": NOW,
+        }
+        defaults.update(overrides)
+        return await _session(db, provider, **defaults)
+
+    async def _idle_stop(self, reconciler, *, at):
+        return await reconciler._step_idle_stop_intent(
+            await reconciler._step_observe(at), at
+        )
+
+    async def test_a_finished_worker_is_stopped_and_its_slot_freed(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("stopped", "stopped")
+        assert current.end_reason == "stop_intent_idle"
+        # The process went with it, and the durable worker the slot held is
+        # reusable again: the agent is IDLE and the worktree lock is gone.
+        assert await provider.list_running("p-") == []
+        agent = await db.get_agent("a1")
+        assert agent.state is AgentState.IDLE
+        assert agent.current_task_id is None
+        assert (await db.get_workspace("ws1")).locked_by_agent_id is None
+        stopped = pool_reconciler.bus.payload("session.stop_intent_stopped")
+        assert stopped is not None
+        assert (stopped["session_id"], stopped["lifecycle"]) == (row.id, "pool")
+
+    async def test_the_grace_is_not_spent_before_it_expires(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        await self._idle_stop(pool_reconciler, at=NOW + 59)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_session_mid_turn_is_never_stopped(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        """The same shape with the task still open is a worker at work."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db,
+            provider,
+            sid="p-working",
+            name="p-working",
+            lifecycle="pool",
+            agent_id="a1",
+            desired_state="stopped",
+            claims=1,
+            last_claim_epoch=(await db.get_task("t1")).claim_epoch,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+        for at in (NOW, NOW + 61, NOW + 600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+        assert [h.name for h in await provider.list_running("p-")] == [row.name]
+
+    async def test_a_worker_inside_a_claim_is_never_stopped(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path, claim_phase="preparing")
+
+        for at in (NOW, NOW + 61):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_spent_claim_budget_stops_a_worker_that_was_never_drained(
+        self, db, provider, pool_reconciler
+    ):
+        """``session_exhausted`` is the other exit the worker prompt names.
+
+        Nothing records it durably -- ``take_claim_slot`` answers it from
+        ``claims >= cap`` -- and with ``fresh_context_per_task`` off the
+        budget is the profile's, so ``desired_state`` stays ``running`` and
+        ``_step_drain_ack`` never sees a drain at all.
+        """
+        from src.models import AgentProfile
+
+        pool_reconciler.config.swarm.fresh_context_per_task = False
+        await db.create_profile(
+            AgentProfile(id="claude-opus", name="Claude", harness="claude",
+                         max_claims_per_session=1)
+        )
+        row = await _session(
+            db,
+            provider,
+            sid="p-spent",
+            task_id=None,
+            name="p-spent",
+            lifecycle="pool",
+            claims=1,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+        await self._idle_stop(pool_reconciler, at=NOW)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_an_unclaimed_worker_is_not_a_spent_one(
+        self, db, provider, pool_reconciler
+    ):
+        row = await _session(
+            db,
+            provider,
+            sid="p-fresh",
+            task_id=None,
+            name="p-fresh",
+            lifecycle="pool",
+            claims=0,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+
+        for at in (NOW, NOW + 61, NOW + 3_600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_named_session_is_stopped_without_claiming_a_death(
+        self, db, provider, releasing_reconciler
+    ):
+        """``state`` stays an observation; ``_step_exits`` writes it next tick."""
+        row = await _session(
+            db,
+            provider,
+            sid="n1",
+            task_id=None,
+            name="n-supervisor--global",
+            lifecycle="named",
+            desired_state="stopped",
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+
+        await self._idle_stop(releasing_reconciler, at=NOW)
+        assert [h.name for h in await provider.list_running("n-")] == [row.name]
+
+        await self._idle_stop(releasing_reconciler, at=NOW + 61)
+
+        assert await provider.list_running("n-") == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_the_clock_restarts_when_the_session_takes_work_again(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        await self._idle_stop(pool_reconciler, at=NOW)
+
+        await db.update_session(
+            row.id, task_id="t1", claim_phase="active", desired_state="running"
+        )
+        await self._idle_stop(pool_reconciler, at=NOW + 30)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await db.update_session(
+            row.id, task_id=None, claim_phase=None, desired_state="stopped"
+        )
+        await self._idle_stop(pool_reconciler, at=NOW + 50)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await self._idle_stop(pool_reconciler, at=NOW + 111)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_a_relaunched_instance_starts_its_own_clock(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        await self._idle_stop(pool_reconciler, at=NOW)
+
+        await db.update_session(row.id, instance_token="tok-relaunched")
+        await self._idle_stop(pool_reconciler, at=NOW + 120)
+
+        # The clock is keyed by the instance token, so the old observation
+        # cannot stop a process that was never seen in this shape.
+        assert pool_reconciler.test_orch.terminations == []
+        await self._idle_stop(pool_reconciler, at=NOW + 181)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_the_grace_can_be_switched_off(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        pool_reconciler.config.sessions.idle_stop_grace_seconds = 0
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        for at in (NOW, NOW + 3_600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_pool_worker_without_an_orchestrator_is_left_alone(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        pool_reconciler.orchestrator = None
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert (await db.get_session(row.id)).state == "running"
+        assert [h.name for h in await provider.list_running("p-")] == [row.name]
+
+
 class TestPoolLifecycle:
     @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
     async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(
@@ -1431,7 +1687,7 @@ class TestUnreadableComposerLadder:
     def _progress(source, at):
         """A stand-in for ``harness_progress`` returning a fixed reading."""
 
-        async def read(row, *, base_dir=None):
+        async def read(row, *, base_dir=None, liveness=None):
             return source, at
 
         return read
@@ -1748,6 +2004,235 @@ class TestUnreadableComposerLadder:
         assert bus.types().count("task.stalled") == 1
         assert "deferred_reason" not in bus.payload("task.stalled")
         assert bus.types().count("task.nudged") == 1
+
+
+# ---------------------------------------------------------------------------
+# Stall ladder: a pane that keeps painting while nothing is happening
+# ---------------------------------------------------------------------------
+
+
+class _StubStore:
+    """The harness store, read: what the session wrote and what is open."""
+
+    def __init__(self, activity):
+        self.activity_value = activity
+        self.reads = 0
+
+    def activity(self, work_dir, since):
+        self.reads += 1
+        return self.activity_value
+
+
+class TestWedgedMidTurn:
+    """R7: a TUI that reports itself mid-turn forever while doing nothing.
+
+    ``crisp-horizon-90.10`` (2026-10-03): an OpenCode pool session held its
+    task for 42 minutes after its last store row — a byte-identical pane
+    repainting its in-turn spinner, an Ollama holding no model at all, zero
+    nudge attempts, zero ``task.stalled``, no restart. Nothing was wrong with
+    the ladder below its gate; the gate is tmux's ``window_activity``, which a
+    spinner keeps fresh forever.
+
+    So the gate is overridden from two clocks AQ does not control — the CLI's
+    own store and the provider's residency — and then the ordinary ladder runs,
+    composer guard included.
+    """
+
+    async def _wedged(self, db, provider):
+        """A session whose pane looks busy and whose own record is frozen."""
+        await _task(db)
+        row = await _session(
+            db, provider, started_at=NOW - 5000, last_activity=NOW,
+            harness="opencode", llm_provider="ollama", model="qwen3.8:27b",
+        )
+        provider.sessions[row.name].activity = NOW
+        return row
+
+    def _store(self, reconciler, activity):
+        store = _StubStore(activity)
+        reconciler._liveness_store = lambda harness: store
+        return store
+
+    def _probe(self, monkeypatch, answer):
+        async def probe(session, config):
+            return answer
+
+        monkeypatch.setattr("src.sessions.reconciler.request_inflight", probe)
+
+    async def test_a_wedged_turn_emits_stalled_and_climbs_the_ladder(
+        self, db, provider, reconciler, bus, config, monkeypatch
+    ):
+        row = await self._wedged(db, provider)
+        self._store(
+            reconciler,
+            OpenCodeActivity(progress_at=NOW - 5000, sessions=frozenset({"ses_abc"})),
+        )
+        self._probe(monkeypatch, False)
+
+        # Nothing had happened for over an hour by its own record, and no
+        # rung had been spent: this is the whole failure being tested.
+        await reconciler.tick(now=NOW)
+        payload = bus.payload("task.stalled")
+        assert payload is not None
+        assert payload["session_id"] == row.id
+        assert payload["evidence"] == "store_stalled"
+        assert payload["idle_seconds"] == 5000
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+
+        # The climb is the ordinary one: the last rung restarts with the
+        # resume key, bounded by the same budgets as any other stall.
+        await db.set_task_meta(
+            "t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges)
+        )
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+        await reconciler.tick(now=NOW + 400)
+        session = await db.get_session("s1")
+        assert session.state == "stopped" and session.restarts == 1
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert bus.types().count("task.restarted") == 1
+
+    async def test_a_recent_store_row_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Progress on this very tick: the pane was right and AQ was wrong."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5))
+        self._probe(monkeypatch, False)
+
+        # Two ticks inside the lease: the wedge gate is the only path here, and
+        # it must not take it. (Past the lease the ordinary ladder would fire
+        # on the pane's own clock, which is a different question.)
+        for tick in (NOW, NOW + 400):
+            await reconciler.tick(now=tick)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+        assert (await db.get_session("s1")).state == "running"
+
+    async def test_an_active_generation_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """A model resident may just be held warm; either way this is not proof."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, True)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    @pytest.mark.parametrize("answer", [None])
+    async def test_an_unanswerable_provider_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch, answer
+    ):
+        """Unknown is not stalled: an endpoint AQ could not read holds the ladder."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, answer)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert (await db.get_session("s1")).state == "running"
+
+    async def test_an_open_tool_call_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Silence is also what one long ``bash`` looks like from outside."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000, open_tools=1))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    async def test_a_session_that_never_wrote_a_row_is_not_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """No row is no clock: there is nothing there that could have stopped."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity())
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+
+    async def test_an_unreadable_store_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """``None`` from the store is the same unknown as no store at all."""
+        await self._wedged(db, provider)
+        self._store(reconciler, None)
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+
+    async def test_a_harness_with_no_store_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Claude and Codex are gated on their own transcripts, as before."""
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 5000, last_activity=NOW)
+        provider.sessions[row.name].activity = NOW
+        self._store(reconciler, None)
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    async def test_a_person_at_the_composer_still_holds_a_wedged_turn(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """R1's human-draft guard is unchanged by any of this."""
+        row = await self._wedged(db, provider)
+        provider.script_composer_refusal(
+            row.name, "terminal holds a draft", "half a sentence"
+        )
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        for tick in (NOW, NOW + 400, NOW + 800, NOW + 1200):
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert (await db.get_session("s1")).state == "running"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert bus.types() == []
+
+    async def test_an_unreadable_composer_escalates_on_the_store_clock(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """The R1 refusal path, now with a record to corroborate it.
+
+        ``opencode`` used to land in ``report`` here — no rung, no escalation —
+        because ``harness_progress`` had nothing to read for it (report R7).
+        It reads the store now, so the rung is spent with nothing typed.
+        """
+        row = await self._wedged(db, provider)
+        provider.script_composer_refusal(
+            row.name, "terminal input is unknown", kind=NudgeReason.STALE_FRAME
+        )
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+        assert provider.sent_nudges == []
+        assert bus.payload("task.stalled")["deferred_reason"] == "stale_frame"
+        assert "task.nudged" not in bus.types()
+
+    async def test_the_store_is_read_once_per_interval_not_once_per_tick(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """A wedged TUI repaints forever; the store is tens of gigabytes."""
+        await self._wedged(db, provider)
+        store = self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        await reconciler.tick(now=NOW + 5)
+        await reconciler.tick(now=NOW + 10)
+        assert store.reads == 1
 
 
 # ---------------------------------------------------------------------------

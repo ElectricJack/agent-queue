@@ -40928,6 +40928,13 @@
                 "type": "null"
               }
             ]
+          },
+          "review_waits": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewWait"
+            },
+            "type": "array",
+            "title": "Review Waits"
           }
         },
         "type": "object",
@@ -59661,6 +59668,55 @@
           "vault_path"
         ],
         "title": "ReviewSubmitResponse"
+      },
+      "ReviewWait": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "review_state": {
+            "type": "string",
+            "title": "Review State"
+          },
+          "review_kind": {
+            "type": "string",
+            "title": "Review Kind"
+          },
+          "review_title": {
+            "type": "string",
+            "title": "Review Title"
+          },
+          "gate_id": {
+            "type": "string",
+            "title": "Gate Id"
+          },
+          "gate_type": {
+            "type": "string",
+            "title": "Gate Type"
+          },
+          "gate_status": {
+            "type": "string",
+            "title": "Gate Status"
+          },
+          "blocking": {
+            "type": "boolean",
+            "title": "Blocking"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "review_state",
+          "review_kind",
+          "review_title",
+          "gate_id",
+          "gate_type",
+          "gate_status",
+          "blocking"
+        ],
+        "title": "ReviewWait",
+        "description": "A document review one of this task's gates is tied to.\n\n``blocking`` is the ``blocked_gate`` test ``aq task explain`` applies: the\nreview's gate is attached to the task and not resolved (open or expired).\nA review gate is resolved only by an approval, so a rejected or withdrawn\nreview still blocks.  A non-blocking entry is an approved review whose\ngate released the task, reported while the task is not yet completed so\nthe card can still link to the design it was gated on."
       },
       "ReviewWithdrawRequest": {
         "properties": {

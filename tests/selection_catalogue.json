@@ -1069,6 +1069,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1397,7 +1398,7 @@
       ]
     }
   },
-  "digest": "sha256:44d255ae6cc34af990f75ba42ee51067d8dd72f8ff110a470d9e8163f65a00ab",
+  "digest": "sha256:a4ab3cc2a94774fa244b362951a75bdfdf0fa346214179fbc5626498e5364e80",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4663,6 +4664,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.proposal_commands",
         "src.doctor.integration_checks",
         "src.playbooks.definition",
@@ -6133,9 +6136,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.integration.development"
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.regeneration",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
+        "parametrize",
         "slow"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
@@ -6537,6 +6545,7 @@
         "src.api",
         "src.api.dependencies",
         "src.api.health",
+        "src.api.health_monitor",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
@@ -7258,7 +7267,8 @@
         "src.integration.recovery_controls",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -7872,6 +7882,7 @@
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
@@ -7994,7 +8005,8 @@
         "src.integration.promotion",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -9786,6 +9798,7 @@
       "imports": [
         "src.config",
         "src.metrics.histogram",
+        "src.metrics.loop_watchdog",
         "src.metrics.perf"
       ],
       "markers": [
@@ -13812,6 +13825,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13871,6 +13901,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
@@ -15415,6 +15446,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.health",
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",

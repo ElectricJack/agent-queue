@@ -77,6 +77,7 @@ async def test_parent_adoption_adapter_retains_child_proof_and_delegate_plan(out
                 "outcome": outcome, "task_id": "parent", "head_sha": "a" * 40,
                 "verifier_task_id": "stale", "retire_delegates": ["stale"],
                 "children": [{"task_id": "child", "state": "contained"}],
+                "ownership": [{"id": "child-owner", "owner_id": "child", "fence_token": 7}],
                 "conclusion": "not_ci_attested",
             }
 
@@ -95,6 +96,7 @@ async def test_parent_adoption_adapter_retains_child_proof_and_delegate_plan(out
     assert result.outcome == outcome
     assert result.value.children == ({"task_id": "child", "state": "contained"},)
     assert result.value.retire_delegates == ("stale",)
+    assert result.value.ownership == ({"id": "child-owner", "owner_id": "child", "fence_token": 7},)
     assert result.value.conclusion == "not_ci_attested"
 
 
@@ -473,6 +475,9 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     }
     assert {row.name for row in record.outcomes} == {
         "continue",
+        # A parent's first red arrives with no stage; opening one is its own
+        # outcome because playbook transitions key on the outcome alone.
+        "started",
         "escalate",
         "human_required",
         "budget_exhausted",

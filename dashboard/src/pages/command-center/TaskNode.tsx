@@ -7,6 +7,8 @@ import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
 import { EpicDeliveryBadge } from "../../components/EpicDelivery";
 import { deliveryCardStatus } from "../../components/epicDeliveryFormat";
+import { ReviewWaitBadge } from "./ReviewWaitBadge";
+import { reviewStateLabel } from "./reviewWaitFormat";
 
 export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
@@ -26,6 +28,10 @@ const STATUS_TONE: Record<string, string> = {
   CANCELED: "border-gray-700 bg-gray-900 text-gray-400",
 };
 
+/** A task held by a review wears the review's colour on its border, whatever
+ *  its stored status, so a review wait never reads as a generic block. */
+const REVIEW_WAIT_BORDER = "border-violet-400";
+
 interface CardProps {
   data: TaskNodeData;
   selected?: boolean;
@@ -38,16 +44,20 @@ interface CardProps {
  *  so the copy-id button in its header can nest inside it validly. */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
   const { task, gates, hierarchy, onOpenTask, onFocus, subtasks, phase } = data;
+  const reviewWaits = data.reviewWaits ?? [];
+  const reviewBlock = reviewWaits.find((wait) => wait.blocking) ?? null;
   // An epic's delivery projection, when the daemon sent one: its status word
   // and tone replace the stored lifecycle (an integration hold is PAUSED in
   // storage but is not a pause anyone chose).
   const delivery = data.delivery ?? null;
   const blocked = isTaskBlocked(task);
-  const tone = STATUS_TONE[deliveryCardStatus(delivery, task.status)] ?? STATUS_TONE.DEFINED;
+  const statusTone = STATUS_TONE[deliveryCardStatus(delivery, task.status)] ?? STATUS_TONE.DEFINED ?? "";
+  const tone = reviewBlock ? statusTone.replace(/\bborder-\S+/, REVIEW_WAIT_BORDER) : statusTone;
   const statusWord = delivery ? delivery.display_status : task.status.replace(/_/g, " ");
   const working = delivery ? delivery.state === "integrating" || delivery.state === "verifying" : task.status === "IN_PROGRESS";
   const statusTitle = delivery
     ? `${delivery.display_status} · task status ${task.status}${delivery.hold === "integration" ? " (held by integration, not paused by anyone)" : ""}`
+    : reviewBlock ? `${task.status} · waiting on review ${reviewBlock.review_id} (${reviewStateLabel(reviewBlock.review_state)})`
     : blocked ? `${task.status} · blocked by dependencies or gates` : task.status;
   const priority = task.priority ?? 100;
   const urgent = priority <= 20 ? "ring-2 ring-red-400" : priority <= 50 ? "ring-1 ring-amber-400" : "";
@@ -56,6 +66,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
   return (
     <div
       data-task-card
+      data-review-blocked={reviewBlock ? "" : undefined}
       className={`relative flex flex-col rounded-md border text-xs shadow ${tone} ${urgent} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-white" : ""}`}
       style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}
     >
@@ -141,6 +152,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
           </span>
         )}
       </div>
+      <ReviewWaitBadge waits={reviewWaits} />
       {hierarchy.childCount > 0 && (
         <div className="flex shrink-0 items-center gap-1 rounded-b-md border-t border-white/10 px-2 text-[10px]">
           {/* A count, not a control: the children are reached by ENTERING the
