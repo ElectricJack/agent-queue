@@ -219,6 +219,96 @@ async def recycled_slot(incident, tmp_path):
     return slot, branch
 
 
+async def historical_collector(incident, *, state="cancelled"):
+    db, _service, source, _remote, repo = incident[0]
+    async with db.immediate() as conn:
+        await conn.execute(insert(t.integration_parent_episodes).values(
+            id="old-episode", parent_task_id=PARENT, repository_id=repo.id,
+            generation=0, pre_collection_checkpoint_sha=incident[3], created_at=1.0,
+        ))
+        await conn.execute(insert(t.integration_repair_operations).values(
+            id="old-collection", target_kind="parent", parent_task_id=PARENT,
+            episode_id="old-episode", state=state, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="checks-v1", created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(insert(t.workspaces).values(
+            id="historical-slot", project_id="p", workspace_path=str(source), created_at=1.0,
+        ))
+        await conn.execute(update(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner",
+        ).values(owner_id="old-collection", owner_role="collector",
+                 confirmed_workspace_id="historical-slot"))
+
+
+@pytest.mark.parametrize("state", ["cancelled", "completed"])
+async def test_adoption_retires_quiet_historical_parent_collector(incident, state):
+    await historical_collector(incident, state=state)
+    db, _service, _source, remote, _repo = incident[0]
+    refs = git(remote, "show-ref")
+    preview = await adopt(incident, dry_run=True)
+    assert preview["ownership"][0]["owner_id"] == "old-collection"
+    assert git(remote, "show-ref") == refs
+    assert (await db.get_task(PARENT)).status == TaskStatus.PAUSED
+    assert (await adopt(incident))["outcome"] == "adopted"
+    assert git(remote, "rev-parse", "main") == incident[3]
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(t.integration_branch_owners))).mappings().one()
+        assert (owner["handoff_state"], owner["fence_token"]) == ("released", 5)
+        assert await conn.scalar(select(t.integration_repair_operations.c.state).where(
+            t.integration_repair_operations.c.id == "old-collection",
+        )) == state
+
+
+@pytest.mark.parametrize("blocker", [
+    "active_operation", "other_parent", "wrong_role", "attached", "locked_checkout",
+    "dirty_checkout", "unpublished_ref", "missing_workspace", "historical_write",
+])
+async def test_historical_parent_collector_preserves_writers_and_unpublished_work(incident, blocker):
+    await historical_collector(incident)
+    db, _service, source, _remote, _repo = incident[0]
+    async with db.immediate() as conn:
+        if blocker in {"active_operation", "other_parent"}:
+            if blocker == "active_operation":
+                await conn.execute(update(t.integration_repair_operations).where(
+                    t.integration_repair_operations.c.id == "collection",
+                ).values(state="cancelled"))
+            else:
+                await conn.execute(insert(t.integration_parent_episodes).values(
+                    id="unrelated-episode", parent_task_id="another-parent", repository_id="r",
+                    generation=0, pre_collection_checkpoint_sha=incident[3], created_at=1.0,
+                ))
+            await conn.execute(update(t.integration_repair_operations).where(
+                t.integration_repair_operations.c.id == "old-collection",
+            ).values(**({"state": "active"} if blocker == "active_operation"
+                        else {"parent_task_id": "another-parent", "episode_id": "unrelated-episode"})))
+        elif blocker in {"wrong_role", "attached", "missing_workspace"}:
+            field, value = {
+                "wrong_role": ("owner_role", "worker"),
+                "attached": ("handoff_state", "attached"),
+                "missing_workspace": ("confirmed_workspace_id", "missing"),
+            }[blocker]
+            await conn.execute(update(t.integration_branch_owners).values(**{field: value}))
+        elif blocker == "locked_checkout":
+            await conn.execute(update(t.workspaces).values(locked_by_task_id=VERIFIER))
+        elif blocker == "historical_write":
+            await conn.execute(insert(t.integration_promotion_intents).values(
+                id="old-write", domain_key="old-write", operation_key="old-collection",
+                receipt_id="missing", project_id="p", repository_id="r",
+                target_branch="aq/epic/old-aggregate", source_head=incident[3],
+                source_base=incident[3], expected_target=incident[3],
+                fence_owner_id="old-collection", fence_token=4, state="pushed",
+                created_at=1.0, updated_at=2.0,
+            ))
+    if blocker == "dirty_checkout":
+        (source / "uncommitted.txt").write_text("unpublished parent work\n")
+    elif blocker == "unpublished_ref":
+        git(source, "commit", "--allow-empty", "-m", "unpublished parent work")
+    for dry_run in (True, False):
+        with pytest.raises(ValueError):
+            await adopt(incident, dry_run=dry_run)
+    assert await db.get_task_completion(PARENT) is None
+
+
 @pytest.mark.parametrize("parent", [PARENT, "agile-impact-14", "vivid-quest-44"])
 @pytest.mark.parametrize("reused_by_writer", [False, True])
 async def test_confirmed_recycled_slot_does_not_retain_delivered_child(

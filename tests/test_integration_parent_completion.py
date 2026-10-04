@@ -21,6 +21,7 @@ from src.database.tables import (
     task_gates,
     workspaces,
     integration_check_evidence,
+    integration_promotion_intents,
     integration_episode_receipt_acceptances,
     integration_branch_owners,
     integration_batch_members,
@@ -72,7 +73,7 @@ from src.profiles.capabilities import DENY_ALL
 from src.database.queries.task_queries import StaleClaim
 
 
-async def _parent_repair_case(db, tmp_path):
+async def _parent_repair_case(db, tmp_path, *, children=1):
     from src.git.manager import GitManager
     from src.integration.parent_repair_heads import ParentHeadRecovery
     from src.integration.promotion import PromotionService
@@ -101,7 +102,7 @@ async def _parent_repair_case(db, tmp_path):
     git("commit", "--allow-empty", "-m", "authorized repair")
     head = git("rev-parse", "HEAD")
     git("push", "origin", "aq/parent")
-    hierarchy, checkpointed, children = await _parent_tree(db, children=1, base_sha=base)
+    hierarchy, checkpointed, children = await _parent_tree(db, children=children, base_sha=base)
     await _code_receipt(db, children[0], base, collected)
     await db.create_task(
         Task(
@@ -201,6 +202,517 @@ async def _parent_repair_case(db, tmp_path):
         reason="Reconcile authorized repair",
     )
     return recovery, hierarchy, request, git, collected, head
+
+
+async def _finished_collection_case(db, tmp_path, *, wrong_tree=False):
+    """Three receipts, two audited repair gaps, and a receipt-covered final stage."""
+    from src.database.queries.result_queries import close_identity
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.integration.outbox import enqueue_integration_event
+
+    recovery, hierarchy, request, git, collected, first_gap = await _parent_repair_case(
+        db, tmp_path, children=3
+    )
+    git("commit", "--allow-empty", "-m", "second collected child")
+    second_child = git("rev-parse", "HEAD")
+    git("commit", "--allow-empty", "-m", "second authorized repair")
+    second_gap = git("rev-parse", "HEAD")
+    git("commit", "--allow-empty", "-m", "final child resolution")
+    final_head = git("rev-parse", "HEAD")
+    final_tree = git("rev-parse", "HEAD^{tree}")
+    if wrong_tree:
+        final_tree = "d" * 40
+    git("push", "origin", "aq/parent")
+    await _code_receipt(db, "parent.2", first_gap, second_child)
+    for task_id, head, completed_at in (
+        ("repair-middle", second_gap, 22.0),
+        ("repair-final", final_head, 26.0),
+    ):
+        await db.create_task(
+            Task(
+                id=task_id,
+                project_id="p",
+                repo_id="repo",
+                branch_name="aq/parent",
+                title=task_id,
+                description="Authorized collection repair",
+                status=TaskStatus.COMPLETED,
+                created_by_kind="integration_repair",
+                created_by_id=request.operation_id,
+            )
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id=f"completion-{task_id}",
+                task_id=task_id,
+                outcome="pass",
+                branch="aq/parent",
+                commits=[] if task_id == "repair-final" else [head],
+                completed_at=completed_at,
+            )
+        )
+    await db.set_task_meta(
+        "repair-final",
+        ACCEPTED_CLOSE_KEY,
+        close_identity("completion-repair-final", session_id="final-session", claim_epoch=0),
+    )
+    push = {"kind": "exact_resolution_push_observed", "remote_sha": final_head}
+    remote = {
+        "kind": "exact_resolution_tip",
+        "remote_sha": final_head,
+        "resolved_tree_sha": final_tree,
+        "repair_commit_shas": [final_head],
+    }
+    evidence = {
+        "kind": "conflict_resolution",
+        "original_source_base": "a" * 40,
+        "original_source_head": "b" * 40,
+        "original_source_tree": "c" * 40,
+        "original_expected_target": second_gap,
+        "resolved_head_sha": final_head,
+        "resolved_tree_sha": final_tree,
+        "repair_commit_shas": [final_head],
+        "authoring": {
+            "operation_id": request.operation_id,
+            "stage_ordinal": 2,
+            "repair_task_id": "repair-final",
+            "repair_session_id": "final-session",
+            "repair_session_instance_token": "final-instance",
+            "repair_workspace_id": "final-workspace",
+            "fence": {
+                "repository_id": "repo",
+                "branch": "aq/parent",
+                "owner_id": "repair-final",
+                "token": 6,
+            },
+        },
+        "push_authority": push,
+        "remote_proof": remote,
+    }
+    await _code_receipt(
+        db,
+        "parent.3",
+        second_gap,
+        final_head,
+        squash_sha=None,
+        review_evidence={"review": {"source_base": "a" * 40}},
+        resolution_evidence=evidence,
+    )
+    async with db.immediate() as conn:
+        original = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+        await conn.execute(
+            update(integration_repair_operations).values(
+                state="escalated",
+                active_stage=2,
+            )
+        )
+        await conn.execute(update(integration_branch_owners).values(fence_token=7))
+        await conn.execute(update(integration_repair_stages).values(state="expired"))
+        for ordinal, task_id, start, head, state in (
+            (1, "repair-middle", second_child, second_gap, "expired"),
+            (2, "repair-final", second_gap, final_head, "active"),
+        ):
+            await conn.execute(
+                insert(integration_repair_stages).values(
+                    **(
+                        original
+                        | {
+                            "ordinal": ordinal,
+                        "deadline_event_id": f"deadline-{ordinal}",
+                            "repair_task_id": task_id,
+                            "starting_sha": start,
+                            "current_subject": {
+                                "kind": "parent",
+                                "generation": 1,
+                                "head_sha": head,
+                            },
+                            "state": state,
+                            "dossier": {"repair_commits": [head], "branch_sha": head},
+                        }
+                    )
+                )
+            )
+        await enqueue_integration_event(
+            conn,
+            event_id="middle-closed",
+            dedup_key="middle-closed",
+            project_id="p",
+            event_type="integration.repair_delegate_closed",
+            available_at=22.0,
+            payload={
+                "operation_id": request.operation_id,
+                "stage": 1,
+                "task_id": "repair-middle",
+                "session_id": "middle-session",
+                "instance_token": "middle-instance",
+                "workspace_id": "middle-workspace",
+                "fence_token": 4,
+            },
+        )
+        await conn.execute(
+            insert(integration_promotion_intents).values(
+                id="final-intent",
+                domain_key="final-intent",
+                operation_key=request.operation_id,
+                project_id="p",
+                receipt_id="receipt-parent.3",
+                source_task_id="parent.3",
+                target_task_id="parent",
+                source_head="b" * 40,
+                source_base="a" * 40,
+                repository_id="repo",
+                target_branch="aq/parent",
+                expected_target=second_gap,
+                fence_owner_id=request.operation_id,
+                fence_token=5,
+                state="committed",
+                resolution_head_sha=final_head,
+                resolution_tree_sha=final_tree,
+                resolution_commit_shas=[final_head],
+                resolution_operation_id=request.operation_id,
+                resolution_stage_ordinal=2,
+                resolution_task_id="repair-final",
+                resolution_session_id="final-session",
+                resolution_session_instance_token="final-instance",
+                resolution_workspace_id="final-workspace",
+                resolution_fence_owner_id="repair-final",
+                resolution_fence_token=6,
+                resolution_push_started_at=24.0,
+                resolution_push_evidence=push,
+                remote_evidence=remote,
+                committed_at=25.0,
+                created_at=23.0,
+                updated_at=25.0,
+            )
+        )
+    request.head_sha = final_head
+    request.expected_stage = 2
+    request.expected_fence_token = 7
+    return recovery, hierarchy, request, git, ((collected, first_gap), (second_child, second_gap))
+
+
+@pytest.mark.parametrize("archived", [False, True])
+async def test_finished_collection_reconciles_both_gaps_and_files_fresh_verifier(
+    db, tmp_path, archived
+):
+    recovery, hierarchy, request, git, gaps = await _finished_collection_case(db, tmp_path)
+    async with db._engine.connect() as conn:
+        receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+        stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        completions = (await conn.execute(select(task_completion_records))).mappings().all()
+    if archived:
+        from src.database.tables import task_metadata
+
+        async with db.immediate() as conn:
+            # Archives discard accepted-close metadata. An archived delegate
+            # therefore needs its original nonempty completion proof.
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == "repair-final",
+            ))
+            await conn.execute(update(task_completion_records).where(
+                task_completion_records.c.task_id == "repair-final",
+            ).values(commits=json.dumps([request.head_sha])))
+            completions = (await conn.execute(select(task_completion_records))).mappings().all()
+            task = dict((await conn.execute(select(tasks).where(
+                tasks.c.id == "repair-final",
+            ))).mappings().one())
+            await conn.execute(insert(archived_tasks).values(
+                **{key: value for key, value in task.items() if key in archived_tasks.c},
+                archived_at=30.0,
+            ))
+            await conn.execute(delete(tasks).where(tasks.c.id == "repair-final"))
+    refs = git("ls-remote", "origin")
+    preview = await recovery.run(request, principal="supervisor")
+    assert preview["outcome"] == "would_recover"
+    assert all(f"{before} -> {after}" in preview["reason"] for before, after in gaps)
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == gaps[0][0]
+    assert await db.get_task(f"verify-{request.operation_id}") is None
+    request.dry_run = False
+    assert (await recovery.run(request, principal="supervisor"))["outcome"] == "recovered"
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["checkpoint_sha"] == request.head_sha
+    assert checkpoint["verified_sha"] is None
+    assert checkpoint["current_verification_id"] is None
+    assert checkpoint["state"] == "integration_ready"
+    assert (await db.get_task(f"verify-{request.operation_id}")).status == TaskStatus.PAUSED
+    assert (await hierarchy.verify_parent("parent", 1, request.head_sha, []))[
+        "outcome"
+    ] != "verified"
+    assert (await recovery.run(request, principal="supervisor"))["outcome"] == "already_recovered"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
+        assert (await conn.execute(select(task_completion_records))).mappings().all() == completions
+        updated = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for index, stage in enumerate(updated):
+            assert stage["attempts"] == stages[index]["attempts"]
+            assert stage["deadline_at"] == stages[index]["deadline_at"]
+            assert stage["policy"] == stages[index]["policy"]
+            if index < 2:
+                assert stage["state"] == stages[index]["state"]
+                (edge,) = stage["dossier"]["parent_head_extensions"]
+                assert (edge["before_sha"], edge["after_sha"]) == gaps[index]
+        assert updated[2]["state"] == "passed"
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        assert operation["state"] == "escalated"
+        events = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "task.integration_ready",
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(events) == 1
+        assert events[0]["payload"]["head_sha"] == request.head_sha
+    assert git("ls-remote", "origin") == refs
+    transferred = await hierarchy.ownership.transfer(
+        Fence(target=BranchKey(repository_id="repo", branch="aq/parent"),
+              owner_id=request.operation_id, token=7),
+        f"verify-{request.operation_id}", "verifier",
+    )
+    assert (await hierarchy.wake_verifier("parent", transferred))["outcome"] == "woken"
+    assert (await hierarchy.complete_parent("parent", 1, request.head_sha))[
+        "outcome"
+    ] == AWAITING_TRUSTED_VERIFICATION
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(
+            id="fresh-collection-check", operation_id=request.operation_id,
+            parent_task_id="parent", parent_generation=1, parent_head_sha=request.head_sha,
+            producer_id="forge-observer", workflow_id="workflow", run_id="fresh-run",
+            attempt=1, required_check_version="parent-v1", checks={"unit": "success"},
+            conclusion="success", classification="conclusive", observed_at=40.0,
+        ))
+    assert (await hierarchy.verify_parent("parent", 1, request.head_sha, [
+        "fresh-collection-check",
+    ]))["outcome"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "gap_audit",
+        "gap_lineage",
+        "final_intent_fence",
+        "final_push",
+        "final_tree",
+        "accepted_close",
+        "latest_completion",
+        "remote_head",
+        "check_failure",
+    ],
+)
+async def test_finished_collection_refuses_unproved_gap_or_resolution(db, tmp_path, damage):
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+    recovery, _hierarchy, request, git, gaps = await _finished_collection_case(
+        db, tmp_path, wrong_tree=damage == "final_tree"
+    )
+    if damage == "accepted_close":
+        await db.set_task_meta("repair-final", ACCEPTED_CLOSE_KEY, "{}")
+    elif damage == "remote_head":
+        git("commit", "--allow-empty", "-m", "unrecorded write")
+        git("push", "origin", "aq/parent")
+    elif damage == "latest_completion":
+        await db.save_task_completion(
+            TaskCompletion(
+                id="later-failure",
+                task_id="repair-middle",
+                outcome="fail",
+                branch="aq/parent",
+                commits=[gaps[1][1]],
+                completed_at=30.0,
+            )
+        )
+    else:
+        async with db.immediate() as conn:
+            if damage == "gap_audit":
+                await conn.execute(
+                    delete(integration_outbox).where(
+                        integration_outbox.c.id == "middle-closed",
+                    )
+                )
+            elif damage == "gap_lineage":
+                await conn.execute(
+                    update(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                    .values(dossier={"branch_sha": gaps[1][1], "repair_commits": ["a" * 40]})
+                )
+            elif damage == "final_intent_fence":
+                await conn.execute(
+                    update(integration_promotion_intents).values(resolution_fence_token=4)
+                )
+            elif damage == "final_push":
+                await conn.execute(
+                    update(integration_promotion_intents).values(resolution_push_evidence={})
+                )
+            elif damage == "check_failure":
+                await conn.execute(
+                    insert(integration_check_evidence).values(
+                        id="final-failed-check",
+                        operation_id=request.operation_id,
+                        parent_task_id="parent",
+                        parent_generation=1,
+                        parent_head_sha=request.head_sha,
+                        producer_id="observer",
+                        workflow_id="workflow",
+                        run_id="failed-run",
+                        attempt=1,
+                        required_check_version="parent-v1",
+                        checks={"unit": "failure"},
+                        conclusion="failure",
+                        classification="conclusive",
+                        observed_at=26.0,
+                    )
+                )
+    request.dry_run = False
+    with pytest.raises(ValueError):
+        await recovery.run(request, principal="supervisor")
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == gaps[0][0]
+    assert await db.get_task(f"verify-{request.operation_id}") is None
+    async with db._engine.connect() as conn:
+        stages = (await conn.execute(select(integration_repair_stages))).mappings().all()
+        assert all(not (stage["dossier"] or {}).get("parent_head_extensions") for stage in stages)
+
+
+async def test_finished_collection_rechecks_gap_close_after_publication_proof(
+    db, tmp_path, monkeypatch
+):
+    recovery, _hierarchy, request, _git, gaps = await _finished_collection_case(db, tmp_path)
+    prove = recovery._git_proof
+    changed = False
+
+    async def change_gap_audit(*args, **kwargs):
+        nonlocal changed
+        proof = await prove(*args, **kwargs)
+        if not changed:
+            changed = True
+            async with db.immediate() as conn:
+                await conn.execute(delete(integration_outbox).where(
+                    integration_outbox.c.id == "middle-closed",
+                ))
+        return proof
+
+    monkeypatch.setattr(recovery, "_git_proof", change_gap_audit)
+    request.dry_run = False
+    with pytest.raises(ValueError, match="delegate-close audit"):
+        await recovery.run(request, principal="supervisor")
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == gaps[0][0]
+    assert await db.get_task(f"verify-{request.operation_id}") is None
+
+
+@pytest.mark.parametrize("case", ["current", "ancestor", "diverged", "dirty", "writer"])
+async def test_finished_collection_checks_confirmed_collector_workspace(db, tmp_path, case):
+    recovery, _hierarchy, request, git, gaps = await _finished_collection_case(db, tmp_path)
+    if case == "writer":
+        await db.create_task(Task(
+            id="retained-writer", project_id="p", title="Retained writer", description="",
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(workspaces).values(
+            id="former-collector", project_id="p", workspace_path=str(tmp_path / "work"),
+            source_type="link", enabled=True, created_at=30.0,
+            locked_by_task_id="retained-writer" if case == "writer" else None,
+        ))
+        await conn.execute(update(integration_branch_owners).values(
+            confirmed_workspace_id="former-collector",
+        ))
+    if case == "ancestor":
+        git("reset", "--hard", gaps[0][1])
+    elif case == "diverged":
+        git("commit", "--allow-empty", "-m", "unpublished collector work")
+    elif case == "dirty":
+        (tmp_path / "work" / "unpublished.txt").write_text("retain me")
+    before = await db.get_integration_checkpoint("parent")
+    local_head = git("rev-parse", "aq/parent")
+    for dry_run in (True, False):
+        request.dry_run = dry_run
+        if case in {"current", "ancestor"}:
+            assert (await recovery.run(request, principal="supervisor"))["outcome"] == (
+                "would_recover" if dry_run else "recovered"
+            )
+        else:
+            with pytest.raises(ValueError, match="confirmed parent"):
+                await recovery.run(request, principal="supervisor")
+            assert await db.get_integration_checkpoint("parent") == before
+    assert git("rev-parse", "aq/parent") == local_head
+
+
+@pytest.mark.parametrize("prior_verifier", [False, True])
+async def test_finished_collection_uses_idle_verifier_and_fresh_handoff_after_prior_session(
+    db, tmp_path, prior_verifier
+):
+    from src.database.tables import task_session_attempts
+    from src.integration.outbox import enqueue_integration_event
+
+    recovery, _hierarchy, request, _git, _gaps = await _finished_collection_case(db, tmp_path)
+    if prior_verifier:
+        await db.create_task(Task(
+            id="old-verifier", project_id="p", repo_id="repo", branch_name="aq/parent",
+            title="Completed verifier", description="", status=TaskStatus.COMPLETED,
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_session_attempts).values(
+            id="prior-parent-attempt", session_id="prior-parent-session", task_id="parent",
+            project_id="p", profile_id="worker", name="old-parent", lifecycle="task",
+            harness="codex", provider="fake", state="stopped", work_dir=str(tmp_path),
+            started_at=1.0, session_started_at=1.0, ended_at=2.0,
+        ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(state="integration_ready"))
+        await enqueue_integration_event(
+            conn, event_id="old-ready", project_id="p", event_type="task.integration_ready",
+            dedup_key=f"task.integration_ready:{request.operation_id}:1",
+            available_at=30.0, payload={"head_sha": "f" * 40},
+        )
+        if prior_verifier:
+            await conn.execute(update(integration_repair_operations).values(
+                verifier_task_id="old-verifier",
+            ))
+    before = await db.get_integration_checkpoint("parent")
+    request.dry_run = False
+    if prior_verifier:
+        with pytest.raises(ValueError, match="idle matching aggregate verifier"):
+            await recovery.run(request, principal="supervisor")
+        assert await db.get_integration_checkpoint("parent") == before
+        return
+    assert (await recovery.run(request, principal="supervisor"))["outcome"] == "recovered"
+    async with db._engine.connect() as conn:
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "task.integration_ready",
+        ))).mappings().all()
+    assert operation["verifier_task_id"] == f"verify-{request.operation_id}"
+    assert (await db.get_task(operation["verifier_task_id"])).status == TaskStatus.PAUSED
+    assert len(events) == 2
+    fresh = next(event for event in events if event["id"] != "old-ready")
+    assert fresh["payload"]["head_sha"] == request.head_sha
+    assert fresh["payload"]["next_owner_id"] == operation["verifier_task_id"]
 
 
 @pytest.mark.parametrize("archived,empty_commits", [(False, False), (True, False), (False, True)])
