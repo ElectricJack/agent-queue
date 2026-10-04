@@ -615,6 +615,7 @@ class ReviewCommandsMixin:
             "artifact_sha256": "sha256:" + hashlib.sha256(artifact_bytes).hexdigest(),
             "source_sha256": artifact.source_hash,
             "source_path": source.vault_path,
+            "source_markdown": source.raw,
             "contract_fingerprint": artifact.contract_fingerprint(),
             "scope": scope,
             "scope_identifier": scope_identifier or None,
@@ -698,6 +699,7 @@ class ReviewCommandsMixin:
         return await self._v2_store_artifact(
             definition,
             artifact_bytes,
+            source=pin.meta.get("source_markdown"),
             provenance={
                 "review": {
                     "review_id": review["id"],

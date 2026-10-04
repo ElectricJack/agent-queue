@@ -408,6 +408,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _orphaned_pr_findings(ctx, active, now),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
+        _subject_unknown_findings(ctx, active, now),
     )
     findings = [item for group in groups for item in group] + _route_findings(tasks)
     summary = (
@@ -419,7 +420,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         for item in findings
     )
     return CheckResult(
-        CHECK_ID, Severity.WARN if findings else Severity.OK,
+        CHECK_ID, (Severity.ERROR if any(item.get("severity") == "error" for item in findings)
+                   else Severity.WARN if findings else Severity.OK),
         detail,
         data={"findings": findings, "count": len(findings),
               "vault_root": str(Path(ctx.config.vault_root).expanduser())},
@@ -485,3 +487,49 @@ async def _validation_findings() -> list[dict]:
 
 def stall_checks() -> list[DoctorCheck]:
     return [DoctorCheck(id=CHECK_ID, run=_check_sweep, owner="operations", timeout_s=55)]
+
+
+def _unknown_subject_streaks(rows, now: float) -> list[dict]:
+    """Replay newest-first observations; successful decisions break the unknown streak."""
+    streaks, settled = {}, set()
+    for row in rows:
+        subject_id = row["subject_id"]
+        if subject_id in settled:
+            continue
+        failed = row.get("rule") == "unknown-facts" or (
+            row.get("primitive") == "integration_observe_subject"
+            and row.get("outcome") == "unknown"
+        )
+        if not failed:
+            settled.add(subject_id)
+            continue
+        streak = streaks.setdefault(subject_id, dict(row))
+        streak["started_at"] = row["recorded_at"]
+    return [
+        _finding(
+            "integration_unknown_facts", row["project_id"],
+            f"subject {subject_id} batch {row.get('batch_id') or '-'} has unknown facts "
+            f"for {int(now - row['started_at'])}s: "
+            f"{row['payload'].get('facts', {}).get('unknown') or row['payload'].get('result')}",
+            subject_id=subject_id, batch_id=row.get("batch_id"), severity="error",
+            started_at=row["started_at"], journal_seq=row["seq"],
+        )
+        for subject_id, row in streaks.items() if now - row["started_at"] >= 300
+    ]
+
+
+async def _subject_unknown_findings(ctx, active, now):
+    from src.database.tables import integration_subject_journal as j, integration_subjects as s
+
+    if not getattr(ctx.db, "_engine", None):
+        return []
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(j, s.c.project_id, s.c.batch_id).join(s, s.c.id == j.c.subject_id).where(
+                s.c.project_id.in_(active), s.c.engine == "reconciler", s.c.phase != "done",
+                j.c.mode == "active",
+                or_(j.c.entry_kind == "decision",
+                    and_(j.c.primitive == "integration_observe_subject", j.c.outcome == "unknown")),
+            ).order_by(j.c.recorded_at.desc(), j.c.seq.desc()).limit(10000)
+        )).mappings().all()
+    return _unknown_subject_streaks(rows, now)

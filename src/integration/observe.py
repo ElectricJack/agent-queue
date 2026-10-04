@@ -826,12 +826,14 @@ class IntegrationObserver:
         clock: Callable[[], float] = time.time,
         session_probe: SessionProbe | None = None,
         facts_type: type[SubjectFacts] = SubjectFacts,
+        candidate_ci: Callable[[ObservationRows, HeadIdentity], Awaitable[CIEvidence]] | None = None,
     ) -> None:
         if not issubclass(facts_type, SubjectFacts):
             raise TypeError("facts_type must extend SubjectFacts")
         self.reader, self.git, self.clock = reader, git, clock
         self.session_probe = session_probe
         self.facts_type = facts_type
+        self.candidate_ci = candidate_ci
 
     async def observe(self, subject: Subject) -> SubjectFacts:
         """The reconciler callable: current facts for its supplied subject.
@@ -915,7 +917,26 @@ class IntegrationObserver:
         target = candidate or subject.head
         ci = []
         if target:
-            ci.append(_ci(snapshot, target, subject.task_id, now, candidate=candidate is not None))
+            if candidate and self.candidate_ci and subject.engine.value == "reconciler":
+                try:
+                    evidence = await self.candidate_ci(snapshot, target)
+                    if evidence.head_sha != target.sha:
+                        raise ValueError("CI answered a different candidate SHA")
+                    # Legacy repair attempt accounting still names durable CI
+                    # rows. Retain that ID only if live checks agree; it never
+                    # supplies or overrides the current state.
+                    recorded = _ci(snapshot, target, subject.task_id, now, candidate=True)
+                    if recorded.state is evidence.state and recorded.evidence_id:
+                        evidence = evidence.model_copy(update={"evidence_id": recorded.evidence_id})
+                except Exception:
+                    logger.warning("Candidate CI observation unavailable for %s", target.sha,
+                                   exc_info=True)
+                    evidence = CIEvidence(head_sha=target.sha, state=CIState.INFRA,
+                                          observed_at=now)
+                ci.append(evidence)
+            else:
+                ci.append(_ci(snapshot, target, subject.task_id, now,
+                              candidate=candidate is not None))
         # Before construction there is no candidate: members relate to the
         # publication target's observed tip (main for a root batch), not to
         # an absent head. An unread tip still leaves ancestry unknown.
