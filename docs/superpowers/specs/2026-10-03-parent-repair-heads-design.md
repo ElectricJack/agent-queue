@@ -81,3 +81,27 @@ Git read-back and application. A parent assigned to the reconciler refuses legac
 recovery, including previews, without changing checkpoint or repair-stage state.
 This uses the existing operation-scoped parent engine guard and preserves the
 exclusive cutover protocol; feature flags alone are not ownership evidence.
+
+## Finished collection stages with historical receipt gaps
+
+The same recovery command may reconcile an active/escalated collection whose
+last conflict-resolution delegate completed but whose stage remains active.
+The final head can already be covered by a trusted conflict-resolution receipt.
+When its delegate-close outbox audit is absent, require the exact committed
+promotion intent and trusted receipt to agree on operation, episode, stage,
+delegate, repository, branch, source identity, resolution tree, commit range,
+session, instance, workspace, fence and observed push. An empty completion still
+requires its accepted-close identity; a contradictory audit or completion refuses.
+This proof settles resolution bookkeeping and never supplies green check evidence.
+
+Missing edges between immutable child receipts may be recovered only from a
+completed stage bound to the exact gap head. Each gap independently requires the
+original fenced close audit, latest passing completion (or its exact accepted
+empty close), recorded commit range and Git ancestry to the current published
+parent head. Unattributed commits and summary text are insufficient. Preview
+reports every gap or refuses. Apply rechecks all stage/delegate/owner facts and
+remote ancestry, appends each edge to its originating stage, and projects ordinary
+verifier readiness in one transaction. No episode, generation, attempt budget,
+deadline, receipt, completion or human gate is replaced. Replay is idempotent.
+Fresh exact-head verification and the configured parent review path still own
+completion and delivery. Live apply follows supervisor review and deployment.

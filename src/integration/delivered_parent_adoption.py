@@ -14,7 +14,7 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.database.queries.task_queries import _OPERATOR_ADOPTION_TOKEN
 from src.git.manager import GitError
 from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
-from src.integration.delegate_release import release_delegates_on
+from src.integration.delegate_release import ENDED_OPERATION_STATES, release_delegates_on
 from src.integration.delivery_truth import (
     PARENT_ADOPTION_EVENT,
     DeliveryState,
@@ -280,6 +280,7 @@ class DeliveredParentAdoption:
             .all()
         )
         confirmed_workspaces = {}
+        historical_collectors = {}
         for owner in owners:
             if owner["handoff_state"] == "released":
                 continue
@@ -288,6 +289,30 @@ class DeliveredParentAdoption:
                 owner_branch == branch
                 and owner["owner_id"] in {task_id, operation["id"], *delegate_ids}
             )
+            historical_operation = next(
+                (
+                    op for op in operations
+                    if op["id"] == owner["owner_id"]
+                    and op["id"] != operation["id"]
+                    and op["target_kind"] == "parent"
+                    and op["state"] in ENDED_OPERATION_STATES
+                ),
+                None,
+            )
+            historical_reservation = (
+                owner_branch == branch
+                and owner["owner_role"] == "collector"
+                and historical_operation is not None
+            )
+            if historical_reservation:
+                historical_episode = await conn.scalar(
+                    select(t.integration_parent_episodes.c.id).where(
+                        t.integration_parent_episodes.c.id == historical_operation["episode_id"],
+                        t.integration_parent_episodes.c.parent_task_id == task_id,
+                        t.integration_parent_episodes.c.repository_id == repo["id"],
+                    )
+                )
+                historical_reservation = historical_episode is not None
             child_reservation = (
                 owner["owner_role"] == "worker"
                 and child_branches.get(owner["owner_id"]) == owner_branch
@@ -299,11 +324,18 @@ class DeliveredParentAdoption:
                 owner["handoff_state"] != "reserved"
                 or owner["session_id"]
                 or owner["workspace_id"]
-                or (owner["confirmed_workspace_id"] and not child_reservation)
+                or (owner["confirmed_workspace_id"]
+                    and not (child_reservation or historical_reservation))
                 or owner["repository_id"] != repo["id"]
-                or not (parent_reservation or child_reservation)
+                or not (parent_reservation or child_reservation or historical_reservation)
             ):
                 raise ValueError(f"branch owner {owner['id']} must be recovered first")
+            if historical_reservation:
+                historical_collectors[historical_operation["id"]] = dict(historical_operation)
+                if await IntegrationRecoveryControls._ambiguous_writes_on(
+                    conn, historical_operation, allowed_writer_id=owner["id"],
+                ):
+                    raise ValueError(f"branch owner {owner['id']}: unresolved historical write")
             if owner["confirmed_workspace_id"]:
                 workspace = (
                     (await conn.execute(
@@ -374,11 +406,12 @@ class DeliveredParentAdoption:
             "children": [dict(row) for row in children],
             "requests": requests,
             "owners": [dict(row) for row in owners],
+            "historical_collectors": historical_collectors,
             "confirmed_workspaces": confirmed_workspaces,
         }
 
     async def prove_confirmed_workspaces_on(self, conn, facts, truth):
-        """A historical slot is harmless only when its child ref has no writer or local work."""
+        """A historical slot is harmless only when its ref has no writer or local work."""
         if not facts["confirmed_workspaces"]:
             return
         writer_paths = {
@@ -411,7 +444,7 @@ class DeliveredParentAdoption:
                 exists = await self.service.git.aref_exists(path, local_ref)
                 local_sha = await self.service.git.arev_parse(path, local_ref) if exists else None
                 if exists is None or (exists and not local_sha):
-                    raise ValueError("local child ref cannot be observed")
+                    raise ValueError("local reserved ref cannot be observed")
                 remote_sha = truth.source_heads.get("refs/remotes/origin/" + branch)
                 if local_sha:
                     for published in (remote_sha, truth.target_oid):
@@ -421,18 +454,18 @@ class DeliveredParentAdoption:
                             break
                     else:
                         raise ValueError(
-                            "local child ref has unpublished commits or cannot be proved"
+                            "local reserved ref has unpublished commits or cannot be proved"
                         )
                 for entry in await self.service.git.aworktree_list(path):
                     if entry.get("branch") != branch:
                         continue
                     if entry.get("head") != local_sha:
-                        raise ValueError("child ref moved during workspace observation")
+                        raise ValueError("reserved ref moved during workspace observation")
                     if os.path.realpath(entry["path"]) in writer_paths:
-                        raise ValueError("a writer still holds a checkout of the child ref")
+                        raise ValueError("a writer still holds a checkout of the reserved ref")
                     dirty = await self.service.git.aget_dirty_paths(entry["path"])
                     if dirty is None or any(p != ".agent-queue-lock" for p in dirty):
-                        raise ValueError("child ref checkout has local changes or cannot be observed")
+                        raise ValueError("reserved ref checkout has local changes or cannot be observed")
             except (GitError, OSError, ValueError) as exc:
                 raise ValueError(f"branch owner {owner['id']} must be recovered first: {exc}") from exc
 
@@ -492,7 +525,7 @@ class DeliveredParentAdoption:
             (
                 t.integration_repair_operations,
                 t.integration_repair_operations.c.id,
-                [facts["operation"]["id"]],
+                [facts["operation"]["id"], *facts["historical_collectors"]],
             ),
             (
                 t.integration_repair_stages,
