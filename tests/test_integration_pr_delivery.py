@@ -483,20 +483,36 @@ async def test_periodic_sweep_times_out_one_pr_and_continues_to_the_next(env):
     assert not sweep.pending and env.github.closed == []
 
 
-async def test_adoption_cleanup_retains_failure_and_refuses_a_new_settlement(env, monkeypatch):
-    from src.integration.pr_cleanup import queue_settled_task_prs_on, retry_settled_task_prs
-    from src.database.tables import task_metadata
-    from src.git.manager import GitError
+async def _adopted_task(env, task_id, number, *, queue=True):
+    from src.integration.pr_cleanup import queue_settled_task_prs_on
 
-    env.github.open(32, "aq/adopted", "c" * 40)
+    env.github.open(number, f"aq/{task_id}", "c" * 40)
     async with env.db.immediate() as conn:
         await conn.execute(insert(tasks).values(
-            id="adopted", project_id="p", repo_id="repo", title="adopted", description="",
-            status="COMPLETED", branch_name="aq/adopted",
-            pr_url="https://github.com/o/r/pull/32", created_at=1.0, updated_at=1.0,
+            id=task_id, project_id="p", repo_id="repo", title=task_id, description="",
+            status="COMPLETED", branch_name=f"aq/{task_id}",
+            pr_url=f"https://github.com/o/r/pull/{number}", created_at=1.0, updated_at=1.0,
         ))
-        await queue_settled_task_prs_on(env.db, conn, ["adopted"], reason="adopted at main",
-                                        principal="operator")
+        if queue:
+            await queue_settled_task_prs_on(env.db, conn, [task_id], reason="adopted at main",
+                                            principal="operator")
+
+
+async def _settled_marker(env, task_id):
+    from src.database.tables import task_metadata
+
+    async with env.db._engine.connect() as conn:
+        value = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id))
+    return json.loads(value) if value else None
+
+
+async def test_adoption_cleanup_retains_failure_and_refuses_a_new_settlement(env, monkeypatch):
+    from src.integration.pr_cleanup import retry_settled_task_prs
+    from src.git.manager import GitError
+    from src.models import TaskStatus
+
+    await _adopted_task(env, "adopted", 32)
     close = env.github.close_pull_request
 
     async def unavailable(*, number):
@@ -505,21 +521,99 @@ async def test_adoption_cleanup_retains_failure_and_refuses_a_new_settlement(env
     monkeypatch.setattr(env.github, "close_pull_request", unavailable)
     assert (await retry_settled_task_prs(env.db, env.control.git))[0]["outcome"] == "blocked"
     assert (await env.db.get_task("adopted")).status.value == "COMPLETED"
-    async with env.db._engine.connect() as conn:
-        assert await conn.scalar(select(task_metadata.c.value).where(
-            task_metadata.c.task_id == "adopted"))
+    assert await _settled_marker(env, "adopted")
     monkeypatch.setattr(env.github, "close_pull_request", close)
+    # Reopen and re-close: a newer settlement the queued reason never covered.
+    await env.db.update_task("adopted", status=TaskStatus.READY)
+    await env.db.update_task("adopted", status=TaskStatus.COMPLETED)
+    [refused] = await retry_settled_task_prs(env.db, env.control.git)
+    assert refused["outcome"] == "superseded"
+    assert env.github.closed == [] and env.github.comments == {}
+    assert env.github.pulls[32]["state"] == "open"
+    assert await _settled_marker(env, "adopted") is None
+    assert await retry_settled_task_prs(env.db, env.control.git) == []
+
+
+async def test_a_comment_after_adoption_does_not_strand_the_settled_pr_marker(env, monkeypatch):
+    from src.integration.pr_cleanup import retry_settled_task_prs
+    from src.git.manager import GitError
+
+    await _adopted_task(env, "adopted", 33)
+    close = env.github.close_pull_request
+
+    async def unavailable(*, number):
+        raise GitError("unavailable")
+
+    monkeypatch.setattr(env.github, "close_pull_request", unavailable)
+    assert (await retry_settled_task_prs(env.db, env.control.git))[0]["outcome"] == "blocked"
+    monkeypatch.setattr(env.github, "close_pull_request", close)
+    before = (await env.db.get_task("adopted")).updated_at
+    await env.db.add_task_comment("adopted", "post-adoption note", author_kind="user",
+                                  author_id="operator")
+    assert (await env.db.get_task("adopted")).updated_at != before
+    [closed] = await retry_settled_task_prs(env.db, env.control.git)
+    assert closed["outcome"] == "closed" and env.github.closed == [33]
+    assert len(env.github.comments[33]) == 1
+    assert await _settled_marker(env, "adopted") is None
+
+
+async def test_an_already_closed_pr_retires_a_changed_settlement_marker(env):
+    from src.integration.pr_cleanup import retry_settled_task_prs
+    from src.models import TaskStatus
+
+    await _adopted_task(env, "adopted", 34)
+    env.github.pulls[34]["state"] = "closed"
+    await env.db.update_task("adopted", status=TaskStatus.READY)
+    await env.db.update_task("adopted", status=TaskStatus.COMPLETED)
+    [result] = await retry_settled_task_prs(env.db, env.control.git)
+    assert result["outcome"] == "nothing_to_close"
+    assert env.github.closed == [] and env.github.comments == {}
+    assert await _settled_marker(env, "adopted") is None
+
+
+async def test_a_marker_queued_without_a_completion_generation_still_resolves(env):
+    """Markers queued before the generation existed fall back to the exact version."""
+    from src.database.tables import task_metadata
+    from src.integration.pr_cleanup import SETTLED_PR_CLEANUP_KEY, retry_settled_task_prs
+
+    await _adopted_task(env, "unchanged", 35, queue=False)
+    await _adopted_task(env, "edited", 36, queue=False)
     async with env.db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == "adopted").values(updated_at=2.0))
-    refused = await retry_settled_task_prs(env.db, env.control.git)
-    assert refused[0]["outcome"] == "blocked" and env.github.closed == []
-    async with env.db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == "adopted").values(updated_at=1.0))
-    assert (await retry_settled_task_prs(env.db, env.control.git))[0]["outcome"] == "closed"
-    assert len(env.github.comments[32]) == 1
-    async with env.db._engine.connect() as conn:
-        assert await conn.scalar(select(task_metadata.c.value).where(
-            task_metadata.c.task_id == "adopted")) is None
+        for task_id, number in (("unchanged", 35), ("edited", 36)):
+            await conn.execute(insert(task_metadata).values(
+                task_id=task_id, key=SETTLED_PR_CLEANUP_KEY, value=json.dumps({
+                    "pr_url": f"https://github.com/o/r/pull/{number}",
+                    "branch_name": f"aq/{task_id}", "updated_at": 1.0,
+                    "reason": "adopted at main", "principal": "operator",
+                }),
+            ))
+        await conn.execute(update(tasks).where(tasks.c.id == "edited").values(updated_at=2.0))
+    results = {
+        result["task_id"]: result["outcome"]
+        for result in await retry_settled_task_prs(env.db, env.control.git)
+    }
+    assert results == {"edited": "superseded", "unchanged": "closed"}
+    assert env.github.closed == [35] and env.github.pulls[36]["state"] == "open"
+    assert await _settled_marker(env, "edited") is None
+    assert await _settled_marker(env, "unchanged") is None
+
+
+async def test_an_edit_during_settled_closure_does_not_block_it(env, monkeypatch):
+    """The in-transaction recheck binds the settlement, not the row version."""
+    from src.integration.pr_cleanup import SettledTaskPullRequestClosure
+
+    await _adopted_task(env, "obsolete", 37, queue=False)
+    read = env.github.pull_request
+
+    async def commented_during_read(pr_url):
+        await env.db.add_task_comment("obsolete", "late note", author_kind="user",
+                                      author_id="operator")
+        return await read(pr_url)
+
+    monkeypatch.setattr(env.github, "pull_request", commented_during_read)
+    service = SettledTaskPullRequestClosure(env.db, env.control.git)
+    result = await service.run("obsolete", reason="superseded", principal="operator")
+    assert result["outcome"] == "closed" and env.github.closed == [37]
 
 
 async def test_old_orphan_prs_exclude_live_tasks_reservations_and_batch_members(env):
