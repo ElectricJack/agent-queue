@@ -1400,6 +1400,50 @@ class WorkspaceMixin:
         )
         if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
             return False
+        # Read-only checkout proof must pass *before* we kill a live writer.
+        # Stopping the session destroys its process; if the checkout turns out
+        # to be dirty or unpushed at that point there is no recovery, and any
+        # subsequent probe/detach will race a checkout that is no longer under
+        # the writer's control.  Proving the Git state first lets us refuse
+        # cleanly while the writer is still intact.
+        try:
+            from src.orchestrator.workspace_attachments import (
+                probe_slot_for_integration_handoff,
+                probe_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                probed = await probe_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                )
+            else:
+                probed = await probe_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                )
+            if not probed:
+                logger.warning(
+                    "Refusing integration handoff %s: checkout not clean and pushed "
+                    "before writer stop (workspace=%s, branch=%s)",
+                    owner.get("id"), workspace.id, owner.get("ref"),
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Could not probe integration workspace %s before writer stop",
+                workspace.id, exc_info=True,
+            )
+            return False
         try:
             provider = self.session_providers.create(session.provider, self.config)
             handle = SessionHandle(

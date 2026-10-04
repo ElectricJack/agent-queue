@@ -205,7 +205,7 @@ async def test_stop_timeout_is_not_release_evidence(orchestrator_factory, tmp_pa
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "stop"]
+    assert events == ["validate-branch", "clean-check", "fetch", "stop"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -282,7 +282,12 @@ async def test_dirty_slot_is_not_detached_or_released(
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "stop", "confirm", "clean-check"]
+    assert events == ["validate-branch", "clean-check"]
+    # The live writer must not be killed by a dirty-checkout refusal: the
+    # pre-stop probe has to refuse before ``provider.stop`` runs at all, so a
+    # dirty working tree cannot be lost along with its session.
+    assert "stop" not in events
+    assert "confirm" not in events
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -301,7 +306,9 @@ async def test_unpushed_slot_is_not_detached_or_released(
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
+    assert events == ["validate-branch", "clean-check", "fetch"]
+    assert "stop" not in events
+    assert "confirm" not in events
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -371,6 +378,8 @@ async def test_success_stops_confirms_detaches_then_releases(
     assert confirmed is True
     assert events == [
         "validate-branch",
+        "clean-check",
+        "fetch",
         "stop",
         "confirm",
         "clean-check",
@@ -561,7 +570,7 @@ async def test_detached_handoff_with_wrong_head_remains_busy(
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
+    assert events == ["validate-branch", "clean-check", "fetch"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -590,7 +599,15 @@ async def test_detached_non_slot_releases_only_after_exact_git_proof(
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is True
-    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch"]
+    assert events == [
+        "validate-branch",
+        "clean-check",
+        "fetch",
+        "stop",
+        "confirm",
+        "clean-check",
+        "fetch",
+    ]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
 
 
@@ -764,7 +781,16 @@ async def test_release_for_retry_restores_a_closed_repair_delegates_reservation(
     )
 
     assert released is True
-    assert events == ["validate-branch", "stop", "confirm", "clean-check", "fetch", "detach"]
+    assert events == [
+        "validate-branch",
+        "clean-check",
+        "fetch",
+        "stop",
+        "confirm",
+        "clean-check",
+        "fetch",
+        "detach",
+    ]
     target = BranchKey(repository_id="repo", branch="aq/parent")
     owner = await BranchOwnership(orchestrator.db).get_owner(target)
     assert owner is not None
