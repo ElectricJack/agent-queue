@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database import tables as t
 from src.integration.engine import EngineRefused
@@ -15,16 +17,28 @@ from src.integration.parent_engine import ParentEngineOwnership, active_parent_s
 from src.integration.parent_subjects import ParentSubjectFacts
 from src.integration.records import RecordsPrimitives
 from src.integration.subjects import (
+    PRIMITIVE_ARGS,
+    SHA_PATTERN,
     MemberRef,
     Primitive,
     PrimitiveOutcome,
     PrimitivePorts,
-    PRIMITIVE_ARGS,
     Subject,
     WriterRole,
-    SHA_PATTERN,
 )
 from src.integration.writers import WriterPrimitives
+
+#: Marker naming a reopen the existing episode cannot satisfy until a human
+#: clears the blocker (an ambiguous verifier subject, a manual hold, a dirty
+#: checkout). The adapter records it; the observer reports it to the policy,
+#: which asks a human instead of backing off on every visit.
+REOPEN_REFUSED_META_KEY = "integration_reopen_refused"
+
+#: Reopen refusals no retry can satisfy: the verifier subject is ambiguous, or a
+#: manual hold, a missing stop proof or a dirty checkout blocks the reopen.
+#: ``changed`` and the other refusals stay an unknown answer, because
+#: re-diagnosing can still succeed and a false human gate is worse than a retry.
+DURABLE_REOPEN_REFUSALS = frozenset({"ambiguous", "blocked"})
 
 
 class PendingParentPublication(BaseModel):
@@ -46,6 +60,7 @@ class ParentPolicyFacts(ParentSubjectFacts):
     legacy_repair_dossier: dict | None = None
     verifier_task_id: str | None = None
     verifier_failed: bool = False
+    reopen_refused: bool = False
     aggregate_verified: bool = False
     parent_completed: bool = False
     ci_evidence_ids: tuple[str, ...] = ()
@@ -246,7 +261,7 @@ class ParentPrimitiveAdapters:
                     expected_head_sha=subject.head_sha,
                     reason="pinned parent policy collects fixes after failed aggregate",
                 )
-                return self.translate(args, result, {"reopened": "merged"}, head=subject.head_sha)
+                return await self.reopen_outcome(args, subject, facts, result)
             if tuple(args.members) != facts.collection_members:
                 return PrimitiveOutcome.unknown(p, "collection_members_changed")
             if not args.regenerate_generated or not facts.collector_fence:
@@ -344,6 +359,61 @@ class ParentPrimitiveAdapters:
                 args, result, {"completed": "clean", "already_completed": "clean"}
             )
         return PrimitiveOutcome.unknown(p, "parent_primitive_unavailable")
+
+    async def reopen_outcome(self, args, subject, facts, result):
+        """Answer a collection reopen, recording a refusal no retry can satisfy.
+
+        A durable refusal is still an unknown answer — this primitive cannot
+        merge — but it is recorded for the exact episode, operation, head and
+        generation, so the observer reports it and the policy asks a human
+        instead of backing off on every visit.
+        """
+        refusal = result.get("outcome")
+        if refusal in DURABLE_REOPEN_REFUSALS:
+            await self.record_reopen_refusal(subject, facts, refusal, result.get("reason"))
+            return PrimitiveOutcome.unknown(
+                args.primitive,
+                f"reopen_refused:{refusal}",
+                head=subject.head_sha,
+                refusal_reason=result.get("reason") or refusal,
+            )
+        if refusal == "reopened":
+            await self.clear_reopen_refusal(subject)
+        return self.translate(args, result, {"reopened": "merged"}, head=subject.head_sha)
+
+    async def record_reopen_refusal(self, subject, facts, refusal, reason):
+        payload = json.dumps(
+            {
+                "episode_id": subject.parent_episode_id,
+                "operation_id": facts.parent_operation_id,
+                "head_sha": subject.head_sha,
+                "generation": subject.generation,
+                "refusal": refusal,
+                "reason": reason,
+                "recorded_at": self.clock(),
+            },
+            sort_keys=True,
+        )
+        async with self.db.immediate() as conn:
+            await conn.execute(
+                pg_insert(t.task_metadata)
+                .values(
+                    task_id=subject.task_id, key=REOPEN_REFUSED_META_KEY, value=payload
+                )
+                .on_conflict_do_update(
+                    index_elements=[t.task_metadata.c.task_id, t.task_metadata.c.key],
+                    set_={"value": payload},
+                )
+            )
+
+    async def clear_reopen_refusal(self, subject):
+        async with self.db.immediate() as conn:
+            await conn.execute(
+                delete(t.task_metadata).where(
+                    t.task_metadata.c.task_id == subject.task_id,
+                    t.task_metadata.c.key == REOPEN_REFUSED_META_KEY,
+                )
+            )
 
     @staticmethod
     def translate(args, result, codes, **detail):
