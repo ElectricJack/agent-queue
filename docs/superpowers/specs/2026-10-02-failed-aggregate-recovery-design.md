@@ -34,6 +34,27 @@ mutations, missing failure evidence, missing fixes and manual holds. Live
 deployment, recovery and Phase 1 verification belong to the operator because
 pool workers cannot restart the daemon or mutate tasks they do not hold.
 
+## Held verifiers with trusted red CI
+
+A completed additional fix may also reopen collection while the old verifier
+still holds its task. Require a unique immutable verifier handoff matching the
+current episode, generation and head, plus conclusive failed CI from the frozen
+parent check producer and version, naming a failed required check. The CI must
+postdate that handoff. Stale generations, infrastructure failures and untrusted
+producers cannot authorize settlement.
+
+Dry run reports the evidence and required handoff without stopping or writing.
+Apply repeats all facts under the project lock before asking the existing fenced
+provider stop/detach protocol to release an attached verifier. Missing stop proof
+or an unpublished/dirty checkout remains a refusal; never discard its work.
+Repeat diagnosis and remote proof after handoff. Only a detached verifier with
+no remaining session/claim/workspace hold can be settled FAILED in the reopen
+transaction. Append a completion naming the immutable head and CI evidence;
+keep all historical completions, CI evidence, receipts and consumed budgets.
+The recovery audit retains the original attachment as well as the final fence.
+The parent observer treats exact trusted red as verifier failure so the existing
+policy can collect the new fix; existing manual holds and human gates still bind.
+
 ## Legacy failures with an empty commit list
 
 An otherwise settled failed completion with exactly `commits=[]` may use the
