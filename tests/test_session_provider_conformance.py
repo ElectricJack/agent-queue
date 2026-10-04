@@ -205,6 +205,14 @@ class TestLifecycle:
         await provider.stop(handle)
         assert await provider.is_running(handle) is False
 
+    async def test_confirm_stopped_checks_live_instance(self, provider, case, tmp_path):
+        handle = await provider.start(_spec(case, tmp_path, token="confirm-stop"))
+        try:
+            assert await provider.confirm_stopped(handle) is False
+        finally:
+            await provider.stop(handle)
+        assert await provider.confirm_stopped(handle) is True
+
     async def test_stop_is_instance_token_fenced(self, provider, case, tmp_path):
         """A handle for a predecessor must never kill its successor."""
         live = await provider.start(_spec(case, tmp_path, token="tok-new"))

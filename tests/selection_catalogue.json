@@ -1084,6 +1084,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_launch.py",
         "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
@@ -1414,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:fa0a0a5d037619a0fcfbef4fa39e4554441a5bd14ae66d3a04b8f144798b43e8",
+  "digest": "sha256:07727e4481a48ad22011e64e4d22af48d33511425e5fa2fc8dd2e9ec1d49d236",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14064,6 +14065,7 @@
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.spec",
@@ -14148,6 +14150,31 @@
       ],
       "markers": [],
       "summary": "Session launch consumes intelligence class → provider → model."
+    },
+    "tests/test_session_launch.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agents.sessions",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.event_bus",
+        "src.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.flock_audit",
+        "src.sessions.launch",
+        "src.sessions.proctable",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The flock registration invariant, including failure and concurrent observation."
     },
     "tests/test_session_lens.py": {
       "areas": [

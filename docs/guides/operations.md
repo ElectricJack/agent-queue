@@ -66,6 +66,11 @@ For a cross-project stall sweep, run `aq doctor --check stall.sweep` (or `aq --j
 
 ## State ownership
 
+Every agent execution belongs to the flock, including global and project
+supervisors. See [Flock sessions](flock-sessions.md) for the registration
+invariant, history filters, inactive supervisor cleanup, and the
+`sessions.untracked` check included in `stall.sweep`.
+
 | State | Owner and location | What an operator may infer |
 |---|---|---|
 | Task status, dependencies, claims, sessions and integration ownership | AQ database | The database is authoritative; dashboard labels and command output are views. |

@@ -344,6 +344,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_input": "system",
     "session_logs": "system",
     "session_kill": "system",
+    "session_prune": "system",
     "session_sleep": "system",
     "session_wake": "system",
     "supervisor_restart": "supervisor",
@@ -604,6 +605,13 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "name": {"type": "string", "description": "Session name"},
             "task_id": {"type": "string", "description": "Resolve session from this task id"},
         },
+    },
+    "session_prune": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Inactive named session to forget"},
+        },
+        "required": ["session_id"],
     },
     "session_kill": {
         "type": "object",
@@ -2090,8 +2098,8 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "list_agents",
         "description": (
-            "List globally defined shared agents, including the supervisor. "
-            "No project is required. Optional project_id filters current assignments."
+            "List shared agents and every starting, running, draining or sleeping session. "
+            "Includes project/global supervisors and delegates. No project is required."
         ),
         "input_schema": {
             "type": "object",
@@ -2099,6 +2107,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Only agents currently working in this project",
+                },
+                "include_stopped": {
+                    "type": "boolean",
+                    "description": "Also include stopped and quarantined session history",
                 },
             },
         },

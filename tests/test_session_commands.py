@@ -56,6 +56,7 @@ from src.sessions.fake import FakeProvider
 from src.sessions.harness_registry import HarnessRegistry, load_from_vault
 from src.sessions.reconciler import DRAIN_ACK_KEY, SessionReconciler
 from src.sessions.spec import SessionSpecBuilder
+from src.sessions.provider import SessionHandle
 from tests.db_fixtures import lease_dsn
 
 
@@ -324,6 +325,46 @@ async def _make_task(db, task_id="t1", status=TaskStatus.IN_PROGRESS, agent_id=N
 # ---------------------------------------------------------------------------
 # Operator surface
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("state", ["sleeping", "stopped"])
+async def test_prune_inactive_named_session(handler, providers, state, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    row = await _make_session(handler.db, providers.create("fake"),
+                              task_id=None, lifecycle="named", state=state, name="n-supervisor--p1")
+    await providers.create("fake").stop(SessionHandle(row.name, row.provider, row.instance_token))
+    result = await handler.execute("session_prune", {"session_id": row.id})
+    assert result["success"], result
+    assert await handler.db.get_session(row.id) is None
+    assert "session.pruned" in handler.orchestrator.bus.types()
+
+
+async def test_prune_refuses_live_terminal_and_leftover_marked_process(handler, providers, monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.sessions.proctable import ProcEntry
+
+    row = await _make_session(handler.db, providers.create("fake"),
+                              task_id=None, lifecycle="named", state="sleeping")
+    result = await handler.execute("session_prune", {"session_id": row.id})
+    assert "live terminal" in result["error"]
+    await providers.create("fake").stop(SessionHandle(row.name, row.provider, row.instance_token))
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[
+        ProcEntry(42, 1, "codex", 1, row.instance_token),
+    ]))
+    result = await handler.execute("session_prune", {"session_id": row.id})
+    assert "marked processes" in result["error"]
+    assert await handler.db.get_session(row.id) is not None
+
+
+async def test_prune_query_refuses_wake_or_token_change(db, providers):
+    row = await _make_session(db, providers.create("fake"),
+                              task_id=None, lifecycle="named", state="sleeping")
+    assert not await db.prune_named_session(row.id, row.instance_token)
+    await db.update_session(row.id, desired_state="stopped")
+    assert not await db.prune_named_session(row.id, "different-instance")
+    assert await db.prune_named_session(row.id, row.instance_token)
 
 
 class TestSessionList:
@@ -3743,14 +3784,14 @@ class TestEndToEndOnFakeProvider:
 
         wd = await self._setup(db, tmp_path)
         ownership, _fence = await self._enable_hierarchy_launch(db, tmp_path)
-        original_update = db.update_session
+        original_update = db.publish_session_running
 
-        async def crash_before_running(session_id, *, conn=None, **fields):
-            if conn is not None and fields.get("state") == "running":
+        async def crash_before_running(session_id, instance_token, *, conn=None, **fields):
+            if conn is not None:
                 raise asyncio.CancelledError
-            return await original_update(session_id, conn=conn, **fields)
+            return await original_update(session_id, instance_token, conn=conn, **fields)
 
-        monkeypatch.setattr(db, "update_session", crash_before_running)
+        monkeypatch.setattr(db, "publish_session_running", crash_before_running)
         task = await db.get_task("t1")
         with pytest.raises(asyncio.CancelledError):
             await real_orch._launch_session_for_task(

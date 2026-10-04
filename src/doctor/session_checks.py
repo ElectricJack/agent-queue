@@ -657,8 +657,26 @@ async def _check_idle_worker_backlog(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_flock(ctx: DoctorContext) -> CheckResult:
+    from src.sessions.flock_audit import audit_flock
+
+    resolved = _providers(ctx)
+    if ctx.db is None or resolved is None:
+        return CheckResult("sessions.untracked", Severity.INFO,
+                           "session providers unavailable; flock was not checked")
+    registry, config = resolved
+    findings = await audit_flock(ctx.db, registry, config)
+    return CheckResult(
+        "sessions.untracked", Severity.ERROR if findings else Severity.OK,
+        f"{len(findings)} untracked execution/probe finding(s)" if findings
+        else "zero untracked sessions or AQ-marked processes",
+        data={"count": len(findings), "findings": findings},
+    )
+
+
 def session_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id="sessions.untracked", run=_check_flock, owner=OWNER, timeout_s=15.0),
         DoctorCheck(id=ENV_CHECK_ID, run=_check_env_markers, owner=OWNER),
         DoctorCheck(
             id=BACKLOG_CHECK_ID,

@@ -362,6 +362,7 @@ from .find_merge_conflict_workspaces_request import FindMergeConflictWorkspacesR
 from .find_merge_conflict_workspaces_response import FindMergeConflictWorkspacesResponse
 from .find_merge_conflict_workspaces_response_422 import FindMergeConflictWorkspacesResponse422
 from .find_merge_conflict_workspaces_response_conflicts_item import FindMergeConflictWorkspacesResponseConflictsItem
+from .flock_session import FlockSession
 from .formula_cook_request import FormulaCookRequest
 from .formula_cook_request_vars_type_0 import FormulaCookRequestVarsType0
 from .formula_cook_response import FormulaCookResponse
@@ -1470,6 +1471,8 @@ from .session_nudge_response_422 import SessionNudgeResponse422
 from .session_peek_request import SessionPeekRequest
 from .session_peek_response import SessionPeekResponse
 from .session_peek_response_422 import SessionPeekResponse422
+from .session_prune_request import SessionPruneRequest
+from .session_prune_response_422 import SessionPruneResponse422
 from .session_show_request import SessionShowRequest
 from .session_show_response_422 import SessionShowResponse422
 from .session_sleep_request import SessionSleepRequest
@@ -2137,6 +2140,7 @@ __all__ = (
     "FindMergeConflictWorkspacesResponse",
     "FindMergeConflictWorkspacesResponse422",
     "FindMergeConflictWorkspacesResponseConflictsItem",
+    "FlockSession",
     "FormulaCookRequest",
     "FormulaCookRequestVarsType0",
     "FormulaCookResponse",
@@ -3235,6 +3239,8 @@ __all__ = (
     "SessionPeekRequest",
     "SessionPeekResponse",
     "SessionPeekResponse422",
+    "SessionPruneRequest",
+    "SessionPruneResponse422",
     "SessionShowRequest",
     "SessionShowResponse422",
     "SessionSleepRequest",

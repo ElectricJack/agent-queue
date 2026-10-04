@@ -23,18 +23,20 @@ def configured_settings(agent) -> dict:
     }
 
 
-async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> list[dict]:
+async def list_agent_flock(
+    orchestrator, *, project_id: str | None = None, agents=None, sessions=None, tasks=None,
+) -> list[dict]:
     """Return durable identities; a project filter means current assignment."""
     from src.agents.subagents import build_subagent_index, subagent_counts
 
     db = orchestrator.db
-    agents = await db.list_agents()
-    sessions = await db.list_sessions()
+    agents = await db.list_agents() if agents is None else agents
+    sessions = await db.list_sessions() if sessions is None else sessions
     # Every use below (current session, current task, sub-agent fold) treats
     # a task outside _ACTIVE_TASKS exactly like a missing one, so only those
     # rows are read -- hydrating the whole table (10k rows) was ~90% of this
     # read's latency and one long event-loop stall (wise-ember.16).
-    tasks = await db.list_tasks(statuses=_ACTIVE_TASKS)
+    tasks = await db.list_tasks(statuses=_ACTIVE_TASKS) if tasks is None else tasks
     task_by_id = {task.id: task for task in tasks}
     questions_by_session: dict[str, list[dict]] = {}
     for question in await db.list_agent_questions(project_id=project_id, pending_only=True):

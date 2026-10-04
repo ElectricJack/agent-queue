@@ -16,9 +16,11 @@ class ListAgentsRequest:
     """
     Attributes:
         project_id (None | str | Unset): Only agents currently working in this project
+        include_stopped (bool | None | Unset): Also include stopped and quarantined session history
     """
 
     project_id: None | str | Unset = UNSET
+    include_stopped: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,11 +30,19 @@ class ListAgentsRequest:
         else:
             project_id = self.project_id
 
+        include_stopped: bool | None | Unset
+        if isinstance(self.include_stopped, Unset):
+            include_stopped = UNSET
+        else:
+            include_stopped = self.include_stopped
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if include_stopped is not UNSET:
+            field_dict["include_stopped"] = include_stopped
 
         return field_dict
 
@@ -49,8 +59,18 @@ class ListAgentsRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
+        def _parse_include_stopped(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        include_stopped = _parse_include_stopped(d.pop("include_stopped", UNSET))
+
         list_agents_request = cls(
             project_id=project_id,
+            include_stopped=include_stopped,
         )
 
         list_agents_request.additional_properties = d
