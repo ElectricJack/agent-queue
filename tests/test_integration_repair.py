@@ -239,6 +239,7 @@ async def _add_parent_evidence(
     classification: str = "conclusive",
     generation: int = 3,
     head_sha: str = STARTING_SHA,
+    observed_at: float = 9.0,
 ) -> None:
     async with db.immediate() as conn:
         await conn.execute(
@@ -256,7 +257,7 @@ async def _add_parent_evidence(
                 checks={"unit": conclusion},
                 conclusion=conclusion,
                 classification=classification,
-                observed_at=9.0,
+                observed_at=observed_at,
             )
         )
 
@@ -7327,3 +7328,178 @@ async def test_unchanged_resolved_successor_stage_does_not_escalate_the_operatio
             integration_repair_stages.c.operation_id == "operation",
             integration_repair_stages.c.ordinal == 2,
         ))).all() == []
+
+
+async def _settle_resolution_then_red(
+    db,
+    *,
+    evidence_id: str = "resolution-red",
+    head_sha: str = RESOLUTION_HEAD,
+    classification: str = "conclusive",
+):
+    """Settle stage 0 on its recorded resolution, then record exact-head CI red."""
+    from src.integration.repair import RepairService
+
+    delegate = await _seed_resolved_parent_conflict(db)
+    service = RepairService(db, clock=lambda: 210.0)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _record_resolution_stage(db, delegate)
+    settled = await service.dispatch("operation", 0)
+    assert settled["reason"] == "resolution_recorded_for_subject"
+    # The verifier's CI runs because the settle woke it, so its red always
+    # lands after the resolution committed.
+    await _add_parent_evidence(
+        db,
+        evidence_id,
+        run_id="run-resolution",
+        conclusion="failure",
+        classification=classification,
+        head_sha=head_sha,
+        observed_at=220.0,
+    )
+    return service, delegate
+
+
+async def test_red_at_a_settled_resolution_head_opens_the_next_stage(db):
+    """Exact-head CI red after a settled resolution owes the parent a repair.
+
+    Settling the resolved stage is what wakes the verifier, so its CI always
+    reports after the stage ended. ``record_result`` used to answer that red
+    ``stale`` because the active stage was no longer live, the playbook then
+    completed the run green, and nothing ever repaired the resolution head.
+    """
+    service, delegate = await _settle_resolution_then_red(db)
+    verifier = (await db.get_integration_operation("operation"))["verifier_task_id"]
+    assert verifier == "verify-operation"
+
+    result = await service.record_result("operation", "resolution-red", now=230.0)
+    replay = await service.record_result("operation", "resolution-red", now=231.0)
+
+    assert result == {
+        "outcome": "started", "action": "stage_opened", "attempts": 0, "stage": 1,
+    }
+    assert replay == result | {"action": "duplicate"}
+    settled = await _repair_stage(db, "operation", 0)
+    assert settled["state"] == "passed"
+    assert settled["dossier"]["resolution_verification"]["resolution_head_sha"] == (
+        RESOLUTION_HEAD
+    )
+    stage = await _repair_stage(db, "operation", 1)
+    assert stage["state"] == "active"
+    assert stage["starting_sha"] == RESOLUTION_HEAD
+    assert stage["trigger_id"] == "resolution-red"
+    assert stage["current_subject"] == {
+        "kind": "parent", "generation": 3, "head_sha": RESOLUTION_HEAD,
+    }
+    # The red opens the stage the way a conflict does: no attempt is spent and
+    # no writer is named until the dispatcher claims it. A stage after zero
+    # runs on the debug rung, as every later ordinal does.
+    assert stage["attempts"] == 0
+    assert stage["repair_task_id"] is None
+    assert stage["intelligence_class"] == "debug-high"
+    assert (stage["started_at"], stage["deadline_at"]) == (230.0, 290.0)
+    assert stage["dossier"]["budget"] == {
+        "ordinal": 1, "started_at": 230.0, "deadline_at": 290.0,
+        "attempt_limit": 1, "attempts": 0,
+    }
+    assert stage["dossier"]["allocation"] == {
+        "subject_sha": RESOLUTION_HEAD, "ordinal": 1, "allocated_at": 230.0,
+    }
+    assert stage["dossier"]["previous_stage"] == {
+        "ordinal": 0,
+        "state": "passed",
+        "trigger_id": "failed-check",
+        "starting_sha": STARTING_SHA,
+        "resolution_verification": settled["dossier"]["resolution_verification"],
+    }
+    operation = await db.get_integration_operation("operation")
+    assert (operation["active_stage"], operation["state"]) == (1, "escalated")
+    async with db._engine.connect() as conn:
+        notes = (
+            await conn.execute(select(messages).where(messages.c.to_id == verifier))
+        ).mappings().all()
+        links = (
+            await conn.execute(
+                select(integration_repair_stage_evidence).where(
+                    integration_repair_stage_evidence.c.evidence_id == "resolution-red"
+                )
+            )
+        ).mappings().all()
+    assert [note["body_kind"] for note in notes] == ["integration_parent_red"]
+    assert RESOLUTION_HEAD in notes[0]["body"]
+    assert [(link["ordinal"], link["counted_attempt"]) for link in links] == [(1, False)]
+
+    # The dispatcher owes the new stage a writer, and that writer repairs the
+    # red rather than being settled again on the same recorded resolution.
+    assert await service.pending_dispatches() == [{"operation_id": "operation", "ordinal": 1}]
+    dispatched = await service.dispatch("operation", 1)
+    assert dispatched["outcome"] == "dispatched", dispatched
+    assert dispatched["repair_task_id"] not in {None, delegate}
+    assert (await _repair_stage(db, "operation", 1))["state"] == "active"
+
+
+@pytest.mark.parametrize(
+    ("head_sha", "classification"),
+    [(STARTING_SHA, "conclusive"), (RESOLUTION_HEAD, "infrastructure")],
+    ids=["superseded_head", "infrastructure"],
+)
+async def test_red_that_is_not_about_the_settled_head_stays_stale(
+    db, head_sha, classification
+):
+    """Only a conclusive red on the parent's live head reopens a settled operation."""
+    service, _delegate = await _settle_resolution_then_red(
+        db, head_sha=head_sha, classification=classification
+    )
+
+    result = await service.record_result("operation", "resolution-red", now=230.0)
+
+    assert result == {"outcome": "continue", "action": "stale", "attempts": 1}
+    async with db._engine.connect() as conn:
+        ordinals = (
+            await conn.execute(
+                select(integration_repair_stages.c.ordinal).where(
+                    integration_repair_stages.c.operation_id == "operation"
+                )
+            )
+        ).scalars().all()
+        notes = (
+            await conn.execute(
+                select(messages.c.id).where(messages.c.body_kind == "integration_parent_red")
+            )
+        ).all()
+    assert ordinals == [0]
+    assert notes == []
+    operation = await db.get_integration_operation("operation")
+    assert (operation["active_stage"], operation["state"]) == (0, "active")
+
+
+async def test_red_on_a_reopened_collections_cancelled_stage_opens_the_next_stage(db):
+    """A reopened collection keeps its cancelled stage; its next red is new work."""
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db, policy=_continuous_policy())
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    async with db.immediate() as conn:
+        # ``aq integration reopen-collection`` without a conflict: the stage
+        # stays cancelled while the operation comes back to life around it.
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == "operation")
+            .values(state="cancelled", completed_at=110.0)
+        )
+    await _add_parent_evidence(db, "reopened-red", run_id="run-reopened", conclusion="failure")
+
+    result = await service.record_result("operation", "reopened-red", now=120.0)
+
+    assert result == {
+        "outcome": "started", "action": "stage_opened", "attempts": 0, "stage": 1,
+    }
+    stage = await _repair_stage(db, "operation", 1)
+    assert stage["state"] == "active"
+    assert stage["trigger_id"] == "reopened-red"
+    assert stage["starting_sha"] == STARTING_SHA
+    assert stage["dossier"]["previous_stage"]["state"] == "cancelled"
+    assert (await _repair_stage(db, "operation", 0))["state"] == "cancelled"
+    operation = await db.get_integration_operation("operation")
+    assert (operation["active_stage"], operation["state"]) == (1, "escalated")
