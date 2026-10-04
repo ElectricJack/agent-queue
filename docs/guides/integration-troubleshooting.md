@@ -1120,7 +1120,12 @@ continues it: the collector and `redrive-child` need a live operation,
 conflict intent never gets a repair stage (calm-grove-25 and azure-vault-92,
 2026-10-02).
 
-Reopen it in place, so every receipt stays valid as recorded:
+`cancel-preserving` refuses a parent operation with an unresolved promotion or
+conflict resolution, naming the intent to reconcile first. It keeps the
+operation, collector fence and delegates intact so ordinary fenced recovery
+can still run. Once the write is reconciled, cancellation can be retried.
+
+Reopen a cancelled collection in place, so every receipt stays valid as recorded:
 
 ```bash
 aq integration reopen-collection <parent>        # dry run
