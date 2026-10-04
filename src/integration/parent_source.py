@@ -445,11 +445,11 @@ class ParentSourceReverification:
         if observation.approval is None and not await self.producer._authorization_on(
             conn, task_id, source, generation
         ):
-            latest = await self.producer.latest_exact_evidence_on(conn, task_id, source)
+            latest = await self.producer.latest_exact_evidence_on(conn, task_id, source) or {}
             raise HierarchyError(
                 "rejected",
-                f"{latest['reviewer_login']} rejected verified head {source['head']} and "
-                f"no reviewer has approved PR head {observation.head_sha}",
+                f"{latest.get('reviewer_identity') or 'a reviewer'} rejected verified head "
+                f"{source['head']} and no reviewer has approved PR head {observation.head_sha}",
             )
         policy = HierarchicalIntegrationPolicy.model_validate(
             project["hierarchical_integration_policy"]

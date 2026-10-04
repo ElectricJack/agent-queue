@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import time
 from typing import Any
 
@@ -22,6 +23,7 @@ from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.parent_engine import parent_engine_guard
 from src.models import TaskStatus
 
+logger = logging.getLogger(__name__)
 
 _TASK_OWNER_ROLES = frozenset({"worker", "repair", "verifier"})
 
@@ -63,11 +65,7 @@ class IntegrationCommandsMixin:
         A refusal that needs a human decision raises an escalation naming the
         recovery; the next answer for the parent resolves it.
         """
-        from src.integration.parent_source import (
-            ParentHeadObservation,
-            ParentSourceReverification,
-            settle_refusal_escalation,
-        )
+        from src.integration.parent_source import ParentHeadObservation, ParentSourceReverification
 
         principal = current_principal()
         if (principal is None or principal.kind is not PrincipalKind.SERVICE
@@ -84,11 +82,32 @@ class IntegrationCommandsMixin:
             refusal, error = "stale", str(exc)
             result = _failure(refusal, error)
         else:
-            refusal, error = None, ""
-            result = _with_reason(result["outcome"] == "reverifying", result)
-        created, resolved = await settle_refusal_escalation(
-            self.db, observation, refusal, error, now=time.time()
-        )
+            # The parent engine guard answers a busy parent with ``waiting``.
+            started = result["outcome"] == "reverifying"
+            result = _with_reason(started, result)
+            refusal = None if started else result["outcome"]
+            error = result.get("error", "")
+        await self._settle_parent_head_escalation(observation, refusal, error)
+        return result
+
+    async def _settle_parent_head_escalation(self, observation, refusal, error) -> None:
+        """Raise or resolve the escalation for this parent head answer.
+
+        The answer has already committed (or refused), so a failure here is
+        logged and the next observation of the parent settles it again.
+        """
+        from src.integration.parent_source import settle_refusal_escalation
+
+        try:
+            created, resolved = await settle_refusal_escalation(
+                self.db, observation, refusal, error, now=time.time()
+            )
+        except Exception:
+            logger.warning(
+                "parent %s head %s escalation bookkeeping failed",
+                observation.task_id, observation.head_sha, exc_info=True,
+            )
+            return
         if created is not None:
             await self._emit_escalation("escalation.created.v1", {
                 "escalation_id": created["id"],
@@ -109,7 +128,6 @@ class IntegrationCommandsMixin:
                 "revision": row["revision"],
                 "terminal_outcome": row.get("terminal_outcome"),
             })
-        return result
 
     async def _cmd_integration_parent_action(self, args: dict) -> dict:
         """Internal visit dispatch: process-bound engine scope is the authority."""
