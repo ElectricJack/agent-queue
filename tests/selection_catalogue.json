@@ -1414,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:cd7bb8c29b8dd798549eac93cb863bf8a68789b83ae0b78f0de24f711b340fad",
+  "digest": "sha256:fe7673eb53d70a9fdf762bf76bc4bb36f8a04334bfc27b92e07a0aa3c072b569",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8276,7 +8276,6 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration",
-        "src.integration.candidate_ci",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.published_repair_handoff",
@@ -8973,6 +8972,7 @@
         "src.config",
         "src.database.tables",
         "src.jobs.artifacts",
+        "src.jobs.editor_pin",
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",

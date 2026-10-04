@@ -24,6 +24,10 @@ exist: durable artifact URIs for the evidence, and a `render_profile_sha256`.
 Both are produced by one command each, from a completed job id.
 
 ```bash
+# 0. Pin the attempt's editor build, and render the baseline capture with it.
+#    Every later capture of this attempt repeats --attempt-id.
+aq job submit --preset matter_render --attempt-id rock-me3-a1 -- bundle --json
+
 # 1. Retain the capture, and read the render profile off the immutable result.
 aq job retain 44a60940-aa75-4284-be56-9e28d2748056 --json
 #    -> render_profile_sha256   quote as ObjectLoopStartArgs.render_profile_sha256
@@ -33,6 +37,7 @@ aq job retain 44a60940-aa75-4284-be56-9e28d2748056 --json
 #    -> artifacts[kind=capture_receipt].sha256
 #                              quote as incumbent_capture_sha256
 #    -> rig_sha256              quote as ObjectLoopStartArgs.rig_sha256
+#    -> editor_pin              the attempt's pinned editor build and its digest
 
 # 2. Prove a URI still names the bytes it claims, any time later.
 aq artifact verify artifact://sha256/aefb3b06bc177013a45015de69066201eaafbda20c3d0ae7516ceb1a88882e9f
@@ -48,13 +53,31 @@ and `decoded`, and every per-view metric, are the external scorer's to produce.
 AQ gives it the pointers and the digests.
 
 Two fields are only right if their producers are, too. `render_profile_sha256`
-covers the editor build, the capture adapter, the GPU lease, the view set and
-each view's resolution, the admitted rig frame budget and the VT readiness
-counters — so a start packet that quotes it is claiming those bytes came from
-that preset. And `candidate_artifact.sha256` equals the candidate's declared
+covers the editor build, the capture adapter, the GPU lease, the rig with its
+admitted frame budget, and the view set with each view's resolution — so a
+start packet that quotes it is claiming those bytes came from that preset, and
+every candidate of the attempt is compared under exactly that preset. It does
+**not** cover the object under test: the candidate's own identity is
+`candidate_sha256` on the candidate and on every receipt that scores it, and the
+per-capture VT readiness counters are recorded beside the profile as `observed`
+rather than hashed into it, so two candidates rendered under one preset are
+comparable. And `candidate_artifact.sha256` equals the candidate's declared
 `candidate_sha256` because the canonical manifest is what AQ retained; if the
 bundle's declared identity stops being the canonical document, retention refuses
 it rather than minting an artifact that merely sits beside the claim.
+
+### One attempt, one editor build
+
+`resources.jobs.matter_editor` is a shared build, and it can be rebuilt while an
+attempt is running. Submit the baseline capture and every later capture of the
+attempt with the same `--attempt-id` (the start packet's `attempt_id`): AQ copies
+that build once into `<data_dir>/editor-pins/` and launches the copy for every
+capture of the attempt, so a rebuild cannot move the preset under a run whose
+render profile is already pinned. A different attempt id re-pins, which is the
+only supported way the build moves; a pinned binary that has gone missing is
+refused (`jobs.editor_pin_lost`) rather than silently replaced. Captures
+submitted without an attempt id still launch a content-addressed copy, so one
+job's editor cannot move under it, but they have no cross-job continuity.
 
 ### Operator-only steps, and who runs them
 
@@ -135,8 +158,16 @@ to continue, the reservation is refused with `round cap reached`; the loop
 records that as a stop through the policy's score fallback, keeping the
 verified incumbent.
 
-Candidate tasks use immutable artifacts and cannot publish their source.
-The independent scorer receives the current loop version and wave manifest.
+Candidate tasks use immutable artifacts and cannot publish their source. Each
+candidate packet carries a `round_handoff` block: the incumbent bundle artifact
+to start from, every earlier round's branch and commit with the bundle it
+retained and the scope it patched, the frozen comparison inputs, and the
+instructions to read those retained artifacts and branches in scope. That is
+what a round needs and what the pilot's round 2 lacked — it closed blocked
+twice with zero captures because it could not see what round 1 had changed.
+The independent scorer receives the current loop version, the wave manifest and
+the same `round_handoff` and `frozen_inputs`, and scores every wave member under
+that one profile so candidate and reference are comparable.
 Before closing its held task, it records a note beginning exactly
 `object-score:1` plus a newline, followed by one JSON `ObjectScoreRecordArgs`
 object. `aq task set <held-id> --note <packet>` is the supported handoff.
@@ -167,16 +198,24 @@ reuse prevention, finalizer holds, and approval storage without activation.
 `tests/test_object_loop.py` retains the five prerequisite regression probes,
 and covers the durable artifact store (minting, idempotence, symlink and
 tamper refusal, URI resolution), the render profile's stability under per-run
-jitter and its sensitivity to every preset input, and the acceptance path end to
-end: one retention run yielding both a valid `ObjectLoopStartArgs` and a
-`ScoreReceipt` that passes `validate_score_receipt`.
+jitter and its sensitivity to every preset input while staying blind to the
+object under test, a changed candidate rendering under the incumbent's profile
+so its receipt validates, the round handoff (round 2's packet carries round 1's
+branch, commit, retained bundle, scope and loss, and the frozen inputs; a round
+without a close record names no branch rather than inventing one), and the
+acceptance path end to end: one retention run yielding both a valid
+`ObjectLoopStartArgs` and a `ScoreReceipt` that passes `validate_score_receipt`.
 It also pins the round cap: `max_rounds` is bounded start input, three rounds of
 two variants each is admitted and refused on the fourth, the refused
 continuation charges nothing, and a loop row written before the field existed
 keeps the eight-round ceiling.
 `tests/test_jobs_matter.py` asserts the profile is recorded on a real completed
-render's immutable result, that the admitted frame budget reaches the contract,
-and that a result with no retained capture records none.
+render's immutable result with its readiness counters beside it rather than
+inside the digest, that the admitted frame budget reaches the contract, that a
+rebuilt shared editor does not change an in-flight attempt's captures or their
+profiles while a new attempt re-pins, that a lost pin is refused, that pins are
+swept only once nothing can use them, and that a result with no retained capture
+records none.
 
 Run these through `aq test` with a disposable `POSTGRES_TEST_DSN`. The affected
 area checks cover V2 execution, formulas, graph creation, vault seeding, reviewed

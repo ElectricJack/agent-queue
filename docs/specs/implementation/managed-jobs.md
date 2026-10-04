@@ -220,6 +220,17 @@ NEW_RUN_DIR --editor EDITOR --timeout SECONDS` contract supplies its embedded ri
 `matter_gpu_id` identifies the reserved physical device;
 every cooperating author targeting that device uses the same id.
 
+`--attempt-id` names the object attempt a capture belongs to. The configured
+editor build is copied once per attempt into
+`<data_dir>/editor-pins/binaries/<sha256>/<name>` and every capture of that
+attempt launches the copy, so rebuilding the shared build cannot move the preset
+under an attempt whose render profile is already pinned. A new attempt id
+re-pins; a recorded pin whose binary is missing or no longer hashes true is
+refused (`jobs.editor_pin_lost`); the attempt id is refused on any other preset,
+and a submission without one still launches a content-addressed copy without
+cross-job continuity. Pins older than the retention window that no surviving
+attempt names are swept with the rest of job retention.
+
 The existing job/wait transaction, scope, idempotency and durable terminal outbox
 apply unchanged. Render jobs use an independent exclusive device lock, never a
 pytest slot. A surviving POSIX child retains its inherited device lock. Windows
