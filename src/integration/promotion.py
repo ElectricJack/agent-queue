@@ -880,7 +880,32 @@ class PromotionService:
                             {"kind": "prepared_reachable", "remote_sha": remote.oid},
                         )
                         return self._value(intent)
+                    evidence = None
                     if remote.oid != intent["expected_target"]:
+                        evidence = {
+                            "kind": "prepared_not_reachable", "remote_sha": remote.oid,
+                            "prepared_sha": intent["prepared_sha"],
+                        }
+                    elif intent["state"] == "reserved":
+                        # A continuation re-requests the frozen source head, so a
+                        # moved child branch would fail source_moved forever.
+                        source = await self.git.als_remote_ref(
+                            str(repository.retained_git_dir),
+                            intent["provenance"]["source_branch"],
+                        )
+                        if source.state is RemoteRefState.ERROR:
+                            raise PromotionRuntimeError(
+                                source.error or "source remote state is unknown"
+                            )
+                        if (
+                            source.state is not RemoteRefState.PRESENT
+                            or source.oid != intent["source_head"]
+                        ):
+                            evidence = {
+                                "kind": "source_moved", "remote_sha": remote.oid,
+                                "source_sha": source.oid, "prepared_sha": intent["prepared_sha"],
+                            }
+                    if evidence is not None:
                         if intent["remote_evidence"] is not None:
                             raise PromotionInvariantError("promotion already has push evidence")
                         domain_key = self._successor_domain(intent)
@@ -889,11 +914,7 @@ class PromotionService:
                             integration_promotion_intents.c.id == intent["id"],
                         ).values(
                             state="superseded", superseded_by_intent_id=successor_id,
-                            remote_evidence={
-                                "kind": "prepared_not_reachable", "remote_sha": remote.oid,
-                                "prepared_sha": intent["prepared_sha"],
-                                "fence": fence.model_dump(mode="json"),
-                            },
+                            remote_evidence={**evidence, "fence": fence.model_dump(mode="json")},
                             updated_at=self.clock(),
                         ))
                         outcome = "superseded"
