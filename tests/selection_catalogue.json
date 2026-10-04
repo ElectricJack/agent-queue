@@ -1414,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:fa0a0a5d037619a0fcfbef4fa39e4554441a5bd14ae66d3a04b8f144798b43e8",
+  "digest": "sha256:e568ca09ab8862e26c0258479f00506690929ddcfd092c96161099d31d76090c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9007,6 +9007,8 @@
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.jobs.artifacts",
+        "src.jobs.identity",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
