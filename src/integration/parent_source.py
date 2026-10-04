@@ -8,7 +8,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import exists, insert, select, update
 
 from src.database import tables as t
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -27,14 +27,95 @@ from src.models import TaskStatus
 _OID = re.compile(r"^[0-9a-f]{40}$")
 
 
+#: Refusals no reread can change while the PR head stays where it is: the
+#: Git proof failed or the parent cannot reverify at all. The review poller
+#: does not ask again until the head moves.
+REFUSED_UNTIL_HEAD_MOVES = frozenset({"unproven", "invalid", "delivered"})
+
+
 @dataclass(frozen=True)
 class ParentHeadObservation:
-    """A configured GitHub read of an open, canonical parent pull request."""
+    """A configured GitHub read of an open, canonical parent pull request.
+
+    ``approval`` is the PR's human approval of exactly ``head_sha`` with no
+    reviewer still requesting changes (``{"review_id", "reviewer_login"}``).
+    It supersedes a rejection of the old verified head, so a reviewer who
+    requested changes recovers the parent by approving the fixed head.
+    """
 
     task_id: str
     source: dict[str, Any]
     head_sha: str
     policy_generation: int
+    approval: dict[str, Any] | None = None
+
+
+#: Escalations raised for a moved parent PR head AQ will not reverify.
+ESCALATION_SOURCE_KIND = "integration_parent_source"
+
+
+def refusal_escalation(
+    observation: ParentHeadObservation, refusal: str, error: str
+) -> dict[str, str] | None:
+    """What a human must decide about a refused head, or None if nobody must.
+
+    ``stale``, ``waiting`` and ``delivered`` clear without a decision; the
+    rest leave the parent COMPLETED with an open PR until someone acts.
+    """
+    source, head = observation.source, observation.head_sha
+    task, old, pr = observation.task_id, source["head"], source.get("pr_url") or "its PR"
+    moved = f"Parent {task}'s PR head moved from verified {old[:12]} to {head[:12]}"
+    if refusal == "rejected":
+        summary = f"{moved} after a reviewer rejected the verified head"
+        why = (
+            "A review rejected the exact verified head, so automatic reverification "
+            "waits for a human approval of the new head; operator root authorization "
+            "also refuses while that rejection stands."
+        )
+        decision = (
+            f"Ask a reviewer to approve PR head {head} on GitHub ({pr}) while no reviewer "
+            "still requests changes. The review poller then starts a fresh aggregate "
+            "verification of that head; a later push is checked again on its own."
+        )
+    elif refusal == "unproven":
+        summary = f"{moved}, which does not preserve the verified aggregate"
+        why = (
+            f"A new head must descend from {old} and keep every accepted child receipt; "
+            "Git proved this one does not (a rewrite or force-push). AQ does not probe "
+            "this head again until the PR head moves."
+        )
+        decision = (
+            f"Push the fix as new commits on top of {old} on {source['branch']} instead of "
+            f"rewriting it, or close {pr} and re-plan the parent's work."
+        )
+    elif refusal == "unauthorized":
+        summary = f"{moved}; the root policy does not allow automatic reverification"
+        why = (
+            "Automatic parent reverification needs root.admission authorized, "
+            "root.repair.source_ci true and a task the root policy admits."
+        )
+        decision = (
+            f"Enable it with `aq project set {source['project_id']} integration-policy ...`, "
+            f"or restore {source['branch']} to {old} or close {pr}."
+        )
+    elif refusal == "invalid":
+        summary = f"{moved}, but the parent cannot be reverified"
+        why = "The parent's integration state cannot carry a new aggregate episode."
+        decision = (
+            f"Inspect the parent with `aq integration status` and `aq task show {task}`, "
+            f"then repair its integration state or close {pr}."
+        )
+    else:
+        return None
+    return {
+        "summary": summary,
+        "investigation": (
+            f"{error}\n\n{why} Until then the parent stays COMPLETED with its PR open "
+            f"and nothing delivers it. PR: {pr}; branch {source['branch']}; "
+            f"verified head {old}; PR head {head}."
+        ),
+        "decision_requested": decision,
+    }
 
 
 class ParentSourceReverification:
@@ -67,15 +148,20 @@ class ParentSourceReverification:
             .order_by(t.task_delivery_receipts.c.id)
         )
         async with self.db._engine.connect() as conn:
-            if await self.producer._pull_request_source_on(
-                conn, task_id
-            ) != source or not await self.producer._authorization_on(
-                conn,
-                task_id,
-                source,
-                observation.policy_generation,
-            ):
-                raise HierarchyError("stale", "parent source or authorization changed")
+            if await self.producer._pull_request_source_on(conn, task_id) != source:
+                raise HierarchyError("stale", "parent source changed")
+            project = (
+                (await conn.execute(select(t.projects).where(t.projects.c.id == source["project_id"])))
+                .mappings()
+                .one_or_none()
+            )
+            # Every refusal Postgres alone can decide comes before the remote
+            # proof, so a parent that cannot reverify costs no Git reads.
+            await self._admit_on(conn, task_id, observation, project)
+            await self._completed_operation_on(conn, task_id)
+            await self._require_undelivered_on(
+                conn, task_id, source, await self._repo_on(conn, source)
+            )
             observed_owner = (await conn.execute(owner_statement)).mappings().one_or_none()
             if (
                 observed_owner is None
@@ -127,77 +213,15 @@ class ParentSourceReverification:
             )
             if (
                 parent is None
-                or project is None
-                or project["status"] != "ACTIVE"
-                or project["hierarchical_integration_draining"]
                 or parent["assigned_agent_id"] is not None
                 or await self.producer._pull_request_source_on(conn, task_id) != source
             ):
-                raise HierarchyError("stale", "completed parent source changed or is inactive")
-            policy = HierarchicalIntegrationPolicy.model_validate(
-                project["hierarchical_integration_policy"]
+                raise HierarchyError("stale", "completed parent source changed")
+            await self._admit_on(conn, task_id, observation, project)
+            checkpoint, operation = await self._completed_operation_on(conn, task_id, lock=True)
+            await self._require_undelivered_on(
+                conn, task_id, source, await self._repo_on(conn, source)
             )
-            if not policy.root.repair.source_ci or not await self.producer._authorization_on(
-                conn,
-                task_id,
-                source,
-                observation.policy_generation,
-            ):
-                raise HierarchyError(
-                    "unauthorized", "automatic parent reverification is not authorized"
-                )
-            if await self.db._read_manual_pause(conn, task_id) is not None:
-                raise HierarchyError("waiting", "parent has a manual pause")
-            checkpoint = dict(
-                (
-                    await conn.execute(
-                        select(t.task_integration_checkpoints)
-                        .where(
-                            t.task_integration_checkpoints.c.task_id == task_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            operation = (
-                (
-                    await conn.execute(
-                        select(t.integration_repair_operations)
-                        .where(
-                            t.integration_repair_operations.c.id
-                            == checkpoint["last_completed_operation_id"],
-                            t.integration_repair_operations.c.parent_task_id == task_id,
-                            t.integration_repair_operations.c.episode_id
-                            == checkpoint["episode_id"],
-                            t.integration_repair_operations.c.state == "completed",
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if operation is None:
-                raise HierarchyError("invalid", "parent has no completed aggregate operation")
-            for writer in {task_id, operation["verifier_task_id"]} - {None}:
-                if await CancelledCollectionRecovery._live_holder_on(conn, writer):
-                    raise HierarchyError("waiting", "a session or workspace still holds the parent")
-            repo = (
-                (
-                    await conn.execute(
-                        select(t.repos).where(
-                            t.repos.c.id == source["repository_id"],
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            if source["branch"].removeprefix("refs/heads/") == repo["default_branch"]:
-                raise HierarchyError("invalid", "parent source is the default branch")
-            await self._require_undelivered_on(conn, task_id, source, repo)
             owner = (await conn.execute(owner_statement.with_for_update())).mappings().one_or_none()
             if (
                 owner is None
@@ -303,6 +327,97 @@ class ParentSourceReverification:
             "head_sha": head,
             "verifier_task_id": verifier_id,
         }
+
+    async def _admit_on(self, conn, task_id, observation, project) -> None:
+        """Admission controls: checked before the remote proof and again under lock.
+
+        The codes tell the poller what a refusal needs: ``stale`` and
+        ``waiting`` clear without anyone, ``rejected`` needs a reviewer and
+        ``unauthorized`` needs the root policy to change.
+        """
+        source = observation.source
+        if (
+            project is None
+            or project["hierarchical_integration_generation"] != observation.policy_generation
+        ):
+            raise HierarchyError("stale", "parent project or its integration policy changed")
+        if project["status"] != "ACTIVE" or project["hierarchical_integration_draining"]:
+            raise HierarchyError("waiting", "parent project is inactive or draining")
+        if await conn.scalar(
+            select(
+                exists(
+                    select(t.task_labels.c.task_id).where(
+                        t.task_labels.c.task_id == task_id, t.task_labels.c.label.like("hold:%")
+                    )
+                )
+                | exists(
+                    select(t.task_gates.c.task_id)
+                    .select_from(t.task_gates.join(t.gates, t.gates.c.id == t.task_gates.c.gate_id))
+                    .where(t.task_gates.c.task_id == task_id, t.gates.c.status == "open")
+                )
+            )
+        ):
+            raise HierarchyError("waiting", "parent has a hold or an open gate")
+        generation = observation.policy_generation
+        if not await self.producer._authorization_on(conn, task_id, source, generation):
+            latest = await self.producer.latest_exact_evidence_on(conn, task_id, source)
+            if latest is None or latest["verdict"] == "approved":
+                raise HierarchyError(
+                    "unauthorized", "the root policy does not admit automatic parent reverification"
+                )
+            if observation.approval is None or not await self.producer._authorization_on(
+                conn, task_id, source, generation, rejection_superseded=True
+            ):
+                raise HierarchyError(
+                    "rejected",
+                    f"{latest['reviewer_login']} rejected verified head {source['head']} and "
+                    f"no reviewer approved PR head {observation.head_sha}",
+                )
+        policy = HierarchicalIntegrationPolicy.model_validate(
+            project["hierarchical_integration_policy"]
+        )
+        if not policy.root.repair.source_ci:
+            raise HierarchyError(
+                "unauthorized", "automatic parent reverification is off (root.repair.source_ci)"
+            )
+        if await self.db._read_manual_pause(conn, task_id) is not None:
+            raise HierarchyError("waiting", "parent has a manual pause")
+
+    async def _completed_operation_on(self, conn, task_id, *, lock=False):
+        """The checkpoint and completed operation a new episode carries forward."""
+        checkpoint_statement = select(t.task_integration_checkpoints).where(
+            t.task_integration_checkpoints.c.task_id == task_id,
+        )
+        if lock:
+            checkpoint_statement = checkpoint_statement.with_for_update()
+        checkpoint = (await conn.execute(checkpoint_statement)).mappings().one_or_none()
+        if checkpoint is None:
+            raise HierarchyError("invalid", "parent has no integration checkpoint")
+        operation_statement = select(t.integration_repair_operations).where(
+            t.integration_repair_operations.c.id == checkpoint["last_completed_operation_id"],
+            t.integration_repair_operations.c.parent_task_id == task_id,
+            t.integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+            t.integration_repair_operations.c.state == "completed",
+        )
+        if lock:
+            operation_statement = operation_statement.with_for_update()
+        operation = (await conn.execute(operation_statement)).mappings().one_or_none()
+        if operation is None:
+            raise HierarchyError("invalid", "parent has no completed aggregate operation")
+        for writer in {task_id, operation["verifier_task_id"]} - {None}:
+            if await CancelledCollectionRecovery._live_holder_on(conn, writer):
+                raise HierarchyError("waiting", "a session or workspace still holds the parent")
+        return dict(checkpoint), operation
+
+    async def _repo_on(self, conn, source):
+        repo = (
+            (await conn.execute(select(t.repos).where(t.repos.c.id == source["repository_id"])))
+            .mappings()
+            .one()
+        )
+        if source["branch"].removeprefix("refs/heads/") == repo["default_branch"]:
+            raise HierarchyError("invalid", "parent source is the default branch")
+        return repo
 
     async def _require_undelivered_on(self, conn, task_id, source, repo):
         if await conn.scalar(

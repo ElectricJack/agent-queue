@@ -76,7 +76,16 @@ class ReviewEvidenceProducer:
             reviewed_sha=reviewed_sha, authorization_generation=policy_generation,
         )
 
-    async def _authorization_on(self, conn, task_id, source, generation, *, allow_reviewed=False) -> bool:
+    async def _authorization_on(
+        self, conn, task_id, source, generation, *, allow_reviewed=False,
+        rejection_superseded=False,
+    ) -> bool:
+        """Whether the root policy admits ``source`` without a new human review.
+
+        ``rejection_superseded`` lets a rejection of the exact source stand aside
+        under authorized admission: a parent whose fixed PR head a reviewer
+        approved may start reverifying it (``ParentSourceReverification``).
+        """
         row = (await conn.execute(
             select(tasks.c.task_type, projects.c.hierarchical_integration_policy,
                    projects.c.hierarchical_integration_generation)
@@ -105,7 +114,14 @@ class ReviewEvidenceProducer:
             return False
         if policy.root.admission != "authorized" and not allow_reviewed:
             return False
-        latest = (await conn.execute(select(integration_review_evidence).where(
+        latest = await self.latest_exact_evidence_on(conn, task_id, source)
+        if policy.root.admission == "reviewed":
+            return latest is not None and latest["verdict"] == "approved"
+        return latest is None or latest["verdict"] == "approved" or rejection_superseded
+
+    async def latest_exact_evidence_on(self, conn, task_id, source) -> dict[str, Any] | None:
+        """The newest review verdict stored for exactly this source, if any."""
+        row = (await conn.execute(select(integration_review_evidence).where(
             integration_review_evidence.c.source_task_id == task_id,
             integration_review_evidence.c.repository_id == source["repository_id"],
             integration_review_evidence.c.source_base == source["base"],
@@ -113,9 +129,7 @@ class ReviewEvidenceProducer:
             integration_review_evidence.c.generation == source["generation"],
         ).order_by(integration_review_evidence.c.created_at.desc(),
                    integration_review_evidence.c.id.desc()).limit(1))).mappings().one_or_none()
-        if policy.root.admission == "reviewed":
-            return latest is not None and latest["verdict"] == "approved"
-        return latest is None or latest["verdict"] == "approved"
+        return dict(row) if row is not None else None
 
     async def _snapshot_pull_request(
         self,
