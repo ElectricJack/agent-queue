@@ -1791,18 +1791,24 @@ def s15_development_delivery(state: dict) -> str:
     head = _git_text(str(source), "rev-parse", "HEAD")
     _git_text(str(source), "push", "origin", "fixture-feature")
     # This source is completed/adopted by the scenario, never by a worker.
-    # Hold it atomically at filing: Tier 1 runs the routing playbook, and a
-    # scheduler tick between these CLI calls (including the reopen -> pause below)
-    # can otherwise prepare a workspace and replace its fixture branch.
-    task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
-        "title": "development delivery", "description": "real Git fixture",
-        "labels": ["hold:e2e-adoption"]})
-    task_id = task.get("task_id") or task.get("created")
-    check(bool(task_id), str(task))
-    aq("task", "set", task_id, "--branch", "fixture-feature")
-    aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
-    check(task_show(task_id)["branch_name"] == "fixture-feature",
-          "legacy fixture source branch changed during setup")
+    # Filing stores the row before its labels. Pause this disposable project
+    # before creation so no scheduler tick can prepare the fixture's workspace
+    # during that interval or between the subsequent setup commands.
+    api_checked("pause_project", {"project_id": "e2e-development"})
+    try:
+        task = api_checked("create_task", {
+            "project_id": "e2e-development", "repo_id": configured["repository_id"],
+            "title": "development delivery", "description": "real Git fixture",
+            "labels": ["hold:e2e-adoption"],
+        })
+        task_id = task.get("task_id") or task.get("created")
+        check(bool(task_id), str(task))
+        aq("task", "set", task_id, "--branch", "fixture-feature")
+        aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+        check(task_show(task_id)["branch_name"] == "fixture-feature",
+              "legacy fixture source branch changed during setup")
+    finally:
+        api_checked("resume_project", {"project_id": "e2e-development"})
     successor = api("create_task", {
         "project_id": "e2e-development", "title": "wait for delivered code",
         "description": "must not start before the prerequisite reaches main",
@@ -1845,12 +1851,16 @@ def s15_development_delivery(state: dict) -> str:
     if "provenance migration" not in str(refused.get("_error")):
         raise Failure(f"adoption invented legacy completion identity: {refused}; "
                       + _adoption_evidence(task_id, remote, head))
-    # Reopen outside the claim frontier, then hold the fixture before adoption.
-    # A READY interval can let workspace preparation replace its branch name.
-    aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
-    paused = api_checked("pause_task", {"task_id": task_id})
-    check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
-    aq("task", "set", task_id, "--branch", "fixture-feature")
+    # Reopening DEFINED can be promoted on the next tick. Keep project
+    # scheduling paused until the fixture's manual task pause is established.
+    api_checked("pause_project", {"project_id": "e2e-development"})
+    try:
+        aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
+        paused = api_checked("pause_task", {"task_id": task_id})
+        check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
+        aq("task", "set", task_id, "--branch", "fixture-feature")
+    finally:
+        api_checked("resume_project", {"project_id": "e2e-development"})
     for reason in ("operator creates an exact completion generation",
                    "prove repeatable operator reconciliation"):
         adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
