@@ -405,6 +405,119 @@ async def test_settled_pr_closure_is_idempotent_and_rejects_a_moved_head(env):
     assert "superseded by PR #32" in env.github.comments[31][0]
 
 
+async def _hierarchy_lock_free(env, project_id="p") -> bool:
+    from sqlalchemy import func
+
+    from src.database.queries.hierarchy_queries import HIERARCHY_LOCK_NAMESPACE
+
+    async with env.db.immediate() as conn:
+        return await conn.scalar(select(func.pg_try_advisory_xact_lock(
+            HIERARCHY_LOCK_NAMESPACE, func.hashtext(project_id),
+        )))
+
+
+async def _settled_task(env, task_id: str, number: int) -> None:
+    env.github.open(number, f"aq/{task_id}", "d" * 40)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id=task_id, project_id="p", repo_id="repo", title=task_id, description="",
+            status="COMPLETED", branch_name=f"aq/{task_id}",
+            pr_url=f"https://github.com/o/r/pull/{number}", created_at=1.0, updated_at=1.0,
+        ))
+
+
+async def _settled_close_events(env) -> list[dict]:
+    async with env.db._engine.connect() as conn:
+        return (await conn.execute(select(events).where(
+            events.c.event_type == "integration.pr_closed_settled"
+        ))).mappings().all()
+
+
+async def test_settled_pr_closure_holds_the_hierarchy_lock_only_around_the_close(
+    env, monkeypatch,
+):
+    from src.integration.pr_cleanup import SettledTaskPullRequestClosure
+
+    await _settled_task(env, "settled", 33)
+    lock_free = {}
+    for name in ("has_comment_marker", "comment_pull_request", "exact_pull_request",
+                 "close_pull_request"):
+        def probe(call, name=name):
+            async def observed(**kwargs):
+                lock_free[name] = await _hierarchy_lock_free(env)
+                return await call(**kwargs)
+            return observed
+
+        monkeypatch.setattr(env.github, name, probe(getattr(env.github, name)))
+    closed = await SettledTaskPullRequestClosure(env.db, env.control.git).run(
+        "settled", reason="adopted at main", principal="operator",
+    )
+    assert closed["outcome"] == "closed" and env.github.closed == [33]
+    # Reading comments and posting the marker never hold the project lock;
+    # only the head re-read and the close it fences do.
+    assert lock_free == {
+        "has_comment_marker": True, "comment_pull_request": True,
+        "exact_pull_request": False, "close_pull_request": False,
+    }
+    assert len(await _settled_close_events(env)) == 1
+
+
+async def test_settled_pr_closure_rechecks_a_writer_that_attached_during_the_comment(
+    env, monkeypatch,
+):
+    from src.integration.pr_cleanup import SettledTaskPullRequestClosure
+
+    await _settled_task(env, "reclaimed", 34)
+    comment = env.github.comment_pull_request
+
+    async def claimed_while_commenting(**kwargs):
+        await comment(**kwargs)
+        async with env.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "reclaimed").values(
+                assigned_agent_id="worker", updated_at=2.0,
+            ))
+
+    monkeypatch.setattr(env.github, "comment_pull_request", claimed_while_commenting)
+    refused = await SettledTaskPullRequestClosure(env.db, env.control.git).run(
+        "reclaimed", reason="adopted at main", principal="operator",
+    )
+    assert refused["outcome"] == "blocked"
+    assert "writer" in refused["reason"]
+    assert env.github.closed == [] and env.github.pulls[34]["state"] == "open"
+    assert await _settled_close_events(env) == []
+
+
+async def test_settled_pr_closure_bounds_github_inside_the_lock_and_releases_it(
+    env, monkeypatch,
+):
+    import asyncio
+
+    from src.integration.pr_cleanup import SettledTaskPullRequestClosure
+
+    await _settled_task(env, "stalled", 35)
+    stopped = []
+
+    async def hangs(*, number):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.append(number)
+
+    monkeypatch.setattr(env.github, "close_pull_request", hangs)
+    service = SettledTaskPullRequestClosure(
+        env.db, env.control.git, close_timeout_seconds=0.05,
+    )
+    blocked = await asyncio.wait_for(
+        service.run("stalled", reason="adopted at main", principal="operator"), timeout=10,
+    )
+    assert blocked["outcome"] == "blocked" and "0.05" in blocked["reason"]
+    assert stopped == [35] and env.github.pulls[35]["state"] == "open"
+    assert await _hierarchy_lock_free(env)
+    assert await _settled_close_events(env) == []
+    with pytest.raises(ValueError):
+        SettledTaskPullRequestClosure(env.db, env.control.git, close_timeout_seconds=0)
+
+
 async def test_periodic_sweep_visits_inventory_beyond_one_hundred_prs(env):
     from src.integration.pr_cleanup import PullRequestReconciler
 
