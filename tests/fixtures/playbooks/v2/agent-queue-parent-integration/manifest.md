@@ -1,7 +1,7 @@
 ---
 playbook_id: agent-queue-parent-integration
-artifact_sha256: sha256:358641ae6ad325b7e9df53f824c868054ff68a55ea2301d422b4e3616de226cf
-source_sha256: sha256:a41c408ec411fb8202e30003655529d277f950efafd1c7dc00c3f4e2e318fc32
+artifact_sha256: sha256:4f3bf46a93c26507e7920deb93cf3b97cbe5caa6d8ad834fd0dec30d00825122
+source_sha256: sha256:8bded9b9c87c84c0552217f60ed33af8c421c7bc5eac61cdaf1ea2a0a3428737
 contract_fingerprint: sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0
 questions_resolved: 0
 capabilities_granted:
@@ -51,3 +51,10 @@ Integration CI repair refreshes the reconciliation contract and explicitly maps
 failure, matching the server's current outcome classifications. This preserves
 the exact remote reconciliation requirement and grants no additional capability.
 The new digest still requires operator review before activation.
+
+A durably refused collection reopen now reaches the red human gate instead of
+backing off forever. The `blocked-reopen` case matches the recorded
+`reopen_refused` fact together with a failed verifier and routes to the
+existing no-default `red` gate; it adds no command, transition or capability,
+and the marker it reads is scoped to one episode, operation, head and
+generation, so a later generation clears it.

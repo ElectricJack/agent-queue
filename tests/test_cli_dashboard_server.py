@@ -49,7 +49,7 @@ def state(tmp_path, monkeypatch, unused_tcp_port_factory):
     """A private state dir, config, and staged bundle; returns a namespace of paths."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    # The factory remembers prior allocations, even if the OS reuses a released port.
+    # Released ephemeral ports can repeat; the config requires distinct ports.
     port = unused_tcp_port_factory()
     api_port = unused_tcp_port_factory()
     config = state_dir / "config.yaml"

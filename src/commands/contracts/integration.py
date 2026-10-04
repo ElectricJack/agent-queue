@@ -69,6 +69,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_reconcile_unmaterialized",
         "integration_waive_history",
         "integration_resume",
+        "integration_reevaluate_repair",
         "integration_abort",
         "integration_develop",
         "integration_adopt",
@@ -1417,6 +1418,60 @@ INTEGRATION_WAIVE_HISTORY = _operational_contract(
     ("waived", "stale", "not_waivable", "not_found"),
     successes=frozenset({"waived"}),
     side_effect=SideEffectClass.CREATE,
+)
+class IntegrationReevaluateRepairArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_head_sha: str | None = None
+    expected_episode_id: str | None = None
+    expected_generation: int | None = Field(default=None, ge=0)
+    expected_stage: int | None = Field(default=None, ge=0)
+    expected_fence_token: int | None = Field(default=None, ge=1)
+    expected_snapshot_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_exact_preview(self) -> IntegrationReevaluateRepairArgs:
+        if self.expected_head_sha and not is_valid_git_oid(self.expected_head_sha):
+            raise ValueError("expected_head_sha must be a full commit id")
+        if not self.dry_run and (
+            not self.expected_head_sha or self.expected_generation is None
+            or self.expected_stage is None or self.expected_fence_token is None
+            or not self.expected_snapshot_digest
+            or not (self.reason or "").strip()
+        ):
+            raise ValueError("apply requires the previewed head, generation, stage, fence, snapshot and reason")
+        return self
+
+
+class IntegrationReevaluateRepairValue(CommandValue):
+    operation_id: str | None = None
+    stage: int | None = None
+    subject: dict[str, Any] | None = None
+    evidence_ids: tuple[str, ...] = ()
+    attempts: int | None = None
+    head_sha: str | None = None
+    episode_id: str | None = None
+    generation: int | None = None
+    fence_token: int | None = None
+    completion_id: str | None = None
+    deadline_at: float | None = None
+    apply_command: str | None = None
+    snapshot_digest: str | None = None
+    planned_steps: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+REEVALUATE_REPAIR_OUTCOMES = (
+    "would_reevaluate", "reevaluated", "already_settled", "blocked", "stale", "not_found", "configuration_blocked",
+)
+INTEGRATION_REEVALUATE_REPAIR = _operational_contract(
+    "integration_reevaluate_repair",
+    IntegrationReevaluateRepairArgs,
+    REEVALUATE_REPAIR_OUTCOMES,
+    successes=frozenset({"would_reevaluate", "reevaluated", "already_settled"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationReevaluateRepairValue,
 )
 INTEGRATION_RESUME = _operational_contract(
     "integration_resume",
@@ -3061,6 +3116,15 @@ async def _resume_adapter(
     )
 
 
+async def _reevaluate_repair_adapter(
+    args: IntegrationReevaluateRepairArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_reevaluate_repair", args, ctx, IntegrationReevaluateRepairValue,
+        set(REEVALUATE_REPAIR_OUTCOMES),
+    )
+
+
 async def _abort_adapter(args: IntegrationAbortArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_abort",
@@ -3459,6 +3523,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECONCILE_UNMATERIALIZED, _reconcile_unmaterialized_adapter),
         (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),
         (INTEGRATION_RESUME, _resume_adapter),
+        (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
         (INTEGRATION_ABORT, _abort_adapter),
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),

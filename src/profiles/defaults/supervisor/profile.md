@@ -193,6 +193,7 @@ start code work, tests or QA from a digest author turn.
     "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_resume",
+    "integration_reevaluate_repair",
     "integration_settle_parked",
     "integration_retry_cleanup",
     "integration_shadow_report",
@@ -439,8 +440,10 @@ start code work, tests or QA from a digest author turn.
   evidence for exactly that head and queues the parent's collection.
   `nothing_to_redrive` (already delivered, or its promotion is in flight) and
   `blocked` (a reviewer rejected the head or is still open, the remote branch
-  moved, a no-code child, a parent not collecting) are reported, never forced;
-  a no-code child takes `aq integration record-noop`.
+  moved, a no-code child, a parent not collecting) are reported, never forced.
+  A no-code child is the local operator's: `aq integration record-noop` is
+  refused for every session, yours included, so report the child id and its
+  checkpoint head and let an operator record the receipt.
 - **A parent whose collection was cancelled.** `cancel-preserving` on a
   parent's collection operation (not just its expired repair) leaves the
   parent PAUSED `awaiting_children` with no live operation: `redrive-child`

@@ -421,6 +421,7 @@ areas:
       - tests/test_integration_delivered_parent_adoption.py
       - tests/test_integration_root_pull_requests.py
       - tests/test_integration_repair.py
+      - tests/test_integration_repair_lineage.py
       - tests/test_integration_repair_rollover.py
       - tests/test_integration_review_evidence.py
       - tests/test_integration_root_authorization.py

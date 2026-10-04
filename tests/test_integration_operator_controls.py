@@ -236,6 +236,30 @@ async def test_archive_obsolete_delegates_requires_matching_operator_authority(
         controls.release_delegates.assert_not_awaited()
 
 
+@pytest.mark.parametrize("principal,allowed", [
+    (None, True), (_session("super-p", "p"), True),
+    (_session("super-other", "other"), False),
+    (_session("worker", "p", elevated=False), False),
+])
+async def test_noop_repair_preview_requires_live_matching_supervisor(db, monkeypatch, principal, allowed):
+    monkeypatch.setattr(db, "get_integration_operation", AsyncMock(return_value={
+        "target_kind": "batch", "batch_id": "batch", "parent_task_id": None,
+    }))
+    monkeypatch.setattr(db, "get_integration_batch", AsyncMock(return_value={"project_id": "p"}))
+    service = SimpleNamespace(reevaluate=AsyncMock(return_value={"outcome": "would_reevaluate"}))
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(repair_service=service)
+    with principal_context(principal):
+        result = await handler._cmd_integration_reevaluate_repair({"operation_id": "operation"})
+    if allowed:
+        assert result["outcome"] == "would_reevaluate"
+        assert service.reevaluate.await_args.kwargs["dry_run"] is True
+    else:
+        assert result["outcome"] == "unauthorized"
+        service.reevaluate.assert_not_awaited()
+
+
 async def test_release_owner_passes_derived_operator_label_and_dry_run(db, monkeypatch):
     await db.create_repo(
         RepoConfig(

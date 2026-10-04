@@ -1234,6 +1234,35 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", refusal)
         return await self._integration_control_service().resume(operation_id)
 
+    async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
+
+        request = IntegrationReevaluateRepairArgs.model_validate(args)
+        _principal, refusal = await self._integration_operator_for_operation(request.operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        operation = await self.db.get_integration_operation(request.operation_id)
+        if operation is None:
+            return _failure("not_found", "operation does not exist")
+        subject = None
+        if request.expected_head_sha:
+            subject = ({"kind": "parent", "generation": request.expected_generation,
+                        "head_sha": request.expected_head_sha}
+                       if operation["target_kind"] == "parent" else
+                       {"kind": "batch", "revision": request.expected_generation,
+                        "candidate_sha": request.expected_head_sha})
+        service = self._integration_repair_service()
+        result = await service.reevaluate(
+            request.operation_id, dry_run=request.dry_run, expected_subject=subject,
+            expected_episode_id=request.expected_episode_id,
+            expected_generation=request.expected_generation, expected_stage=request.expected_stage,
+            expected_fence_token=request.expected_fence_token, reason=request.reason,
+            expected_snapshot_digest=request.expected_snapshot_digest,
+        )
+        return _with_reason(result["outcome"] in {
+            "would_reevaluate", "reevaluated", "already_settled",
+        }, result)
+
     async def _cmd_integration_abort(self, args: dict) -> dict:
         operation_id = str(args.get("operation_id") or "")
         reason = str(args.get("reason") or "")
@@ -2484,6 +2513,7 @@ class IntegrationCommandsMixin:
                 None,
             ),
             owner_recovery=owner_recovery_for(self.orchestrator),
+            promotion=self._integration_promotion_service(),
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:

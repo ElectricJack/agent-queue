@@ -964,6 +964,7 @@ async def test_green_candidate_with_attached_writer_promotes_after_guarded_close
             integration_repair_stages.c.ordinal == 0,
         )
         assert stage["state"] == "awaiting_completion"
+        before_close = stage
         # The CI wakeup the attestation publisher emits for this evidence.
         async with db.immediate() as conn:
             await enqueue_integration_event(
@@ -1064,7 +1065,7 @@ async def test_green_candidate_with_attached_writer_promotes_after_guarded_close
 
             # 3. continue-closed-root-repair returns the branch to the collector
             # and enqueues a fresh, fence-bound promotion continuation.
-            _rows, continued = await deliver("integration.repair_delegate_closed", at=1340.0)
+            close_rows, continued = await deliver("integration.repair_delegate_closed", at=1340.0)
             assert [run.rules_selected for run in continued] == [("continue-closed-root-repair",)]
             owner = await ownership.get_owner(BranchKey(repository_id="repo", branch=built.branch))
             assert (owner["owner_id"], owner["owner_role"]) == (operation_id, "collector")
@@ -1075,7 +1076,24 @@ async def test_green_candidate_with_attached_writer_promotes_after_guarded_close
                 integration_repair_stages.c.ordinal == 0,
             )
             assert stage["dossier"]["green_handoffs"][-1]["task_id"] == writer
-            assert stage["attempts"] == 0 and stage["state"] == "awaiting_completion"
+            # An unchanged green head still represents a completed writer claim.
+            assert stage["attempts"] == before_close["attempts"] + 1 == 1
+            assert stage["dossier"]["budget"]["attempts"] == 1
+            assert stage["dossier"]["completed_delegate_attempts"] == [
+                {"task_id": writer, "claim_epoch": 0, "recorded_at": 1330.0},
+            ]
+            assert stage["state"] == "awaiting_completion"
+            assert stage["deadline_at"] == before_close["deadline_at"]
+            close_replay = await engine.dispatch_event(
+                {"event_type": "integration.repair_delegate_closed", **close_rows[0]["payload"]},
+                principal,
+            )
+            assert close_replay.rules_selected == ("continue-closed-root-repair",)
+            assert await _one(
+                db, integration_repair_stages,
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == 0,
+            ) == stage
 
             # 4. The continuation promotes the exact tested candidate.
             continuation, promoted = await deliver("integration.candidate_green", at=1351.0)

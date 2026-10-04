@@ -185,6 +185,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_waive_history",
         "integration_reconcile_unmaterialized",
         "integration_resume",
+        "integration_reevaluate_repair",
         "integration_abort",
         "integration_settle_delivered_batch",
         "integration_retry_cleanup",
