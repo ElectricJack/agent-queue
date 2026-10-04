@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-175 commands are registered.
+176 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -73,6 +73,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`escalation_get`](escalation_get.md) | Escalation Get | Read one incident and its authoritative history. |
 | [`escalation_list`](escalation_list.md) | Escalation List | List visible human decision incidents. |
 | [`escalation_reply`](escalation_reply.md) | Escalation Reply | Record authenticated human evidence and notify its supervisor. |
+| [`escalation_resolve`](escalation_resolve.md) | Escalation Resolve | Close an answered incident with the outcome a human reads. |
+| [`escalation_sweep`](escalation_sweep.md) | Escalation Sweep | Plan the §5.6 back-fill sweep, and apply it on request. |
 | [`escalation_update`](escalation_update.md) | Escalation Update | CAS-update an incident owned by the supervisor. |
 
 ### Integration
@@ -148,7 +150,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
-| [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
@@ -156,6 +157,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
@@ -165,7 +167,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_list`](job_list.md) | Job List | List this owner's managed jobs. |
 | [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
-| [`job_retain`](job_retain.md) | Job Retain | Retain a completed capture as durable artifact identities, with its candidate artifact and render profile. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |

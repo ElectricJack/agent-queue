@@ -394,6 +394,8 @@ async def run(
         if discord_transport is not None and config.discord.channel_id:
             from src.escalations import EscalationDeliveryService
 
+            conversation_adapter = _bind_conversation_outbox(orch, discord_transport, config)
+
             handler = orch._get_handler()
             # Every link names the dashboard server's configured origin
             # (dashboard.server.public_url), resolved per new payload --
@@ -427,12 +429,18 @@ async def run(
                 escalation_priority=orch.db.count_due_escalation_deliveries,
                 event_bus=orch.bus,
                 include_outbound=True,
+                conversation_adapter=conversation_adapter,
                 authoring_ready=lambda: bool(
                     orch.playbook_manager is not None
                     and orch.playbook_manager.is_active("supervisor-hourly-report")
                 ),
             )
             logger.info("Digest scheduler wired to the Discord transport")
+            # READY may have attempted recovery before this binding existed.
+            # Its fail-closed pass leaves cursors untouched; recover now.
+            recover = getattr(bot, "_run_conversation_backfill", None)
+            if config.discord.conversation.enabled and recover is not None:
+                await recover()
         elif bot is not None:
             logger.warning(
                 "Discord cutover is not ready or has no explicit shared channel; core "
@@ -511,17 +519,32 @@ async def run(
     return restart
 
 
+def _bind_conversation_outbox(orch: Any, transport: Any, config: Any):
+    """Bind both ends of the conversation port once Discord cutover is complete."""
+    from src.conversations.delivery import ConversationDeliveryAdapter, DurableConversationOutbox
+
+    orch.conversation_outbox = DurableConversationOutbox(orch.db)
+    return ConversationDeliveryAdapter(
+        orch.db, transport, config=config, lease_owner=f"daemon-{os.getpid()}"
+    )
+
+
 def _bot_rate_guard(bot: Any):
-    """Let the escalation pump defer while the invalid-request guard is hot.
+    """Defer dispatch before claiming when either shared Discord budget is held.
 
     The guard is the bot's, not a second counter: an escalation is critical
     traffic, so it is held rather than dropped, and the delivery row simply
     retries after backoff (§7 keeps the existing rate guard).
     """
     tracker = getattr(bot, "_rate_tracker", None)
-    if tracker is None:
-        return None
-    return lambda: tracker.should_allow(critical=True)
+
+    def allowed():
+        bucket = getattr(bot, "_outbound_bucket", None)
+        return (tracker is None or tracker.should_allow(critical=True)) and (
+            bucket is None or bucket.available()
+        )
+
+    return allowed
 
 
 async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:

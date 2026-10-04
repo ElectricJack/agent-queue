@@ -153,13 +153,13 @@ Unique: (`project_id`, `incident_key`) and (`project_id`, `source_kind`, `source
 
 ### Table: `escalation_messages`
 
-Immutable inbound and outbound conversation facts. Verified actor identity is supplied by a trusted command boundary. Transport/external-message uniqueness collapses replay. For an accepted open reply, `supervisor_message_id` points to the supervisor notice inserted in the same transaction.
+Immutable conversation facts. Verified actor identity is supplied by a trusted command boundary. Transport/external-message uniqueness collapses replay. For an accepted open reply, `supervisor_message_id` points to the supervisor notice inserted in the same transaction. `direction` names the author: `inbound` is a verified human reply, `outbound` a supervisor answer (the only direction relayed into the channel thread), and `system` the daemon's own audit note — the §5.6 sweep's `sweep: <rule>` trail, which is neither answered nor relayed.
 
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
 | `escalation_id` | TEXT | NOT NULL, REFERENCES escalations(id) ON DELETE CASCADE |
-| `direction` | TEXT | inbound or outbound |
+| `direction` | TEXT | inbound, outbound or system |
 | `transport` | TEXT | NOT NULL |
 | `verified_actor` | TEXT | NOT NULL |
 | `text` | TEXT | NOT NULL, 1–16000 characters |
@@ -288,7 +288,7 @@ Durable author requests for supervisor-written digest reports: one row per reser
 
 ### Table: `supervisor_conversations`
 
-One operator conversation with the global supervisor, opened by an allowlisted @mention of the bot in the configured channel (Discord mention-routing spec §4.1, opt-in via `discord.conversation.enabled`). The row, its first input and the supervisor notice are written in one transaction before any transport side effect. `thread_id` is the internal `messages.thread_id` both directions share; `external_thread_id` is set, and the state moves `opening` → `open`, only when the thread-open delivery confirms.
+One operator conversation with the addressed supervisor, opened by an allowlisted message in the configured channel (Discord mention-routing spec §4.1, chat-extension spec §2.2, opt-in via `discord.conversation.enabled`). The row, its first input and the supervisor notice are written in one transaction before any transport side effect. `thread_id` is the internal `messages.thread_id` both directions share; `external_thread_id` is set, and the state moves `opening` → `open`, only when the thread-open delivery confirms — or, for a direct message or a thread the operator started, on the first post that has nowhere else to go. `guild_id` is `dm` for a direct message, which has no guild.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -302,11 +302,12 @@ One operator conversation with the global supervisor, opened by an allowlisted @
 | `created_by` | TEXT | NOT NULL verified actor, `human:discord:<id>` |
 | `audience` | JSON | NOT NULL allowlist snapshot at open |
 | `state` | TEXT | opening, open, closed or delivery_blocked |
+| `kind` | TEXT | `thread` (one conversation per opened thread) or `channel` (the channel's one conversation) |
 | `created_at` | FLOAT | NOT NULL |
 | `updated_at` | FLOAT | NOT NULL, bumped by each input and reply |
 | `closed_at` | FLOAT | nullable |
 
-Unique: (`transport`, `external_root_message_id`), `thread_id`, and (`transport`, `external_thread_id`) where the thread is set. Index: `idx_supervisor_conversations_state`.
+Unique: (`transport`, `external_root_message_id`), `thread_id`, (`transport`, `external_thread_id`) where the thread is set, and (`transport`, `channel_id`) where `kind = 'channel'` and the conversation is not closed — the last is what makes "one conversation per channel" an invariant rather than a convention. Check: `ck_supervisor_conversations_kind`. Index: `idx_supervisor_conversations_state`. Added by revision `a00000000063`.
 
 ### Table: `conversation_inputs`
 

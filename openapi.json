@@ -3920,6 +3920,90 @@
         }
       }
     },
+    "/api/digest/facts": {
+      "post": {
+        "tags": [
+          "digest"
+        ],
+        "summary": "Read the frozen facts for one supervisor-authored digest window: landed, stuck, needs-you and session counts, plus the deadline the deterministic fallback posts at.",
+        "description": "Read the frozen facts for one supervisor-authored digest window: landed, stuck, needs-you and session counts, plus the deadline the deterministic fallback posts at.",
+        "operationId": "digest_facts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestFactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigestFactsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/digest/post": {
+      "post": {
+        "tags": [
+          "digest"
+        ],
+        "summary": "Post the supervisor's digest body for one held window. The daemon renders it inside the size budget and appends the needs-you link.",
+        "description": "Post the supervisor's digest body for one held window. The daemon renders it inside the size budget and appends the needs-you link.",
+        "operationId": "digest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestPostRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigestPostResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/digest/preview": {
       "post": {
         "tags": [
@@ -3945,6 +4029,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DigestPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/digest/request": {
+      "post": {
+        "tags": [
+          "digest"
+        ],
+        "summary": "Queue the supervisor author turn for every reserved digest window (install-wide digest service/playbook only).",
+        "description": "Queue the supervisor author turn for every reserved digest window (install-wide digest service/playbook only).",
+        "operationId": "digest_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigestRequestResponse"
                 }
               }
             }
@@ -4244,6 +4370,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EscalationReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/resolve": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Close an answered human escalation with the outcome its channel post will show. Owning supervisor only; a newer human reply wins and is reported as a stale revision. Cancelling an unanswered question is escalation_update --state cancelled.",
+        "description": "Close an answered human escalation with the outcome its channel post will show. Owning supervisor only; a newer human reply wins and is reported as a stale revision. Cancelling an unanswered question is escalation_update --state cancelled.",
+        "operationId": "escalation_resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationResolveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/escalation/sweep": {
+      "post": {
+        "tags": [
+          "escalation"
+        ],
+        "summary": "Plan the \u00a75.6 back-fill sweep over the escalation pile and, with apply, run it. Without apply it is a dry run that writes nothing: it returns the plan per escalation, what it would close, and what it would list for supervisor triage. Gated by discord.escalations.stateful; idempotent, so a second run is a no-op.",
+        "description": "Plan the \u00a75.6 back-fill sweep over the escalation pile and, with apply, run it. Without apply it is a dry run that writes nothing: it returns the plan per escalation, what it would close, and what it would list for supervisor triage. Gated by discord.escalations.stateful; idempotent, so a second run is a no-op.",
+        "operationId": "escalation_sweep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationSweepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalationSweepResponse"
                 }
               }
             }
@@ -27155,6 +27365,150 @@
         ],
         "title": "DigestEscalationSettings"
       },
+      "DigestFactsRequest": {
+        "properties": {
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since",
+            "description": "Window start as epoch seconds (default: newest window)."
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "DigestFactsRequest"
+      },
+      "DigestFactsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "window_id": {
+            "type": "string",
+            "title": "Window Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "deadline": {
+            "type": "number",
+            "title": "Deadline"
+          },
+          "seconds_remaining": {
+            "type": "number",
+            "title": "Seconds Remaining",
+            "default": 0.0
+          },
+          "facts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Facts"
+          },
+          "facts_hash": {
+            "type": "string",
+            "title": "Facts Hash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "window_id",
+          "state",
+          "deadline",
+          "facts",
+          "facts_hash"
+        ],
+        "title": "DigestFactsResponse",
+        "description": "One window's frozen evidence, as the author reads it."
+      },
+      "DigestPostRequest": {
+        "properties": {
+          "window": {
+            "type": "number",
+            "title": "Window",
+            "description": "Window start as epoch seconds."
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Three sentences, no links."
+          }
+        },
+        "type": "object",
+        "required": [
+          "window",
+          "body"
+        ],
+        "title": "DigestPostRequest"
+      },
+      "DigestPostResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "window_id": {
+            "type": "string",
+            "title": "Window Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "default": ""
+          },
+          "characters": {
+            "type": "integer",
+            "title": "Characters",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "window_id",
+          "state",
+          "version"
+        ],
+        "title": "DigestPostResponse",
+        "description": "The rendered post the daemon will send for one window."
+      },
       "DigestPreviewRequest": {
         "properties": {
           "dashboard_url": {
@@ -27280,6 +27634,46 @@
         "title": "DigestPreviewResponse",
         "description": "A dry evaluation of the current window; nothing was sent."
       },
+      "DigestRequestRequest": {
+        "properties": {
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "DigestRequestRequest"
+      },
+      "DigestRequestResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested",
+            "default": 0
+          },
+          "cancelled": {
+            "type": "integer",
+            "title": "Cancelled",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "DigestRequestResponse",
+        "description": "How many held windows this reconciliation handed to the supervisor."
+      },
       "DigestScheduleSettings": {
         "properties": {
           "enabled": {
@@ -27309,6 +27703,21 @@
           "catchup_hours": {
             "type": "integer",
             "title": "Catchup Hours"
+          },
+          "supervisor_authored": {
+            "type": "boolean",
+            "title": "Supervisor Authored",
+            "default": false
+          },
+          "cadence_minutes": {
+            "type": "integer",
+            "title": "Cadence Minutes",
+            "default": 120
+          },
+          "author_fallback_minutes": {
+            "type": "integer",
+            "title": "Author Fallback Minutes",
+            "default": 10
           }
         },
         "type": "object",
@@ -30371,6 +30780,141 @@
           "terminal"
         ],
         "title": "EscalationReplyResponse"
+      },
+      "EscalationResolveRequest": {
+        "properties": {
+          "escalation_id": {
+            "type": "string",
+            "title": "Escalation Id",
+            "description": ""
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "description": "What was done, in the words the human will read."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Optional compare-and-set fence. Omit to resolve the revision this incident has now."
+          }
+        },
+        "type": "object",
+        "required": [
+          "escalation_id",
+          "outcome"
+        ],
+        "title": "EscalationResolveRequest"
+      },
+      "EscalationResolveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "resolved": {
+            "type": "boolean",
+            "title": "Resolved"
+          },
+          "escalation": {
+            "$ref": "#/components/schemas/EscalationRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolved",
+          "escalation"
+        ],
+        "title": "EscalationResolveResponse"
+      },
+      "EscalationSweepRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "Close and triage as planned instead of only printing it.",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 500
+          }
+        },
+        "type": "object",
+        "title": "EscalationSweepRequest"
+      },
+      "EscalationSweepResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Plan"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Report"
+          },
+          "open_before": {
+            "type": "integer",
+            "title": "Open Before"
+          },
+          "open_after": {
+            "type": "integer",
+            "title": "Open After"
+          },
+          "target_open_items": {
+            "type": "integer",
+            "title": "Target Open Items"
+          },
+          "within_target": {
+            "type": "boolean",
+            "title": "Within Target"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "plan",
+          "report",
+          "open_before",
+          "open_after",
+          "target_open_items",
+          "within_target"
+        ],
+        "title": "EscalationSweepResponse",
+        "description": "One \u00a75.6 sweep pass: the plan, and what the pass did about it."
       },
       "EscalationUpdateRequest": {
         "properties": {

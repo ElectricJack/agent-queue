@@ -31,16 +31,21 @@ from sqlalchemy import and_, case, delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
 from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
+from src.conversations.outbox import STATUS_LINE_ACTION
 from src.database.tables import (
     conversation_backfill_cursors,
     conversation_inputs,
     conversation_intake_gaps,
+    digest_windows,
     messages,
+    outbound_deliveries,
     supervisor_conversations,
 )
 
 CONVERSATION_STATES = ("opening", "open", "closed", "delivery_blocked")
+CONVERSATION_KINDS = (KIND_THREAD, KIND_CHANNEL)
 INPUT_STATES = ("accepted", "answered", "expired", "revoked")
 INPUT_SOURCES = frozenset({"gateway", "backfill", "replay", "test"})
 GAP_REASONS = frozenset({"cursor_expired", "history_forbidden", "pass_cap"})
@@ -50,8 +55,15 @@ MAX_INPUT_CHARS = 4000
 #: Conversations an idle sweep may close.  ``opening`` is left alone: its
 #: thread-open delivery is still owned by the outbox.
 IDLE_CLOSABLE_STATES = ("open", "delivery_blocked")
+#: States a channel conversation may be joined in.  A closed one is finished;
+#: the next message opens a fresh conversation rather than reviving it.
+JOINABLE_STATES = ("opening", "open", "delivery_blocked")
+#: Outbound-delivery owners a Discord post may be, mapped to the §2.2 thread
+#: tag the conversation envelope carries for it.
+DELIVERY_OWNER_TAGS = {"morning": "report"}
 
 SUPERVISOR_RECIPIENT = "supervisor-global"
+QUEUED_SUPERVISOR_RECIPIENT = "conversation-queued"
 _SUPERVISOR_PRIORITY = 50
 _UNIQUE_INPUT = "uq_conversation_inputs_external"
 
@@ -98,6 +110,21 @@ def _row(row: Any) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def _channel_conversation_statement(transport: str, channel_id: str):
+    """The channel's one live conversation, newest first (chat-extension §2.2)."""
+    return (
+        select(supervisor_conversations)
+        .where(
+            supervisor_conversations.c.transport == transport,
+            supervisor_conversations.c.channel_id == channel_id,
+            supervisor_conversations.c.kind == KIND_CHANNEL,
+            supervisor_conversations.c.state.in_(JOINABLE_STATES),
+        )
+        .order_by(supervisor_conversations.c.created_at.desc())
+        .limit(1)
+    )
+
+
 def _page_boundary(time_column: Any, id_column: Any, before: float, before_id: str | None) -> Any:
     """Rows after an exclusive ``(before, before_id)`` boundary in newest-first order.
 
@@ -115,6 +142,67 @@ class ConversationQueriesMixin:
     # ------------------------------------------------------------------
     # Intake
     # ------------------------------------------------------------------
+
+    async def resolve_conversation_supervisor(
+        self, project_id: str = ""
+    ) -> tuple[str | None, str | None]:
+        """Choose a live project supervisor, then global, otherwise keep the input queued."""
+        from src.sessions.spec import named_session_name
+
+        if not project_id:
+            projects = await self.list_projects()
+            if len(projects) == 1:
+                project_id = projects[0].id
+            elif len(projects) > 1:
+                # A shared channel cannot guess which project's supervisor owns it.
+                return None, None
+        for scope in [project_id, None] if project_id else [None]:
+            live = await self.get_session_by_name(
+                named_session_name("supervisor", scope or "global")
+            )
+            if (
+                live is not None
+                and live.state in {"starting", "running"}
+                and live.desired_state == "running"
+                and live.profile_id == "supervisor"
+                and live.lifecycle == "named"
+                and live.project_id == scope
+            ):
+                return f"supervisor-{scope or 'global'}", scope
+        return None, project_id or None
+
+    async def route_queued_conversation_inputs(self, project_id: str = "") -> int:
+        """Drain only unassigned notices; assigned envelopes retain their recipient."""
+        recipient, scope = await self.resolve_conversation_supervisor(project_id)
+        if recipient is None:
+            return 0
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(messages)
+                .where(
+                    messages.c.to_kind == "session",
+                    messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
+                    messages.c.body_kind == "conversation_input",
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+                .values(to_id=recipient, project_id=scope)
+            )
+            return result.rowcount
+
+    async def find_conversation_input_by_supervisor_message(self, message_id: str) -> dict | None:
+        async with self._engine.connect() as conn:
+            return _row(
+                (
+                    await conn.execute(
+                        select(conversation_inputs).where(
+                            conversation_inputs.c.supervisor_message_id == message_id
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
 
     async def accept_conversation_input(
         self,
@@ -134,8 +222,10 @@ class ConversationQueriesMixin:
         conversation_id: str | None,
         brief: str | Callable[[str, str], str],
         supervisor_recipient: str = SUPERVISOR_RECIPIENT,
+        supervisor_project_id: str | None = None,
         now: float | None = None,
         enforce_limits: bool = False,
+        kind: str = KIND_THREAD,
     ) -> dict[str, Any]:
         """Persist one verified operator message and queue its supervisor notice.
 
@@ -144,6 +234,12 @@ class ConversationQueriesMixin:
         -- (b) the ``conversation_inputs`` row and (c) the deterministic
         ``msg-<input id>`` message to ``session:<supervisor_recipient>`` in
         the conversation's thread.
+
+        *kind* is ``thread`` for one conversation per opened thread and
+        ``channel`` for the one a channel carries (chat-extension spec §2.2).
+        Two ``channel`` accepts that race on the same channel serialise on the
+        partial unique index: the loser joins the winner's conversation rather
+        than creating a second one.
 
         A replay of ``(transport, external_message_id)`` returns the original
         rows with ``"created": False`` and writes nothing, whatever text the
@@ -163,6 +259,8 @@ class ConversationQueriesMixin:
         channel quota checks are serialized with the insert; the window uses
         acceptance time, so old backfill messages still spend current quota.
         """
+        if kind not in CONVERSATION_KINDS:
+            raise ValueError(f"unknown conversation kind {kind!r}")
         _require_nonempty(
             {
                 "transport": transport,
@@ -211,8 +309,10 @@ class ConversationQueriesMixin:
                 conversation_id=conversation_id,
                 brief=brief,
                 supervisor_recipient=supervisor_recipient,
+                supervisor_project_id=supervisor_project_id,
                 now=stamp,
                 enforce_limits=enforce_limits,
+                kind=kind,
             )
         except IntegrityError as exc:
             # The lock order above makes this unreachable for one message, but
@@ -243,14 +343,19 @@ class ConversationQueriesMixin:
         conversation_id: str | None,
         brief: str | Callable[[str, str], str],
         supervisor_recipient: str,
+        supervisor_project_id: str | None,
         now: float,
         enforce_limits: bool,
+        kind: str,
     ) -> dict[str, Any]:
         async with self.immediate() as conn:
             if enforce_limits:
                 # Shared across handlers/restarts and gateway/backfill. Always
                 # acquire author then channel to keep the lock order stable.
-                for key in (f"conversation:author:{author_id}", f"conversation:channel:{channel_id}"):
+                for key in (
+                    f"conversation:author:{author_id}",
+                    f"conversation:channel:{channel_id}",
+                ):
                     await conn.execute(
                         select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
                     )
@@ -262,7 +367,9 @@ class ConversationQueriesMixin:
                     ("channel", conversation_inputs.c.channel_id, channel_id, CHANNEL_WINDOW_LIMIT),
                 ):
                     total = await conn.scalar(
-                        select(func.count()).select_from(conversation_inputs).where(
+                        select(func.count())
+                        .select_from(conversation_inputs)
+                        .where(
                             conversation_inputs.c.created_at >= now - WINDOW_SECONDS,
                             conversation_inputs.c.state != "revoked",
                             column == value,
@@ -274,55 +381,49 @@ class ConversationQueriesMixin:
                 existing = await _input_by_external(conn, transport, external_message_id)
                 if existing is not None:
                     return await _replay(conn, existing)
-                new_id = f"conv-{uuid.uuid4()}"
-                inserted = (
-                    (
-                        await conn.execute(
-                            pg_insert(supervisor_conversations)
-                            .values(
-                                id=new_id,
-                                transport=transport,
-                                guild_id=guild_id,
-                                channel_id=channel_id,
-                                external_root_message_id=external_root_message_id,
-                                external_thread_id=external_thread_id,
-                                thread_id=f"conversation:{new_id}",
-                                created_by=verified_actor,
-                                audience=audience,
-                                state="opening",
-                                created_at=now,
-                                updated_at=now,
-                                closed_at=None,
-                            )
-                            .on_conflict_do_nothing(
-                                index_elements=["transport", "external_root_message_id"]
-                            )
-                            .returning(supervisor_conversations)
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if inserted is not None:
-                    conversation = dict(inserted)
-                else:
-                    # Another accept owns this root.  ON CONFLICT waited for it
-                    # to commit, so the row and its input are visible now.
-                    conversation = dict(
-                        (
-                            await conn.execute(
-                                select(supervisor_conversations)
-                                .where(
-                                    supervisor_conversations.c.transport == transport,
-                                    supervisor_conversations.c.external_root_message_id
-                                    == external_root_message_id,
+                conversation = None
+                if kind == KIND_CHANNEL:
+                    # §2.2: one live conversation per channel. The advisory lock
+                    # serialises this accept against every other one for the
+                    # channel, so the row it reads is the only candidate the
+                    # partial index could reject.
+                    await conn.execute(
+                        select(
+                            func.pg_advisory_xact_lock(
+                                func.hashtextextended(
+                                    f"conversation:channel-row:{transport}:{channel_id}", 0
                                 )
-                                .with_for_update()
                             )
                         )
-                        .mappings()
-                        .one()
                     )
+                    conversation = await self._live_channel_conversation(
+                        conn, transport=transport, channel_id=channel_id
+                    )
+                if conversation is None:
+                    new_id = f"conv-{uuid.uuid4()}"
+                    inserted = await self._insert_conversation(
+                        conn,
+                        conversation_id=new_id,
+                        transport=transport,
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        external_root_message_id=external_root_message_id,
+                        external_thread_id=external_thread_id,
+                        created_by=verified_actor,
+                        audience=audience,
+                        kind=kind,
+                        now=now,
+                    )
+                    if inserted is not None:
+                        conversation = inserted
+                    else:
+                        # Another accept owns this root. ON CONFLICT waited for
+                        # it to commit, so its row and input are visible now.
+                        conversation = await self._conversation_by_root(
+                            conn,
+                            transport=transport,
+                            external_root_message_id=external_root_message_id,
+                        )
             else:
                 locked = (
                     (
@@ -362,7 +463,7 @@ class ConversationQueriesMixin:
             await conn.execute(
                 pg_insert(messages).values(
                     id=supervisor_message_id,
-                    project_id=None,
+                    project_id=supervisor_project_id,
                     from_kind="user",
                     from_id=f"discord:{author_id}",
                     to_kind="session",
@@ -439,6 +540,90 @@ class ConversationQueriesMixin:
             existing = await _input_by_external(conn, transport, external_message_id)
             return await _replay(conn, existing) if existing is not None else None
 
+    async def _insert_conversation(
+        self,
+        conn,
+        *,
+        conversation_id: str,
+        transport: str,
+        guild_id: str,
+        channel_id: str,
+        external_root_message_id: str,
+        external_thread_id: str | None,
+        created_by: str,
+        audience: list[str],
+        kind: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        """Insert one conversation, or ``None`` when another accept owns its root.
+
+        The root-message conflict is settled by ``ON CONFLICT``; the channel
+        conflict that keeps a ``channel`` conversation unique per channel is
+        settled by the advisory lock the caller takes first, so this insert
+        cannot be aborted mid-transaction by it.
+        """
+        row = (
+            (
+                await conn.execute(
+                    pg_insert(supervisor_conversations)
+                    .values(
+                        id=conversation_id,
+                        transport=transport,
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        external_root_message_id=external_root_message_id,
+                        external_thread_id=external_thread_id,
+                        thread_id=f"conversation:{conversation_id}",
+                        created_by=created_by,
+                        audience=audience,
+                        state="opening",
+                        kind=kind,
+                        created_at=now,
+                        updated_at=now,
+                        closed_at=None,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["transport", "external_root_message_id"]
+                    )
+                    .returning(supervisor_conversations)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(row) if row is not None else None
+
+    async def _live_channel_conversation(self, conn, *, transport: str, channel_id: str):
+        """The channel's joinable conversation, locked, or ``None``.
+
+        Callers hold the channel-row advisory lock, so this read is the last
+        word on whether a ``channel`` accept may insert.
+        """
+        return await self._conversation_row(
+            conn, _channel_conversation_statement(transport, channel_id), optional=True
+        )
+
+    async def _conversation_by_root(self, conn, *, transport: str, external_root_message_id: str):
+        """The conversation that owns a root message, locked."""
+        return await self._conversation_row(
+            conn,
+            select(supervisor_conversations)
+            .where(
+                supervisor_conversations.c.transport == transport,
+                supervisor_conversations.c.external_root_message_id == external_root_message_id,
+            )
+            .limit(1),
+            optional=False,
+        )
+
+    async def _conversation_row(self, conn, statement, *, optional: bool):
+        row = (await conn.execute(statement.with_for_update())).mappings().first()
+        if row is None:
+            if not optional:
+                raise ConversationNotFound("no conversation owns this input")
+            return None
+        return dict(row)
+
     # ------------------------------------------------------------------
     # Lookups
     # ------------------------------------------------------------------
@@ -490,6 +675,170 @@ class ConversationQueriesMixin:
                 .one_or_none()
             )
         return _row(row)
+
+    async def find_channel_conversation(
+        self, *, transport: str, channel_id: str
+    ) -> dict[str, Any] | None:
+        """The live channel conversation a top-level message joins, or ``None``.
+
+        The channel route is "one durable conversation row per channel"
+        (chat-extension spec §2.2), so this is keyed by the channel itself and
+        not by a message: every later top-level message lands in the same
+        conversation.  A closed or absent row means the next message opens a
+        fresh one.
+        """
+        if not channel_id:
+            return None
+        async with self._engine.connect() as conn:
+            row = (
+                (await conn.execute(_channel_conversation_statement(transport, channel_id)))
+                .mappings()
+                .one_or_none()
+            )
+        return _row(row)
+
+    async def find_conversation_thread_tag(self, external_message_id: str) -> str | None:
+        """What a Discord post a thread hangs off is about, as a §2.2 tag.
+
+        Only durable receipts answer this: a thread on a digest window or a
+        morning report names its window.  A post whose producer does not record
+        the message id -- today's review-ready post -- has no tag, and the
+        thread simply becomes a conversation of its own.  Escalation roots are
+        not consulted: an escalation thread never becomes chat at all.
+        """
+        if not external_message_id:
+            return None
+        async with self._engine.connect() as conn:
+            window = (
+                (
+                    await conn.execute(
+                        select(digest_windows.c.id)
+                        .where(
+                            digest_windows.c.external_receipt_id == external_message_id,
+                            digest_windows.c.send_status == "sent",
+                        )
+                        .order_by(digest_windows.c.created_at.desc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if window:
+                return f"digest:{window}"
+            owner = (
+                (
+                    await conn.execute(
+                        select(
+                            outbound_deliveries.c.owner_kind,
+                            outbound_deliveries.c.owner_id,
+                        )
+                        .where(
+                            outbound_deliveries.c.external_receipt_id == external_message_id,
+                            outbound_deliveries.c.state == "sent",
+                            outbound_deliveries.c.owner_kind.in_(tuple(DELIVERY_OWNER_TAGS)),
+                        )
+                        .order_by(outbound_deliveries.c.updated_at.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if owner is None:
+            return None
+        return f"{DELIVERY_OWNER_TAGS[owner['owner_kind']]}:{owner['owner_id']}"
+
+    async def count_queued_conversation_inputs(self, conversation_id: str) -> int:
+        """Inputs of one conversation still waiting for a supervisor (§2.4)."""
+        async with self._engine.connect() as conn:
+            conversation = await conn.scalar(
+                select(supervisor_conversations.c.thread_id).where(
+                    supervisor_conversations.c.id == conversation_id
+                )
+            )
+            if conversation is None:
+                return 0
+            total = await conn.scalar(
+                select(func.count())
+                .select_from(messages)
+                .where(
+                    messages.c.body_kind == "conversation_input",
+                    messages.c.thread_id == conversation,
+                    messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+            )
+        return int(total or 0)
+
+    async def find_conversation_status_line(
+        self, conversation_id: str, *, exclude_delivery_id: str = ""
+    ) -> dict[str, Any] | None:
+        """The newest delivered §2.4 status line of a conversation, or ``None``.
+
+        The status line is one post per conversation, edited in place, so the
+        adapter edits what an earlier delivery of it posted instead of adding a
+        line per queued message.
+        """
+        if not conversation_id:
+            return None
+        conditions = [
+            outbound_deliveries.c.owner_kind == "conversation",
+            outbound_deliveries.c.owner_id == conversation_id,
+            outbound_deliveries.c.state == "sent",
+            outbound_deliveries.c.external_receipt_id.is_not(None),
+        ]
+        if exclude_delivery_id:
+            conditions.append(outbound_deliveries.c.id != exclude_delivery_id)
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(outbound_deliveries)
+                        .where(*conditions)
+                        .order_by(outbound_deliveries.c.updated_at.desc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None or (row["payload"] or {}).get("action") != STATUS_LINE_ACTION:
+            return None
+        return dict(row)
+
+    async def cancel_pending_conversation_status_line(
+        self, conversation_id: str, *, now: float | None = None
+    ) -> int:
+        """Withdraw a §2.4 status line that was reserved but never posted.
+
+        A line the operator's answer has already superseded must not appear
+        afterwards, so an undelivered reservation is cancelled rather than
+        queued.  Only ``pending`` and ``retry`` rows are touched: a line the
+        dispatcher is already sending belongs to its lease, and its own
+        delivery reconciles whatever this loses.  The status line's dedup key
+        names the conversation and its state, so no payload read is needed.
+        """
+        if not conversation_id:
+            return 0
+        stamp = _now(now)
+        async with self.immediate() as conn:
+            result = await conn.execute(
+                update(outbound_deliveries)
+                .where(
+                    outbound_deliveries.c.owner_kind == "conversation",
+                    outbound_deliveries.c.owner_id == conversation_id,
+                    outbound_deliveries.c.state.in_(("pending", "retry")),
+                    outbound_deliveries.c.dedup_key.startswith(f"conv-status:{conversation_id}:"),
+                )
+                .values(
+                    state="cancelled",
+                    updated_at=stamp,
+                    last_error="retired by an answer before it was posted",
+                )
+            )
+        return result.rowcount
 
     async def get_conversation_input(self, input_id: str) -> dict[str, Any] | None:
         async with self._engine.connect() as conn:
@@ -603,7 +952,7 @@ class ConversationQueriesMixin:
         nothing.  Raises :class:`ConversationNotFound`,
         :class:`ConversationConflict` (input from another conversation, or the
         id already names an unrelated message), :class:`ConversationClosed`
-        and :class:`ConversationStateError` (revoked input).
+        and :class:`ConversationStateError` (revoked or already answered input).
 
         Returns ``{"created", "conversation", "input", "message"}``.
         """
@@ -662,6 +1011,8 @@ class ConversationQueriesMixin:
                     "input": dict(item),
                     "message": dict(existing),
                 }
+            if item["reply_message_id"] is not None:
+                raise ConversationStateError(f"input {input_id} already has an answer")
             if conversation["state"] == "closed":
                 raise ConversationClosed(f"conversation {conversation_id} is closed")
             if item["state"] == "revoked":
@@ -670,7 +1021,7 @@ class ConversationQueriesMixin:
             notice = (
                 (
                     await conn.execute(
-                        select(messages.c.to_id, messages.c.read_at).where(
+                        select(messages.c.to_id, messages.c.read_at, messages.c.project_id).where(
                             messages.c.id == item["supervisor_message_id"]
                         )
                     )
@@ -685,7 +1036,7 @@ class ConversationQueriesMixin:
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,
-                            project_id=None,
+                            project_id=notice["project_id"] if notice is not None else None,
                             from_kind="session",
                             from_id=sender,
                             to_kind="user",

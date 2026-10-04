@@ -1,7 +1,7 @@
 """Shared helper functions for command handler and mixins.
 
 Module-level utilities for time parsing, subprocess execution,
-tree-view formatting, and archive note building.
+tree-view formatting, status/progress display, and archive note building.
 """
 
 from __future__ import annotations
@@ -10,8 +10,44 @@ import asyncio
 import datetime
 import time
 
-from src.discord.embeds import STATUS_EMOJIS
 from src.models import Task, TaskStatus
+
+# ── Status and progress display ───────────────────────────────────────
+# Owned here rather than in a transport module: every consumer is the command
+# layer rendering a result payload.  They moved out of ``src/discord/embeds.py``
+# with the rest of the retired Discord embed factory (Discord-as-a-chat-extension
+# spec §9 row 12).
+
+STATUS_EMOJIS: dict[str, str] = {
+    TaskStatus.DEFINED.value: "⚪",  # white circle
+    TaskStatus.READY.value: "\U0001f535",  # blue circle
+    TaskStatus.ASSIGNED.value: "\U0001f4cb",  # clipboard
+    TaskStatus.IN_PROGRESS.value: "\U0001f7e1",  # yellow circle
+    TaskStatus.WAITING_INPUT.value: "\U0001f4ac",  # speech balloon
+    TaskStatus.PAUSED.value: "⏸️",  # pause button
+    TaskStatus.COMPLETED.value: "\U0001f7e2",  # green circle
+    TaskStatus.FAILED.value: "\U0001f534",  # red circle
+    TaskStatus.BLOCKED.value: "⛔",  # no entry
+}
+
+
+def progress_bar(
+    completed: int,
+    total: int,
+    *,
+    width: int = 10,
+    filled: str = "█",
+    empty: str = "░",
+) -> str:
+    """Render a text-based progress bar, e.g. ``████░░░░░░ 40% (4/10)``."""
+    if total <= 0:
+        pct = 0.0
+    else:
+        pct = completed / total * 100
+    fill_count = round(pct / 100 * width)
+    bar = filled * fill_count + empty * (width - fill_count)
+    return f"{bar} {pct:.0f}% ({completed}/{total})"
+
 
 # ── Log / event time helpers ──────────────────────────────────────────
 
@@ -250,9 +286,9 @@ def _format_interval(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 # Tree-view text formatting
 # ---------------------------------------------------------------------------
-# Unicode box-drawing characters for task tree rendering.  These match the
-# constants in ``src/discord/embeds.py`` but are duplicated here so the
-# command handler stays self-contained for formatting purposes.
+# Unicode box-drawing characters for task tree rendering.  They were the
+# ``src/discord/embeds.py`` tree constants, kept local so the command handler
+# stays self-contained for formatting purposes.
 
 _TREE_BRANCH = "├── "  # Non-last child connector
 _TREE_LAST = "└── "  # Last child connector

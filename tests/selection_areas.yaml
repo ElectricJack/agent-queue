@@ -269,13 +269,13 @@ areas:
       - tests/test_notifications.py
       - tests/test_discord_adapter.py
       - tests/test_remote_links.py
+      - tests/test_dashboard_links.py
   - id: discord
-    description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle."
+    description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle."
     match:
       - tests/test_discord_*.py
       - tests/test_rate_guard.py
       - tests/test_slash_commands.py
-      - tests/test_views.py
   - id: discord-conversations
     description: "Discord @mention conversations with the supervisor: the pure intake classifier and its gate order, the numeric limits, fail-closed preconditions, the outbound outbox port and durable conversations, inputs, backfill cursors and gaps."
     match: [tests/test_conversation_*.py]
@@ -808,6 +808,7 @@ areas:
       - tests/test_doctor_stall_checks.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
+      - tests/test_doctor_discord_config.py
       - tests/test_health_platform.py
 
   # ------------------------------------------------------------ install and release

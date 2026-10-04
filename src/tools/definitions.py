@@ -101,7 +101,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_get": "escalation",
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
+    "escalation_resolve": "escalation",
     "escalation_apply_reply": "escalation",
+    "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
@@ -126,6 +128,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    "digest_facts": "digest",
+    "digest_post": "digest",
+    "digest_request": "digest",
     "job_submit": "job",
     "job_get": "job",
     "job_list": "job",
@@ -7307,6 +7312,36 @@ _ALL_TOOL_DEFINITIONS.extend(
             },
         },
         {
+            "name": "escalation_resolve",
+            "description": (
+                "Close an answered human escalation with the outcome its channel post will show. "
+                "Owning supervisor only; a newer human reply wins and is reported as a stale "
+                "revision. Cancelling an unanswered question is escalation_update --state cancelled."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "escalation_id": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000,
+                        "description": "What was done, in the words the human will read.",
+                    },
+                    "expected_revision": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "Optional compare-and-set fence. Omit to resolve the revision "
+                            "this incident has now."
+                        ),
+                    },
+                },
+                "required": ["escalation_id", "outcome"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "escalation_apply_reply",
             "description": (
                 "Apply one bound verified human reply through the owning supervisor's exact "
@@ -7337,6 +7372,28 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "escalation_sweep",
+            "description": (
+                "Plan the §5.6 back-fill sweep over the escalation pile and, with apply, run it. "
+                "Without apply it is a dry run that writes nothing: it returns the plan per "
+                "escalation, what it would close, and what it would list for supervisor triage. "
+                "Gated by discord.escalations.stateful; idempotent, so a second run is a no-op."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "apply": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Close and triage as planned instead of only printing it.",
+                    },
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
+                },
+                "additionalProperties": False,
+            },
+        },
     ]
 )
 
@@ -7362,6 +7419,55 @@ _ALL_TOOL_DEFINITIONS.extend(
             "description": (
                 "Configured digest destination and schedule generation, next evaluation, recent "
                 "windows and pending/unknown/failed delivery health."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"now": {"type": "number"}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "digest_facts",
+            "description": (
+                "Read the frozen facts for one supervisor-authored digest window: landed, stuck, "
+                "needs-you and session counts, plus the deadline the deterministic fallback posts at."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "number",
+                        "description": "Window start as epoch seconds (default: newest window).",
+                    },
+                    "now": {"type": "number"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "digest_post",
+            "description": (
+                "Post the supervisor's digest body for one held window. The daemon renders it "
+                "inside the size budget and appends the needs-you link."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "window": {
+                        "type": "number",
+                        "description": "Window start as epoch seconds.",
+                    },
+                    "body": {"type": "string", "description": "Three sentences, no links."},
+                },
+                "required": ["window", "body"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "digest_request",
+            "description": (
+                "Queue the supervisor author turn for every reserved digest window "
+                "(install-wide digest service/playbook only)."
             ),
             "input_schema": {
                 "type": "object",

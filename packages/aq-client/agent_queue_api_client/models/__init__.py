@@ -223,8 +223,15 @@ from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .deleted_branch import DeletedBranch
 from .digest_escalation_settings import DigestEscalationSettings
+from .digest_facts_request import DigestFactsRequest
+from .digest_facts_response import DigestFactsResponse
+from .digest_facts_response_facts import DigestFactsResponseFacts
+from .digest_post_request import DigestPostRequest
+from .digest_post_response import DigestPostResponse
 from .digest_preview_request import DigestPreviewRequest
 from .digest_preview_response import DigestPreviewResponse
+from .digest_request_request import DigestRequestRequest
+from .digest_request_response import DigestRequestResponse
 from .digest_schedule_settings import DigestScheduleSettings
 from .digest_status_request import DigestStatusRequest
 from .digest_status_response import DigestStatusResponse
@@ -313,6 +320,12 @@ from .escalation_record import EscalationRecord
 from .escalation_record_terminal_evidence_type_0 import EscalationRecordTerminalEvidenceType0
 from .escalation_reply_request import EscalationReplyRequest
 from .escalation_reply_response import EscalationReplyResponse
+from .escalation_resolve_request import EscalationResolveRequest
+from .escalation_resolve_response import EscalationResolveResponse
+from .escalation_sweep_request import EscalationSweepRequest
+from .escalation_sweep_response import EscalationSweepResponse
+from .escalation_sweep_response_plan import EscalationSweepResponsePlan
+from .escalation_sweep_response_report import EscalationSweepResponseReport
 from .escalation_update_request import EscalationUpdateRequest
 from .escalation_update_request_terminal_evidence_type_0 import EscalationUpdateRequestTerminalEvidenceType0
 from .escalation_update_response import EscalationUpdateResponse
@@ -1987,8 +2000,15 @@ __all__ = (
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DigestEscalationSettings",
+    "DigestFactsRequest",
+    "DigestFactsResponse",
+    "DigestFactsResponseFacts",
+    "DigestPostRequest",
+    "DigestPostResponse",
     "DigestPreviewRequest",
     "DigestPreviewResponse",
+    "DigestRequestRequest",
+    "DigestRequestResponse",
     "DigestScheduleSettings",
     "DigestStatusRequest",
     "DigestStatusResponse",
@@ -2075,6 +2095,12 @@ __all__ = (
     "EscalationRecordTerminalEvidenceType0",
     "EscalationReplyRequest",
     "EscalationReplyResponse",
+    "EscalationResolveRequest",
+    "EscalationResolveResponse",
+    "EscalationSweepRequest",
+    "EscalationSweepResponse",
+    "EscalationSweepResponsePlan",
+    "EscalationSweepResponseReport",
     "EscalationUpdateRequest",
     "EscalationUpdateRequestTerminalEvidenceType0",
     "EscalationUpdateResponse",

@@ -34,6 +34,7 @@ async def env(tmp_path):
                 "escalation_get",
                 "escalation_reply",
                 "escalation_update",
+                "escalation_resolve",
                 "escalation_apply_reply",
             ],
             harness_tools=[],
@@ -428,3 +429,116 @@ async def test_task_recovery_delegates_exact_incident_decision_and_reply(env):
             "reason": "Retry after preserving the current evidence",
         }
     )
+
+
+# ======================================================================
+# §5.3 — escalation_resolve: the supervisor closes what a human answered
+# ======================================================================
+
+
+async def answered_incident(handler, *, external="human-answer-1"):
+    incident = (await handler.execute("escalation_create", create_args()))["escalation"]
+    accepted = await handler.execute(
+        "escalation_reply",
+        {
+            "escalation_id": incident["id"],
+            "text": "Ship from main",
+            "external_message_id": external,
+        },
+    )
+    return incident, accepted
+
+
+async def test_resolve_closes_an_answered_incident_with_the_outcome_a_human_reads(env):
+    handler, db = env
+    incident, accepted = await answered_incident(handler)
+
+    result = await supervisor_execute(
+        handler,
+        "escalation_resolve",
+        {"escalation_id": incident["id"], "outcome": "Shipped from main"},
+    )
+
+    assert result["success"] is True and result["resolved"] is True
+    stored = await db.get_escalation(incident["id"])
+    assert stored["state"] == "resolved"
+    assert stored["terminal_outcome"] == "Shipped from main"
+    # A person closed it, so §5.2's collapsed row reads "Resolved", not
+    # "No longer needed" -- which is what `outcome` decides.
+    assert stored["outcome"] == "human"
+    assert stored["terminal_evidence"]["resolved_by"] == "session:super-p"
+    assert stored["revision"] > accepted["escalation"]["revision"]
+    assert stored["terminal_at"] is not None
+
+
+async def test_resolve_walks_the_legal_path_and_never_resolves_over_a_newer_answer(env):
+    handler, db = env
+    incident, _accepted = await answered_incident(handler)
+
+    stale = await supervisor_execute(
+        handler,
+        "escalation_resolve",
+        {"escalation_id": incident["id"], "outcome": "Shipped from main", "expected_revision": 0},
+    )
+    assert stale["error_code"] == "stale_revision"
+    assert (await db.get_escalation(incident["id"]))["state"] == "reply_received"
+
+    resolved = await supervisor_execute(
+        handler,
+        "escalation_resolve",
+        {"escalation_id": incident["id"], "outcome": "Shipped from main"},
+    )
+    assert resolved["success"] is True
+    assert (await db.get_escalation(incident["id"]))["state"] == "resolved"
+    # The terminal write happened after the intermediate one, never instead.
+    assert resolved["escalation"]["revision"] == 3
+
+
+async def test_resolve_refuses_an_unanswered_incident_and_names_the_alternative(env):
+    handler, db = env
+    incident = (await handler.execute("escalation_create", create_args()))["escalation"]
+
+    result = await supervisor_execute(
+        handler, "escalation_resolve", {"escalation_id": incident["id"], "outcome": "Moot"}
+    )
+
+    assert result["error_code"] == "invalid_state"
+    assert "cancelled" in result["error"]
+    assert (await db.get_escalation(incident["id"]))["state"] == "needs_human"
+
+
+async def test_resolve_is_terminal_immutable_and_outcome_is_required(env):
+    handler, db = env
+    incident, _accepted = await answered_incident(handler)
+    await supervisor_execute(
+        handler, "escalation_resolve", {"escalation_id": incident["id"], "outcome": "Shipped"}
+    )
+
+    again = await supervisor_execute(
+        handler, "escalation_resolve", {"escalation_id": incident["id"], "outcome": "Shipped"}
+    )
+    blank = await supervisor_execute(
+        handler, "escalation_resolve", {"escalation_id": incident["id"], "outcome": "  "}
+    )
+    other = await supervisor_execute(
+        handler, "escalation_resolve", {"escalation_id": "escalation-nope", "outcome": "x"}
+    )
+
+    assert again["error_code"] == "invalid_state"
+    assert blank["error_code"] == "invalid_request"
+    assert other["error_code"] == "not_found"
+
+
+async def test_resolve_is_the_owning_supervisors_and_nobody_elses(env):
+    handler, db = env
+    incident, _accepted = await answered_incident(handler)
+    args = {"escalation_id": incident["id"], "outcome": "Shipped"}
+
+    local = await handler.execute("escalation_resolve", args)
+    spoofed = await supervisor_execute(
+        handler, "escalation_resolve", {**args, "verified_actor": "human:jack"}
+    )
+
+    assert local["error_code"] == "out_of_scope"
+    assert spoofed["error_code"] == "spoofed_identity"
+    assert (await db.get_escalation(incident["id"]))["state"] == "reply_received"

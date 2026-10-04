@@ -57,6 +57,7 @@
         "tests/test_reviewer_api_scope.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_target_scope.py",
         "tests/test_triage_api_scope.py",
         "tests/test_worker_git_scope.py"
       ]
@@ -233,6 +234,7 @@
         "tests/test_digest_commands.py",
         "tests/test_digest_dispatch.py",
         "tests/test_digest_queries.py",
+        "tests/test_digest_supervisor.py",
         "tests/test_discord_settings.py",
         "tests/test_morning_reports.py",
         "tests/test_report_delivery.py",
@@ -240,22 +242,22 @@
       ]
     },
     "discord": {
-      "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle.",
+      "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle.",
       "modules": [
         "tests/test_discord_adapter.py",
         "tests/test_discord_bot_routing.py",
-        "tests/test_discord_commands.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
+        "tests/test_discord_escalation_buttons.py",
         "tests/test_discord_escalation_transport.py",
         "tests/test_discord_housekeeping.py",
         "tests/test_discord_inbound_router.py",
         "tests/test_discord_intake_diagnostics.py",
+        "tests/test_discord_render_budgets.py",
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
         "tests/test_rate_guard.py",
-        "tests/test_slash_commands.py",
-        "tests/test_views.py"
+        "tests/test_slash_commands.py"
       ]
     },
     "discord-conversations": {
@@ -268,7 +270,8 @@
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
-        "tests/test_conversation_render.py"
+        "tests/test_conversation_render.py",
+        "tests/test_conversation_wiring.py"
       ]
     },
     "docs-guards": {
@@ -289,6 +292,7 @@
       "description": "aq doctor: the check registry and runner, exit codes, built-in checks, platform health diagnostics, the operator stall sweep, sustained event-loop lag reports and installed-skill drift.",
       "modules": [
         "tests/test_doctor.py",
+        "tests/test_doctor_discord_config.py",
         "tests/test_doctor_perf_checks.py",
         "tests/test_doctor_skill_checks.py",
         "tests/test_doctor_stall_checks.py",
@@ -349,7 +353,9 @@
         "tests/test_escalation_commands.py",
         "tests/test_escalation_delivery.py",
         "tests/test_escalation_intake.py",
-        "tests/test_escalation_queries.py"
+        "tests/test_escalation_queries.py",
+        "tests/test_escalation_state.py",
+        "tests/test_escalation_sweep.py"
       ]
     },
     "events": {
@@ -614,10 +620,9 @@
       ]
     },
     "knowledge-evaluation": {
-      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks, plus the thin harness delivery/resume adapters and the integrated runner replayed against the real context service.",
+      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks.",
       "modules": [
-        "tests/test_knowledge_evaluation.py",
-        "tests/test_knowledge_harness_delivery.py"
+        "tests/test_knowledge_evaluation.py"
       ]
     },
     "knowledge-inventory": {
@@ -632,13 +637,9 @@
         "tests/test_api_knowledge.py",
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
-        "tests/test_knowledge_budget.py",
-        "tests/test_knowledge_citations.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
-        "tests/test_knowledge_context.py",
         "tests/test_knowledge_evaluation.py",
-        "tests/test_knowledge_harness_delivery.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
         "tests/test_knowledge_inventory.py",
@@ -731,6 +732,7 @@
     "messaging-adapters": {
       "description": "Messaging and notifications abstraction: the messaging port and adapter factory, the Discord adapter, booting with no adapter, event-driven notifications and remote-safe links.",
       "modules": [
+        "tests/test_dashboard_links.py",
         "tests/test_discord_adapter.py",
         "tests/test_messaging_adapter.py",
         "tests/test_messaging_port.py",
@@ -769,9 +771,13 @@
         "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
+        "tests/test_migration_conversation_kind.py",
+        "tests/test_migration_digest_author_requests.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
+        "tests/test_migration_escalation_message_direction.py",
         "tests/test_migration_escalation_state.py",
+        "tests/test_migration_escalation_stateful_outcomes.py",
         "tests/test_migration_guard.py",
         "tests/test_migration_guard_restoration.py",
         "tests/test_migration_handoff.py",
@@ -1101,6 +1107,7 @@
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
         "tests/test_conversation_render.py",
+        "tests/test_conversation_wiring.py",
         "tests/test_supervisor_capability_sync.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_supervisor_global_lifecycle.py",
@@ -1251,6 +1258,7 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_host_shell.py",
         "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
@@ -1389,7 +1397,7 @@
       ]
     }
   },
-  "digest": "sha256:6952860a879ce969cfc41a0b1aa2e0e06a58c921233d2fa38cb01689c5010ede",
+  "digest": "sha256:f3416b0d56a8f03d29095bb6aa5df0f6855e1bebbe00d73defe6b3ba49ed8432",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4204,6 +4212,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.conversations",
         "src.conversations.intake",
         "src.conversations.limits",
@@ -4299,6 +4308,35 @@
       "markers": [],
       "summary": "Explicit replies are bounded, mention-free and link-filtered."
     },
+    "tests/test_conversation_wiring.py": {
+      "areas": [
+        "discord-conversations",
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.intake",
+        "src.conversations.outbox",
+        "src.conversations.preconditions",
+        "src.digest",
+        "src.discord.inbound",
+        "src.discord.intake_diagnostics",
+        "src.discord.rate_guard",
+        "src.escalations.transport",
+        "src.main",
+        "src.messages.delivery",
+        "src.messages.session_lens",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Production outbox binding and project-supervisor conversation round trips."
+    },
     "tests/test_costs.py": {
       "areas": [
         "provider-usage"
@@ -4387,6 +4425,24 @@
       "imports": [],
       "markers": [],
       "summary": "Ratchet: persistent dashboard feature state lives on the server, not in the browser."
+    },
+    "tests/test_dashboard_links.py": {
+      "areas": [
+        "messaging-adapters"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.dashboard_paths",
+        "src.digest",
+        "src.digest.facts",
+        "src.discord.render_budget",
+        "src.escalations",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
     },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
@@ -4904,7 +4960,8 @@
       "imports": [
         "src.digest",
         "src.digest.eligibility",
-        "src.digest.facts"
+        "src.digest.facts",
+        "src.discord.render_budget"
       ],
       "markers": [
         "parametrize"
@@ -4972,6 +5029,29 @@
       "markers": [],
       "summary": "What a digest window is allowed to see (implementation spec §8)."
     },
+    "tests/test_digest_supervisor.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.digest.supervisor",
+        "src.escalations.transport",
+        "src.event_bus",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The §4 supervisor-authored digest window (2026-10-03 §4.1-4.3, §7.1 P3)."
+    },
     "tests/test_discord_adapter.py": {
       "areas": [
         "discord",
@@ -5000,18 +5080,6 @@
       ],
       "markers": [],
       "summary": "Discord inbound routing is escalation-only after cutover."
-    },
-    "tests/test_discord_commands.py": {
-      "areas": [
-        "discord"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.discord.notifications",
-        "src.models"
-      ],
-      "markers": [],
-      "summary": ""
     },
     "tests/test_discord_cutover.py": {
       "areas": [
@@ -5044,6 +5112,28 @@
       "markers": [],
       "summary": "The Discord/escalation operator docs must describe surfaces that exist."
     },
+    "tests/test_discord_escalation_buttons.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.queries.escalation_queries",
+        "src.discord.bot",
+        "src.discord.escalation_buttons",
+        "src.discord.escalation_transport",
+        "src.escalations.interactions",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "§5.3's choice buttons: what a post offers, and what a press records."
+    },
     "tests/test_discord_escalation_transport.py": {
       "areas": [
         "discord",
@@ -5053,6 +5143,7 @@
       "imports": [
         "src.config",
         "src.discord.escalation_transport",
+        "src.discord.rate_guard",
         "src.escalations.transport"
       ],
       "markers": [
@@ -5106,6 +5197,25 @@
       ],
       "markers": [],
       "summary": "Hour-window counts of ignored inbound Discord messages, by reason code."
+    },
+    "tests/test_discord_render_budgets.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations.limits",
+        "src.dashboard_paths",
+        "src.digest",
+        "src.digest.facts",
+        "src.discord.render_budget",
+        "src.escalations",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Every row of the §3.2 size budget, pinned by the renderer that spends it."
     },
     "tests/test_discord_settings.py": {
       "areas": [
@@ -5176,6 +5286,8 @@
         "src.doctor.dashboard_server_checks",
         "src.doctor.dashboard_state_checks",
         "src.doctor.db_checks",
+        "src.doctor.discord_config_checks",
+        "src.doctor.escalation_checks",
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
@@ -5248,6 +5360,23 @@
         "migration"
       ],
       "summary": "``db.alembic_orphan`` — the repair path for a poisoned ``alembic_version``."
+    },
+    "tests/test_doctor_discord_config.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.doctor",
+        "src.doctor.discord_config_checks",
+        "src.doctor.models",
+        "src.doctor.runner"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``discord.config``: the single-channel Discord config of spec 2026-10-03 §1.2/§7.1."
     },
     "tests/test_doctor_integration_checks.py": {
       "areas": [
@@ -5542,6 +5671,9 @@
         "src.api.models.task",
         "src.commands.handler",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.integration.epic_delivery",
         "src.models"
       ],
@@ -5694,7 +5826,9 @@
         "src.orchestrator",
         "src.runtimes"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "One channel post and one thread per incident (discord-simplification §7)."
     },
     "tests/test_escalation_intake.py": {
@@ -5733,6 +5867,45 @@
       ],
       "markers": [],
       "summary": "Durable escalation, reply, delivery, and digest persistence on PostgreSQL."
+    },
+    "tests/test_escalation_state.py": {
+      "areas": [
+        "escalations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.queries.escalation_queries",
+        "src.database.tables",
+        "src.escalations",
+        "src.escalations.dispatch",
+        "src.escalations.plan",
+        "src.escalations.render",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Escalations are stateful: one post, edited in place, closed on evidence."
+    },
+    "tests/test_escalation_sweep.py": {
+      "areas": [
+        "escalations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.doctor.escalation_checks",
+        "src.doctor.models",
+        "src.doctor.runner",
+        "src.escalations.sweep",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "§5.6's back-fill sweep: the pile, the dry run, and what an apply leaves behind."
     },
     "tests/test_event_bus.py": {
       "areas": [
@@ -8808,38 +8981,6 @@
       ],
       "summary": "Core access remains fail closed with legacy capability enforcement disabled."
     },
-    "tests/test_knowledge_budget.py": {
-      "areas": [
-        "knowledge-records"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.config",
-        "src.knowledge.budget",
-        "src.records.models"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Hard aggregate caps include required text, tools, wrappers and output."
-    },
-    "tests/test_knowledge_citations.py": {
-      "areas": [
-        "knowledge-records"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.commands.principal",
-        "src.database.tables",
-        "src.knowledge.service",
-        "src.profiles.capabilities",
-        "src.records.models"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Only observed, authorized delivery becomes persistent injected evidence."
-    },
     "tests/test_knowledge_commands.py": {
       "areas": [
         "knowledge-records"
@@ -8866,38 +9007,6 @@
       "markers": [],
       "summary": "Ownership stays fenced across disabled writes and filesystem divergence."
     },
-    "tests/test_knowledge_context.py": {
-      "areas": [
-        "knowledge-records"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.commands.principal",
-        "src.config",
-        "src.database.tables",
-        "src.knowledge.budget",
-        "src.knowledge.context",
-        "src.knowledge.models",
-        "src.knowledge.service",
-        "src.messages",
-        "src.models",
-        "src.prime.models",
-        "src.prime.renderer",
-        "src.profiles.capabilities",
-        "src.prompt_builder",
-        "src.records.auth",
-        "src.records.models",
-        "src.sessions",
-        "src.sessions.fake",
-        "src.sessions.harness_parser",
-        "src.sessions.harness_registry",
-        "src.sessions.spec"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
-    },
     "tests/test_knowledge_evaluation.py": {
       "areas": [
         "knowledge-evaluation",
@@ -8909,28 +9018,6 @@
         "parametrize"
       ],
       "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
-    },
-    "tests/test_knowledge_harness_delivery.py": {
-      "areas": [
-        "knowledge-evaluation",
-        "knowledge-records"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.commands.principal",
-        "src.database.tables",
-        "src.knowledge.budget",
-        "src.knowledge.context",
-        "src.knowledge.delivery",
-        "src.records.models",
-        "src.sessions.harness_parser",
-        "src.sessions.spec",
-        "src.sessions.subprocess"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "K09 — thin harness delivery/resume adapters and the integrated fixture runner."
     },
     "tests/test_knowledge_import.py": {
       "areas": [
@@ -9816,6 +9903,30 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_conversation_kind.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The conversation-kind revision upgrades idempotently on PostgreSQL."
+    },
+    "tests/test_migration_digest_author_requests.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The digest revision follows the collected siblings and preserves author requests."
+    },
     "tests/test_migration_epic_pull_requests.py": {
       "areas": [
         "migrations"
@@ -9845,6 +9956,18 @@
       ],
       "summary": "The verified-reply action reservation revision upgrades on PostgreSQL."
     },
+    "tests/test_migration_escalation_message_direction.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The ``direction=system`` widening upgrades, is enforced, and refuses to roll back."
+    },
     "tests/test_migration_escalation_state.py": {
       "areas": [
         "migrations"
@@ -9856,6 +9979,18 @@
         "migration"
       ],
       "summary": "The post-squash escalation revision upgrades and rolls back on PostgreSQL."
+    },
+    "tests/test_migration_escalation_stateful_outcomes.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The stateful-escalations columns revision upgrades and rolls back on PostgreSQL."
     },
     "tests/test_migration_guard.py": {
       "areas": [
@@ -10359,7 +10494,8 @@
         "src.event_bus",
         "src.models",
         "src.notifications.builder",
-        "src.notifications.events"
+        "src.notifications.events",
+        "src.notifications.render"
       ],
       "markers": [
         "asyncio"
@@ -14281,6 +14417,27 @@
       "markers": [],
       "summary": "Tests for path= validation in _cmd_read_prompt / _cmd_render_prompt."
     },
+    "tests/test_target_scope.py": {
+      "areas": [
+        "api-scope"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Per-project elevated tokens may run target-keyed commands (azure-journey-72)."
+    },
     "tests/test_task_activity.py": {
       "areas": [
         "task-activity"
@@ -14828,6 +14985,24 @@
         "parametrize"
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
+    },
+    "tests/test_terminal_host_shell.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.terminal_stream",
+        "src.config",
+        "src.sessions",
+        "src.sessions.host_shell",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
     },
     "tests/test_terminal_input.py": {
       "areas": [
@@ -15610,19 +15785,6 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
-    },
-    "tests/test_views.py": {
-      "areas": [
-        "discord"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.discord.views"
-      ],
-      "markers": [
-        "asyncio"
-      ],
-      "summary": "Tests for standalone Discord views."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
