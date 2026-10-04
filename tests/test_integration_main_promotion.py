@@ -3154,6 +3154,64 @@ async def test_reconciler_leaves_the_first_wakeup_to_the_ci_publisher(prepared_d
     assert [row["id"] for row in continuations] == [lost["event_id"]]
 
 
+@pytest.mark.asyncio
+async def test_quarantined_green_continuation_does_not_block_the_next(prepared_db):
+    """A continuation the outbox gave up on is a failed delivery, not a pending one."""
+    from src.integration.green_continuation import GreenPromotionReconciler
+    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_integration_event
+
+    db, data_dir = prepared_db
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(expires_at=1_000_000.0))
+        await enqueue_integration_event(
+            conn, event_id="ci-green-fact", dedup_key="ci-green-fact", project_id="p",
+            event_type="integration.candidate_green",
+            payload={"operation_id": "root-op", "batch_id": "batch", "revision": 0,
+                     "head_sha": HEAD},
+            available_at=100.0,
+        )
+        await conn.execute(update(integration_outbox).values(delivered_at=100.0))
+        await conn.execute(insert(integration_attestation_publications).values(
+            id="attestation-published", project_id="p", batch_id="batch", revision=0,
+            operation_id="root-op", head_sha=HEAD, ci_evidence_id="ci-green",
+            external_id="aq-attestation-v1:" + "8" * 64, execution_nonce="nonce",
+            state="published", prewrite_at=160.0, check_run_id=7001, expires_at=10_000.0,
+            created_at=150.0, updated_at=160.0,
+        ))
+    reconciler = GreenPromotionReconciler(db, promotion=_promoter(db, data_dir, lambda: 100.0))
+
+    first = await reconciler.reconcile("batch", now=200.0)
+    # The consumer stayed unavailable until the outbox's max_wait deadline.
+    deadline = 200.0 + 3600
+    quarantined = f"{RETRY_EXHAUSTED_PREFIX}max_wait=3600s deadline={deadline:.3f}; 503"
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_outbox)
+            .where(integration_outbox.c.delivered_at.is_(None))
+            .values(attempts=7, available_at=deadline, last_error=quarantined)
+        )
+
+    within_grace = await reconciler.reconcile("batch", now=deadline + 59)
+    continued = await reconciler.reconcile("batch", now=deadline + 60)
+    # The fresh continuation is pending again; the quarantined row stays for inspection.
+    pending = await reconciler.reconcile("batch", now=deadline + 60)
+
+    assert first["outcome"] == "continued" and first["generation"] == 0
+    assert within_grace["outcome"] == "pending" and "delivery grace" in within_grace["reason"]
+    assert (continued["outcome"], continued["generation"]) == ("continued", 1)
+    assert pending["outcome"] == "pending"
+    rows = sorted(
+        (row for row in await _rows(db, integration_outbox)
+         if row["id"].startswith("integration-green-continuation-")),
+        key=lambda row: (row["available_at"], row["id"]),
+    )
+    assert [row["dedup_key"].rsplit(":", 1)[1] for row in rows] == ["0", "1"]
+    assert rows[0]["delivered_at"] is None and rows[0]["last_error"] == quarantined
+    assert rows[0]["available_at"] == deadline
+    assert rows[1]["delivered_at"] is None and rows[1]["last_error"] is None
+    assert rows[1]["available_at"] == deadline + 60
+
+
 async def test_slow_tick_naturally_promotes_and_releases_through_reviewed_outbox(
     prepared_db, command_handler_factory, caplog,
 ):
