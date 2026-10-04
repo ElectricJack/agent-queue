@@ -618,6 +618,71 @@ async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_p
     assert original_access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
 
 
+async def test_daemon_start_and_cycle_schedule_interrupted_playbook_runs(tmp_path):
+    from dataclasses import replace
+    import time
+
+    from src.config import PlaybooksConfig
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.runtime import V2PlaybookRuntime
+    from src.playbooks.services import build_v2_engine
+    from tests.test_child_task_reconciler import seed_artifact
+    from tests.test_v2_restart_resume import drain_recovery, fresh_engine, orphan_snapshot
+    from tests.test_v2_engine import ok
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("daemon_restart_playbooks")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+        playbooks=PlaybooksConfig(enabled=True),
+    )
+    daemon = Orchestrator(config, runtimes=MockAdapterFactory())
+    # Seed exactly what the previous daemon left behind, before initialize.
+    await daemon.db.initialize()
+    engine, adapter, ref = fresh_engine("two-rules-one-event.artifact.json", runs=daemon.db)
+    # Production clocks advance past the process boundary on every receipt.
+    store = ArtifactStore(config.compiled_root)
+    store.put(
+        engine.services.artifact_store.load(ref.artifact_sha256),
+        source_digest=ref.source_digest,
+        contract_fingerprint=ref.contract_fingerprint,
+        profile_fingerprint="test",
+        compiler_build=ref.compiler_build,
+    )
+    engine.services = replace(engine.services, clock=time.time, artifact_store=store)
+    await seed_artifact(daemon.db, ref)
+    await daemon.db.create_run(orphan_snapshot(ref, run_id="startup-orphan"))
+    handler = CommandHandler(daemon, config)
+    handler._v2_playbook_engine = engine
+    daemon.set_command_handler(handler)
+    adapter.queue.append(ok("startup-review"))
+    try:
+        await daemon.initialize()
+        runtime = daemon.playbook_manager
+        assert isinstance(runtime, V2PlaybookRuntime)
+        assert runtime._engine is build_v2_engine(config=config, db=daemon.db, handler=handler)
+        assert runtime.restart_reconciler.process_started_at == daemon._process_started_at
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("startup-orphan")).lifecycle.value == "completed"
+
+        # Startup scanned one bounded page; later pages/retries use the real
+        # cycle, without an event, operator resume, or a synthesized cause.
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="cycle-orphan"))
+        adapter.queue.append(ok("cycle-review"))
+        await daemon.run_one_cycle()
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("cycle-orphan")).lifecycle.value == "completed"
+        assert len(adapter.calls) == 2
+
+        config.playbooks.enabled = False
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="disabled-orphan"))
+        await daemon.run_one_cycle()
+        assert (await daemon.db.load_run("disabled-orphan")).lifecycle.value == "running"
+        assert len(adapter.calls) == 2
+    finally:
+        await daemon.shutdown()
+
+
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(

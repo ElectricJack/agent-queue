@@ -1701,6 +1701,7 @@ class Orchestrator(
                 llm=self.llm,
                 bus=self.bus,
                 required_playbook_status=self.required_playbook_status,
+                process_started_at=self._process_started_at,
             )
             await self.playbook_manager.refresh()
             subscribed = self.playbook_manager.subscribe_to_events()
@@ -2384,6 +2385,10 @@ class Orchestrator(
             replay = await self.required_playbook_reconciler.replay_route_needed_events()
             if replay.get("errors"):
                 logger.error("Required playbook late replay errors: %s", replay["errors"])
+
+        # Recovery may execute any pinned step, so wait until all handler
+        # dependencies are wired. Only the bounded scan is awaited here.
+        await self._recover_interrupted_playbook_runs()
 
     async def refresh_required_playbook_status(self) -> dict[str, Any]:
         """Recompute required-playbook readiness from the activations as they are now.
@@ -3122,6 +3127,9 @@ class Orchestrator(
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.
+
+            # Re-drive runs whose asyncio driver was lost on daemon restart.
+            await self._recover_interrupted_playbook_runs()
 
             # 12a. Resume playbook runs suspended on a child task that has
             #      settled.  Before the timeout sweep on purpose: a child that
