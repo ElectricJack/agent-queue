@@ -5679,6 +5679,7 @@
           "--project-id",
           "--task-id",
           "--session-id",
+          "--attempt-id",
           "--claim-epoch",
           "argv",
           "--json",
@@ -11895,6 +11896,7 @@
         "optional": [
           "--idempotency-key",
           "--wait",
+          "--attempt-id",
           "--claim-epoch",
           "argv",
           "--json",

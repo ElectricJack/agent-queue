@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:0591aa66d819e0a2d55f25dd9f339a70d274a00037a5e1ebd82afd82648920db",
+  "digest": "sha256:7bcca4d41b8d1cd2dbf3e7abb7d59bbd9b5f2dcaba0c2cce5b58ec5eb8a07dad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8986,6 +8986,7 @@
         "src.config",
         "src.database.tables",
         "src.jobs.artifacts",
+        "src.jobs.editor_pin",
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",

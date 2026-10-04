@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/job.py`](../../../src/commands/contracts/job.py) |
-| Contract fingerprint | `sha256:bbd254154d84f90e2d9c3a5ca6d36a16ac1ed8073e56b6019ac15aa815af5795` |
+| Contract fingerprint | `sha256:ee1c5f39e5ab3ff4d4d3c047b41b0edb5b5652e559f964d53e59ea2d2852c9aa` |
 
 ## Parameters
 
@@ -27,6 +27,7 @@
 | `preset` | `string` | yes | — | — |
 | `argv` | `string[]` | no | — | — |
 | `idempotency_key` | `string` | yes | — | — |
+| `attempt_id` | `string \| null` | no | `null` | — |
 | `wait` | `boolean` | no | `false` | — |
 
 ## Result
@@ -77,7 +78,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, task_id, session_id, claim_epoch, preset, argv, idempotency_key, wait | — | always |
+| Create using project_id, task_id, session_id, claim_epoch, preset, argv, idempotency_key, attempt_id, wait | — | always |
 
 <!-- aq:generated:end -->
 

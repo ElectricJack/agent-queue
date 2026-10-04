@@ -135,9 +135,15 @@ def render_profile_record(job: dict, capture: dict | None) -> dict | None:
     """
     if not capture:
         return None
-    from src.object_loop.render_profile import RenderProfileError, render_profile, with_digest
+    from src.object_loop.render_profile import (
+        RenderProfileError,
+        capture_observations,
+        render_profile,
+        with_digest,
+    )
 
+    contract = job.get("contract") or {}
     try:
-        return with_digest(render_profile(job.get("contract") or {}, capture))
+        return with_digest(render_profile(contract, capture), capture_observations(contract, capture))
     except RenderProfileError as exc:
         return {"error": str(exc)}

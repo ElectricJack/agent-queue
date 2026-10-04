@@ -22,12 +22,18 @@ Freeze the candidate with ME-1, then submit its bundle directory relative to the
 held workspace:
 
 ```bash
-aq job submit --preset matter_render --wait --idempotency-key capture-round-1 -- out/candidate
+aq job submit --preset matter_render --wait --attempt-id rock-me3-a1 \
+  --idempotency-key capture-round-1 -- out/candidate
 aq job result JOB_ID --json
 ```
 
 The server chooses a fresh capture directory and verifies the candidate, rig,
-editor and view artifact hashes. `result.capture` contains the ME-1 receipt and
+editor and view artifact hashes. For a capture that has to stay comparable with
+the rest of an object attempt, pass `--attempt-id`: AQ pins that editor build
+once per attempt and launches the pinned copy for every capture of it, so
+rebuilding the shared `matter_editor` cannot move the preset under a run whose
+render profile is already pinned
+([object-loop guide](object-loop.md#one-attempt-one-editor-build)). `result.capture` contains the ME-1 receipt and
 the retained files' relative paths, sizes and hashes under `<data_dir>/runs/JOB_ID/`.
 Capture evidence follows result retention (90 days by default), independently of
 the 14-day log lifetime and worker slot cleanup. A timeout, cancelled run or
