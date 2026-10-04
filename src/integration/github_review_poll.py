@@ -8,7 +8,11 @@ can have changed since this process last looked:
 * a PR's reviews are re-read only when its fingerprint (``updated_at``, state,
   exact head and base) changed, or after ``review_refresh_seconds``;
 * a review verdict or task authorization already stored for the exact source
-  identity is not proven against Git again.
+  identity is not proven against Git again;
+* a completed parent whose PR head moved is offered for reverification, but a
+  head Git already proved does not preserve the verified aggregate is not
+  offered again until the head moves, and the moved head's reviews are read
+  (on the same cadence) only while a rejection of the verified head blocks it.
 
 Exact-head source CI is still observed on every visit of an open exact PR.
 The cache lives in memory and is keyed by the exact source identity, so a
@@ -46,6 +50,10 @@ class _Observation:
     reviews_at: float = 0.0
     recorded: set[tuple] = field(default_factory=set)
     authorized: int | None = None
+    #: ``(head, refusal code)`` of the last refused parent reverification.
+    refused: tuple[str, str] | None = None
+    #: ``(fingerprint, read at, approval)`` of the moved parent head's reviews.
+    head_reviews: tuple | None = None
 
 
 @dataclass
@@ -277,21 +285,7 @@ class GitHubReviewPoller:
         if unobservable is not None:
             if (unobservable == "head moved" and source["review_kind"] == "parent"
                     and self.parent_head_handler is not None):
-                from src.integration.parent_source import ParentHeadObservation
-
-                result = await self.parent_head_handler(ParentHeadObservation(
-                    task_id=row["id"], source=source, head_sha=head.get("sha"),
-                    policy_generation=row["hierarchical_integration_generation"],
-                ))
-                if (result or {}).get("success"):
-                    self._observed.pop(row["id"], None)
-                    self._report(row["id"], ("reverifying", head.get("sha")))
-                    return
-                self._report(
-                    row["id"], ("reverification_blocked", head.get("sha"), str(result)),
-                    logging.WARNING, "Parent %s PR head advanced; reverification blocked: %s",
-                    row["id"], (result or {}).get("error") or result,
-                )
+                await self._offer_parent_head(row, source, pull, client, binding, number, seen, now)
                 return
             self._report(
                 row["id"], ("unobservable", unobservable),
@@ -335,6 +329,79 @@ class GitHubReviewPoller:
                 return
             seen.authorized = generation
         self._report(row["id"], ("observed",))
+
+    async def _offer_parent_head(
+        self, row: dict[str, Any], source: dict[str, Any], pull: dict[str, Any], client: Any,
+        binding: Any, number: int, seen: _Observation, now: float,
+    ) -> None:
+        """Ask the daemon to reverify a completed parent whose PR head moved."""
+        from src.integration.parent_source import (
+            REFUSED_UNTIL_HEAD_MOVES,
+            ParentHeadObservation,
+        )
+
+        moved = pull["head"].get("sha")
+        if seen.refused is not None and seen.refused[0] != moved:
+            seen.refused = seen.head_reviews = None
+        if seen.refused is not None and seen.refused[1] in REFUSED_UNTIL_HEAD_MOVES:
+            return
+        approval = None
+        if seen.refused == (moved, "rejected"):
+            approval = await self._head_approval(pull, client, binding, number, seen, now)
+        result = await self.parent_head_handler(ParentHeadObservation(
+            task_id=row["id"], source=source, head_sha=moved,
+            policy_generation=row["hierarchical_integration_generation"],
+            approval=approval,
+        )) or {}
+        if result.get("success"):
+            self._observed.pop(row["id"], None)
+            self._report(row["id"], ("reverifying", moved))
+            return
+        seen.refused = (moved, str(result.get("outcome")))
+        self._report(
+            row["id"], ("reverification_blocked", moved, str(result)),
+            logging.WARNING, "Parent %s PR head advanced; reverification blocked: %s",
+            row["id"], result.get("error") or result,
+        )
+
+    async def _head_approval(
+        self, pull: dict[str, Any], client: Any, binding: Any, number: int,
+        seen: _Observation, now: float,
+    ) -> dict[str, Any] | None:
+        """The latest human approval of exactly the PR head, unless changes are requested.
+
+        Each reviewer's newest verdict counts; one who still requests changes
+        (on any commit) withholds approval, as GitHub's own merge rule does.
+        Reviews are reread when the PR changes or after ``review_refresh_seconds``.
+        """
+        moved = pull["head"].get("sha")
+        updated_at = pull.get("updated_at")
+        fingerprint = (updated_at, moved) if isinstance(updated_at, str) and updated_at else None
+        cached = seen.head_reviews
+        if (fingerprint is not None and cached is not None and cached[0] == fingerprint
+                and now - cached[1] < self.review_refresh_seconds):
+            return cached[2]
+        reviews = await client.paged_list(
+            f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100"
+        )
+        latest: dict[str, dict[str, Any]] = {}
+        for review in sorted(reviews, key=lambda item: item.get("id", -1)):
+            user = review.get("user")
+            if (review.get("state") not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+                    or not isinstance(user, dict) or user.get("type") != "User"
+                    or not isinstance(user.get("login"), str) or not user["login"].strip()):
+                continue
+            latest[user["login"]] = review
+        approvals = [
+            review for review in latest.values()
+            if review["state"] == "APPROVED" and review.get("commit_id") == moved
+        ]
+        approval = None
+        if approvals and all(review["state"] != "CHANGES_REQUESTED" for review in latest.values()):
+            newest = max(approvals, key=lambda review: review["id"])
+            approval = {"review_id": newest["id"], "reviewer_login": newest["user"]["login"]}
+        seen.head_reviews = (fingerprint, now, approval)
+        return approval
 
     async def _record_reviews(
         self, row: dict[str, Any], source: dict[str, Any], binding: Any, client: Any,

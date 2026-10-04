@@ -57,9 +57,17 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 class IntegrationCommandsMixin:
     async def reverify_integration_parent_source(self, observation) -> dict:
-        """Daemon-only adapter for a configured canonical PR head observation."""
-        from src.integration.cancelled_collection_recovery import _ProofFailed
-        from src.integration.parent_source import ParentHeadObservation, ParentSourceReverification
+        """Daemon-only adapter for a configured canonical PR head observation.
+
+        A refusal's ``outcome`` is its code (``rejected``, ``unproven``, ...).
+        A refusal that needs a human decision raises an escalation naming the
+        recovery; the next answer for the parent resolves it.
+        """
+        from src.integration.parent_source import (
+            ParentHeadObservation,
+            ParentSourceReverification,
+            settle_refusal_escalation,
+        )
 
         principal = current_principal()
         if (principal is None or principal.kind is not PrincipalKind.SERVICE
@@ -69,9 +77,39 @@ class IntegrationCommandsMixin:
             result = await ParentSourceReverification(
                 self.db, self._integration_promotion_service(),
             ).run(observation.task_id, observation)
-        except (HierarchyError, _ProofFailed, BranchBusy, StaleFence) as exc:
-            return _failure("blocked", str(exc))
-        return _with_reason(result["outcome"] == "reverifying", result)
+        except HierarchyError as exc:
+            refusal, error = exc.code, str(exc)
+            result = _failure(refusal, error)
+        except (BranchBusy, StaleFence) as exc:
+            refusal, error = "stale", str(exc)
+            result = _failure(refusal, error)
+        else:
+            refusal, error = None, ""
+            result = _with_reason(result["outcome"] == "reverifying", result)
+        created, resolved = await settle_refusal_escalation(
+            self.db, observation, refusal, error, now=time.time()
+        )
+        if created is not None:
+            await self._emit_escalation("escalation.created.v1", {
+                "escalation_id": created["id"],
+                "project_id": created["project_id"],
+                "task_id": created.get("task_id"),
+                "source_kind": created["source_kind"],
+                "source_identity": created["source_identity"],
+                "incident_key": created["incident_key"],
+                "state": created["state"],
+                "revision": created["revision"],
+            })
+        for row in resolved:
+            await self._emit_escalation("escalation.updated.v1", {
+                "escalation_id": row["id"],
+                "project_id": row["project_id"],
+                "task_id": row.get("task_id"),
+                "state": row["state"],
+                "revision": row["revision"],
+                "terminal_outcome": row.get("terminal_outcome"),
+            })
+        return result
 
     async def _cmd_integration_parent_action(self, args: dict) -> dict:
         """Internal visit dispatch: process-bound engine scope is the authority."""

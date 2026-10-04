@@ -11,12 +11,16 @@ from typing import Any
 from sqlalchemy import exists, insert, select, update
 
 from src.database import tables as t
+from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.queries.integration_train_queries import (
     _ACTIVE_BATCH_LIFECYCLES,
     _root_delivery_receipt_conditions,
 )
-from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
+from src.integration.cancelled_collection_recovery import (
+    CancelledCollectionRecovery,
+    _ProofFailed,
+)
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.ownership import BranchOwnership
 from src.integration.parent_completion import ParentCompletion
@@ -27,10 +31,11 @@ from src.models import TaskStatus
 _OID = re.compile(r"^[0-9a-f]{40}$")
 
 
-#: Refusals no reread can change while the PR head stays where it is: the
-#: Git proof failed or the parent cannot reverify at all. The review poller
-#: does not ask again until the head moves.
-REFUSED_UNTIL_HEAD_MOVES = frozenset({"unproven", "invalid", "delivered"})
+#: Refusals no reread can change while the PR head stays where it is: Git
+#: proved the head does not preserve the verified aggregate. The review poller
+#: does not ask again until the head moves. Every other refusal is decided
+#: from Postgres before any Git read, so asking again costs no remote work.
+REFUSED_UNTIL_HEAD_MOVES = frozenset({"unproven"})
 
 
 @dataclass(frozen=True)
@@ -59,8 +64,8 @@ def refusal_escalation(
 ) -> dict[str, str] | None:
     """What a human must decide about a refused head, or None if nobody must.
 
-    ``stale``, ``waiting`` and ``delivered`` clear without a decision; the
-    rest leave the parent COMPLETED with an open PR until someone acts.
+    ``stale``, ``waiting`` and ``delivered`` need no decision; the rest
+    leave the parent COMPLETED with an open PR until someone acts.
     """
     source, head = observation.source, observation.head_sha
     task, old, pr = observation.task_id, source["head"], source.get("pr_url") or "its PR"
@@ -116,6 +121,63 @@ def refusal_escalation(
         ),
         "decision_requested": decision,
     }
+
+
+async def settle_refusal_escalation(
+    db, observation: ParentHeadObservation, refusal: str | None, error: str, *, now: float
+) -> tuple[dict | None, list[dict]]:
+    """Keep open exactly the incident this parent's latest answer needs.
+
+    ``refusal`` is None once reverification started. Returns the incident
+    created now, if any, and the incidents this answer resolved. ``stale``
+    and ``waiting`` decide nothing, so they leave every incident alone.
+    """
+    if refusal in {"stale", "waiting"}:
+        return None, []
+    task_id, head = observation.task_id, observation.head_sha
+    wanted = refusal_escalation(observation, refusal, error) if refusal else None
+    key = f"parent-head:{task_id}:{head}:{refusal}" if wanted else None
+    if refusal is None:
+        outcome = f"Parent {task_id} started a fresh aggregate verification of PR head {head}."
+    elif refusal == "delivered":
+        outcome = f"Parent {task_id} has already been delivered."
+    else:
+        outcome = f"Parent {task_id}'s PR head is now {head} ({refusal}); this refusal is stale."
+    resolved = []
+    for incident in await db.list_escalations(
+        task_id=task_id, source_kind=ESCALATION_SOURCE_KIND, states=sorted(OPEN_ESCALATION_STATES)
+    ):
+        if incident["incident_key"] == key:
+            continue
+        row = await db.resolve_escalation_on_recovery(
+            incident["id"],
+            expected_revision=int(incident["revision"]),
+            source_kind=ESCALATION_SOURCE_KIND,
+            terminal_outcome=outcome,
+            terminal_evidence={"task_id": task_id, "head_sha": head, "refusal": refusal},
+            now=now,
+        )
+        if row is not None:
+            resolved.append(row)
+    if wanted is None:
+        return None, resolved
+    project_id = observation.source["project_id"]
+    incident, created = await db.create_escalation(
+        id=f"escalation-parent-head-{task_id}-{head}-{refusal}",
+        project_id=project_id,
+        task_id=task_id,
+        source_kind=ESCALATION_SOURCE_KIND,
+        source_identity=f"{task_id}:{head}:{refusal}",
+        incident_key=key,
+        supervisor_owner=f"supervisor-{project_id}",
+        summary=wanted["summary"][:4000],
+        investigation=wanted["investigation"][:8000],
+        decision_requested=wanted["decision_requested"][:4000],
+        choices=None,
+        severity="medium",
+        now=now,
+    )
+    return (incident if created else None), resolved
 
 
 class ParentSourceReverification:
@@ -174,15 +236,27 @@ class ParentSourceReverification:
         # Remote reads precede the short mutation transaction. The transaction
         # rechecks the exact source, receipts and fence, as well as every
         # admission control, before changing the aggregate.
-        await CancelledCollectionRecovery(self.db, self.promotion)._prove(
-            {
-                "project_id": source["project_id"],
-                "target": BranchKey(repository_id=source["repository_id"], branch=source["branch"]),
-                "expected_tip": head,
-                "episode": {"pre_collection_checkpoint_sha": source["head"]},
-                "receipts": receipts,
-            }
-        )
+        try:
+            await CancelledCollectionRecovery(self.db, self.promotion)._prove(
+                {
+                    "project_id": source["project_id"],
+                    "target": BranchKey(
+                        repository_id=source["repository_id"], branch=source["branch"]
+                    ),
+                    "expected_tip": head,
+                    "episode": {"pre_collection_checkpoint_sha": source["head"]},
+                    "receipts": receipts,
+                }
+            )
+        except _ProofFailed as exc:
+            # Only a failed ancestry check of the observed head is final for
+            # that head; a branch that moved again or an unreadable remote
+            # is asked again on the next observation.
+            if exc.remote_head == head:
+                code = "unproven"
+            else:
+                code = "stale" if exc.remote_head else "waiting"
+            raise HierarchyError(code, exc.reason) from exc
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
             parent = (
@@ -313,6 +387,7 @@ class ParentSourceReverification:
                             "operation_id": replacement["id"],
                             "generation": new_checkpoint["generation"],
                             "collector_fence_token": fence.token,
+                            "superseding_approval": observation.approval,
                         }
                     ),
                     timestamp=self.clock(),
@@ -359,20 +434,23 @@ class ParentSourceReverification:
         ):
             raise HierarchyError("waiting", "parent has a hold or an open gate")
         generation = observation.policy_generation
-        if not await self.producer._authorization_on(conn, task_id, source, generation):
+        if not await self.producer._authorization_on(
+            conn, task_id, source, generation, rejection_superseded=True
+        ):
+            raise HierarchyError(
+                "unauthorized", "the root policy does not admit automatic parent reverification"
+            )
+        # Admitted but for a rejection of the exact verified head: only an
+        # approval of the new head with no reviewer requesting changes lifts it.
+        if observation.approval is None and not await self.producer._authorization_on(
+            conn, task_id, source, generation
+        ):
             latest = await self.producer.latest_exact_evidence_on(conn, task_id, source)
-            if latest is None or latest["verdict"] == "approved":
-                raise HierarchyError(
-                    "unauthorized", "the root policy does not admit automatic parent reverification"
-                )
-            if observation.approval is None or not await self.producer._authorization_on(
-                conn, task_id, source, generation, rejection_superseded=True
-            ):
-                raise HierarchyError(
-                    "rejected",
-                    f"{latest['reviewer_login']} rejected verified head {source['head']} and "
-                    f"no reviewer approved PR head {observation.head_sha}",
-                )
+            raise HierarchyError(
+                "rejected",
+                f"{latest['reviewer_login']} rejected verified head {source['head']} and "
+                f"no reviewer has approved PR head {observation.head_sha}",
+            )
         policy = HierarchicalIntegrationPolicy.model_validate(
             project["hierarchical_integration_policy"]
         )
