@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:9d155e18fabbc8771172a07d9469f05a5c63bc5adf15705d8050bd941d816ac5",
+  "digest": "sha256:4dd826f53d79bba5d413f7a8664a5bdc8bf698bfe4da2c1c466f1b5fa813c547",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7246,6 +7246,7 @@
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.repair",
+        "src.integration.verifier_subject",
         "src.models"
       ],
       "markers": [
