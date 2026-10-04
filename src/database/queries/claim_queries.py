@@ -170,6 +170,10 @@ PREPARE_BACKOFF_INITIAL_SECONDS = 120.0
 PREPARE_BACKOFF_MAX_SECONDS = 300.0
 CLAIM_PREPARATION_METADATA_KEYS = (
     "manual_pause_checkpoint",
+    # Operator-handoff checkpoint (task_recovery_queries): consumed by the one
+    # preparation that applies it; left behind, every later prepare re-enters
+    # the handoff path against a preserved ref that has since moved or gone.
+    "supervisor_recovery_checkpoint",
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
     "slot_reset_failure",

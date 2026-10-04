@@ -259,7 +259,7 @@ class PromotionService:
                     }
                 )
             except ValueError as exc:
-                if "unresolved promotion" in str(exc):
+                if "unresolved promotion" in str(exc) or "parent collection" in str(exc):
                     raise PromotionTargetMoved(str(exc)) from exc
                 raise PromotionInvariantError(str(exc)) from exc
             value = self._value(intent)

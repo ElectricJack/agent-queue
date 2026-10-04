@@ -4425,6 +4425,246 @@ async def test_parent_intent_reserved_continuation_retries_after_delivery_and_fe
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
 
 
+@pytest.mark.parametrize("phase", ["after_object", "after_prepare"])
+async def test_cancel_parent_preserves_pending_intent_and_its_recovery(
+    db, promotion_case, phase,
+):
+    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
+    from src.integration.promotion import (
+        PromotionNotApplied,
+        PromotionRecovery,
+        PromotionService,
+    )
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(), crash_hook=CrashOnce(phase),
+    )
+    with pytest.raises(InjectedCrash, match=phase):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+        operation = dict((await conn.execute(
+            select(integration_repair_operations),
+        )).mappings().one())
+    assert intent["state"] == ("reserved" if phase == "after_object" else "prepared")
+    assert (intent["prepared_sha"] is None) == (phase == "after_object")
+    ownership = BranchOwnership(db)
+    owner = await ownership.get_owner(case["fence"].target)
+    development = DevelopmentIntegration(db, data_dir=case["data_dir"], git=GitManager())
+
+    with pytest.raises(
+        DevelopmentBusy, match=f"reconcile unresolved parent promotion {intent['id']}",
+    ):
+        await development.cancel_preserving("collector-op", reason="unstick collection")
+
+    assert await db.get_integration_promotion_intent(intent["id"]) == intent
+    assert await ownership.get_owner(case["fence"].target) == owner
+    async with db._engine.connect() as conn:
+        current = dict((await conn.execute(
+            select(integration_repair_operations),
+        )).mappings().one())
+        assert current == operation
+        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+    assert await development.rows("project") == []
+    remote = _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+    assert remote == case["base"]
+
+    # The refusal retains authority for ordinary recovery and later siblings.
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    expected = PromotionRecovery if phase == "after_object" else PromotionNotApplied
+    with pytest.raises(expected):
+        await service.reconcile(intent["id"], fence=case["fence"])
+    # Prepared attempts replay their original command; collection waits for
+    # that attempt rather than queueing a different promotion.
+    first_event = {"payload": case["request"].model_dump(mode="json")}
+    if phase == "after_object":
+        async with db._engine.connect() as conn:
+            first_event = (await conn.execute(select(integration_outbox).where(
+                integration_outbox.c.event_type == "delivery.ready",
+            ))).mappings().one()
+    await _collect_recovered_children(
+        db, case, _intent_commands(db, service), first_event=first_event,
+    )
+    cancelled = await development.cancel_preserving("collector-op", reason="reconciled")
+    assert cancelled["outcome"] == "cancelled"
+
+
+async def test_cancel_parent_refuses_unresolved_conflict_resolution(db, tmp_path):
+    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
+
+    intent = await db.reserve_integration_promotion_intent(_intent_values() | {
+        "operation_key": "collector-op", "fence_owner_id": "collector-op",
+    })
+    await db.mark_integration_promotion_conflict(intent["id"], {"paths": ["shared.txt"]})
+    async with db.immediate() as conn:
+        await db.reserve_integration_conflict_resolution(conn, intent["id"], {
+            "resolved_head_sha": "e" * 40, "resolved_tree_sha": "f" * 40,
+            "repair_commit_shas": ["e" * 40], "operation_id": "collector-op",
+            "stage_ordinal": 0, "repair_task_id": "repair", "repair_session_id": "writer",
+            "repair_session_instance_token": "instance", "repair_workspace_id": "workspace",
+            "fence_owner_id": "repair", "fence_token": 2,
+        })
+    before = await db.get_integration_promotion_intent(intent["id"])
+    development = DevelopmentIntegration(db, data_dir=tmp_path, git=GitManager())
+    with pytest.raises(DevelopmentBusy, match="reconcile unresolved parent promotion"):
+        await development.cancel_preserving("collector-op", reason="unstick resolution")
+    assert await db.get_integration_promotion_intent(intent["id"]) == before
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
+    assert await development.rows("project") == []
+
+
+async def test_cancel_parent_fences_a_preparation_that_already_validated(
+    db, promotion_case, monkeypatch,
+):
+    from src.integration.development import DevelopmentIntegration
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+
+    case = promotion_case
+    validated, resume = asyncio.Event(), asyncio.Event()
+    reserve = db.reserve_integration_promotion_intent
+
+    async def paused_reserve(values):
+        validated.set()
+        await resume.wait()
+        return await reserve(values)
+
+    monkeypatch.setattr(db, "reserve_integration_promotion_intent", paused_reserve)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    preparing = asyncio.create_task(service.prepare(case["request"]))
+    try:
+        await asyncio.wait_for(validated.wait(), 5)
+        development = DevelopmentIntegration(db, data_dir=case["data_dir"], git=GitManager())
+        cancelled = await development.cancel_preserving("collector-op", reason="cancel first")
+        assert cancelled["outcome"] == "cancelled"
+        resume.set()
+        with pytest.raises(PromotionTargetMoved, match="parent collection is no longer active"):
+            await asyncio.wait_for(preparing, 5)
+    finally:
+        resume.set()
+        if not preparing.done():
+            preparing.cancel()
+        await asyncio.gather(preparing, return_exceptions=True)
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(
+            select(func.count()).select_from(integration_promotion_intents),
+        ) == 0
+    remote = _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
+    assert remote == case["base"]
+
+
+async def test_cancel_parent_waits_for_an_inflight_reservation(db, tmp_path, monkeypatch):
+    from sqlalchemy import text
+
+    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
+
+    reserving, resume = asyncio.Event(), asyncio.Event()
+    by_domain = db._promotion_intent_by_domain
+    reservation_pid = None
+
+    async def paused_domain(conn, domain_key):
+        nonlocal reservation_pid
+        value = await by_domain(conn, domain_key)
+        if not reserving.is_set():
+            reservation_pid = await conn.scalar(text("SELECT pg_backend_pid()"))
+            reserving.set()
+            await resume.wait()
+        return value
+
+    monkeypatch.setattr(db, "_promotion_intent_by_domain", paused_domain)
+    reservation = asyncio.create_task(db.reserve_integration_promotion_intent(_intent_values() | {
+        "operation_key": "collector-op", "fence_owner_id": "collector-op",
+    }))
+    cancellation = None
+    try:
+        await asyncio.wait_for(reserving.wait(), 5)
+        development = DevelopmentIntegration(db, data_dir=tmp_path, git=GitManager())
+        cancellation = asyncio.create_task(
+            development.cancel_preserving("collector-op", reason="race reservation"),
+        )
+
+        async def observe_operation_lock():
+            async with db._engine.connect() as conn:
+                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                while True:
+                    assert not cancellation.done(), "cancellation bypassed the reservation lock"
+                    if await conn.scalar(text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND :reservation_pid = ANY(pg_blocking_pids(pid)))"
+                    ), {"reservation_pid": reservation_pid}):
+                        return
+                    await asyncio.sleep(0.01)
+
+        # Observe actual PostgreSQL lock contention before letting the first
+        # transaction insert, rather than assuming either task won the race.
+        await asyncio.wait_for(observe_operation_lock(), 5)
+        resume.set()
+        intent = await asyncio.wait_for(reservation, 5)
+        with pytest.raises(DevelopmentBusy, match=intent["id"]):
+            await asyncio.wait_for(cancellation, 5)
+    finally:
+        resume.set()
+        pending = [reservation, *([cancellation] if cancellation is not None else [])]
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
+
+
+async def test_parent_intent_quarantined_continuation_does_not_block_the_next(
+    db, promotion_case,
+):
+    """A continuation the outbox gave up on is a failed delivery, not a pending one."""
+    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX
+    from src.integration.parent_intents import ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    now = intent["updated_at"] + 60
+    service = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(), clock=lambda: now,
+    )
+    handler = _intent_commands(db, service)
+
+    async def visit():
+        return await ParentIntentReconciler(db, commands=lambda: handler).reconcile(intent, now=now)
+
+    assert (await visit())["outcome"] == "continued"
+    # The consumer stayed unavailable until the outbox's max_wait deadline.
+    deadline = now + 3600
+    quarantined = f"{RETRY_EXHAUSTED_PREFIX}max_wait=3600s deadline={deadline:.3f}; 503"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_outbox).values(
+            attempts=7, available_at=deadline, last_error=quarantined,
+        ))
+    now = deadline + 59
+    assert (await visit())["outcome"] == "waiting"
+    now += 1
+    assert (await visit())["outcome"] == "continued"
+    # The fresh continuation is pending again; the quarantined row stays for inspection.
+    assert (await visit())["outcome"] == "waiting"
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_outbox).order_by(
+            integration_outbox.c.available_at,
+        ))).mappings().all()
+    assert [row["dedup_key"].rsplit(":", 1)[1] for row in rows] == ["0", "1"]
+    assert rows[0]["delivered_at"] is None and rows[0]["last_error"] == quarantined
+    assert rows[1]["delivered_at"] is None and rows[1]["last_error"] is None
+    assert rows[1]["available_at"] == now
+
+
 @pytest.mark.parametrize("blocker", ["stale_fence", "paused", "cancelled", "absent", "error", "fetch_moved"])
 async def test_parent_intent_fenced_recovery_preserves_intent_without_proof(
     db, promotion_case, monkeypatch, blocker,

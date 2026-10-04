@@ -17,7 +17,9 @@ from src.integration.observe import (
     GitObservationReader,
     IntegrationObserver,
 )
-from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler, VisitTransition
+from src.integration.reconciler import (
+    CompiledPolicyAdapter, IntegrationReconciler, ScopedIntegrationDB, VisitTransition,
+)
 from src.integration.root_adapters import RootPrimitiveAdapters
 from src.integration.subjects import (
     JournalMode,
@@ -387,17 +389,18 @@ class RootSubjectRuntime:
 
     def __init__(self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time):
         self.db, self.policy, self.clock = db, policy, clock
+        scoped_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
         self.loops = []
         if active:
             self.loops.append(
                 IntegrationReconciler(
-                    db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock
+                    scoped_db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock
                 )
             )
         if shadow:
             self.loops.append(
                 IntegrationReconciler(
-                    _ShadowDB(db),
+                    _ShadowDB(scoped_db),
                     observer.observe,
                     policy,
                     ports,
@@ -609,9 +612,12 @@ def root_runtime_for(orchestrator):
         return None
     observer = RootObserver(
         orchestrator.db,
-        GitObservationReader(orchestrator.git),
+        RootGitObservationReader(
+            orchestrator.git, orchestrator.integration_attestation_service._store
+        ),
         facts_type=IntegrationPolicyFacts,
         session_probe=orchestrator._root_subject_session_probe,
+        candidate_ci=root_candidate_ci_reader(orchestrator),
     )
     policy = PinnedRootPolicy(orchestrator._load_playbook_artifact)
     ports = RootPrimitiveAdapters(
@@ -630,3 +636,59 @@ def root_runtime_for(orchestrator):
     )
     runtime.subscribe(orchestrator.bus)
     return runtime
+
+
+class RootGitObservationReader(GitObservationReader):
+    """Prefer retained candidate objects; unsealed frontiers still use the base checkout."""
+
+    def __init__(self, git, store_for):
+        super().__init__(git)
+        self.store_for = store_for
+
+    async def remote_head(self, repository, ref):
+        store = self.store_for(repository["id"])
+        if store.exists():
+            reader = GitObservationReader(self.git, checkout=lambda _: str(store))
+            result = await reader.remote_head(repository, ref)
+            if result.state != "unknown":
+                return result
+        return await super().remote_head(repository, ref)
+
+    async def is_ancestor(self, repository, ancestor, descendant):
+        result = await self.git.ais_ancestor(
+            str(self.store_for(repository["id"])), ancestor, descendant, strict=True
+        )
+        if result is not None:
+            return result
+        return await super().is_ancestor(repository, ancestor, descendant)
+
+
+def root_candidate_ci_reader(orchestrator):
+    """Read authenticated checks for the frozen candidate, without an evidence-row prerequisite."""
+    from src.integration.ci_producers import HostedCIProducer
+    from src.integration.observe import _required
+    from src.integration.subjects import CIEvidence
+
+    async def read(snapshot, head):
+        repo = await orchestrator.db.get_repo(head.repository_id)
+        binding = await orchestrator.github_repository_binding_resolver(repo)
+        required = _required(snapshot)
+        state = {
+            "project_id": snapshot.subject.project_id,
+            "canonical_repository_id": head.repository_id,
+            "repository_numeric_id": binding.repository_id,
+            "repository_full_name": binding.full_name,
+            "batch_id": snapshot.subject.batch_id,
+            "revision": head.generation,
+            "candidate_sha": head.sha,
+            "operation_id": snapshot.subject.id,
+            "policy_snapshot": {"root": {"required_checks": dict(required)}},
+        }
+        trust, client = await orchestrator.integration_attestation_service._load_trust(state)
+        observed = await HostedCIProducer(client, trust).observe(snapshot.subject, head)
+        return CIEvidence(
+            head_sha=head.sha, state=observed.state, producer=observed.producer,
+            observed_at=observed.observed_at, age_seconds=0,
+        )
+
+    return read

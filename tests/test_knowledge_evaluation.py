@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import runpy
 import socket
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -447,12 +447,18 @@ def test_the_snapshot_adapter_cannot_satisfy_an_integrated_fixture(path):
         else "budget.required_diagnostic" in errors(report)
 
 
-def test_integrated_adapter_refuses_a_database_it_must_not_touch():
+@pytest.mark.parametrize("sentinel_env", ["AQ_DATABASE_URL", "AGENT_QUEUE_DB", "AGENT_QUEUE_DB_URL"])
+def test_integrated_adapter_refuses_a_database_it_must_not_touch(monkeypatch, sentinel_env):
     refuse = API["_refuse_unsafe_database"]
+    sentinel = "aq-worker-no-direct-db://"
+    # Isolate the guard's environment reads from CI configuration without
+    # changing the test process's worker database isolation variables.
+    monkeypatch.setitem(
+        refuse.__globals__, "os", SimpleNamespace(environ={sentinel_env: sentinel})
+    )
     with pytest.raises(API["AdapterUnavailable"]) as missing:
         refuse(None)
     assert "requires_disposable_db" in str(missing.value)
-    sentinel = os.environ.get("AQ_DATABASE_URL") or "aq-worker-no-direct-db://"
     with pytest.raises(API["AdapterUnavailable"]) as worker:
         refuse(sentinel)
     assert "refuses_worker_sentinel" in str(worker.value)

@@ -307,3 +307,30 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert [item["kind"] for item in findings] == ["orphaned_pr", "pr_inventory_failed"]
     assert "pull/92" in findings[0]["detail"] and "26h" in findings[0]["detail"]
     assert findings[1]["detail"] == "offline"
+
+
+def test_unknown_subject_journal_replay_reports_error_after_five_minutes():
+    def entry(seq, timestamp, rule="unknown-facts", **fields):
+        return dict(subject_id="30b7d7f1", project_id="one",
+                    batch_id="integration-batch-66ee241c", seq=seq, recorded_at=timestamp,
+                    rule=rule, payload={"facts": {"unknown": ["ancestry_unknown:source"]}},
+                    **fields)
+
+    journal = [entry(5, NOW-60), entry(3, NOW-200), entry(1, NOW-400)]
+    findings = module._unknown_subject_streaks(journal, NOW)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["batch_id"] == "integration-batch-66ee241c"
+    assert "ancestry_unknown:source" in findings[0]["detail"]
+    assert not module._unknown_subject_streaks(journal[:2], NOW)
+    assert not module._unknown_subject_streaks([entry(6, NOW, "ci-current"), *journal], NOW)
+    assert not module._unknown_subject_streaks(
+        [journal[0], entry(4, NOW-100, "construct"), *journal[1:]], NOW
+    )
+
+
+def test_observation_failure_journal_replay_is_visible():
+    rows = [dict(subject_id="s", project_id="one", batch_id=None, seq=1,
+                 recorded_at=NOW-301, rule=None, primitive="integration_observe_subject",
+                 outcome="unknown", payload={"result": {"reason": "source unavailable"}})]
+    assert "source unavailable" in module._unknown_subject_streaks(rows, NOW)[0]["detail"]

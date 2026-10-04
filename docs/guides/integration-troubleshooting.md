@@ -863,7 +863,9 @@ leave a subject waiting:
   never built (`reserved`) gets a durable `delivery.ready` continuation so the
   parent playbook can rebuild it and handle any conflict. Pending continuations
   deduplicate across restarts; delivered but refused continuations retry with
-  exponential backoff. Ended operations and operator pauses remain held.
+  exponential backoff, and so does one the outbox quarantined
+  (`retry_budget_exhausted:`), paced from its deadline. The quarantined row stays
+  for inspection. Ended operations and operator pauses remain held.
 
 Every source of the pass and every item of a page the service iterates itself
 runs under a budget: `integration.service_source_timeout_seconds` (300 s),
@@ -1128,7 +1130,12 @@ continues it: the collector and `redrive-child` need a live operation,
 conflict intent never gets a repair stage (calm-grove-25 and azure-vault-92,
 2026-10-02).
 
-Reopen it in place, so every receipt stays valid as recorded:
+`cancel-preserving` refuses a parent operation with an unresolved promotion or
+conflict resolution, naming the intent to reconcile first. It keeps the
+operation, collector fence and delegates intact so ordinary fenced recovery
+can still run. Once the write is reconciled, cancellation can be retried.
+
+Reopen a cancelled collection in place, so every receipt stays valid as recorded:
 
 ```bash
 aq integration reopen-collection <parent>        # dry run

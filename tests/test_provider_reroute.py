@@ -687,6 +687,127 @@ async def test_worker_token_is_out_of_scope(orch):
     assert result["success"] is False and result["error"].startswith("out of scope")
 
 
+# --- A per-project supervisor names only its own tasks (quick-crest-28) ------------
+
+
+def _project_supervisor(handler, project_id="p-1"):
+    handler._current_scope = {
+        "kind": "session", "session_id": "sup", "project_id": project_id, "elevated": True,
+    }
+    return handler
+
+
+async def _two_projects_on_codex(orch):
+    """``own`` in p-1 and ``theirs`` in p-2, both on codex, with codex down."""
+    from src.models import Project
+
+    await orch.db.create_project(Project(id="p-2", name="p-2"))
+    await _task(orch, "own", "standard-high-codex")
+    await orch.db.create_task(
+        Task(
+            id="theirs", project_id="p-2", title="theirs", description="d",
+            status=TaskStatus.READY, profile_id="standard-high-codex",
+            route_source=route_source_for("standard-high-codex"),
+            intelligence_class="standard-high", provider_intent=PREFERRED,
+        )
+    )
+    await _codex_down(orch)
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["theirs,", " theirs", "theirs ", "own theirs", "own,theirs", ["own", "theirs,"]],
+)
+async def test_a_project_supervisor_cannot_move_another_projects_task(orch, task_id):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({"task_id": task_id, "force": True})
+
+    assert result == {
+        "success": False,
+        "error": "out of scope: provider_reroute may only name tasks of project p-1 (theirs)",
+    }
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+    assert (await orch.db.get_task("own")).profile_id == "standard-high-codex"
+
+
+@pytest.mark.parametrize(
+    ("args", "refused"),
+    [
+        ({"task_ids": ["theirs"]}, "task_ids"),
+        ({"task_ids": ["theirs"], "job_id": "made-up"}, "task_ids"),
+        ({"task_id": ["theirs", 5]}, "task_id"),
+    ],
+)
+async def test_reroute_refuses_arguments_its_model_does_not_declare(orch, args, refused):
+    await _two_projects_on_codex(orch)
+
+    result = await _handler(orch)._cmd_provider_reroute(dict(args))
+
+    assert result["success"] is False
+    assert result["error"].startswith("invalid provider_reroute arguments: ")
+    assert f"{refused}:" in result["error"]
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_sweep_is_refused(orch):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({})
+
+    assert result["success"] is False
+    assert "re-routes named tasks only" in result["error"]
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_moves_its_own_task_however_it_is_spelled(orch):
+    await _two_projects_on_codex(orch)
+    handler = _project_supervisor(_handler(orch))
+
+    result = await handler._cmd_provider_reroute({"task_id": "own,"})
+
+    assert [d["task_id"] for d in result["moved"]] == ["own"], result
+    assert (await orch.db.get_task("theirs")).profile_id == "standard-high-codex"
+
+
+async def test_a_project_supervisor_undoes_only_its_own_projects_moves(orch):
+    await _two_projects_on_codex(orch)
+    handler = _handler(orch)
+    swept = await handler.execute("provider_reroute", {})
+    assert sorted(d["task_id"] for d in swept["moved"]) == ["own", "theirs"], swept
+    [batch_id] = swept["batch_ids"]
+    await orch.provider_availability.set_state("codex", "auto", by="human:test")
+    _project_supervisor(handler)
+
+    for args in ({"task_id": "theirs,"}, {"task_id": [" theirs"]}, {"task_id": "own theirs"}):
+        refused = await handler._cmd_provider_reroute_undo(args)
+        assert refused == {
+            "success": False,
+            "error": (
+                "out of scope: provider_reroute_undo may only name tasks of project p-1 (theirs)"
+            ),
+        }
+    for args in ({"task_ids": ["theirs"]}, {"batch": batch_id}):
+        refused = await handler._cmd_provider_reroute_undo(args)
+        assert refused["success"] is False
+        assert refused["error"].startswith("invalid provider_reroute_undo arguments: ")
+
+    # The batch spans both projects; the injected ``project_id`` is not the
+    # authority, the scope is.
+    undone = await handler._cmd_provider_reroute_undo(
+        {"batch_id": batch_id, "project_id": "p-2"}
+    )
+    assert undone["outcome"] == "undone", undone
+    assert [d["task_id"] for d in undone["undone"]] == ["own"]
+    assert (await orch.db.get_task("own")).profile_id == "standard-high-codex"
+    theirs = await orch.db.get_task("theirs")
+    assert (theirs.profile_id, theirs.rerouted_from) == (
+        "standard-high-claude", "standard-high-codex"
+    )
+
+
 async def test_provider_paused_task_resumes_then_moves(orch):
     await _task(orch, "pp", "standard-high-codex", status=TaskStatus.READY)
     await orch.db.transition_task(

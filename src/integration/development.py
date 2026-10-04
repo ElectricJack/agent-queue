@@ -3502,6 +3502,7 @@ class DevelopmentIntegration:
     @parent_engine_guard("operation", outcome="blocked")
     async def cancel_preserving(self, operation_id, *, reason):
         from src.database.tables import integration_batches
+        from src.database.tables import integration_promotion_intents as intents
         from src.database.tables import integration_branch_owners as owners
         from src.database.tables import integration_repair_operations as operations
         from src.database.tables import integration_repair_stages as stages
@@ -3524,6 +3525,21 @@ class DevelopmentIntegration:
                 raise ValueError("operation not found")
             if operation["state"] == "completed":
                 return {"outcome": "already_terminal", "operation_id": operation_id}
+            if operation["target_kind"] == "parent":
+                # Ending the collection or releasing its fence would remove
+                # the authority needed to reconcile an interrupted promotion.
+                # New parent reservations take this same operation lock.
+                pending = await conn.scalar(
+                    select(intents.c.id).where(
+                        (intents.c.operation_key == operation_id)
+                        | (intents.c.resolution_operation_id == operation_id),
+                        intents.c.state.not_in(["committed", "conflict", "superseded"]),
+                    ).limit(1)
+                )
+                if pending is not None:
+                    raise DevelopmentBusy(
+                        f"reconcile unresolved parent promotion {pending} before cancellation"
+                    )
             delegates = list(
                 (
                     await conn.execute(

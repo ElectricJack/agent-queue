@@ -798,3 +798,28 @@ async def test_development_transfer_waits_for_a_publisher_instead_of_racing_it(d
     assert (await transfer)["outcome"] == "transferred"
     await publisher
     assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
+
+
+def test_runtime_loads_retained_reviewed_source_after_vault_changes(tmp_path):
+    from src.integration.development_runtime import load_pinned_development_policy
+    from src.playbooks.artifact_store import ArtifactStore
+
+    pinned = pinned_policy()
+    config = SimpleNamespace(compiled_root=str(tmp_path / "compiled"),
+                             vault_root=str(tmp_path / "vault"))
+    store = ArtifactStore(config.compiled_root)
+    ref = store.put(pinned.definition, source_digest=pinned.definition.source_hash,
+                    contract_fingerprint="sha256:" + "b" * 64,
+                    profile_fingerprint="test", compiler_build="test")
+    vault_path = tmp_path / "vault/projects/p/playbooks/p-development.md"
+    vault_path.parent.mkdir(parents=True)
+    vault_path.write_text(pinned.source)
+    assert load_pinned_development_policy(config, ref.artifact_sha256,
+                                         pinned.definition).settings == pinned.settings
+    vault_path.write_text("changed policy")
+    with pytest.raises(ValueError, match="source does not match"):
+        load_pinned_development_policy(config, ref.artifact_sha256, pinned.definition)
+    store.put_source(ref.artifact_sha256, pinned.source)
+    vault_path.unlink()
+    assert load_pinned_development_policy(config, ref.artifact_sha256,
+                                         pinned.definition).settings == pinned.settings

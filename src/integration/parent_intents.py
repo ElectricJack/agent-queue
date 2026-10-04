@@ -21,6 +21,8 @@ On each visit, after a grace for the run that may still be in flight:
 3. A diverged, unapplied attempt is superseded under that same fence after
    fresh read-back. A ``reserved`` intent emits a durable ``delivery.ready``
    continuation so its playbook can rebuild it and own any conflict repair.
+   A continuation the outbox quarantined after its retry budget no longer
+   counts as pending, so the next one follows on the same backoff.
 
 Every call goes through the command handler as a service principal, which
 re-derives authority, fences and Git state.  Visits back off per intent.
@@ -39,7 +41,7 @@ from sqlalchemy import select
 from src.database.tables import integration_outbox, integration_repair_operations, task_metadata
 from src.integration.green_continuation import continuation_delay
 from src.integration.models import BranchKey
-from src.integration.outbox import enqueue_integration_event
+from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.service import RetryBackoff
 
@@ -59,6 +61,21 @@ _QUIET_OUTCOMES = frozenset({
 })
 
 
+def _settled_at(row: Any) -> float | None:
+    """When a continuation stopped being pending, or ``None`` while it still is.
+
+    A quarantined row (``retry_budget_exhausted:``) keeps ``delivered_at`` unset
+    because no consumer accepted it, but the outbox will not retry it either: it
+    settled as a failed delivery at its deadline, which quarantine leaves in
+    ``available_at``.
+    """
+    if row["delivered_at"] is not None:
+        return float(row["delivered_at"])
+    if (row["last_error"] or "").startswith(RETRY_EXHAUSTED_PREFIX):
+        return float(row["available_at"])
+    return None
+
+
 async def enqueue_parent_continuation_on(conn, *, intent, fence, now) -> bool:
     """Pace wakeups durably under the caller's collector and intent locks."""
     prefix = f"parent-intent:{intent['id']}:{fence.owner_id}:{fence.token}:"
@@ -67,13 +84,13 @@ async def enqueue_parent_continuation_on(conn, *, intent, fence, now) -> bool:
             integration_outbox.c.dedup_key.startswith(prefix, autoescape=True),
         ).order_by(integration_outbox.c.available_at, integration_outbox.c.id)
     )).mappings().all()
-    if any(row["delivered_at"] is None for row in emitted):
+    settled = [_settled_at(row) for row in emitted]
+    if None in settled:
         return False
     if emitted:
-        last = emitted[-1]
         due = max(
-            float(last["available_at"]) + continuation_delay(len(emitted)),
-            float(last["delivered_at"]) + GRACE_SECONDS,
+            float(emitted[-1]["available_at"]) + continuation_delay(len(emitted)),
+            settled[-1] + GRACE_SECONDS,
         )
         if now < due:
             return False

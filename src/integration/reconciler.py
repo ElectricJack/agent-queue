@@ -651,3 +651,18 @@ class IntegrationReconciler:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
             except TimeoutError:
                 pass
+
+
+class ScopedIntegrationDB:
+    """Select runtime-owned project modes before paging shared subject kinds."""
+
+    def __init__(self, db, integration_modes):
+        self.db, self.integration_modes = db, tuple(integration_modes)
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    async def due_integration_subject_page(self, **kwargs):
+        return await self.db.due_integration_subject_page(
+            **{**kwargs, "integration_modes": self.integration_modes}
+        )

@@ -1414,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:53db945ffe547b85d00463bc685f0657a4d4f5b83c3cb353af1b66c23bf4f3ef",
+  "digest": "sha256:cd7bb8c29b8dd798549eac93cb863bf8a68789b83ae0b78f0de24f711b340fad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3980,10 +3980,13 @@
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.api.target_scope",
         "src.commands.contracts",
         "src.commands.handler",
         "src.mcp_registration",
-        "src.models"
+        "src.models",
+        "src.profiles.drift",
+        "src.profiles.parser"
       ],
       "markers": [
         "parametrize"
@@ -4985,9 +4988,11 @@
         "src.integration.development",
         "src.integration.development_adapter",
         "src.integration.development_policy",
+        "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.subjects",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
       ],
@@ -7901,9 +7906,11 @@
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.root_runtime",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8220,8 +8227,10 @@
         "src.git.identity",
         "src.git.manager",
         "src.integration.collection",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.parent_completion",
@@ -8440,6 +8449,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.development",
         "src.integration.engine",
         "src.integration.models",
@@ -8738,6 +8748,7 @@
         "src.database",
         "src.database.tables",
         "src.integration.models",
+        "src.integration.reconciler",
         "src.integration.subjects"
       ],
       "markers": [
@@ -11519,6 +11530,7 @@
         "src.commands.principal",
         "src.database",
         "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.playbooks.profiles",
         "src.playbooks.validation",
         "src.profiles.capabilities",
@@ -12679,7 +12691,9 @@
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
@@ -13426,6 +13440,7 @@
         "src.doctor.review_checks",
         "src.event_bus",
         "src.models",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.reviews.vault"
       ],

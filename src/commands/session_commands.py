@@ -146,6 +146,28 @@ class SessionCommandsMixin:
 
         return None, {"error": "session_id, name, or task_id is required"}
 
+    def _session_project_scope_error(self, session) -> dict | None:
+        """Refuse a session row belonging to another project than the caller's.
+
+        A **per-project** elevated token is trusted for its own project and no
+        further.  ``check_command_scope`` pins ``args["project_id"]`` for such a
+        caller, but these commands address a row by id, unique id prefix, name
+        or task and never read that field, so the pin is vacuous here and the
+        fence has to live in the command.  A supervisor of project A could
+        otherwise stop, read or drain-ack project B's workers by naming their
+        session -- and the names are short prefixes printed by
+        ``aq session list``.
+
+        Local callers (the loopback CLI) and the global supervisor carry no
+        project pin, so both stay unrestricted, as does any caller with no
+        scope at all.  Same answer for every way :meth:`_resolve_session` can
+        name a row, because the fence runs on the resolved session.
+        """
+        scope_project = (self._current_scope or {}).get("project_id")
+        if scope_project is not None and session.project_id != scope_project:
+            return {"success": False, "error": "out of scope: session belongs to another project"}
+        return None
+
     @staticmethod
     def _session_dict(session) -> dict:
         return {
@@ -260,6 +282,8 @@ class SessionCommandsMixin:
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
             return {"error": f"Provider '{session.provider}' is not available"}
@@ -498,10 +522,22 @@ class SessionCommandsMixin:
         workspace locked.  The row is left live and the ``process_alive``
         probe — which is now the *only* thing that decides a session is
         dead — reports what actually happened.
+
+        Isolation is the shared session fence
+        (:meth:`_session_project_scope_error`), and it has to be here:
+        ``check_command_scope`` pins ``args["project_id"]`` for a per-project
+        elevated token, but this command takes the row by id, unique id
+        prefix, name or task and never reads that field, so the pin bought
+        nothing.  ``aq session kill <8-char-prefix>`` — the prefix
+        ``aq session list`` prints — is enough to stop another project's
+        worker.  The fence runs on the resolved session, so every way of
+        naming one is covered, and it runs before the provider is touched.
         """
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
             return {"error": f"Provider '{session.provider}' is not available"}
@@ -554,14 +590,14 @@ class SessionCommandsMixin:
         the same trust level that can already kill the session outright.
 
         A **per-project** elevated token is trusted for its own project and
-        no further.  ``check_command_scope`` pins ``args["project_id"]``
-        for such a caller, but this command addresses a session by id (or
-        name, or task) and never reads ``project_id`` — so without the
-        fence below, ``supervisor-A`` could mint a token for a session in
-        project B and use it to read and write B's work.  A minted token is
-        a durable credential, which makes this a privilege escalation
-        rather than a scoping slip.  Local callers carry no project pin and
-        stay unrestricted, as does the global supervisor.
+        no further.  ``check_command_scope`` pins ``args["project_id"]`` for
+        such a caller, but this command addresses a session by id (or
+        name, or task) and never reads ``project_id`` — so without the fence
+        in :meth:`_session_project_scope_error`, ``supervisor-A`` could mint a
+        token for a session in project B and use it to read and write B's
+        work.  A minted token is a durable credential, which makes this a
+        privilege escalation rather than a scoping slip.  Local callers carry
+        no project pin and stay unrestricted, as does the global supervisor.
 
         The new token carries the session's own scope — ``session_id``,
         ``project_id``, and ``task_id`` **only for a task session**.  A
@@ -571,12 +607,8 @@ class SessionCommandsMixin:
         session, err = await self._resolve_session(args)
         if err:
             return err
-        scope_project = (self._current_scope or {}).get("project_id")
-        if scope_project is not None and session.project_id != scope_project:
-            return {
-                "success": False,
-                "error": "out of scope: session belongs to another project",
-            }
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is None:
             return {"success": False, "error": "no token store on this daemon"}
@@ -670,10 +702,20 @@ class SessionCommandsMixin:
         worker there is no further work to come back for
         (``session_exhausted`` / ``drain_requested`` are the only two
         results that tell it to ack).
+
+        An ack is a request to tear a session down, so it is fenced like the
+        other session commands: an elevated per-project supervisor may ack
+        only its own project's sessions
+        (:meth:`_session_project_scope_error`).  A plain session reaches this
+        command at all only with its own ``session_id`` — the scope layer pins
+        that field for ``AGENT_COMMAND_SET`` members — so the fence only
+        closes the elevated path.
         """
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         provider = self._provider_for_session(session)
         if provider is None:
             return {"error": f"Provider '{session.provider}' is not available"}
