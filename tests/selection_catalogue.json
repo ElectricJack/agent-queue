@@ -220,7 +220,6 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
-        "tests/test_development_scenarios.py",
         "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
@@ -594,8 +593,7 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
-        "tests/test_integration_surface.py",
-        "tests/test_integration_surface_commands.py"
+        "tests/test_integration_table_retirement.py"
       ]
     },
     "intelligence-classes": {
@@ -1387,7 +1385,7 @@
       ]
     }
   },
-  "digest": "sha256:4c68b0f53be5444360d1caf19e430d8ff37b49894dccce47fc30932e9248b1fd",
+  "digest": "sha256:9a59d6ef59987c56c22ee28c16a9a713de50d24ed56e697b90bf8955f0a3c7d6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4857,38 +4855,6 @@
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
     },
-    "tests/test_development_scenarios.py": {
-      "areas": [
-        "development-delivery"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.commands.handler",
-        "src.config",
-        "src.database",
-        "src.database.tables",
-        "src.git.github_contracts",
-        "src.git.manager",
-        "src.integration.development",
-        "src.integration.development_adapter",
-        "src.integration.development_policy",
-        "src.integration.development_runtime",
-        "src.integration.engine",
-        "src.integration.gitops",
-        "src.integration.models",
-        "src.integration.observe",
-        "src.integration.ownership",
-        "src.integration.service",
-        "src.integration.subjects",
-        "src.jobs.result",
-        "src.models",
-        "src.orchestrator",
-        "src.playbooks.definition",
-        "src.playbooks.integration_policy"
-      ],
-      "markers": [],
-      "summary": "Rev-2 section-6 phase-3 Development acceptance over real Git and PostgreSQL."
-    },
     "tests/test_development_subjects.py": {
       "areas": [
         "development-delivery"
@@ -5210,7 +5176,6 @@
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
         "src.doctor.integration_checks",
-        "src.doctor.integration_subject_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
         "src.doctor.perf_checks",
@@ -5573,6 +5538,9 @@
         "src.api.models.task",
         "src.commands.handler",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.integration.epic_delivery",
         "src.models"
       ],
@@ -8457,44 +8425,23 @@
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
     },
-    "tests/test_integration_surface.py": {
+    "tests/test_integration_table_retirement.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
       "imports": [
-        "src.api.scope",
         "src.cli.app",
-        "src.commands.contracts.builtin",
-        "src.commands.contracts.registry",
-        "src.commands.integration_commands",
-        "src.commands.integration_legacy",
-        "src.doctor",
-        "src.profiles.capabilities",
-        "src.profiles.parser",
-        "src.vault"
-      ],
-      "markers": [],
-      "summary": "The consolidated integration operator surface (simplification §5.1, Phase 4)."
-    },
-    "tests/test_integration_surface_commands.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.commands.integration_surface_commands",
-        "src.commands.principal",
+        "src.database.engine",
         "src.database.tables",
-        "src.doctor.integration_subject_checks",
-        "src.doctor.models",
-        "src.integration.records",
-        "src.integration.subjects",
-        "src.models",
-        "src.profiles.capabilities"
+        "src.integration",
+        "src.integration.table_retirement"
       ],
-      "markers": [],
-      "summary": "The consolidated integration operator surface against a real database."
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Retiring legacy integration tables (rev-agile-ridge §5.3, §6 phase 4)."
     },
     "tests/test_integration_transfer_commands.py": {
       "areas": [

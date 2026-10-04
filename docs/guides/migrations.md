@@ -68,7 +68,43 @@ that decision.
 ```bash
 aq db current    # read-only: stamped revision(s) vs. this checkout's head
 aq db upgrade    # the one sanctioned migration path (refuses inside a slot)
+aq db retire     # read-only: what still uses each legacy integration table
 ```
+
+### Retiring legacy integration tables
+
+rev-agile-ridge §5.3 keeps a few integration tables and retires 37 legacy
+ones, grouped into seven families (`FAMILIES` in
+`src/integration/table_retirement.py`). No migration drops one. Revision
+`a00000000064` only adds the append-only archive, `integration_table_retirements`
+and `integration_retired_rows`. Dropping a family is this explicit operator
+step, and it changes nothing unless every check passes:
+
+```bash
+aq db retire                       # every family: rows, source files, outside FKs
+aq db retire writers               # one family; exit 0 only when it is ready
+docker exec aq-postgres pg_dump -U agent_queue -d agent_queue -Fc \
+  > ~/agent-queue-$(date +%Y%m%d-%H%M).dump
+aq db retire writers --apply --backup ~/agent-queue-<stamp>.dump
+aq db restore-retired integration_branch_owners   # replay one table if needed
+```
+
+A family is ready when no Python file under `src/` names any of its tables (so
+its code and its `tables.py` entries are gone) and no foreign key reaches one
+from outside the families being retired. `repair` and `parent` reference each
+other, so they are named together: `aq db retire repair parent --apply …`.
+The check reads this checkout's files, not the running daemon's, so restart
+the daemon onto the code that removed the family (`aq restart --no-dashboard`)
+before `--apply`.
+`--apply` refuses inside a worker slot and needs a `pg_dump --format=custom`
+backup from the last 24 hours. In one transaction it takes `ACCESS EXCLUSIVE`
+locks with `NOWAIT` (a table in use refuses), re-checks readiness, copies every
+row into the archive, records a receipt whose row count and digest the archive
+must reproduce, and drops the tables. Running it again is a no-op. Downgrading
+past `a00000000064` is refused once a receipt exists. `restore-retired`
+recreates an absent table with its recorded columns only (constraints, defaults
+and indexes come from the backup when they are needed) and refuses unless the
+restored rows reproduce the receipt.
 
 ### Legacy conflict-resolution reservations
 
