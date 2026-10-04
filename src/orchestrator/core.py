@@ -607,6 +607,9 @@ class Orchestrator(
         self.record_outbox = None
         self.knowledge_generation_loop = None
         self.integration_service = None
+        #: When this process began; refreshed by ``initialize()``.  Integration
+        #: seal grace reads it (``stale_schedule.OrphanGrace``).
+        self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
         self.integration_attestation_service = None
@@ -1462,6 +1465,9 @@ class Orchestrator(
         before the Discord bot connects.
         """
         self._log_resource_gating()
+        # Before anything else: the boundary that separates work this process
+        # started from work a previous one did.  See ``stale_schedule.OrphanGrace``.
+        self._process_started_at = time.time()
         await self.db.initialize()
         from src.agents.configuration import ensure_supervisor_agent
 
@@ -1696,6 +1702,7 @@ class Orchestrator(
                 llm=self.llm,
                 bus=self.bus,
                 required_playbook_status=self.required_playbook_status,
+                process_started_at=self._process_started_at,
             )
             await self.playbook_manager.refresh()
             subscribed = self.playbook_manager.subscribe_to_events()
@@ -1760,6 +1767,7 @@ class Orchestrator(
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
+        from src.integration.stale_schedule import OrphanGrace
 
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
@@ -1780,7 +1788,10 @@ class Orchestrator(
                 None if project is None else project.hierarchical_integration_policy
             )
 
-        self.integration_scheduler = IntegrationScheduler(self.db)
+        self.integration_scheduler = IntegrationScheduler(
+            self.db,
+            orphan_grace=OrphanGrace(since=self._process_started_at),
+        )
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             before_dispatch=self.integration_scheduler.maintain_lease,
@@ -1991,6 +2002,14 @@ class Orchestrator(
             source_timeouts=self.config.integration.service_source_timeouts,
         )
         self.integration_service.start()
+        # A restart drops whatever seal was in flight, and nothing re-drives the
+        # run that held it, so a request this process did not start is freed now
+        # rather than after the unsealed grace.  Best effort: the next due tick
+        # reaches the same verdict, and a failure must not block startup.
+        try:
+            await self.integration_service.release_orphaned_sweep_requests(time.time())
+        except Exception:
+            logger.exception("Orphaned integration sweep sweep on start failed")
 
         # Record intents have their own bounded lifecycle and concurrency.
         # No scheduling cascade, integration lease, or optional plugin owns
@@ -2379,6 +2398,10 @@ class Orchestrator(
             replay = await self.required_playbook_reconciler.replay_route_needed_events()
             if replay.get("errors"):
                 logger.error("Required playbook late replay errors: %s", replay["errors"])
+
+        # Recovery may execute any pinned step, so wait until all handler
+        # dependencies are wired. Only the bounded scan is awaited here.
+        await self._recover_interrupted_playbook_runs()
 
     async def refresh_required_playbook_status(self) -> dict[str, Any]:
         """Recompute required-playbook readiness from the activations as they are now.
@@ -3119,6 +3142,9 @@ class Orchestrator(
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.
+
+            # Re-drive runs whose asyncio driver was lost on daemon restart.
+            await self._recover_interrupted_playbook_runs()
 
             # 12a. Resume playbook runs suspended on a child task that has
             #      settled.  Before the timeout sweep on purpose: a child that

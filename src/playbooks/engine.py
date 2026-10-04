@@ -178,7 +178,15 @@ class OperatorResolution:
     payload: Mapping[str, Any] = field(default_factory=dict)
 
 
-ResumeCause = EventArrived | TimerFired | ChildTaskCompleted | HumanDecision | OperatorResolution
+@dataclass(frozen=True, slots=True)
+class InterruptedByRestart:
+    process_started_at: float
+
+
+ResumeCause = (
+    EventArrived | TimerFired | ChildTaskCompleted | HumanDecision
+    | OperatorResolution | InterruptedByRestart
+)
 
 
 # --------------------------------------------------------------------------
@@ -465,6 +473,25 @@ class PlaybookEngine:
         self.cancellation_grace_seconds = cancellation_grace_seconds
         #: Live walks in *this* process, keyed by run id.  See :class:`_RunControl`.
         self._live: dict[str, _RunControl] = {}
+        # Cover the whole resume, including repository reads and recovery
+        # boundaries before _walk installs its cancellation handle.
+        self._driving: set[str] = set()
+        self._driver_idle: dict[str, tuple[asyncio.Task[Any] | None, asyncio.Event]] = {}
+
+    @property
+    def active_run_ids(self) -> frozenset[str]:
+        """Runs this shared engine is currently driving in this process."""
+        return frozenset(self._driving).union(self._live)
+
+    def _reserve_driver(self, run_id: str) -> None:
+        self._driving.add(run_id)
+        self._driver_idle[run_id] = asyncio.current_task(), asyncio.Event()
+
+    def _release_driver(self, run_id: str) -> None:
+        self._driving.discard(run_id)
+        idle = self._driver_idle.pop(run_id, None)
+        if idle is not None:
+            idle[1].set()
 
     # ------------------------------------------------------------------
     # §4.2 — dispatch
@@ -1060,12 +1087,18 @@ class PlaybookEngine:
                 result_value=result_value,
             )
 
-        await self._emit(EVENT_RUN_STARTED, snapshot)
-        if pause_before_start:
-            return RunOutcome(snapshot.run_id, snapshot.lifecycle, "paused", snapshot)
-        if mode is ExecutionMode.SHADOW:
-            return await self._shadow_rule(snapshot, rule, artifact, artifact_ref, principal, repository)
-        return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        self._reserve_driver(snapshot.run_id)
+        try:
+            await self._emit(EVENT_RUN_STARTED, snapshot)
+            if pause_before_start:
+                return RunOutcome(snapshot.run_id, snapshot.lifecycle, "paused", snapshot)
+            if mode is ExecutionMode.SHADOW:
+                return await self._shadow_rule(
+                    snapshot, rule, artifact, artifact_ref, principal, repository
+                )
+            return await self._walk(snapshot, artifact, artifact_ref, principal, mode, repository)
+        finally:
+            self._release_driver(snapshot.run_id)
 
     async def _shadow_rule(
         self,
@@ -1139,12 +1172,36 @@ class PlaybookEngine:
     # ------------------------------------------------------------------
 
     async def resume(self, run_id: str, cause: ResumeCause, principal: Any) -> RunOutcome:
-        """Continue a paused run **against the same artifact**.
+        """Continue a suspended/interrupted run against its pinned artifact.
 
-        Never against a rebuilt one: a run reads its graph from its pinned
-        artifact hash, and re-resolving it at resume time would be the
-        in-place translation the roadmap forbids.
+        Every production caller shares this engine. Reserve the driver before
+        the first await, so recovery and an event/operator resume cannot both
+        interpret a live attempt as interrupted and execute its side effects.
         """
+        while run_id in self.active_run_ids:
+            idle = self._driver_idle.get(run_id)
+            snapshot = await self.runs.load_run(run_id) if self.runs is not None else None
+            if (
+                snapshot is not None and snapshot.lifecycle is RunLifecycle.PAUSED
+                and not isinstance(cause, InterruptedByRestart)
+                and idle is not None and idle[0] is not asyncio.current_task()
+            ):
+                # A timer/event can claim a freshly registered wait before
+                # its driver finishes emitting events. Preserve that cause
+                # and hand off after the driver exits, without overlapping it.
+                await idle[1].wait()
+                continue
+            return RunOutcome(
+                run_id, snapshot.lifecycle if snapshot else RunLifecycle.RUNNING,
+                "already_driving", snapshot,
+            )
+        self._reserve_driver(run_id)
+        try:
+            return await self._resume(run_id, cause, principal)
+        finally:
+            self._release_driver(run_id)
+
+    async def _resume(self, run_id: str, cause: ResumeCause, principal: Any) -> RunOutcome:
         repository = self.runs
         if repository is None:
             raise RuntimeError("resume requires a run repository")
@@ -1153,6 +1210,24 @@ class PlaybookEngine:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
         if snapshot.is_terminal:
             return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
+        if isinstance(cause, InterruptedByRestart):
+            if (
+                snapshot.lifecycle not in {RunLifecycle.RUNNING, RunLifecycle.CANCELLING}
+                or snapshot.updated_at >= cause.process_started_at
+                or snapshot.mode != ExecutionMode.LIVE.value
+            ):
+                return RunOutcome(run_id, snapshot.lifecycle, "restart_recovery_not_needed", snapshot)
+            # Carry the cause into the very first durable boundary, including
+            # an interruption/operator stop before the ordinary resume path.
+            snapshot = replace(
+                snapshot, context=dict(snapshot.context) | self._resume_context(cause)
+            )
+            if snapshot.lifecycle is RunLifecycle.CANCELLING:
+                settled = await self._cancel_paused(
+                    snapshot, repository, principal, "interrupted by daemon restart"
+                )
+                await self._cancel_children(snapshot, principal, None)
+                return settled
 
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
@@ -1808,6 +1883,11 @@ class PlaybookEngine:
             step_id = snapshot.current_step_id or ""
             step = artifact.steps[step_id]
         except (RuntimeError, KeyError, FileNotFoundError):
+            if snapshot.lifecycle is RunLifecycle.CANCELLING:
+                # Re-recording intent would leave this row cancelling with a
+                # fresh timestamp and no driver. Preserve it for recovery and
+                # the orphan diagnostic until the artifact is available.
+                raise
             # No artifact, no step kind, no receipt.  The run still has to
             # stop, and the repository's own cancel clears the waits, so the
             # degradation is the receipt rather than the cancellation.
@@ -3433,6 +3513,11 @@ class PlaybookEngine:
 
     @staticmethod
     def _resume_context(cause: ResumeCause) -> dict[str, Any]:
+        if isinstance(cause, InterruptedByRestart):
+            return {"resume_cause": {
+                "kind": "interrupted_by_restart",
+                "process_started_at": cause.process_started_at,
+            }}
         if isinstance(cause, HumanDecision):
             return {"resume_decision": cause.decision}
         if isinstance(cause, ChildTaskCompleted):
@@ -3715,6 +3800,7 @@ class ChildTaskReconciler:
 
 
 __all__ = [
+    "InterruptedByRestart",
     "ChildTaskCompleted",
     "ChildTaskReconciler",
     "DispatchResult",

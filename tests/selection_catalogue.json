@@ -549,6 +549,7 @@
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
@@ -1389,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:12d07a54cc76c715ad13fbb76d2df692b3fc39383f28c33f605e3ee4c40e2712",
+  "digest": "sha256:202c8d63bad8ccc6aec504ef60c9829f059ef90a8554942c94f4947ffdddc899",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7936,6 +7937,37 @@
       ],
       "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
     },
+    "tests/test_integration_parent_source.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.git.manager",
+        "src.integration.cancelled_collection_recovery",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.parent_completion",
+        "src.integration.parent_source",
+        "src.integration.promotion",
+        "src.integration.review_evidence",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Two-child aggregate admission survives an advanced canonical PR head."
+    },
     "tests/test_integration_parent_subjects.py": {
       "areas": [
         "integration-trains"
@@ -8440,6 +8472,7 @@
         "src.integration.development",
         "src.integration.release",
         "src.integration.scheduler",
+        "src.integration.service",
         "src.integration.settling",
         "src.integration.stale_schedule",
         "src.models",
@@ -8718,9 +8751,7 @@
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",
-        "src.jobs.result",
         "src.jobs.service",
-        "src.object_loop.render_profile",
         "src.resources.box_lock",
         "src.resources.semaphore"
       ],
@@ -10382,22 +10413,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.api.scope",
-        "src.commands.contracts.job",
         "src.commands.contracts.object_loop",
-        "src.commands.formula_commands",
-        "src.commands.job_commands",
         "src.commands.object_loop_commands",
         "src.database.tables",
         "src.integration.child_delivery",
         "src.integration.development",
         "src.integration.promotion",
-        "src.jobs.artifacts",
-        "src.jobs.matter",
         "src.models",
-        "src.object_loop.artifacts",
-        "src.object_loop.contracts",
-        "src.object_loop.render_profile"
+        "src.object_loop.contracts"
       ],
       "markers": [
         "parametrize"
@@ -10466,8 +10489,10 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.playbooks.artifact_store",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
+        "src.playbooks.services",
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
@@ -15504,12 +15529,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.models",
         "src.commands.principal",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.playbook_v2_checks",
+        "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.executors.foreach",
         "src.playbooks.executors.wait",
         "src.playbooks.receipts",
+        "src.playbooks.recovery",
         "src.playbooks.run_state",
         "src.playbooks.waits"
       ],
@@ -15518,7 +15549,7 @@
         "integration",
         "parametrize"
       ],
-      "summary": "Restart and idempotency boundaries — Package 4 child plan T-15."
+      "summary": "Restart recovery and idempotency boundaries — Package 4 child plan T-15."
     },
     "tests/test_v2_shadow.py": {
       "areas": [

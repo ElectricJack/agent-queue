@@ -41,6 +41,7 @@ from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
 from src.integration.settling import clear as clear_settling_window, settled
 from src.integration.stale_schedule import (
+    OrphanGrace,
     classify_outstanding_request_on,
     release_outstanding_request_on,
 )
@@ -114,9 +115,18 @@ class IntegrationScheduler:
 
     DEFAULT_INTERVAL_SECONDS = 300
 
-    def __init__(self, db: Any, *, clock: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        db: Any,
+        *,
+        clock: Callable[[], float] = time.time,
+        orphan_grace: OrphanGrace | None = None,
+    ):
         self.db = db
         self._clock = clock
+        #: ``None`` keeps the full seal grace; the daemon passes the boundary of
+        #: its own start so a request a dead process accepted is freed now.
+        self._orphan_grace = orphan_grace
 
     async def maintain_lease(self, project_id: str) -> None:
         """Refresh only the outstanding batch's exact authority before dispatch."""
@@ -317,7 +327,12 @@ class IntegrationScheduler:
         if schedule["outstanding_request_id"] is None:
             return schedule, False
         state = await classify_outstanding_request_on(
-            conn, project_id, schedule, now=now, lock=True
+            conn,
+            project_id,
+            schedule,
+            now=now,
+            lock=True,
+            orphan_grace=self._orphan_grace,
         )
         if state.verdict != "stale":
             return schedule, False
