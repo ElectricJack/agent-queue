@@ -214,6 +214,15 @@ Once every cleanup item completes for a delivered batch, cleanup releases its
 exact detached collector reservation. `aq integration retry-cleanup BATCH_ID`
 also reconciles that release for batches cleaned up by older versions.
 
+Aborting a batch queues its published audit PRs for cleanup, with a comment naming
+the aborted outcome and reason. Source PRs and refs remain available for diagnosis.
+Cleanup retries and the integration loop also backfill older aborted batches.
+The periodic integration sweep examines every open same-repository `aq/*` PR and
+uses `close-delivered-pr` proof before closing work delivered on the default branch.
+Adoption and supersession retire tracked task PRs with settlement comments; failed
+GitHub cleanup is retained for retry. `integration.orphaned_prs` and `stall.sweep`
+report open `aq/*` PRs older than 24 hours without a live task or train owner.
+
 `aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
 COMPLETED train root with a PR but no checkpoint or live branch origin. The
 GitHub review poller also warns when such a root has no eligible review source,
@@ -872,8 +881,9 @@ private repair ref remain forensic evidence.
 
 Status lists `repair`, `promotion`, `reconciliation`, and `cleanup_pending`
 identities. Resume or abort only an operation already in `human_required`; both
-fail closed when provider or irreversible-write facts are ambiguous. Abort is
-database-only and does not rewrite Git. Cleanup retry requeues only the exact
+fail closed when provider or irreversible-write facts are ambiguous. Abort records
+the cancellation and queues audit PR closure while retaining source Git work.
+Cleanup retry requeues only the exact
 safe existing items and never clears an irreversible marker:
 
 ```bash

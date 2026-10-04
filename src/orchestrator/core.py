@@ -1915,6 +1915,7 @@ class Orchestrator(
         from src.integration.parent_intents import ParentIntentReconciler
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
+        from src.integration.pr_cleanup import PullRequestReconciler
         async def development_confirm_stopped(session):
             from src.sessions.provider import SessionHandle
             provider = self.session_providers.create(session["provider"], self.config)
@@ -1973,6 +1974,10 @@ class Orchestrator(
                 parent_head_handler=self._reverify_integration_parent_source,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
+            pr_cleanup_handler=PullRequestReconciler(
+                self.db, self.git, commands=lambda: self._command_handler,
+            ).tick,
+            aborted_cleanup_handler=self.integration_cleanup_service.reconcile_aborted,
             repair_dispatcher=self._dispatch_integration_repair_stage,
             green_promotion_handler=GreenPromotionReconciler(
                 self.db, promotion=self.root_promotion_service

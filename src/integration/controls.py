@@ -127,7 +127,13 @@ class IntegrationControlService:
         return await self._recovery().resume(operation_id)
 
     async def abort(self, operation_id: str, *, reason: str) -> dict[str, Any]:
-        return await self._recovery().abort(operation_id, reason=reason)
+        result = await self._recovery().abort(operation_id, reason=reason)
+        if result["outcome"] == "aborted" and self.cleanup_service is not None:
+            operation = await self.db.get_integration_operation(operation_id)
+            if operation["target_kind"] == "batch":
+                cleanup = await self.cleanup_service.advance(operation["batch_id"])
+                result["cleanup"] = [item.model_dump() for item in cleanup]
+        return result
 
     async def clear_stale_request(
         self,
@@ -160,9 +166,9 @@ class IntegrationControlService:
         )
 
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:
-        """Requeue retryable cleanup, or materialize a promoted batch's missing cleanup.
+        """Requeue retryable cleanup, or materialize a terminal batch's missing cleanup.
 
-        A promoted batch whose cleanup never materialized has no item to
+        A promoted or aborted batch whose cleanup never materialized has no item to
         requeue, yet its pending cleanup keeps the project's integration work
         active (and so a drain open) forever.  For that batch the retry is the
         materialization itself; the cleanup worker then runs the items.
@@ -175,7 +181,7 @@ class IntegrationControlService:
                 await conn.execute(
                     select(integration_batches.c.id).where(
                         integration_batches.c.id == batch_id,
-                        integration_batches.c.lifecycle == "promoted",
+                        integration_batches.c.lifecycle.in_(("promoted", "aborted")),
                         integration_batches.c.cleanup_state == "pending",
                         ~select(integration_cleanup_items.c.domain_key)
                         .where(integration_cleanup_items.c.batch_id == batch_id)
