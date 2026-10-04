@@ -1933,11 +1933,13 @@ class IntegrationCommandsMixin:
             return service
         from src.integration.scheduler import TrainService
         from src.integration.migration_heads import MigrationInspector
+        from src.integration.source_ci import RootAdmissionReader
 
         return TrainService(
             self.db,
             default_mode=self.config.integration.default_mode,
             migration_inspector=MigrationInspector(self._integration_promotion_service()),
+            admission_reader=RootAdmissionReader(self._integration_promotion_service()),
             delivery_observer=getattr(self.orchestrator, "delivery_observer", None),
         )
 

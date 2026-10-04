@@ -91,14 +91,24 @@ class PinnedRootPolicy(CompiledPolicyAdapter):
 
 
 class RootObserver(IntegrationObserver):
-    def __init__(self, db, git, **kwargs):
+    def __init__(self, db, git, *, open_prs=None, **kwargs):
         self.db = db
-        super().__init__(_RootObservationReader(db), git, **kwargs)
+        super().__init__(_RootObservationReader(db, open_prs=open_prs), git, **kwargs)
 
     async def observe(self, subject):
         # Legacy repair stages own the clock/attempt rows during phase one.
         # Re-read those rather than letting a mirrored budget hide new results.
         facts = await super().observe(subject)
+        if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id:
+            contained = {m.task_id for m in facts.members if m.ancestry == "contained"}
+            facts = facts.model_copy(update={
+                "members": tuple(m for m in facts.members if m.task_id not in contained),
+                # Admission fetches and verifies each exact source. Missing
+                # local source objects must not prevent reaching that port.
+                "unknown": tuple(r for r in facts.unknown if not r.startswith((
+                    "ancestry_unknown:", "member_head_missing:",
+                ))),
+            })
         if (
             subject.engine is SubjectEngine.RECONCILER
             and facts.candidate
@@ -302,7 +312,8 @@ def _legacy_phase(lifecycle):
 
 
 class _RootObservationReader:
-    def __init__(self, db):
+    def __init__(self, db, *, open_prs=None):
+        self.db, self.open_prs = db, open_prs
         self.reader = DatabaseObservationReader(db)
 
     async def read(self, subject_id):
@@ -310,6 +321,28 @@ class _RootObservationReader:
         if snapshot is None:
             return None
         subject = snapshot.subject
+        if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id:
+            eligible, after = set(), None
+            async with self.db._engine.connect() as conn:
+                while True:
+                    page = await self.db.eligible_root_page_on(
+                        conn, project_id=subject.project_id, repository_id=subject.repository_id,
+                        after=after, limit=100,
+                    )
+                    if not page:
+                        break
+                    eligible.update(row["task_id"] for row in page)
+                    after = (page[-1]["task_id"], page[-1]["source_head"])
+            tasks = tuple(row for row in snapshot.all("tasks") if row["id"] in eligible)
+            if self.open_prs and tasks:
+                try:
+                    urls = await self.open_prs(snapshot.repository)
+                    tasks = tuple(row for row in tasks if row.get("pr_url") in urls)
+                except Exception:
+                    # Seal will report a fresh per-source observation failure.
+                    # Do not interpret an unavailable remote as an empty frontier.
+                    pass
+            snapshot = replace(snapshot, rows={**snapshot.rows, "tasks": tasks})
         changes = {"budget": None}
         batch = next(iter(snapshot.all("integration_batches")), None)
         if subject.kind is SubjectKind.ROOT_BATCH and batch:
@@ -618,6 +651,7 @@ def root_runtime_for(orchestrator):
         facts_type=IntegrationPolicyFacts,
         session_probe=orchestrator._root_subject_session_probe,
         candidate_ci=root_candidate_ci_reader(orchestrator),
+        open_prs=root_open_prs_reader(orchestrator.git),
     )
     policy = PinnedRootPolicy(orchestrator._load_playbook_artifact)
     ports = RootPrimitiveAdapters(
@@ -703,5 +737,18 @@ def root_candidate_ci_reader(orchestrator):
             head_sha=head.sha, state=observed.state, producer=observed.producer,
             observed_at=observed.observed_at, age_seconds=0,
         )
+
+    return read
+
+
+def root_open_prs_reader(git):
+    async def read(repository):
+        binding = await git.bind_github_repository(repository["url"])
+        pulls = await git._github_client(binding).paged_list(
+            f"/repositories/{binding.repository_id}/pulls?state=open&per_page=100"
+        )
+        if any(pull.get("state") != "open" or not pull.get("html_url") for pull in pulls):
+            raise ValueError("open PR listing is malformed")
+        return {pull["html_url"] for pull in pulls}
 
     return read

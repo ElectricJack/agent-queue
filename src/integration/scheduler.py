@@ -11,7 +11,8 @@ from collections.abc import Callable
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import case, delete, insert, or_, select, update
+from sqlalchemy import case, cast, delete, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.integration_schedule_queries import (
@@ -19,11 +20,13 @@ from src.database.queries.integration_schedule_queries import (
     INTEGRATION_LEASE_SECONDS,
 )
 from src.database.tables import (
+    events,
     integration_batch_members,
     integration_batches,
     integration_promotion_intents,
     integration_repair_operations,
     integration_source_ci,
+    integration_review_evidence,
     messages,
     playbook_artifacts,
     project_integration_leases,
@@ -484,14 +487,58 @@ class TrainService:
         page_size: int = DEFAULT_PAGE_SIZE,
         migration_inspector=None,
         delivery_observer=None,
+        admission_reader=None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("integration train page size must be positive")
+        self.admission_reader = admission_reader
         self.db = db
         self.default_mode = default_mode
         self.page_size = page_size
         self.migration_inspector = migration_inspector
         self.delivery_observer = delivery_observer or getattr(db, "_delivery_observer", None)
+
+    async def _observe_admission(self, project_id, request_id):
+        from src.integration.engine import current_admission
+
+        if current_admission() is None:
+            return None
+        async with self.db._engine.connect() as conn:
+            prior = await self._batch_for_request(conn, project_id, request_id)
+            if prior is not None and prior["lifecycle"] != "sealing":
+                return None
+            if prior is None and await request_ended_without_batch_on(conn, project_id, request_id):
+                return None
+        project = await self.db.get_project(project_id)
+        policy = HierarchicalIntegrationPolicy.model_validate(project.hierarchical_integration_policy)
+        candidates, after = [], None
+        async with self.db._engine.connect() as conn:
+            while True:
+                page = await self.db.eligible_root_page_on(
+                    conn, project_id=project_id, repository_id=project.integration_repository_id,
+                    after=after, limit=self.page_size,
+                )
+                if not page:
+                    break
+                candidates.extend(page)
+                after = (page[-1]["task_id"], page[-1]["source_head"])
+        if hasattr(self.admission_reader, "observe_many"):
+            results = await self.admission_reader.observe_many(candidates, policy)
+        else:
+            results = [await self.admission_reader(member, policy) if self.admission_reader else
+                       {"reason": "source_observation_unavailable"} for member in candidates]
+        observations = {self._admission_key(member): result
+                        for member, result in zip(candidates, results, strict=True)}
+        return {"policy": policy.model_dump(mode="json"),
+                "generation": project.hierarchical_integration_generation,
+                "members": observations}
+
+    @staticmethod
+    def _admission_key(member):
+        return tuple(member[name] for name in (
+            "task_id", "repository_id", "source_base", "source_head", "generation",
+            "source_branch", "pr_url", "current_verification_id",
+        ))
 
     async def _observe_root_deliveries(self, project_id, request_id):
         """Ask canonical Git truth before taking the hierarchy lock.
@@ -578,6 +625,16 @@ class TrainService:
         for _ in range(3):
             result = await self._seal_once(project_id, request_id, now)
             if result["outcome"] != "stale":
+                async with self.db._engine.connect() as conn:
+                    saved = await conn.scalar(select(events.c.payload).where(
+                        events.c.project_id == project_id,
+                        events.c.event_type == "integration.seal_admission",
+                        case((events.c.event_type == "integration.seal_admission",
+                              cast(events.c.payload, JSONB)), else_=None)["request_id"].astext
+                        == request_id,
+                    ).order_by(events.c.id.desc()).limit(1))
+                if saved:
+                    result["exclusions"] = json.loads(saved)["exclusions"]
                 return result
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
@@ -596,6 +653,8 @@ class TrainService:
     async def _seal_once(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         if not project_id.strip() or not request_id.strip():
             raise ValueError("integration seal project and request are required")
+        admission_view = await self._observe_admission(project_id, request_id)
+        exclusions = []
         delivery_view = await self._observe_root_deliveries(project_id, request_id)
         inspected = None
         if self.migration_inspector is not None:
@@ -627,6 +686,7 @@ class TrainService:
                         repository_id=project.integration_repository_id,
                         project_mode=project.integration_mode,
                         git_delivered=preview_delivered,
+                        admission_view=admission_view,
                     )
                     if project is not None
                     else []
@@ -780,6 +840,7 @@ class TrainService:
                 repository_id=repository_id,
                 project_mode=project["integration_mode"],
                 git_delivered=git_delivered,
+                admission_view=admission_view, exclusions=exclusions,
             )
             if inspected is not None:
                 from src.integration.migration_heads import select_members
@@ -811,6 +872,7 @@ class TrainService:
                     delivered=delivered,
                 )
                 for finding in deferred:
+                    exclusions.append({**finding, "reason": "migration_collision"})
                     await self._record_migration_deferral_on(
                         conn,
                         project_id,
@@ -836,6 +898,8 @@ class TrainService:
                 # keep no batch row.  A replay answers from the schedule.
                 await self._consume_request(conn, project_id, request_id, now)
                 await clear_settling_window(conn, project_id=project_id)
+                if admission_view is not None:
+                    await self._record_admission_on(conn, project_id, request_id, exclusions, [])
                 return self._empty_result(project_id, request_id)
 
             manifest_digest = self._manifest_digest(members)
@@ -923,6 +987,12 @@ class TrainService:
 
             for ordinal, member in enumerate(members):
                 review = member["review"]
+                if review["evidence"].get("decision_path") == "git_source_ci":
+                    await conn.execute(pg_insert(integration_review_evidence).values(**review)
+                                       .on_conflict_do_nothing(index_elements=["id"]))
+                    review = dict((await conn.execute(select(integration_review_evidence).where(
+                        integration_review_evidence.c.id == review["id"],
+                    ))).mappings().one())
                 await conn.execute(
                     insert(integration_batch_members).values(
                         batch_id=batch_id,
@@ -965,7 +1035,16 @@ class TrainService:
                 .values(lifecycle="sealed", updated_at=now)
             )
             await clear_settling_window(conn, project_id=project_id)
+            if admission_view is not None:
+                await self._record_admission_on(conn, project_id, request_id, exclusions, members)
             return self._result("sealed", project_id, request_id, batch_id, operation["id"])
+
+    async def _record_admission_on(self, conn, project_id, request_id, exclusions, members):
+        await self.db.log_event(
+            "integration.seal_admission", project_id=project_id,
+            payload=json.dumps({"request_id": request_id, "exclusions": exclusions,
+                                "admitted": [m["task_id"] for m in members]}), conn=conn,
+        )
 
     async def _record_migration_deferral_on(self, conn, project_id, request_id, finding, now):
         identity = hashlib.sha256(
@@ -1001,6 +1080,94 @@ class TrainService:
         )
         await conn.execute(statement.on_conflict_do_nothing(index_elements=["id"]))
 
+    async def _git_eligible_members(self, conn, project_id, repository_id, project_mode,
+                                    view, delivered, exclusions):
+        from src.integration.engine import current_admission
+
+        project = (await conn.execute(select(projects).where(projects.c.id == project_id))).mappings().one()
+        policy_changed = (view["policy"] != project["hierarchical_integration_policy"]
+                          or view["generation"] != project["hierarchical_integration_generation"])
+        members, after, seen = [], None, set()
+        delivered = set(delivered)
+        while True:
+            page = await self.db.eligible_root_page_on(
+                conn, project_id=project_id, repository_id=repository_id,
+                after=after, limit=self.page_size,
+            )
+            if not page:
+                break
+            reviews = await self.db.latest_exact_reviews_on(conn, page)
+            for member in page:
+                key = self._admission_key(member)
+                seen.add(member["task_id"])
+                observation = view["members"].get(key, {"reason": "source_identity_changed"})
+                reason = "policy_changed" if policy_changed else observation.get("reason")
+                mode, _ = resolve_integration_mode_with_source(
+                    member["task_integration_mode"], parent_task_mode=None,
+                    project_mode=project_mode, default_mode=self.default_mode,
+                )
+                review = reviews.get(key[:5])
+                if member["task_id"] in delivered or reason == "already_delivered":
+                    delivered.add(member["task_id"])
+                    reason = "already_delivered"
+                elif mode != "pull_request":
+                    reason = "integration_mode"
+                elif review and review["verdict"] == "rejected":
+                    reason = "review_rejected"
+                if reason:
+                    exclusions.append({"task_id": member["task_id"],
+                                       "head_sha": member["source_head"], "reason": reason})
+                    continue
+                evidence = {"decision_path": "git_source_ci", **observation,
+                            "policy_generation": view["generation"],
+                            "verification_id": member["current_verification_id"],
+                            "pr_url": member["pr_url"]}
+                identity = json.dumps([key, evidence], sort_keys=True)
+                review = {
+                    "id": "git-admission-" + hashlib.sha256(identity.encode()).hexdigest(),
+                    "source_task_id": member["task_id"], "repository_id": repository_id,
+                    "source_base": member["source_base"], "reviewed_head_sha": member["source_head"],
+                    "reviewed_tree_sha": observation["tree"],
+                    "reviewer_task_id": None, "reviewer_session_attempt_id": None,
+                    "reviewer_identity": "service:root-reconciler", "review_kind": member["source_kind"],
+                    "generation": member["generation"], "verdict": "approved",
+                    "evidence": evidence, "created_at": observation["observed_at"],
+                }
+                members.append({**member, "review": review})
+            after = (page[-1]["task_id"], page[-1]["source_head"])
+        for key in view["members"]:
+            if key[0] not in seen:
+                exclusions.append({"task_id": key[0], "head_sha": key[3],
+                                   "reason": "source_no_longer_eligible"})
+        admission = current_admission()
+        if admission.task_kinds:
+            from src.database.tables import tasks
+
+            allowed = set((await conn.execute(select(tasks.c.id).where(
+                tasks.c.id.in_([m["task_id"] for m in members]),
+                tasks.c.task_type.in_(admission.task_kinds),
+            ))).scalars())
+            for member in members:
+                if member["task_id"] not in allowed:
+                    exclusions.append({"task_id": member["task_id"],
+                                       "head_sha": member["source_head"], "reason": "task_kind"})
+            members = [m for m in members if m["task_id"] in allowed]
+        delivered |= await self.db.delivered_root_task_ids_on(
+            conn, project_id=project_id, repository_id=repository_id,
+        )
+        edges = await dependencies_for(conn, [m["task_id"] for m in members])
+        ordered, deferred = order_members(members, edges, delivered)
+        for member in deferred:
+            exclusions.append({"task_id": member["task_id"], "head_sha": member["source_head"],
+                               "reason": "dependency_unsatisfied"})
+        cap = admission.max_members
+        if cap is not None:
+            for member in ordered[cap:]:
+                exclusions.append({"task_id": member["task_id"], "head_sha": member["source_head"],
+                                   "reason": "batch_limit"})
+            ordered = ordered[:cap]
+        return ordered
+
     async def _eligible_members(
         self,
         conn,
@@ -1009,7 +1176,13 @@ class TrainService:
         repository_id: str,
         project_mode: str | None,
         git_delivered: set[str] | None = None,
+        admission_view=None, exclusions=None,
     ) -> list[dict[str, Any]]:
+        if admission_view is not None:
+            return await self._git_eligible_members(
+                conn, project_id, repository_id, project_mode, admission_view,
+                git_delivered or set(), exclusions if exclusions is not None else [],
+            )
         members: list[dict[str, Any]] = []
         after: tuple[str, str] | None = None
         while True:

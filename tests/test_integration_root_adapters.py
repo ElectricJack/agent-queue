@@ -385,11 +385,15 @@ async def test_command_transfer_requires_operator_and_active_enablement_and_audi
 
 async def test_seal_preserves_the_complete_namespaced_request_key(root):
     db, _, subject = root
-    commands = SimpleNamespace(execute=AsyncMock(return_value={"outcome": "empty"}))
+    exclusions = [{"task_id": "source", "reason": "source_ci_pending"}]
+    commands = SimpleNamespace(execute=AsyncMock(return_value={
+        "outcome": "empty", "exclusions": exclusions,
+    }))
     adapters = RootPrimitiveAdapters(db, commands, None)
     subject = subject.model_copy(update={"subject_key": "root_batch:repo:integration-sweep:p:4"})
     result = await adapters.seal(subject, SealArgs(admission=AdmissionPredicate()))
     assert result.outcome == "empty"
+    assert result.detail["exclusions"] == exclusions
     assert commands.execute.await_args.args[1]["request_id"] == "integration-sweep:p:4"
 
 
@@ -1366,3 +1370,26 @@ async def test_root_remote_reads_use_retained_repository_when_base_is_unavailabl
     store.rmdir()
     await reader.remote_head(repository, "refs/heads/main")
     assert git.als_remote_ref.await_args.args[0] == "/unavailable"
+
+
+@pytest.mark.parametrize('sealed', [False, True])
+async def test_only_unsealed_root_defers_member_ancestry_unknown_to_admission(root, monkeypatch, sealed):
+    from src.integration.observe import IntegrationObserver
+    from src.integration.subjects import MemberFacts
+
+    db, _, subject = root
+    if not sealed:
+        subject = subject.model_copy(update={'batch_id': None})
+    observed = facts(subject).model_copy(update={
+        'members': (MemberFacts(task_id='delivered', head_sha=HEAD, ancestry='contained'),
+                    MemberFacts(task_id='new', head_sha=BASE, ancestry='unknown')),
+        'unknown': ('ancestry_unknown:new', 'remote_unknown:refs/heads/main'),
+    })
+    monkeypatch.setattr(IntegrationObserver, 'observe', AsyncMock(return_value=observed))
+    result = await RootObserver(db, None).observe(subject)
+    if sealed:
+        assert result.members == observed.members
+        assert result.unknown == observed.unknown
+    else:
+        assert [m.task_id for m in result.members] == ['new']
+        assert result.unknown == ('remote_unknown:refs/heads/main',)
