@@ -18,6 +18,21 @@ Remote Git reads run before the mutation transaction, which rechecks the source,
 receipt set, owner fence and admission controls before committing the new episode.
 An unrelated or rewritten head requires operator attention.
 
+A rejection of the verified head is lifted only by GitHub: the latest human
+review of each reviewer counts, and the parent reverifies once some reviewer
+approved exactly the new PR head while none still requests changes. The
+episode's event records that approval. Every refusal has a code. `stale`
+(source, policy generation or remote branch changed) and `waiting` (hold,
+gate, manual pause, inactive or draining project, live writer, busy parent
+engine, unreadable remote) clear without anyone. `rejected`, `unauthorized`,
+`unproven` (Git proved the head does not preserve the aggregate) and `invalid`
+raise one escalation per parent, head and code, naming the recovery: the
+approval, the root policy change, new commits on top of the verified head, or
+the integration state to repair. The next answer for the parent resolves any
+other open one. Every refusal Postgres can decide comes before the remote
+proof. The review poller does not probe an `unproven` head again until the PR
+head moves, and reads the moved head's reviews only while a rejection blocks it.
+
 The transaction preserves the previous completed operation, verification,
 receipt and review evidence. It starts a new episode and generation, accepts
 the old receipts using the previous completed verification, clears current
