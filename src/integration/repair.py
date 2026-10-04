@@ -4726,10 +4726,12 @@ class RepairService:
         # CI has not been observed yet. The candidate-CI section is therefore
         # derived from the current revision in every live state, never from the
         # testing state alone; only a superseded revision (never current) and a
-        # recorded conflict, which has its own section, drop it.
+        # recorded member or rebuild conflict, which is the stage's work, drop it.
+        stage_dossier = repair_stage["dossier"] or {}
         candidate_ci = None
         if (
             conflict is None
+            and not stage_dossier.get("candidate_rebuild_conflict")
             and batch is not None
             and revision is not None
             and revision["state"] != "superseded"
@@ -4746,6 +4748,9 @@ class RepairService:
                     .limit(1)
                 )
             ).mappings().first()
+            recorded_failures = {
+                entry.get("evidence_id") for entry in stage_dossier.get("failed_checks", [])
+            }
             candidate_ci = {
                 # Before the candidate head exists the subject is the
                 # construction base, exactly as ``_batch_subject`` resolves it.
@@ -4757,6 +4762,13 @@ class RepairService:
                 "state": revision["state"],
                 "run_id": evidence["run_id"] if evidence is not None else None,
                 "conclusion": evidence["conclusion"] if evidence is not None else None,
+                # Only a failure this stage's dossier already carries is work
+                # the writer can act on; record_result may not have run yet.
+                "failure_recorded": bool(
+                    evidence is not None
+                    and evidence["conclusion"] == "failure"
+                    and evidence["id"] in recorded_failures
+                ),
             }
         return self._delegate_description(
             operation, repair_stage, conflict=conflict, candidate_ci=candidate_ci
@@ -4764,19 +4776,20 @@ class RepairService:
 
     @staticmethod
     def _candidate_ci_section(candidate_ci: dict[str, Any] | None) -> str:
-        """Tell a delegate the candidate CI it has no evidence for yet.
+        """Tell a delegate what the candidate CI means for its frozen dossier.
 
         The batch's candidate revision exists from the moment the batch is
         sealed, so a stage can be dispatched while the candidate is still
-        ``constructing`` or ``built`` and CI has never reported.  The dossier is
-        then legitimately empty and the writer must hold instead of inventing a
-        failure.  A revision whose latest observation is conclusive and has
-        left ``testing`` needs no hold: the dossier's failed checks are the
-        recorded work.
+        ``constructing`` or ``built``, and production keeps it ``built`` while
+        CI runs.  The revision state therefore says nothing about CI; only the
+        latest observation and the dossier do.  A failure this stage's dossier
+        already records is the work, so it needs no section.  A green run means
+        there is nothing to repair: a fix pushed after green aborts the batch.
+        Every other observation (none yet, pending, cancelled, inconclusive,
+        or a failure ``record_result`` has not folded in) leaves the dossier
+        empty, so the writer holds instead of inventing a failure.
         """
-        if candidate_ci is None:
-            return ""
-        if candidate_ci["conclusion"] is not None and candidate_ci["state"] != "testing":
+        if candidate_ci is None or candidate_ci["failure_recorded"]:
             return ""
         run_line = (
             f"CI run: {candidate_ci['run_id']} ({candidate_ci['conclusion']})"
@@ -4788,31 +4801,58 @@ class RepairService:
             if candidate_ci["candidate_built"]
             else "Candidate SHA: not built yet (the candidate is still being constructed)"
         )
-        cause = (
-            "The frozen dossier's failed checks, logs and attempted commands are empty "
-            "BECAUSE candidate CI has not reported yet. There is nothing on record to "
-            "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
-            if candidate_ci["conclusion"] is None
-            else "The frozen dossier records no required-check failure for this exact "
-            "candidate. There is nothing on record to repair beyond the observation "
-            "above. Do not push, do not rebase, and do not fabricate a fix.\n\n"
-        )
-        return (
-            "\n\n## Awaiting candidate CI — no failure evidence exists yet\n\n"
+        identity = (
             f"Batch: {candidate_ci['batch_id']}\n"
             f"Candidate revision: {candidate_ci['revision']} "
             f"(revision state: {candidate_ci['state']})\n"
             f"{candidate_line}\n"
             f"Construction base: {candidate_ci['construction_base_sha']}\n"
             f"{run_line}\n\n"
+        )
+        if candidate_ci["conclusion"] == "success":
+            return (
+                "\n\n## Candidate CI is green — push nothing\n\n"
+                f"{identity}"
+                "Candidate CI already passed on this exact candidate. There is nothing "
+                "to repair: the frozen dossier records no required-check failure, and "
+                "none exists.\n\n"
+                "Protocol: push nothing at all to the batch branch, do not rebase, and "
+                "close this stage pass-unchanged now; the daemon publishes under its "
+                "fence. A fix after a green result cannot be bound to this candidate; "
+                "it would force a superseding revision and abort the batch. Ask the "
+                "supervisor only if the run above cannot be read at all."
+            )
+        if candidate_ci["conclusion"] is None:
+            cause = (
+                "The frozen dossier's failed checks, logs and attempted commands are empty "
+                "BECAUSE candidate CI has not reported yet. There is nothing on record to "
+                "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+            )
+        elif candidate_ci["conclusion"] == "failure":
+            cause = (
+                "Candidate CI reported a failure for this candidate, but the daemon has "
+                "not recorded that failure in this stage's dossier yet, so its failed "
+                "checks are still empty. Read the run above before acting; do not push, "
+                "do not rebase, and do not fabricate a fix from the empty dossier.\n\n"
+            )
+        else:
+            cause = (
+                "The frozen dossier records no required-check failure for this exact "
+                "candidate. There is nothing on record to repair beyond the observation "
+                "above. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+            )
+        return (
+            "\n\n## Awaiting candidate CI — no failure is on record yet\n\n"
+            f"{identity}"
             f"{cause}"
             "Protocol:\n"
             "1. Check the candidate CI status for the revision above before acting "
             "(read the run above with your CI read; `aq git ci-baseline-status` covers "
             "branch baselines, not this candidate).\n"
-            "2. While the candidate is still being built or the run is pending or "
-            "missing: push nothing at all to the batch branch, and close this stage "
-            "pass-unchanged when CI turns green; the daemon publishes under its fence.\n"
+            "2. While the candidate is still being built or the run is pending, missing, "
+            "cancelled or inconclusive: push nothing at all to the batch branch, and close "
+            "this stage pass-unchanged when CI turns green; the daemon publishes under its "
+            "fence.\n"
             "3. If and only if a required check on the exact candidate SHA fails: "
             "then repair, record the failed checks, and submit through "
             "aq integration resolve-candidate-member as usual.\n"

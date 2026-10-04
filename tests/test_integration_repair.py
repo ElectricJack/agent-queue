@@ -16,6 +16,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
+    integration_candidate_publications,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_operation_artifact_pins,
@@ -2325,71 +2326,144 @@ async def _seed_root_operation(
     return operation["id"]
 
 
+async def _stage_delegate_description(db, service, operation_id: str, ordinal: int = 0) -> str:
+    stage = await _repair_stage(db, operation_id, ordinal)
+    async with db.immediate() as conn:
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        return await service._delegate_description_on(conn, dict(operation), stage)
+
+
+async def _add_candidate_evidence(
+    db,
+    operation_id: str,
+    evidence_id: str,
+    *,
+    run_id: str,
+    conclusion: str,
+    observed_at: float = 10.0,
+) -> None:
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id=evidence_id,
+                operation_id=operation_id,
+                batch_id="batch",
+                candidate_revision=0,
+                producer_id="forge",
+                workflow_id="workflow",
+                run_id=run_id,
+                attempt=1,
+                required_check_version="checks-v1",
+                checks={"unit": conclusion},
+                conclusion=conclusion,
+                classification="conclusive",
+                observed_at=observed_at,
+            )
+        )
+
+
 async def test_pending_ci_delegate_description_carries_sha_and_protocol(db):
     """A stage-0 delegate dispatched before CI reports sees no failures and a hold protocol."""
     from src.integration.repair import RepairService
 
-    operation_id = await _seed_root_operation(db)
+    # ``built`` is the state production keeps while candidate CI runs.
+    operation_id = await _seed_root_operation(
+        db, candidate_state="built", candidate_sha="c" * 40, candidate_evidence=False
+    )
     service = RepairService(db)
-    assert (await service.start(operation_id, STARTING_SHA, "batch", now=100.0))["outcome"] == "started"
-    stage = await _repair_stage(db, operation_id, 0)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_candidate_revisions).values(
-                head_sha="c" * 40, state="testing",
-            )
-        )
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == operation_id
-                )
-            )
-        ).mappings().one()
-        description = await service._delegate_description_on(conn, dict(operation), stage)
+    assert (await service.start(operation_id, "c" * 40, "batch", now=100.0))["outcome"] == "started"
+    await _add_candidate_evidence(
+        db, operation_id, "pending-evidence", run_id="root-run", conclusion="pending"
+    )
+    description = await _stage_delegate_description(db, service, operation_id)
 
     assert "## Awaiting candidate CI" in description
     assert ("c" * 40) in description
-    assert "root-run" in description
+    assert "CI run: root-run (pending)" in description
     assert "There is nothing on record to repair" in description
     assert "Do not push" in description
 
 
-async def test_green_ci_delegate_description_omits_hold_protocol(db):
-    """Once candidate CI is conclusive, the pending-CI hold block is absent."""
+async def test_recorded_failure_delegate_description_omits_hold_protocol(db):
+    """A failure the stage dossier already records is the work; no hold contradicts it."""
     from src.integration.repair import RepairService
 
-    operation_id = await _seed_root_operation(db)
+    operation_id = await _seed_root_operation(
+        db, candidate_state="built", candidate_sha="c" * 40, candidate_evidence=False
+    )
     service = RepairService(db)
-    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
-    stage = await _repair_stage(db, operation_id, 0)
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_candidate_revisions).values(
-                head_sha="c" * 40, state="red", ci_evidence_id="root-green",
-            )
-        )
-        existing_evidence = (
-            await conn.execute(select(integration_check_evidence))
-        ).mappings().one()
-        evidence_dict = dict(existing_evidence)
-        evidence_dict["id"] = "failing-evidence"
-        evidence_dict["run_id"] = "failing-run"
-        evidence_dict["conclusion"] = "failure"
-        evidence_dict["classification"] = "conclusive"
-        evidence_dict["observed_at"] = 10.0
-        await conn.execute(insert(integration_check_evidence).values(**evidence_dict))
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == operation_id
-                )
-            )
-        ).mappings().one()
-        description = await service._delegate_description_on(conn, dict(operation), stage)
+    await service.start(operation_id, "c" * 40, "batch", now=100.0)
+    await _add_candidate_evidence(
+        db, operation_id, "failing-evidence", run_id="failing-run", conclusion="failure"
+    )
+    recorded = await service.record_result(operation_id, "failing-evidence", now=101.0)
+    assert recorded["action"] == "repair"
+    description = await _stage_delegate_description(db, service, operation_id)
 
+    assert "failing-evidence" in description
     assert "## Awaiting candidate CI" not in description
+    assert "## Candidate CI is green" not in description
     assert "There is nothing on record to repair" not in description
+
+
+async def test_unrecorded_failure_evidence_keeps_the_hold(db):
+    """Failure evidence the dossier does not record yet leaves the writer an empty dossier.
+
+    Candidate revisions stay ``built`` through CI, so a red observation that
+    ``record_result`` has not folded in yet used to drop the hold outright and
+    hand the writer an empty dossier with no instruction at all.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db, candidate_state="built", candidate_sha="c" * 40, candidate_evidence=False
+    )
+    service = RepairService(db)
+    await service.start(operation_id, "c" * 40, "batch", now=100.0)
+    await _add_candidate_evidence(
+        db, operation_id, "failing-evidence", run_id="failing-run", conclusion="failure"
+    )
+    description = await _stage_delegate_description(db, service, operation_id)
+
+    assert "## Awaiting candidate CI" in description
+    assert f"Candidate SHA: {'c' * 40}" in description
+    assert "CI run: failing-run (failure)" in description
+    assert "has not recorded that failure in this stage's dossier yet" in description
+    assert "If and only if a required check on the exact candidate SHA fails" in description
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "inconclusive", "pending"])
+async def test_non_failure_latest_run_keeps_the_hold(db, conclusion):
+    """A cancelled, inconclusive or still-pending run is no failure: the writer holds.
+
+    A concurrency-cancelled candidate run never reaches ``record_result``, so
+    stage 0 used to dispatch with an empty dossier and no hold or protocol.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db, candidate_state="built", candidate_sha="c" * 40, candidate_evidence=False
+    )
+    service = RepairService(db)
+    await service.start(operation_id, "c" * 40, "batch", now=100.0)
+    await _add_candidate_evidence(
+        db, operation_id, "latest", run_id="latest-run", conclusion=conclusion
+    )
+    description = await _stage_delegate_description(db, service, operation_id)
+
+    assert "## Awaiting candidate CI" in description
+    assert "## Candidate CI is green" not in description
+    assert f"Candidate SHA: {'c' * 40}" in description
+    assert f"CI run: latest-run ({conclusion})" in description
+    assert "There is nothing on record to repair" in description
+    assert "push nothing at all to the batch branch" in description
+    assert "close this stage pass-unchanged when CI turns green" in description
 
 
 @pytest.mark.parametrize(
@@ -2479,8 +2553,83 @@ async def test_pre_testing_dispatch_delegate_task_carries_candidate_ci(db):
     assert "close this stage pass-unchanged when CI turns green" in delegate.description
 
 
-async def test_conclusive_green_candidate_drops_the_pending_section(db):
-    """A green candidate leaves no pending hold; the dossier's checks are the record."""
+@pytest.mark.parametrize("candidate_state", ["built", "green"])
+async def test_green_candidate_says_push_nothing_and_close_unchanged(db, candidate_state):
+    """A candidate already green at dispatch tells the writer to push nothing.
+
+    Without an instruction the writer of a green candidate saw an empty dossier
+    and pushed a fix after green CI, aborting the batch (0917a17bb).  The
+    revision may still read ``built`` until the green is attested.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db, candidate_state=candidate_state, candidate_sha="c" * 40
+    )
+    service = RepairService(db)
+    await service.start(operation_id, "c" * 40, "batch", now=100.0)
+    description = await _stage_delegate_description(db, service, operation_id)
+
+    assert "## Candidate CI is green — push nothing" in description
+    assert f"(revision state: {candidate_state})" in description
+    assert f"Candidate SHA: {'c' * 40}" in description
+    assert "CI run: root-run (success)" in description
+    assert "push nothing at all to the batch branch" in description
+    assert "close this stage pass-unchanged now" in description
+    assert "## Awaiting candidate CI" not in description
+    assert "If and only if a required check" not in description
+
+
+async def test_green_candidate_delegate_task_carries_push_nothing(db):
+    """The dispatched delegate task itself carries the green instruction.
+
+    Stage 0 of a built candidate dispatches only once its audit PR is
+    published, by which time candidate CI may already be green.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db, candidate_state="built", candidate_sha="c" * 40, batch_lifecycle="repairing"
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_publications).values(
+                batch_id="batch",
+                revision=0,
+                state="pr_published",
+                repository_id="repo",
+                repository_numeric_id=99,
+                repository_full_name="acme/widgets",
+                base_ref="main",
+                head_ref="aq/integration/batch",
+                head_sha="c" * 40,
+                expected_old_sha="0" * 40,
+                idempotency_key="publication",
+                pr_number=9,
+                pr_url="https://github.com/acme/widgets/pull/9",
+                created_at=2.0,
+                updated_at=2.0,
+            )
+        )
+    service = RepairService(db)
+    assert (await service.start(operation_id, "c" * 40, "batch", now=100.0))["outcome"] == "started"
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/integration/batch"), operation_id, "collector"
+    )
+    assert (await service.dispatch(operation_id, 0))["outcome"] == "dispatched"
+    delegate = await db.get_task(f"repair-{operation_id}-0")
+
+    assert "## Candidate CI is green — push nothing" in delegate.description
+    assert "close this stage pass-unchanged now" in delegate.description
+    assert "## Awaiting candidate CI" not in delegate.description
+
+
+async def test_rebuild_conflict_suppresses_the_green_candidate_section(db):
+    """A frozen rebuild conflict is the stage's work even though the candidate is green.
+
+    Main advanced after green CI; the writer must merge the new base, so a
+    push-nothing instruction would contradict the recorded conflict.
+    """
     from src.integration.repair import RepairService
 
     operation_id = await _seed_root_operation(
@@ -2489,18 +2638,25 @@ async def test_conclusive_green_candidate_drops_the_pending_section(db):
     service = RepairService(db)
     await service.start(operation_id, "c" * 40, "batch", now=100.0)
     stage = await _repair_stage(db, operation_id, 0)
+    dossier = dict(stage["dossier"]) | {
+        "candidate_rebuild_conflict": {
+            "kind": "candidate_rebuild",
+            "candidate_sha": "c" * 40,
+            "new_base_sha": "d" * 40,
+        }
+    }
     async with db.immediate() as conn:
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == operation_id
-                )
-            )
-        ).mappings().one()
-        description = await service._delegate_description_on(conn, dict(operation), stage)
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == operation_id)
+            .values(dossier=dossier)
+        )
+    description = await _stage_delegate_description(db, service, operation_id)
 
+    assert "candidate_rebuild_conflict" in description
+    assert "## Candidate CI is green" not in description
     assert "## Awaiting candidate CI" not in description
-    assert "There is nothing on record to repair" not in description
+    assert "push nothing at all to the batch branch" not in description
 
 
 async def test_recorded_conflict_suppresses_the_pending_candidate_section(db):
