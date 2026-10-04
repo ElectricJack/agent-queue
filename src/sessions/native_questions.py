@@ -22,16 +22,21 @@ module only *reads* that store, read-only and outside the event loop, and
 never decides anything: :mod:`src.sessions.questions` owns identity, routing
 and delivery. An unreadable store is unknown evidence (``None``), never "no
 question".
+
+Which OpenCode sessions an AQ session owns — the scoping this reader and the
+liveness reader (:mod:`src.sessions.opencode_store`) must agree on — lives in
+that module, beside the store path and the rules for opening it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from src.sessions.opencode_store import scoped_session_ids, store_path
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +185,7 @@ class OpenCodeQuestionStore:
     harness = "opencode"
 
     def __init__(self, data_dir: Path | None = None, *, timeout: float = 2.0) -> None:
-        if data_dir is None:
-            base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-            data_dir = Path(base) / "opencode"
-        self.path = Path(data_dir) / "opencode.db"
+        self.path = store_path(data_dir)
         self.timeout = timeout
 
     def snapshot(self, work_dir: str, since: float) -> NativeSnapshot | None:
@@ -208,21 +210,7 @@ class OpenCodeQuestionStore:
 
     def _snapshot(self, conn, work_dir: str, since: float) -> NativeSnapshot:
         since_ms = int(since * 1000)
-        directories = sorted({work_dir, os.path.realpath(work_dir)})
-        marks = ",".join("?" * len(directories))
-        parents = dict(
-            conn.execute(
-                f"SELECT id, parent_id FROM session WHERE directory IN ({marks})"
-                " AND time_updated >= ?",
-                (*directories, since_ms),
-            ).fetchall()
-        )
-        # A root busy in a subagent may not have been touched since; it is
-        # still the session whose composer AQ types into.
-        for parent in {p for p in parents.values() if p} - parents.keys():
-            row = conn.execute("SELECT id, parent_id FROM session WHERE id = ?", (parent,)).fetchone()
-            if row is not None:
-                parents[row[0]] = row[1]
+        parents = scoped_session_ids(conn, work_dir, since)
         pending, settled, busy, activity = [], {}, set(), 0.0
         for session_id, parent_id in parents.items():
             for created, data in conn.execute(

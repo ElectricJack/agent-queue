@@ -180,6 +180,7 @@ def _node(
     phase_meta=None,
     phase_holds=None,
     deliveries=None,
+    review_waits=None,
 ) -> LayoutNode:
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
@@ -206,6 +207,7 @@ def _node(
         phase_label=phase_label,
         phase_hold=(phase_holds or {}).get(task["id"]),
         delivery=(deliveries or {}).get(task["id"]),
+        review_waits=(review_waits or {}).get(task["id"], []),
     )
 
 
@@ -679,6 +681,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             )
         )
         deliveries = await _deliveries([with_tasks[t][0] for t in visible if t in with_tasks])
+        review_waits = (
+            await db.list_review_waits_for_tasks(list(with_tasks)) if with_tasks else {}
+        )
         nodes = [
             _node(
                 with_tasks[t][0],
@@ -690,6 +695,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 phase_meta,
                 phase_holds,
                 deliveries,
+                review_waits,
             )
             for t, kind in visible.items()
             if t in with_tasks
@@ -819,6 +825,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             )
         )
         deliveries = await _deliveries([rows[t] for t in page])
+        review_waits = await db.list_review_waits_for_tasks(page) if page else {}
         nodes = [
             _node(
                 rows[t],
@@ -830,6 +837,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 phase_meta,
                 phase_holds,
                 deliveries,
+                review_waits,
             )
             for t in page
         ]
@@ -908,6 +916,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 phase_meta=phase_meta,
                 phase_holds=phase_holds,
                 deliveries=await _deliveries([row]),
+                review_waits=await db.list_review_waits_for_tasks([task_id]),
             ),
             ancestors=ancestors,
             layout_version=meta["layout_version"],

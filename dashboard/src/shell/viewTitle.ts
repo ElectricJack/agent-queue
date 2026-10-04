@@ -68,6 +68,8 @@ export function routeTitle(pathname: string, search: string, names: TitleNames =
       return ["Settings", id ? SETTINGS_SECTIONS[id] ?? id : null].filter(Boolean).join(" · ");
     case "metrics":
       return "Metrics";
+    case "host-shell":
+      return "Host shell";
     case "command-center":
       return "Command Center";
     default:

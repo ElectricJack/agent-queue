@@ -39,3 +39,33 @@ def idle_pool_claim_loop_stalled(session, *, now: float, stall_seconds: float) -
     """
     last = session.last_activity or session.started_at
     return last is not None and last <= now - stall_seconds
+
+
+def pool_claim_cap(config, profile) -> int | None:
+    """The claim budget ``take_claim_slot`` will enforce for this pool session.
+
+    One definition, two callers: ``ClaimCommandsMixin._pool_context_claim_cap``
+    answers it at claim time, and the reconciler's idle-stop grace answers it
+    to recognise a worker whose context is spent.  A recycled session must
+    never be told its budget is spent when ``take_claim_slot`` would still hand
+    it work.
+
+    ``None`` means unbounded (no profile limit and ``fresh_context_per_task``
+    off), and ``0`` is not a budget: a session that has claimed nothing is not
+    exhausted.
+    """
+    swarm = getattr(config, "swarm", None)
+    if swarm is not None and swarm.fresh_context_per_task:
+        # A reused global worker must not carry a previous task's conversation.
+        return 1
+    cap = getattr(profile, "max_claims_per_session", None)
+    return None if cap is None else int(cap)
+
+
+def pool_claim_budget_exhausted(session, cap: int | None) -> bool:
+    """Whether this session has spent the budget :func:`pool_claim_cap` returns.
+
+    ``take_claim_slot`` answers ``session_exhausted`` from exactly this
+    comparison, which is the worker protocol's "leave" signal.
+    """
+    return cap is not None and cap > 0 and int(session.claims or 0) >= cap

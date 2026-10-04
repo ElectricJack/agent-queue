@@ -21,7 +21,14 @@ the extension. Apply additionally requires the previewed episode, generation, st
 current fence and an operator reason. Active or archived completed delegates are
 eligible only with their latest passing completion containing that exact head,
 matching canonical branch and repair origin, and the stage's exact subject and
-recorded lineage. The original fenced `integration.repair_delegate_closed` outbox
+recorded lineage. An older active delegate's empty commit list is eligible only
+when its accepted-close metadata names that exact completion, audited session and
+current claim epoch. A contradictory nonempty list or missing accepted-close
+identity refuses recovery. The immutable completion record remains unchanged;
+the stage's complete recorded range and published Git head still prove the repair.
+Future repair closes pass their already-proven writer head directly to completion
+recording, including when the base checkout lacks the canonical parent ref.
+The original fenced `integration.repair_delegate_closed` outbox
 audit must identify that stage and delegate; the current owner must hold a later
 fence. Fetch and observe the actual origin ref, prove ancestry and the
 complete recorded range, and require every receipt tip to remain an ancestor.
@@ -32,7 +39,11 @@ generation or budget is allocated. Refuse active writers, pending external write
 manual pauses, open gates, paused/draining projects and human-required operations.
 Replay requires the same proof and current fence and leaves verification intact.
 Recovery clears old verification on its first application; fresh exact-head
-verification is required before completion. Live recovery and daemon deployment
+verification is required before completion. If the aggregate has no verifier yet,
+the same transaction uses the ordinary readiness projection to file its verifier
+and enqueue the fenced handoff. It preserves repair state and budgets and refuses
+if readiness cannot be projected; replay creates no duplicate verifier or event.
+Live recovery and daemon deployment
 belong to the supervisor/operator, not the implementing worker.
 
 ## Operator acceptance for azure-vault-92

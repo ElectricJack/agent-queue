@@ -31,7 +31,7 @@ class GitCommandsMixin:
         from src.git.manager import GitError
         from src.integration.provenance_migration import ProvenanceMigration
 
-        _operator, refusal = await integration_operator(self.db, args["project_id"])
+        operator, refusal = await integration_operator(self.db, args["project_id"])
         if refusal is not None:
             return {"success": False, "outcome": "blocked", "error": refusal}
         try:
@@ -39,6 +39,8 @@ class GitCommandsMixin:
                 args["project_id"], apply=args.get("apply", False),
                 limit=args.get("limit", 500), offset=args.get("offset", 0),
                 task_id=args.get("task_id") or None, source=args.get("source") or None,
+                no_artifact=args.get("no_artifact", False), reason=args.get("reason"),
+                operator_id=operator,
             )
         except (ValueError, RuntimeError, GitError) as exc:
             return {"success": False, "outcome": "blocked", "error": str(exc)}

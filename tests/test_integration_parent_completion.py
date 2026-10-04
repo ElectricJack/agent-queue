@@ -203,11 +203,13 @@ async def _parent_repair_case(db, tmp_path):
     return recovery, hierarchy, request, git, collected, head
 
 
-@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("archived,empty_commits", [(False, False), (True, False), (False, True)])
 async def test_post_collection_repair_head_recovery_preserves_receipts_and_requires_fresh_checks(
-    db, tmp_path, archived
+    db, tmp_path, archived, empty_commits
 ):
     recovery, hierarchy, request, _git, collected, head = await _parent_repair_case(db, tmp_path)
+    if empty_commits:
+        await _empty_repair_completion(db)
     async with db.immediate() as conn:
         receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
         original_stage = dict(
@@ -247,6 +249,16 @@ async def test_post_collection_repair_head_recovery_preserves_receipts_and_requi
     assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == collected
     request.dry_run = False
     assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    verifier_id = f"verify-{request.operation_id}"
+    assert (await db.get_task(verifier_id)).status == TaskStatus.PAUSED
+    async with db._engine.connect() as conn:
+        ready_events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "task.integration_ready",
+        ))).mappings().all()
+    assert len(ready_events) == 1
+    assert ready_events[0]["payload"]["head_sha"] == head
+    assert ready_events[0]["payload"]["verifier_task_id"] == verifier_id
+    assert ready_events[0]["payload"]["expected_token"] == 3
     checkpoint = await db.get_integration_checkpoint("parent")
     assert checkpoint["checkpoint_sha"] == head and checkpoint["current_verification_id"] is None
     assert checkpoint["episode_id"] == request.expected_episode_id and checkpoint["generation"] == 1
@@ -293,6 +305,251 @@ async def test_post_collection_repair_head_recovery_preserves_receipts_and_requi
     verified = await db.get_integration_checkpoint("parent")
     assert (await recovery.run(request, principal="operator"))["outcome"] == "already_recovered"
     assert await db.get_integration_checkpoint("parent") == verified
+    if empty_commits:
+        assert (await db.get_task_completions("repair"))[0].commits == []
+
+
+async def test_empty_repair_recovery_enables_normal_fenced_verifier_handoff(db, tmp_path):
+    recovery, hierarchy, request, _git, _collected, head = await _parent_repair_case(db, tmp_path)
+    await _empty_repair_completion(db)
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    verifier_id = f"verify-{request.operation_id}"
+    transferred = await hierarchy.ownership.transfer(
+        Fence(target=BranchKey(repository_id="repo", branch="aq/parent"),
+              owner_id=request.operation_id, token=3),
+        verifier_id, "verifier",
+    )
+    assert (await hierarchy.wake_verifier("parent", transferred))["outcome"] == "woken"
+    assert (await db.get_task(verifier_id)).status == TaskStatus.READY
+    request.expected_fence_token = transferred.token
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "already_recovered"
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        events = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "task.integration_ready",
+        ))).mappings().all()
+    assert stage["state"] == "active" and stage["attempts"] == 1 and stage["deadline_at"] == 10.0
+    assert operation["state"] == "escalated" and operation["active_stage"] == 0
+    assert len(events) == 1
+    assert stage["dossier"]["parent_head_extensions"][0]["authoring"]["accepted_close"][
+        "completion_id"
+    ] == "repair-completion"
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == head
+
+
+async def test_repair_recovery_preserves_an_existing_verifier(db, tmp_path):
+    recovery, _hierarchy, request, _git, _collected, head = await _parent_repair_case(db, tmp_path)
+    await _empty_repair_completion(db)
+    await db.create_task(Task(
+        id="existing-verifier", project_id="p", title="Verify", description="",
+        status=TaskStatus.PAUSED, repo_id="repo", branch_name="aq/parent",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(
+            verifier_task_id="existing-verifier",
+        ))
+        original = (await conn.execute(select(tasks).order_by(tasks.c.id))).mappings().all()
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "already_recovered"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(tasks).order_by(tasks.c.id))).mappings().all() == original
+        assert not (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "task.integration_ready",
+        ))).all()
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == head
+
+
+async def _empty_repair_completion(db):
+    from src.database.queries.result_queries import close_identity
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.database.tables import task_completion_records
+
+    await db.set_task_meta(
+        "repair", ACCEPTED_CLOSE_KEY,
+        close_identity("repair-completion", session_id="former-repair-session", claim_epoch=0),
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(task_completion_records).values(commits="[]"))
+        await conn.execute(update(integration_repair_operations).values(state="escalated"))
+        await conn.execute(update(integration_repair_stages).values(state="active"))
+
+
+async def test_empty_repair_recovery_rechecks_accepted_close_after_git_proof(
+    db, tmp_path, monkeypatch
+):
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+    recovery, _hierarchy, request, _git, collected, _head = await _parent_repair_case(db, tmp_path)
+    await _empty_repair_completion(db)
+    prove = recovery._git_proof
+
+    async def changed_close(*args):
+        proof = await prove(*args)
+        identity = await db.get_task_meta("repair", ACCEPTED_CLOSE_KEY)
+        identity["session_id"] = "replacement-session"
+        await db.set_task_meta("repair", ACCEPTED_CLOSE_KEY, identity)
+        return proof
+
+    monkeypatch.setattr(recovery, "_git_proof", changed_close)
+    request.dry_run = False
+    with pytest.raises(ValueError, match="accepted-close identity"):
+        await recovery.run(request, principal="operator")
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == collected
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    assert "parent_head_extensions" not in stage["dossier"]
+
+
+async def test_repair_recovery_rolls_back_when_verifier_readiness_cannot_be_projected(db, tmp_path):
+    recovery, _hierarchy, request, _git, _collected, _head = await _parent_repair_case(db, tmp_path)
+    await _empty_repair_completion(db)
+    async with db.immediate() as conn:
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        policy = dict(operation["policy_snapshot"])
+        policy["parent"] = dict(policy["parent"]) | {"verifier_intelligence_class": None}
+        await conn.execute(update(integration_repair_operations).values(policy_snapshot=policy))
+        stage = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+    checkpoint = await db.get_integration_checkpoint("parent")
+    request.dry_run = False
+    with pytest.raises(ValueError, match="cannot project verifier readiness"):
+        await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    assert await db.get_task(f"verify-{request.operation_id}") is None
+    async with db._engine.connect() as conn:
+        current = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        assert dict(current) == stage
+        assert not (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "task.integration_ready",
+        ))).all()
+
+
+@pytest.mark.parametrize("case", [
+    "missing_identity", "different_completion", "different_session", "different_epoch",
+    "malformed_identity", "contradictory_commits", "malformed_commits", "missing_close_audit",
+    "missing_lineage", "changed_remote", "different_stage_head", "missing_stage_subject",
+    "different_stage_generation", "different_dossier_head", "missing_dossier_head",
+    "different_audit_stage",
+])
+async def test_empty_repair_completion_requires_exact_close_and_publication_proof(
+    db, tmp_path, case
+):
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.database.tables import task_completion_records, task_metadata
+
+    recovery, _hierarchy, request, git, collected, head = await _parent_repair_case(db, tmp_path)
+    await _empty_repair_completion(db)
+    identity = await db.get_task_meta("repair", ACCEPTED_CLOSE_KEY)
+    if case == "different_completion":
+        identity["completion_id"] = "another-close"
+    elif case == "different_session":
+        identity["session_id"] = "another-session"
+    elif case == "different_epoch":
+        identity["claim_epoch"] = 1
+    elif case == "malformed_identity":
+        identity = []
+    await db.set_task_meta("repair", ACCEPTED_CLOSE_KEY, identity)
+    async with db.immediate() as conn:
+        if case == "missing_identity":
+            await conn.execute(
+                delete(task_metadata).where(task_metadata.c.key == ACCEPTED_CLOSE_KEY)
+            )
+        elif case in {"contradictory_commits", "malformed_commits"}:
+            await conn.execute(update(task_completion_records).values(
+                commits=json.dumps([collected]) if case == "contradictory_commits" else "{",
+            ))
+        elif case == "missing_close_audit":
+            await conn.execute(
+                delete(integration_outbox).where(integration_outbox.c.id == "repair-closed")
+            )
+        elif case == "missing_lineage":
+            await conn.execute(update(integration_repair_stages).values(
+                dossier={"branch_sha": head, "repair_commits": []},
+            ))
+        elif case in {"different_stage_head", "missing_stage_subject", "different_stage_generation"}:
+            subject = {"kind": "parent", "generation": 1, "head_sha": head}
+            if case == "different_stage_head":
+                subject["head_sha"] = collected
+            elif case == "different_stage_generation":
+                subject["generation"] = 2
+            else:
+                subject = None
+            await conn.execute(update(integration_repair_stages).values(current_subject=subject))
+        elif case in {"different_dossier_head", "missing_dossier_head"}:
+            dossier = {"repair_commits": [head]}
+            if case == "different_dossier_head":
+                dossier["branch_sha"] = collected
+            await conn.execute(update(integration_repair_stages).values(dossier=dossier))
+        elif case == "different_audit_stage":
+            event = (await conn.execute(select(integration_outbox).where(
+                integration_outbox.c.id == "repair-closed",
+            ))).mappings().one()
+            await conn.execute(update(integration_outbox).where(
+                integration_outbox.c.id == "repair-closed",
+            ).values(payload=dict(event["payload"]) | {"stage": 1}))
+        receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+        stage = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+    if case == "changed_remote":
+        git("push", "origin", f"{collected}:refs/heads/aq/parent", "--force")
+    for dry_run in (True, False):
+        request.dry_run = dry_run
+        with pytest.raises(ValueError):
+            await recovery.run(request, principal="operator")
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == collected
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
+        current = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        assert dict(current) == stage
+
+
+async def test_attached_repair_close_returns_the_proven_writer_head(
+    db, tmp_path, orchestrator_factory
+):
+    from unittest.mock import AsyncMock
+
+    from src.git.manager import GitManager
+    from src.models import SessionRecord
+
+    _recovery, _hierarchy, request, _git, collected, head = await _parent_repair_case(db, tmp_path)
+    await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
+    await db.create_session(SessionRecord(
+        id="repair-session", task_id="repair", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="repair-session", lifecycle="task",
+        state="running", work_dir=str(tmp_path / "work"), epoch="epoch",
+        instance_token="instance", started_at=2.0,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "repair").values(status="IN_PROGRESS"))
+        await conn.execute(insert(workspaces).values(
+            id="repair-workspace", project_id="p", workspace_path=str(tmp_path / "work"),
+            source_type="link", locked_by_task_id="repair", enabled=True, created_at=2.0,
+        ))
+        await conn.execute(update(integration_branch_owners).values(
+            owner_id="repair", owner_role="repair", session_id="repair-session",
+            workspace_id="repair-workspace", handoff_state="attached",
+        ))
+        await conn.execute(update(integration_repair_stages).values(
+            current_subject={"kind": "parent", "generation": 1, "head_sha": collected},
+            dossier={},
+        ))
+        await conn.execute(
+            delete(integration_outbox).where(integration_outbox.c.id == "repair-closed")
+        )
+    orchestrator = await orchestrator_factory()
+    orchestrator.db = db
+    orchestrator.git = GitManager()
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+    orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=True)
+    result = await orchestrator.complete_session_task(
+        await db.get_task("repair"), outcome="pass", pool=True, session_live=True,
+        session_id="repair-session",
+    )
+    assert result["status"] == "COMPLETED" and result["pipeline_ok"] is True
+    assert result["completion_source"] == head
+    assert (await db.get_task("repair")).status == TaskStatus.COMPLETED
+    assert (await db.get_integration_checkpoint("parent"))["checkpoint_sha"] == head
 
 
 @pytest.mark.parametrize(

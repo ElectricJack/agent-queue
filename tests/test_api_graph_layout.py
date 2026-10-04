@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 
 import pytest
@@ -1493,9 +1494,15 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     # epics in one statement of its own (filtered by gate type).
     approval_reads = [s for s in statements if "gates.gate_type IN" in s]
     assert len(approval_reads) <= 1, approval_reads
+    # The review-wait read joins gates to ``doc_reviews`` once for the whole
+    # response; it is budgeted on its own below, not as a gate lookup.
+    review_reads = [s for s in statements if "doc_reviews" in s]
+    assert len(review_reads) == 1, review_reads
     gate_reads = [
         s for s in statements
-        if ("FROM gates" in s or "task_gates" in s) and s not in approval_reads
+        if ("FROM gates" in s or "task_gates" in s)
+        and s not in approval_reads
+        and s not in review_reads
     ]
     assert len(gate_reads) <= 2, gate_reads
 
@@ -2136,3 +2143,223 @@ async def test_tiles_epic_delivery_statements_do_not_grow_with_visible_epics(db)
         assert len(answers) == 2 + extra  # e and pkg have children; hub only dependents
         counts.append(len(statements))
     assert counts[0] == counts[1], counts
+
+
+# ── review waits (azure-willow-99) ─────────────────────────────────────────
+
+
+async def _review_wait(
+    db,
+    review_id: str,
+    waiters: list[str],
+    *,
+    state: str = "in_review",
+    kind: str = "spec",
+    resolve: bool = False,
+) -> str:
+    """A review and its own ``review`` gate, with *waiters* held on the gate.
+
+    ``resolve`` resolves the gate the way an approval does.  Returns the gate id.
+    """
+    now = time.time()
+    content = "# Body\n"
+    async with db.immediate() as conn:
+        gate_id, _ = await db.create_gate(
+            "p1", "review", f"Review {review_id}", await_id=review_id, conn=conn
+        )
+        await db.insert_review(
+            review={
+                "id": review_id,
+                "project_id": "p1",
+                "author_task_id": None,
+                "kind": kind,
+                "title": f"Design {review_id}",
+                "vault_path": f"projects/p1/specs/{review_id}.md",
+                "current_revision": 1,
+                "state": state,
+                "gate_id": gate_id,
+                "decider": "user",
+                "notified_revision": 0,
+                "created_at": now,
+                "updated_at": now,
+            },
+            revision={
+                "review_id": review_id,
+                "revision": 1,
+                "content": content,
+                "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "submitted_by": "session:author",
+                "submitted_at": now,
+            },
+            conn=conn,
+        )
+        if waiters:
+            await db.attach_gate_waiters(gate_id, waiters, conn=conn)
+    if resolve:
+        await db.resolve_gate(gate_id, resolved_by="user", resolution="approved")
+    return gate_id
+
+
+async def _seed_review_waits(db) -> dict[str, str]:
+    """Every shape a card can wait on a review in, plus two that must not show.
+
+    * ``z``   -- a spec review still in review (blocking)
+    * ``hub`` -- a plan review with changes requested (blocking)
+    * ``d1``  -- a rejected review: its gate stays open, so it still blocks
+    * ``d4``  -- a human gate filed against ``z``'s review by ``await_id``
+    * ``d2``  -- an approved review whose gate released the not-yet-done task
+    * ``d3``  -- the same, but the task is completed: nothing to show
+    * ``d0``  -- a timer gate, which is no review at all: nothing to show
+
+    All of them are root cards, visible with the epic collapsed.
+    """
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table).where(tasks_table.c.id == "d3").values(status="COMPLETED")
+        )
+    gates = {
+        "pending": await _review_wait(db, "rev-pending-spec", ["z"]),
+        "changes": await _review_wait(
+            db, "rev-changes-plan", ["hub"], state="changes_requested", kind="plan"
+        ),
+        "rejected": await _review_wait(db, "rev-rejected-doc", ["d1"], state="rejected", kind="other"),
+        "approved": await _review_wait(
+            db, "rev-approved-spec", ["d2", "d3"], state="approved", resolve=True
+        ),
+    }
+    gates["human"], _ = await db.create_gate(
+        project_id="p1",
+        gate_type="human",
+        title="sign off the pending spec",
+        await_id="rev-pending-spec",
+        waiter_task_ids=["d4"],
+    )
+    await db.create_gate(
+        project_id="p1", gate_type="timer", title="cool down", await_id="d0", waiter_task_ids=["d0"]
+    )
+    return gates
+
+
+def _waits(node: dict) -> list[tuple]:
+    return [
+        (w["review_id"], w["review_state"], w["gate_type"], w["gate_status"], w["blocking"])
+        for w in node["review_waits"]
+    ]
+
+
+async def test_tiles_report_review_waits_with_review_state(db, client_factory):
+    gates = await _seed_review_waits(db)
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+
+    assert _waits(nodes["z"]) == [("rev-pending-spec", "in_review", "review", "open", True)]
+    assert _waits(nodes["hub"]) == [
+        ("rev-changes-plan", "changes_requested", "review", "open", True)
+    ]
+    assert _waits(nodes["d1"]) == [("rev-rejected-doc", "rejected", "review", "open", True)]
+    assert _waits(nodes["d4"]) == [("rev-pending-spec", "in_review", "human", "open", True)]
+    assert _waits(nodes["d2"]) == [("rev-approved-spec", "approved", "review", "resolved", False)]
+    assert nodes["d3"]["review_waits"] == []
+    assert nodes["d0"]["review_waits"] == []
+    # Everything the card needs to label and link the wait.
+    wait = nodes["hub"]["review_waits"][0]
+    assert wait["gate_id"] == gates["changes"]
+    assert wait["review_kind"] == "plan"
+    assert wait["review_title"] == "Design rev-changes-plan"
+
+
+async def test_blocking_review_waits_are_the_gates_task_explain_reports(db, client_factory):
+    """``blocking`` is exactly explain's ``blocked_gate``: attached and not resolved.
+
+    ``aq task explain`` reads ``get_gates_for_task`` and reports every gate
+    whose status is not ``resolved``; the graph must agree gate for gate.
+    """
+    review_gates = set((await _seed_review_waits(db)).values())
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+
+    for task_id in ("z", "hub", "d1", "d4", "d2", "d3", "d0"):
+        explained = {
+            g["id"] for g in await db.get_gates_for_task(task_id) if g["status"] != "resolved"
+        }
+        blocking = {w["gate_id"] for w in nodes[task_id]["review_waits"] if w["blocking"]}
+        # d0's timer gate is a blocked_gate too, but no review wait.
+        assert blocking == explained & review_gates, task_id
+    assert {g["gate_type"] for g in await db.get_gates_for_task("d0")} == {"timer"}
+
+
+async def test_review_waits_list_blocking_first(db, client_factory):
+    await seed(db)
+    await _review_wait(db, "rev-a-approved", ["z"], state="approved", resolve=True)
+    await _review_wait(db, "rev-b-pending", ["z"])
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/z?variant=all")
+    assert r.status_code == 200
+    assert [(w["review_id"], w["blocking"]) for w in r.json()["node"]["review_waits"]] == [
+        ("rev-b-pending", True),
+        ("rev-a-approved", False),
+    ]
+
+
+async def test_list_reports_review_waits(db, client_factory):
+    """The phone list carries the same waits as the canvas tiles."""
+    await _seed_review_waits(db)
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert _waits(nodes["z"]) == [("rev-pending-spec", "in_review", "review", "open", True)]
+    assert _waits(nodes["d2"]) == [("rev-approved-spec", "approved", "review", "resolved", False)]
+    assert nodes["d0"]["review_waits"] == []
+
+
+async def test_list_review_wait_lookup_is_one_statement_regardless_of_page_size(
+    db, client_factory
+):
+    await _seed_review_waits(db)
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert len(r.json()["nodes"]) > 1
+    assert len([s for s in statements if "doc_reviews" in s]) == 1
+
+
+async def test_list_review_wait_lookup_is_skipped_for_an_empty_page(db, client_factory):
+    await _seed_review_waits(db)
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post(
+                "/api/projects/p1/graph/list", json={**ALL, "q": "no-such-title-anywhere"}
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert r.json()["nodes"] == []
+    assert [s for s in statements if "doc_reviews" in s] == []

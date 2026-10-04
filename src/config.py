@@ -1531,6 +1531,20 @@ class SessionsConfig:
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
+    #: Grace before the reconciler stops a session that has nothing left to
+    #: do -- its task closed, or its claim budget is spent -- even though the
+    #: harness never exited.  ``sessions.last_activity`` cannot measure that
+    #: idle: tmux's ``window_activity`` advances on *any* pane output, so an
+    #: OpenCode TUI sitting at its final summary keeps the stamp fresh for as
+    #: long as it is left alone, and the worker holds its pool slot and
+    #: worktree forever (2026-10-03).  The clock here is the first tick the
+    #: finished shape was *observed*, not the pane.  0 disables the stop and
+    #: leaves the diagnosis to ``sessions.stop_intent_pending``.
+    idle_stop_grace_seconds: int = 60
+    #: How long a recorded stop intent may stand before ``aq doctor`` reports
+    #: the session.  It is a report threshold, not an action: the reconciler
+    #: owns the stop, and this only says the graceful path is not converging.
+    stop_intent_report_seconds: int = 600
     stall_max_nudges: int = 3
     stall_backoff_seconds: int = 300
     max_restarts: int = 3
@@ -1610,6 +1624,8 @@ class SessionsConfig:
                 pass
         for name in (
             "lease_ttl_seconds",
+            "idle_stop_grace_seconds",
+            "stop_intent_report_seconds",
             "stall_max_nudges",
             "stall_backoff_seconds",
             "max_restarts",
@@ -3347,6 +3363,34 @@ class GraphLayoutConfig:
         return errors
 
 
+@dataclass
+class HostShellConfig:
+    """Operator host shells in the dashboard (docs/guides/dashboard.md, Host shell).
+
+    YAML: ``dashboard.host_shell`` **or** a top-level ``host_shell:`` block
+    (the config editor's field-name spelling); the nested one wins. Off by
+    default: an enabled host shell is remote code execution by design, open
+    only to the authenticated local operator. Read per request, so an edit
+    bites on the next open or attach.
+    """
+
+    enabled: bool = False
+    #: Upper bound on concurrently open host shells.
+    max_shells: int = 4
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("dashboard.host_shell", "enabled", "must be true or false"))
+        if isinstance(self.max_shells, bool) or not isinstance(self.max_shells, int) or not (
+            1 <= self.max_shells <= 32
+        ):
+            errors.append(ConfigError(
+                "dashboard.host_shell", "max_shells", "must be between 1 and 32",
+            ))
+        return errors
+
+
 DEFAULT_DASHBOARD_SERVER_PORT = 8082
 #: The default when ``mcp_server.port`` already holds :data:`DEFAULT_DASHBOARD_SERVER_PORT`.
 ALTERNATE_DASHBOARD_SERVER_PORT = 8083
@@ -3618,6 +3662,7 @@ class AppConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
+    host_shell: HostShellConfig = field(default_factory=HostShellConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -3841,6 +3886,7 @@ class AppConfig:
         errors.extend(self.graph_layout.validate())
         errors.extend(self.git_identity.validate())
         errors.extend(self.dashboard_server.validate())
+        errors.extend(self.host_shell.validate())
         if self.dashboard_server.port == self.mcp_server.port:
             errors.append(ConfigError(
                 "dashboard.server", "port",
@@ -4014,6 +4060,9 @@ HOT_RELOADABLE_SECTIONS = {
     # Read by the dashboard server process when it starts, never by the
     # daemon's runtime: `aq dashboard restart` applies an edit.
     "dashboard_server",
+    # Read per host-shell request (open, list, attach), so an edit bites on
+    # the next request.
+    "host_shell",
     "pricing",
     "surface",
     "project_roots",
@@ -4908,6 +4957,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "provider": str,
                     "tmux_socket": str,
                     "lease_ttl_seconds": int,
+                    "idle_stop_grace_seconds": int,
+                    "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,
                     "stall_backoff_seconds": int,
                     "max_restarts": int,
@@ -5182,6 +5233,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         ),
         row_aspect=gl.get("row_aspect", gl_defaults.row_aspect),
     )
+
+    hs = (raw.get("dashboard") or {}).get("host_shell") or raw.get("host_shell") or {}
+    config.host_shell = HostShellConfig(**_dataclass_kwargs(HostShellConfig, hs))
 
     config.dashboard_server = dashboard_server_config_from_raw(raw)
     public_url_conflict = dashboard_public_url_conflict(raw)

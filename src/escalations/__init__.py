@@ -71,6 +71,7 @@ from src.escalations.transport import (
     TransportAmbiguous,
     TransportError,
     TransportMissing,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "TransportBinding",
     "TransportError",
     "TransportMissing",
+    "TransportRejected",
     "TransportRetryable",
     "TransportUnavailable",
     "binding_from_deliveries",

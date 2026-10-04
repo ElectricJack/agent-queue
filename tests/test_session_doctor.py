@@ -533,3 +533,132 @@ class TestStallUnreachable:
         assert entry["name"] == row.name
         assert entry["input"].startswith("[fast-jev:opencode")
         assert pane.mutations == []
+
+
+# ---------------------------------------------------------------------------
+# sessions.stop_intent_pending
+# ---------------------------------------------------------------------------
+
+STOP_INTENT = "sessions.stop_intent_pending"
+
+
+async def _stop_pending(db, provider, *, idle_s=30 * 60, attempt="aged"):
+    """A pool worker whose task closed, released, and never went away.
+
+    ``attempt`` moves the durable clock the check reads when the pane keeps
+    painting.  ``aged`` is a close 30 minutes ago, ``fresh`` is one just now,
+    and ``absent`` is a session that never held a task -- a named session
+    killed by hand -- so the only stamp left is the pane's.
+    """
+    from sqlalchemy import delete, update
+
+    from src.database.tables import task_session_attempts
+
+    row = await _running_session(db, provider)
+    await db.transition_task("t1", TaskStatus.COMPLETED, force=True)
+    await db.update_session(
+        row.id,
+        task_id=None,
+        claim_phase=None,
+        desired_state="stopped",
+        last_activity=time.time() - idle_s,
+    )
+    if attempt == "absent":
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                delete(task_session_attempts).where(
+                    task_session_attempts.c.session_id == row.id
+                )
+            )
+    elif attempt == "aged":
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(task_session_attempts)
+                .where(task_session_attempts.c.session_id == row.id)
+                .values(ended_at=time.time() - idle_s)
+            )
+    return row
+
+
+def test_the_stop_intent_check_is_registered_read_only():
+    check = session_checks.CHECKS[STOP_INTENT]
+    assert check.owner == "session-runtime"
+    assert check.fix is None
+    assert STOP_INTENT in {c.id for c in src.doctor.default_registry().checks()}
+
+
+class TestStopIntentPending:
+    """azure-dune-51: two OpenCode verifiers sat in ``state=running,
+    desired_state=stopped`` for 18 and 26 minutes after their own close,
+    each holding a pool slot and a worktree, until ``aq session kill``."""
+
+    async def test_a_stop_pending_session_past_the_threshold_is_reported(self, db):
+        provider = FakeProvider()
+        row = await _stop_pending(db, provider)
+
+        result = await session_checks.run_check(db, _Handler(provider), STOP_INTENT)
+
+        assert result.severity is Severity.WARN
+        [entry] = result.data["sessions"]
+        assert (entry["session_id"], entry["lifecycle"]) == (row.id, "pool")
+        assert (entry["state"], entry["desired_state"]) == ("running", "stopped")
+        assert entry["age_seconds"] >= 30 * 60 - 5
+        assert entry["age_source"] == "attempt"
+        assert row.name in result.detail
+        assert "aq session kill" in result.detail
+
+    async def test_a_brand_new_stop_intent_is_not_reported(self, db):
+        provider = FakeProvider()
+        await _stop_pending(db, provider, attempt="fresh")
+
+        result = await session_checks.run_check(db, _Handler(provider), STOP_INTENT)
+
+        assert result.severity is Severity.OK
+
+    async def test_a_session_holding_open_work_is_not_reported(self, db):
+        """A drain asked mid-turn is not a leak; the worker may be finishing."""
+        provider = FakeProvider()
+        row = await _running_session(db, provider)
+        await db.update_session(row.id, desired_state="stopped")
+
+        result = await session_checks.run_check(db, _Handler(provider), STOP_INTENT)
+
+        assert result.severity is Severity.OK
+        assert row.id not in result.detail
+
+    async def test_a_worker_inside_a_claim_is_not_reported(self, db):
+        provider = FakeProvider()
+        await _stop_pending(db, provider, attempt="fresh")
+        await db.update_session("s1", claim_phase="preparing")
+
+        result = await session_checks.run_check(db, _Handler(provider), STOP_INTENT)
+
+        assert result.severity is Severity.OK
+
+    async def test_a_fresh_pane_with_no_attempt_history_falls_back_to_activity(self, db):
+        """A named session killed by hand never held a task, so it has no
+        attempt row: the activity stamp is the only clock there is."""
+        provider = FakeProvider()
+        row = await _stop_pending(db, provider, attempt="absent")
+
+        result = await session_checks.run_check(db, _Handler(provider), STOP_INTENT)
+
+        [entry] = result.data["sessions"]
+        assert (entry["session_id"], entry["age_source"]) == (row.id, "activity")
+
+    async def test_a_disabled_report_is_informational(self, db):
+        from types import SimpleNamespace
+
+        provider = FakeProvider()
+        await _stop_pending(db, provider)
+        config = SimpleNamespace(sessions=SimpleNamespace(stop_intent_report_seconds=0))
+
+        result = await session_checks.run_check(
+            db, _Handler(provider), STOP_INTENT, config=config
+        )
+
+        assert result.severity is Severity.INFO
+
+    async def test_no_database_is_informational(self):
+        result = await session_checks.run_check(None, _Handler(FakeProvider()), STOP_INTENT)
+        assert result.severity is Severity.INFO

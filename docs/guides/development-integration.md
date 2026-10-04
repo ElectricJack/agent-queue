@@ -273,8 +273,8 @@ Exact completion and
 repair mappings are retained in git. Missing generations, ambiguous sources,
 branchless tasks a retired manifest named without a generation, and incomplete
 equivalence evidence are reported with task ids rather than guessed; an
-operator resolves each (for example by reopening and closing the task again,
-or by an explicit `adopt`). Until then those tasks stay unknown. A legacy close
+operator resolves each with explicit provenance or adoption. Until then those
+tasks stay unknown. A legacy close
 that recorded no commit and that only a delivery manifest located can instead
 be bound by attesting its exact final source:
 
@@ -286,6 +286,42 @@ aq integration migrate-provenance demo --task-id demo.7 --source <40-hex-oid> --
 The attestation binds only that COMPLETED task's current generation, and is
 refused when the generation's own evidence names another source or a repair
 contract names the task's sources.
+
+Some legacy tasks have no database completion row at all. They can be recovered
+without reopening finished work: supply an audit reason with the exact source,
+or explicitly declare artifact-free research with `--no-artifact`:
+
+```bash
+aq integration migrate-provenance demo --task-id demo.8 --source <40-hex-oid> --reason "legacy work already delivered" --apply
+aq integration migrate-provenance demo --task-id research --no-artifact --reason "research only; no code" --apply
+```
+
+Omit `--apply` to preview either decision. The command retains immutable Git
+evidence under the recorded current generation id, or a legacy generation
+identity fenced to the task version. Missing-row attestations retain that
+version identity too, so archiving preserves the decision. It checks for active
+writers and rechecks the generation before writing; reopening changes the
+generation. It records the operator, reason and result in the audit log and
+does not fabricate a passing worker completion or CI evidence. A no-artifact
+declaration cannot erase source evidence that the generation already recorded.
+
+A COMPLETED task whose latest completion did not pass is attested the same way
+on a `--reason`: a research task closed over a blocked close is finished work,
+not work still owed. Its recorded commits are what it read rather than an
+artifact of its own, so `--no-artifact` replaces them and `--source` may name a
+different commit — but an attested source must already be contained in the
+target, so the decision can only clear work the target holds. The failed close
+is retained verbatim; the audit records `completion_outcome: fail`.
+
+A bare pre-train parent episode uses this same completion provenance, and so
+does an episode whose only parent operation was cancelled before it ever
+verified or completed: neither demands a verification that never existed. Any
+real parent operation or verification history still requires the exact verified
+parent completion, and so does a parent an operator already adopted — a stale
+adoption is a decision to redo, not a legacy episode.
+`invalid_parent_completion` and `parent_provenance_mismatch` name broken
+bindings and require parent verification recovery. They do not mean a branch
+must be pushed again.
 
 ## What a worker sees
 

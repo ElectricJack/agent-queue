@@ -105,6 +105,14 @@ aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-int
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
 
+The controls keyed by a task, operation, batch or reservation — `resume`, `abort`,
+`retry-cleanup`, `eject`, `redrive-root`, `redrive-child`, `reopen-collection`, `record-noop`,
+`reserve-owner`, `release-owner` — take no `project_id`, so who may run them is decided by
+*whose target they name*: the project's own supervisor may run them against its own work, and
+is refused anything belonging to another project. `PROJECT_ID`-keyed controls
+(`enable`, `flush`, `waive-history`, …) are the reverse shape and are pinned to the token's
+project directly. The scope model is [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
 `reopen-collection` also recovers a suspended producer whose close detached its
 workspace but left a `worker` reservation on the parent branch. The dry run
 reports `kind: suspended_worker`, the current episode, operation, published head
@@ -664,6 +672,29 @@ epic dependencies, including prerequisites excluded from admission by a hold.
 Changed sources, unproved completion generations, other targets and failed Git
 observations supply no delivery proof. Holds, open gates and exact review rules
 still control admission of any remaining candidate.
+
+### Settle a parent whose children arrived through other routes
+
+When every child is already delivered to the default branch, an obsolete
+aggregate verifier can keep its managed parent PAUSED. A local operator or live
+project supervisor can use `aq integration adopt <project> --task <parent>
+--head-sha <current-main-sha> --settle-delivered-children --dry-run --reason '<why>'`
+to observe the exact child completion sources. Omit `--dry-run` to cancel the
+obsolete collection, retire detached delegates and record an audited operator
+completion. Equivalent replacements also require `--accept-equivalent`.
+The preview lists branch reservations it will release with their fence tokens.
+A writerless `worker` reservation on a proven child's canonical branch is
+released alongside the parent reservation in the same settlement transaction.
+A historical confirmed pool slot is checked for child-ref writers and unpublished
+local commits. Reuse by another branch does not retain the child's reservation;
+the successor's lock and working tree stay intact.
+The recovery refuses pending or unknown child sources, retained
+writers, manual holds, open gates and reconciler engine ownership. It records
+`not_ci_attested` without adding CI or parent-verification evidence.
+
+`aq doctor --check integration.delivered_children_unsettled_parent` reports this
+state and its recovery command. See [the recovery steps and
+blockers](integration-troubleshooting.md#all-children-reached-main-but-the-aggregate-verifier-is-stranded).
 
 ### Epic delivery in the dashboard
 

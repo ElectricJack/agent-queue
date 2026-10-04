@@ -603,6 +603,25 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "host_shell": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": false,
+        "max_shells": 4
+      },
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_shells": {
+          "default": 4,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "inbox": {
       "default": {
         "client_secret": "$GOOGLE_CLIENT_SECRET",
@@ -2692,6 +2711,7 @@
         "dialog_settle_seconds": 1.5,
         "enabled": true,
         "fake_script_file": "",
+        "idle_stop_grace_seconds": 60,
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
         "nudge_debounce_ms": 500,
@@ -2704,6 +2724,7 @@
         "stall_backoff_seconds": 300,
         "stall_max_nudges": 3,
         "state_cache_ttl_seconds": 2,
+        "stop_intent_report_seconds": 600,
         "tmux_socket": "aq",
         "transcript_poll_seconds": 2,
         "transcript_startup_replay_limit": 100,
@@ -2732,6 +2753,10 @@
         "fake_script_file": {
           "default": "",
           "type": "string"
+        },
+        "idle_stop_grace_seconds": {
+          "default": 60,
+          "type": "integer"
         },
         "lease_ttl_seconds": {
           "default": 480,
@@ -2779,6 +2804,10 @@
         },
         "state_cache_ttl_seconds": {
           "default": 2,
+          "type": "integer"
+        },
+        "stop_intent_report_seconds": {
+          "default": 600,
           "type": "integer"
         },
         "tmux_socket": {
@@ -3191,6 +3220,7 @@
       "git_identity",
       "global_token_budget_daily",
       "graph_layout",
+      "host_shell",
       "knowledge",
       "llm_logging",
       "logging",

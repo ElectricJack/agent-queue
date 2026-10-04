@@ -2199,7 +2199,12 @@ class ExecutionMixin:
             # archive path for nothing.
             "slot_restored": slot_restored,
         }
-        if development_completion:
+        if repair_writer_closed:
+            # The canonical ref may be absent from the base checkout used by
+            # task close. Preserve the head proved under the repair writer's
+            # fence rather than making the completion infer it there.
+            response["completion_source"] = repair_writer_head
+        elif development_completion:
             response["completion_source"] = completion_source
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown

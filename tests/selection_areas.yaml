@@ -211,6 +211,7 @@ areas:
       - tests/test_session_provider_conformance.py
       - tests/test_session_reconciler.py
       - tests/test_session_runtime_units.py
+      - tests/test_session_opencode_liveness.py
       - tests/test_session_queries.py
       - tests/test_session_commands.py
       - tests/test_session_close_notifications.py
@@ -419,6 +420,7 @@ areas:
       - tests/test_integration_cancelled_collection.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
+      - tests/test_integration_delivered_parent_adoption.py
       - tests/test_integration_root_pull_requests.py
       - tests/test_integration_repair.py
       - tests/test_integration_repair_rollover.py
@@ -559,6 +561,7 @@ areas:
     match:
       - tests/test_api_auth.py
       - tests/test_api_scope.py
+      - tests/test_target_scope.py
       - tests/test_reviewer_api_scope.py
       - tests/test_triage_api_scope.py
       - tests/test_worker_git_scope.py
