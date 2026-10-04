@@ -654,6 +654,19 @@ class RootGitObservationReader(GitObservationReader):
                 return result
         return await super().remote_head(repository, ref)
 
+    async def remote_heads(self, repository, refs):
+        store = self.store_for(repository["id"])
+        heads = None
+        if store.exists():
+            reader = GitObservationReader(self.git, checkout=lambda _: str(store))
+            heads = await reader.remote_heads(repository, refs)
+            if all(head.state != "unknown" for head in heads):
+                return heads
+        fallback = await super().remote_heads(repository, refs)
+        if heads is None:
+            return fallback
+        return [h if h.state != "unknown" else f for h, f in zip(heads, fallback)]
+
     async def is_ancestor(self, repository, ancestor, descendant):
         result = await self.git.ais_ancestor(
             str(self.store_for(repository["id"])), ancestor, descendant, strict=True
