@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy import or_, select, text
 
 from src.database import tables as t
-from src.git.manager import GitManager, RemoteRefState
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.subjects import (
     CIEvidence,
@@ -107,6 +107,35 @@ class GitObservationReader:
         if path is None:
             return None
         return await self.git.ais_ancestor(path, ancestor, descendant, strict=True)
+
+    # One ls-remote round trip per chunk. A root's admitting frontier can name
+    # hundreds of member branches; one authenticated ls-remote per ref (about a
+    # second each) blew the reconciler's call budget on every visit.
+    _REMOTE_HEADS_CHUNK = 200
+
+    async def remote_heads(self, repository: Row, refs: Sequence[str]) -> list[RemoteHead]:
+        """Exact remote heads for ``refs``, in order, read in batched round trips."""
+        path = self.checkout(repository)
+        branches = [ref.removeprefix("refs/heads/") for ref in refs if ref.startswith("refs/heads/")]
+        observed: dict[str, RemoteRefResult] = {}
+        if path and branches:
+            for start in range(0, len(branches), self._REMOTE_HEADS_CHUNK):
+                chunk = branches[start : start + self._REMOTE_HEADS_CHUNK]
+                observed.update(
+                    await self.git.als_remote_refs(path, chunk, repository_url=repository["url"])
+                )
+        heads = []
+        for ref in refs:
+            result = observed.get(ref.removeprefix("refs/heads/")) if ref.startswith(
+                "refs/heads/"
+            ) else None
+            if result is None or result.state is RemoteRefState.ERROR:
+                heads.append(RemoteHead(ref=ref, state="unknown"))
+            elif result.state is RemoteRefState.PRESENT:
+                heads.append(RemoteHead(ref=ref, state="present", sha=result.oid))
+            else:
+                heads.append(RemoteHead(ref=ref, state="absent"))
+        return heads
 
 
 class DatabaseObservationReader:
@@ -860,6 +889,33 @@ class IntegrationObserver:
             detail={"facts": facts.model_dump(mode="json")},
         )
 
+    async def _remote_heads(
+        self, repository: Row, refs: list[str], *, include_remote: bool
+    ) -> list[RemoteHead]:
+        if not include_remote or self.git is None:
+            return [RemoteHead(ref=ref, state="unknown") for ref in refs]
+        batch = getattr(self.git, "remote_heads", None)
+        if batch is not None:
+            try:
+                heads = list(await batch(repository, refs))
+                if [head.ref for head in heads] != refs:
+                    raise ValueError("remote answered different refs")
+                return heads
+            except Exception:
+                logger.debug("Subject remote heads unavailable", exc_info=True)
+                return [RemoteHead(ref=ref, state="unknown") for ref in refs]
+        heads = []
+        for ref in refs:
+            try:
+                remote = await self.git.remote_head(repository, ref)
+                if remote.ref != ref:
+                    raise ValueError("remote answered a different ref")
+            except Exception:
+                logger.debug("Subject remote head unavailable", exc_info=True)
+                remote = RemoteHead(ref=ref, state="unknown")
+            heads.append(remote)
+        return heads
+
     async def observe_subject(
         self, subject_id: str, *, include_remote: bool = True
     ) -> SubjectFacts | None:
@@ -898,21 +954,12 @@ class IntegrationObserver:
             refs.add(subject.target_ref)
         if candidate:
             refs.add(candidate.ref)
-        remote_heads = []
-        for ref in sorted(refs):
-            if not include_remote or self.git is None:
-                remote = RemoteHead(ref=ref, state="unknown")
-            else:
-                try:
-                    remote = await self.git.remote_head(snapshot.repository, ref)
-                    if remote.ref != ref:
-                        raise ValueError("remote answered a different ref")
-                except Exception:
-                    logger.debug("Subject remote head unavailable", exc_info=True)
-                    remote = RemoteHead(ref=ref, state="unknown")
-            remote_heads.append(remote)
+        remote_heads = await self._remote_heads(
+            snapshot.repository, sorted(refs), include_remote=include_remote
+        )
+        for remote in remote_heads:
             if remote.state == "unknown":
-                unknown.append("remote_unknown:" + ref)
+                unknown.append("remote_unknown:" + remote.ref)
         default = next(head.sha for head in remote_heads if head.ref == default_ref)
         target = candidate or subject.head
         ci = []
