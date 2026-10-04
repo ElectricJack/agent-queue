@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 from types import SimpleNamespace
@@ -23,7 +22,6 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
-    task_completion_records,
     task_integration_checkpoints,
     task_labels,
     tasks,
