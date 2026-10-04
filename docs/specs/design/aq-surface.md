@@ -534,6 +534,11 @@ with no project is distinct from a missing row. A promotion intent whose `projec
 NULL resolves through its persisted repository; if that repository cannot supply a project,
 the intent remains a present row with no resolved owner.
 
+An integration `subject_id` resolves the subject row's own `project_id`. For
+`integration_release_held_gate`, both the subject and gate must belong to the token's
+project; passing this ownership check still leaves the handler's local human operator
+requirement in force.
+
 The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.
 Only `provider_allocation_preview` recognizes that nested target path; other commands
