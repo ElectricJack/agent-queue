@@ -321,7 +321,15 @@ parent completion, and so does a parent an operator already adopted — a stale
 adoption is a decision to redo, not a legacy episode.
 `invalid_parent_completion` and `parent_provenance_mismatch` name broken
 bindings and require parent verification recovery. They do not mean a branch
-must be pushed again.
+must be pushed again. Neither does `parent_adoption_provenance_mismatch`: an
+adopted parent's retained source disagrees with the head its operator adoption
+recorded, or that record holds no artifact. The adoption is redone through the
+delivered-children recovery (`aq integration adopt … --settle-delivered-children
+--dry-run`, see [integration troubleshooting](integration-troubleshooting.md)),
+never through `migrate-provenance`. `missing_or_ambiguous_source` means git
+could not resolve the retained record itself — unreadable, or naming a commit or
+replacement the repository cannot resolve — so the stall names it rather than a
+missing ref, and only a new completion of the exact commit supersedes it.
 
 ## What a worker sees
 

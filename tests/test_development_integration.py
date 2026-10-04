@@ -4972,7 +4972,10 @@ async def test_only_a_cancelled_parent_operation_is_not_a_verified_binding(setup
     assert git(remote, "rev-parse", "main") == head
 
 
-@pytest.mark.parametrize("reason", ["invalid_parent_completion", "parent_provenance_mismatch"])
+@pytest.mark.parametrize("reason", [
+    "invalid_parent_completion", "parent_provenance_mismatch",
+    "parent_adoption_provenance_mismatch", "missing_or_ambiguous_source",
+])
 async def test_publisher_preserves_parent_faults_and_their_dependency_recovery(
     setup, monkeypatch, reason,
 ):
@@ -5005,6 +5008,15 @@ async def test_publisher_preserves_parent_faults_and_their_dependency_recovery(
         # longer offers a leaf attestation as the way out of a real binding.
         assert "migrate-provenance" in body and "parent verification" in body
         assert "bare legacy episode" not in body
+    elif reason == "parent_adoption_provenance_mismatch":
+        # An adopted parent's retained record disagrees with the adoption
+        # audit: the operator redoes the adoption, never re-pushes a branch.
+        assert "operator adoption" in body and "--settle-delivered-children" in body
+        assert "--dry-run" in body and "cannot replace" in body
+    elif reason == "missing_or_ambiguous_source":
+        # Git failed reading the retained record, not a branch that went away.
+        assert "could not resolve an exact source" in body
+        assert "aq-provenance/completions" in body and "not a missing branch" in body
     else:
         assert "retained source disagrees" in body
 

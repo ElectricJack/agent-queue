@@ -104,6 +104,21 @@ _RECOVERY = {
         "`aq integration status` and recover the exact current parent verification "
         "and provenance binding"
     ),
+    "parent_adoption_provenance_mismatch": (
+        "its retained source disagrees with the head its operator adoption recorded, or "
+        "that record holds no artifact: inspect `aq integration status` and redo the "
+        "adoption — preview with `aq integration adopt <project-id> --task TASK "
+        "--head-sha SHA --settle-delivered-children --dry-run --reason REASON`; "
+        "`aq integration migrate-provenance` cannot replace an adopted parent's binding"
+    ),
+    "missing_or_ambiguous_source": (
+        "git could not resolve an exact source for its completion: its retained "
+        "`aq-provenance/completions/…` record is unreadable, or names a commit or "
+        "replacement the repository cannot resolve — not a missing branch ref. Inspect "
+        "that record and `aq integration status`; a broken record is superseded only "
+        "by a new completion of the commit that holds the work (close the task again; "
+        "a parent verifies again)"
+    ),
     "undelivered_dependency": (
         "a dependency is not delivered: publish or recover that dependency first"
     ),
@@ -127,7 +142,10 @@ _RECOVERY = {
 
 def delivery_skip_reason(reason: str) -> str:
     """Preserve actionable delivery faults rather than calling every unknown a missing ref."""
-    if reason in {"invalid_parent_completion", "parent_provenance_mismatch", "git_error"}:
+    if reason in {
+        "invalid_parent_completion", "parent_provenance_mismatch",
+        "parent_adoption_provenance_mismatch", "missing_or_ambiguous_source", "git_error",
+    }:
         return reason
     if reason == "missing_git_provenance":
         return "missing_provenance"
