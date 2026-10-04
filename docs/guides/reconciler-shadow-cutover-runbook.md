@@ -188,6 +188,34 @@ cutover; it takes the repository's exclusive xact lock, and the development
 publisher shares that exclusion, so it cannot enter afterwards. A stale visit
 that was already in flight cannot act on the transferred subject.
 
+### Development projects transfer per project
+
+A project whose subjects are Development ones (`ROOT_BATCH`/`SOURCE` delivery
+rather than a train) moves with the same procedure against the whole project's
+Development subject set, not a repository at a time:
+
+```sh
+# Preview names every subject and its exact version; nothing is written.
+aq integration development-engine-transfer PROJECT_ID --engine reconciler
+
+aq integration development-engine-transfer PROJECT_ID --engine reconciler \
+  --expected-subject SUBJECT_ID:VERSION \
+  --reason "approved shadow evidence sha256:<report digest>" \
+  --evidence "shadow-comparison:sha256:<report digest>" \
+  --evidence "development-scenarios:<pushed commit>" \
+  --apply
+```
+
+`--apply` needs the same fences (`reconciler_active` already true, exact
+versions, a reason, evidence) and takes the *exclusive* repository engine lock
+of every repository the project publishes into, so a publisher already in flight
+is waited for rather than raced. An unconfirmed publish write refuses the
+transfer in **both** directions: the reconciler must not adopt one and the old
+publisher must not resume one. Rollback is the same command with
+`--engine legacy` at the then-current versions; it deletes no subject, journal
+entry, operation row, branch or receipt, so the old engine resumes the same
+durable state.
+
 The report digest is the artifact's identity: it covers the window, the pinned
 artifact, every row, the unexplained batches and the unacknowledged unknowns. A
 different window produces a different digest, so an approval cannot be reused
@@ -236,6 +264,8 @@ The report carries these in its own `coverage_limits`, in every artifact:
 | `aq integration shadow-report --project P --since S [--until U]` | Read-only comparison; `--output PATH` writes the Markdown artifact, `--acknowledge-unknown SEQ` names reviewed unknowns. |
 | `aq integration engine-transfer R --engine reconciler ...` | Preview (default) or `--apply` the transfer of exact root subjects. |
 | `aq integration engine-transfer R --engine legacy --apply` | Audited rollback to legacy ownership. |
+| `aq integration development-engine-transfer PROJECT_ID --engine reconciler ...` | Preview (default) or `--apply` the transfer of every Development subject of one project. |
+| `aq integration development-engine-transfer PROJECT_ID --engine legacy --apply` | Audited rollback of a Development project to the legacy publisher. |
 | `aq restart --no-dashboard` | Install a config change without killing agent sessions. |
 | `aq integration status PROJECT_ID --control-only` | Read the durable rollout control state; see [Hierarchical integration trains](hierarchical-integration-trains.md). |
 

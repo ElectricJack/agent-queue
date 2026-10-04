@@ -65,17 +65,21 @@ subject loops on `IntegrationService`:
   pushed, `HEAD` is never moved (the old engine reads it), and no fence or
   journal is written.
 - `transfer_development_engine` is the audited per-project activation and
-  rollback. It runs inside the *exclusive* repository engine fence — the same
-  lock identity `publisher_exclusion` holds shared for a whole publication — so
-  it waits for a publisher already in flight instead of racing it; row versions
-  alone cannot fence a publisher that is outside any transfer's transaction. It
-  requires exact subject versions, a reason and cutover evidence, and refuses an
-  unconfirmed publish write in **both** directions: the reconciler must not adopt
-  one and the old publisher must not resume one. That check correlates by intent
-  key *and* journal order, so an intent confirmed earlier never hides a later
-  prepare. It never deletes a subject, journal entry, operation row, branch or
-  receipt; rollback is the same serialized transfer back to `legacy`, after which
-  the old engine resumes the same durable state.
+  rollback. Its only supported route is
+  `integration_development_engine_transfer` (`aq integration
+  development-engine-transfer`), preview by default and applied with
+  `--apply` at the exact previewed versions; the Python helper is never an
+  operator surface. It runs inside the *exclusive* repository engine fence — the
+  same lock identity `publisher_exclusion` holds shared for a whole publication —
+  so it waits for a publisher already in flight instead of racing it; row
+  versions alone cannot fence a publisher that is outside any transfer's
+  transaction. It requires exact subject versions, a reason and cutover
+  evidence, and refuses an unconfirmed publish write in **both** directions: the
+  reconciler must not adopt one and the old publisher must not resume one. That
+  check correlates by intent key *and* journal order, so an intent confirmed
+  earlier never hides a later prepare. It never deletes a subject, journal entry,
+  operation row, branch or receipt; rollback is the same serialized transfer
+  back to `legacy`, after which the old engine resumes the same durable state.
 - `development_runtime_for` constructs all of it from existing orchestrator
   owners and returns `None` unless a reconciler flag is on.
 
@@ -131,9 +135,13 @@ Per project, after the parent cutover gates:
    nothing.
 3. Compare the shadow journal with the legacy decisions over the recorded window
    (`aq integration shadow-report`), then transfer with
-   `development_engine_transfer`, recording exact subject versions, artifact
-   digests and evidence.
-4. Rollback is the same command with `engine: legacy` and the then-current exact
+   `aq integration development-engine-transfer PROJECT_ID --engine reconciler`,
+   recording exact subject versions from the preview, artifact digests and
+   evidence. The default is a preview; `--apply` is the only mutating spelling.
+   The apply needs `integration.reconciler_active: true` and its restart first:
+   a reconciler that may only mirror must never be handed the project, so the
+   transfer is refused while the active loop is off.
+4. Rollback is the same command with `--engine legacy` and the then-current exact
    versions, followed by a restart. Ownership is durable in the subject rows, so
    feature-off alone does not return authority; the transfer does.
 5. Durable state is migrated read-only. Legacy operations, receipts, gates,

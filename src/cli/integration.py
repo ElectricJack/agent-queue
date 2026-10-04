@@ -33,6 +33,28 @@ def integration() -> None:
     """Inspect and control hierarchical integration trains."""
 
 
+def _expected_versions(items: tuple[str, ...]) -> dict[str, int]:
+    """Parse repeated ``SUBJECT_ID:VERSION`` fences into exact subject versions."""
+    versions: dict[str, int] = {}
+    for item in items:
+        try:
+            subject_id, version = item.rsplit(":", 1)
+            if not subject_id or int(version) < 0 or subject_id in versions:
+                raise ValueError
+            versions[subject_id] = int(version)
+        except ValueError:
+            raise click.BadParameter("use unique SUBJECT_ID:VERSION with a nonnegative version",
+                                     param_hint="--expected-subject") from None
+    return versions
+
+
+def _require_transfer_apply_fences(engine: str, versions: dict[str, int], reason: str,
+                                   evidence: tuple[str, ...]) -> None:
+    """An apply needs the whole previewed subject set, a reason and evidence."""
+    if not versions or not reason.strip() or (engine == "reconciler" and not evidence):
+        raise click.UsageError("--apply needs exact subject versions, a reason and cutover evidence")
+
+
 @integration.command("engine-transfer")
 @click.argument("repository_id")
 @click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
@@ -49,22 +71,44 @@ def integration_engine_transfer(
     ctx, repository_id, engine, parent_task_id, expected_subjects, reason, evidence, apply,
 ):
     """Preview or transfer exclusive integration ownership for REPOSITORY_ID."""
-    versions = {}
-    for item in expected_subjects:
-        try:
-            subject_id, version = item.rsplit(":", 1)
-            if not subject_id or int(version) < 0 or subject_id in versions:
-                raise ValueError
-            versions[subject_id] = int(version)
-        except ValueError:
-            raise click.BadParameter("use unique SUBJECT_ID:VERSION with a nonnegative version",
-                                     param_hint="--expected-subject") from None
-    if apply and (not versions or not reason.strip() or (engine == "reconciler" and not evidence)):
-        raise click.UsageError("--apply needs exact subject versions, a reason and cutover evidence")
+    versions = _expected_versions(expected_subjects)
+    if apply:
+        _require_transfer_apply_fences(engine, versions, reason, evidence)
     _execute(ctx, "integration_engine_transfer", {
         "repository_id": repository_id, "engine": engine, "expected_versions": versions,
         "reason": reason, "evidence": list(evidence), "dry_run": not apply,
         **({"parent_task_id": parent_task_id} if parent_task_id else {}),
+    })
+
+
+@integration.command("development-engine-transfer")
+@click.argument("project_id")
+@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--expected-subject", "expected_subjects", multiple=True,
+              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every Development subject.")
+@click.option("--reason", default="", help="Required explanation when applying the transfer.")
+@click.option("--evidence", multiple=True,
+              help="Shadow, scenario and operator approval references.")
+@click.option("--apply", is_flag=True,
+              help="Apply the exact previewed versions; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_development_engine_transfer(
+    ctx, project_id, engine, expected_subjects, reason, evidence, apply,
+):
+    """Preview or transfer Development ownership for every subject of PROJECT_ID.
+
+    The apply is a cutover or a rollback of the whole project: it runs inside
+    the repository engine fence a publisher shares, needs the exact versions
+    the preview printed, and refuses while a publish write is unconfirmed in
+    either direction.
+    """
+    versions = _expected_versions(expected_subjects)
+    if apply:
+        _require_transfer_apply_fences(engine, versions, reason, evidence)
+    _execute(ctx, "integration_development_engine_transfer", {
+        "project_id": project_id, "engine": engine, "expected_versions": versions,
+        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
     })
 
 
