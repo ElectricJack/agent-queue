@@ -152,13 +152,43 @@ promotion intent and trusted receipt to agree on operation, episode, stage,
 delegate, repository, branch, source identity, resolution tree, commit range,
 session, instance, workspace, fence and observed push. An empty completion still
 requires its accepted-close identity; a contradictory audit or completion refuses.
+The push observation must equal the complete identity emitted by the ordinary
+resolution push writer, including all ten fields; extra keys refuse. When retries
+produced several close audits, every audit must have a complete authoring tuple,
+and exactly one must match that validated resolution's task, session, instance,
+workspace and fence. An incomplete audit or a missing or duplicate exact match
+refuses; an earlier claim's audit cannot substitute for the resolution author.
 This proof settles resolution bookkeeping and never supplies green check evidence.
 
 Missing edges between immutable child receipts may be recovered only from a
-completed stage bound to the exact gap head. Each gap independently requires the
+completed stage that first recorded the exact gap range. Inherited commit lists
+in later stage dossiers are diagnostic copies, not additional authorship.
+Each gap independently requires the
 original fenced close audit, latest passing completion (or its exact accepted
 empty close), recorded commit range and Git ancestry to the current published
-parent head. Unattributed commits and summary text are insufficient. Preview
+parent head. A gap may end inside a continued stage's recorded repair range rather
+than at its final subject. Its latest passing completion and selected fenced close
+must prove that final subject. Git must prove the complete ordered gap range is a
+contiguous part of the commits first introduced in that stage and an ancestor of
+its completed subject. If continuation advanced the stage's starting SHA to its
+subject, the subject additionally needs its exact committed resolution tree and
+complete Git range. An interior gap additionally must equal the base of that
+stage's first committed resolution. Every historical completion must pass on the
+canonical branch, and every historical close must carry a complete unique fenced
+identity, with fences increasing after the previous stage. Each audit must pair
+with exactly one passing canonical-branch completion after that close and before
+the next; each committed resolution must match that audit's complete authoring
+tuple and completion. Git must prove the gap is the parent branch's exact
+first-parent range. Unrecorded repair-branch refs confer no authority. Missing,
+ambiguous or contradictory history refuses recovery. An archived historical gap
+with an empty completion is eligible only with one exact audited passing close,
+starting SHA equal to the gap base, subject equal to its end, and introduced commits
+exactly equal to the complete first-parent range. The preceding stage's recorded
+list must end at the gap base. This narrow pairing replaces the accepted-close
+metadata and claim epoch removed by archival. A live delegate still requires its
+exact accepted-close identity; resolution receipt fallback cannot prove this gap.
+The edge records only the missing gap and preserves the later stage subject.
+Unattributed commits and summary text are insufficient. Preview
 reports every gap or refuses. Apply rechecks all stage/delegate/owner facts and
 remote ancestry, appends each edge to its originating stage, and projects ordinary
 verifier readiness in one transaction. Both completed collection recovery and
@@ -208,3 +238,24 @@ fence and creates the next stage bound to that intent. Normal dispatch owns the
 conflict repair. Collection receipts for prerequisites are produced only by the
 ordinary fenced resolution/delivery path; a missing receipt is never fabricated.
 Any failed proof is a named refusal requiring inspection before a live apply.
+
+## Operator acceptance for crisp-horizon-90
+
+The worker proves the captured seven-stage history using the replay test. After
+review, delivery and deployment, the authorized supervisor/operator runs the live
+preview below. The worker's recovery command is out of scope and cannot perform
+this live acceptance check.
+
+```bash
+aq integration recover-parent-head 6397b45b-c5f2-4ddc-8450-638f77af1631 \
+  --head cd394b1a6c90d4cffcae1ce99aa6c8948286d021 --dry-run --json
+```
+
+Expect `would_recover` with stage 6 and each missing receipt edge named in the
+reason. Verify the gap attributed to stage 2 and the interior gap first recorded
+by stage 4, using its first committed resolution and parent first-parent
+lineage. Review the exact completion, close, episode, generation and current fence
+before using the returned apply command after deployment. Preserve all eleven
+child receipts and the original stage subjects, deadlines and attempt budgets.
+Fresh trusted verification still owns parent completion. A missing accepted-close,
+published lineage or historical audit remains a refusal; the worker must not fabricate evidence or apply recovery against the operator database.
