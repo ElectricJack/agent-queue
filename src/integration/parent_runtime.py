@@ -38,6 +38,7 @@ from src.integration.subjects import (
     WriterStatus,
     writer_values,
 )
+from src.integration.verifier_subject import latest_red_parent_evidence
 from src.playbooks.integration_policy import CompiledIntegrationPolicy
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,21 @@ class ParentVisitObserver(ParentIntegrationObserver):
             ),
             None,
         )
+        checkpoint = next(
+            (r for r in snapshot.all("task_integration_checkpoints")
+             if r["task_id"] == subject.task_id),
+            None,
+        )
+        evidence = [
+            r for r in snapshot.all("integration_check_evidence")
+             if r["operation_id"] == operation.get("id")
+             and r["parent_generation"] == subject.generation
+             and r["parent_head_sha"] == subject.head_sha
+        ]
+        red_verifier = bool(
+            operation.get("verifier_task_id") and checkpoint and evidence
+            and latest_red_parent_evidence(evidence, operation=operation, checkpoint=checkpoint)
+        )
         return facts.model_copy(
             update={
                 "identity_moved": bool(
@@ -154,7 +170,7 @@ class ParentVisitObserver(ParentIntegrationObserver):
                 "verifier_task_id": operation.get("verifier_task_id"),
                 "verifier_failed": bool(
                     facts.verification and facts.verification.status == "failed"
-                ),
+                ) or red_verifier,
                 "parent_completed": operation.get("state") == "completed",
                 "aggregate_verified": bool(
                     facts.verification
