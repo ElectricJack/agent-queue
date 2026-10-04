@@ -76,6 +76,7 @@ class TestRegistry:
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
         from src.doctor.db_checks import db_checks
+        from src.doctor.discord_config_checks import discord_config_checks
         from src.doctor.escalation_checks import escalation_checks
         from src.doctor.formula_checks import formula_checks
         from src.doctor.git_checks import git_checks
@@ -119,6 +120,7 @@ class TestRegistry:
             | {c.id for c in db_checks()}
             | {c.id for c in dashboard_state_checks()}
             | {c.id for c in dashboard_server_checks()}
+            | {c.id for c in discord_config_checks()}
             | {c.id for c in playbook_v2_checks()}
             | {c.id for c in perf_checks()}
             | {c.id for c in project_checks()}

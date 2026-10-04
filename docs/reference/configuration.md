@@ -75,7 +75,7 @@ aq system config schema
 | data_dir, workspace_dir, project_roots | AQ data, workspaces, and allowed onboarding roots. | Paths default under the user's home directory; project_roots is empty. |
 | database, database_path | PostgreSQL pool settings and a legacy alias. | database.url is required; database_path is compatibility-only. |
 | env, profile, validate_events | Overlay selection and event payload validation. | env defaults to production; profiles are optional. |
-| messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. |
+| messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. The retired `discord.channels` and `discord.per_project_channels` blocks are migration input only; `aq doctor --check discord.config --fix` drops them and writes `channel_id`, `guild_id`, `authorized_users` and `project_id`, filling only the values it can derive. |
 | agents_config, agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
 | llm.fallback | An optional second direct-path credential, used only while provider availability holds the reserved `llm` key unavailable. | `null` (no fallback: direct-path calls fail fast during an outage). Restart-required like the rest of `llm`. See [`llm.fallback`](#llmfallback). |
@@ -342,7 +342,10 @@ answers `421 misdirected_host` (unknown `Host`) or `403 origin_not_allowed`
 `dashboard.server.running`, `dashboard.server.bundle`, `dashboard.server.port`,
 `dashboard.server.exposure` (a warning while `host` is not loopback) and
 `dashboard.remote_link` (the origin Discord links name, whether the edge accepts
-it, and a warning when Discord posts carry the "unavailable" notice)
+it, and a warning when Discord posts carry the "unavailable" notice) and
+`dashboard.public_url` (`public_url` is set, is HTTPS or a tailnet address, is
+listening, and `GET /focus` returns the dashboard shell; plain HTTP warns with the
+Tailscale Serve steps)
 ([src/doctor/dashboard_server_checks.py](../../src/doctor/dashboard_server_checks.py)).
 `aq dashboard link` prints the same report from the YAML, without the daemon.
 
