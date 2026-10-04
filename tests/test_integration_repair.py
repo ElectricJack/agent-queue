@@ -12,8 +12,10 @@ from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
+    integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_candidate_member_results,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_operation_artifact_pins,
@@ -23,6 +25,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stage_evidence,
     integration_repair_stages,
+    integration_review_evidence,
     messages,
     playbook_artifacts,
     sessions,
@@ -2241,7 +2244,16 @@ async def test_parent_green_and_timeout_serialize_to_one_debug_stage(db):
     assert stages[1]["state"] == "active"
 
 
-async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", policy=None) -> str:
+async def _seed_root_operation(
+    db,
+    *,
+    branch: str = "aq/integration/batch",
+    policy=None,
+    candidate_state: str = "testing",
+    candidate_sha: str | None = STARTING_SHA,
+    candidate_evidence: bool = True,
+    batch_lifecycle: str = "testing",
+) -> str:
     from src.integration.repair import RepairService
 
     await db.update_project("p", hierarchical_integration_mode="train")
@@ -2267,7 +2279,7 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", poli
                 request_id="request-batch",
                 source_manifest_digest="manifest",
                 base_sha=STARTING_SHA,
-                lifecycle="testing",
+                lifecycle=batch_lifecycle,
                 current_revision=0,
                 integration_branch=branch,
                 policy_snapshot=policy or _policy(),
@@ -2282,8 +2294,8 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", poli
                 batch_id="batch",
                 revision=0,
                 construction_base_sha=STARTING_SHA,
-                head_sha=STARTING_SHA,
-                state="testing",
+                head_sha=candidate_sha,
+                state=candidate_state,
                 created_at=1.0,
                 updated_at=1.0,
             )
@@ -2291,6 +2303,8 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch", poli
         operation = await RepairService(db).reserve_batch_operation_on(
             conn, "batch", now=50.0
         )
+        if not candidate_evidence:
+            return operation["id"]
         await conn.execute(
             insert(integration_check_evidence).values(
                 id="root-green",
@@ -2376,6 +2390,205 @@ async def test_green_ci_delegate_description_omits_hold_protocol(db):
 
     assert "## Awaiting candidate CI" not in description
     assert "There is nothing on record to repair" not in description
+
+
+@pytest.mark.parametrize(
+    ("candidate_state", "candidate_sha", "expected_sha"),
+    [
+        ("built", "c" * 40, "c" * 40),
+        ("constructing", None, None),
+    ],
+)
+async def test_pre_testing_dispatch_names_the_pending_candidate(
+    db, candidate_state, candidate_sha, expected_sha
+):
+    """A stage dispatched before the revision reaches testing still names the candidate.
+
+    Stage 0 opens as soon as the candidate revision exists, so the writer used
+    to receive an empty dossier with no candidate identity and had to ask the
+    supervisor what to do. It now reads the candidate SHA, the revision state
+    and the pending protocol whatever state the revision is in.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db,
+        candidate_state=candidate_state,
+        candidate_sha=candidate_sha,
+        candidate_evidence=False,
+    )
+    service = RepairService(db)
+    starting = candidate_sha or STARTING_SHA
+    assert (await service.start(operation_id, starting, "batch", now=100.0))["outcome"] == "started"
+    stage = await _repair_stage(db, operation_id, 0)
+    async with db.immediate() as conn:
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        description = await service._delegate_description_on(conn, dict(operation), stage)
+
+    assert "## Awaiting candidate CI" in description
+    assert f"(revision state: {candidate_state})" in description
+    if expected_sha is None:
+        # No candidate head yet: the subject is the construction base and the
+        # section says so instead of naming a SHA that does not exist.
+        assert "Candidate SHA: not built yet" in description
+        assert f"Construction base: {STARTING_SHA}" in description
+    else:
+        assert f"Candidate SHA: {expected_sha}" in description
+    # Nothing has been observed yet, so the protocol is spelled out.
+    assert "CI run: not yet visible" in description
+    assert "There is nothing on record to repair" in description
+    assert "push nothing at all to the batch branch" in description
+    assert "close this stage pass-unchanged when CI turns green" in description
+    assert "If and only if a required check on the exact candidate SHA fails" in description
+
+
+async def test_pre_testing_dispatch_delegate_task_carries_candidate_ci(db):
+    """The dispatched delegate task itself, not just the helper, carries the section.
+
+    Stage 0 opens while the batch is repairing and its candidate is still being
+    constructed: that dispatch is the one that used to reach the writer with
+    nothing but an empty dossier.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db,
+        candidate_state="constructing",
+        candidate_sha=None,
+        candidate_evidence=False,
+        batch_lifecycle="repairing",
+    )
+    service = RepairService(db)
+    assert (await service.start(operation_id, STARTING_SHA, "batch", now=100.0))["outcome"] == "started"
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/integration/batch"), operation_id, "collector"
+    )
+    assert (await service.dispatch(operation_id, 0))["outcome"] == "dispatched"
+    delegate = await db.get_task(f"repair-{operation_id}-0")
+
+    assert "## Awaiting candidate CI" in delegate.description
+    assert "(revision state: constructing)" in delegate.description
+    assert f"Construction base: {STARTING_SHA}" in delegate.description
+    assert "push nothing at all to the batch branch" in delegate.description
+    assert "close this stage pass-unchanged when CI turns green" in delegate.description
+
+
+async def test_conclusive_green_candidate_drops_the_pending_section(db):
+    """A green candidate leaves no pending hold; the dossier's checks are the record."""
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(
+        db, candidate_state="green", candidate_sha="c" * 40
+    )
+    service = RepairService(db)
+    await service.start(operation_id, "c" * 40, "batch", now=100.0)
+    stage = await _repair_stage(db, operation_id, 0)
+    async with db.immediate() as conn:
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        description = await service._delegate_description_on(conn, dict(operation), stage)
+
+    assert "## Awaiting candidate CI" not in description
+    assert "There is nothing on record to repair" not in description
+
+
+async def test_recorded_conflict_suppresses_the_pending_candidate_section(db):
+    """A recorded conflict is the stage's work; a pending-CI hold would contradict it."""
+    from src.integration.repair import RepairService
+
+    candidate = "c" * 40
+    operation_id = await _seed_root_operation(
+        db,
+        candidate_state="built",
+        candidate_sha=candidate,
+        candidate_evidence=False,
+        batch_lifecycle="sealing",
+    )
+    service = RepairService(db)
+    async with db.immediate() as conn:
+        # Membership is frozen while the batch seals, so the source row is
+        # written before the batch leaves sealing.
+        await conn.execute(
+            insert(integration_review_evidence).values(
+                id="review-0",
+                source_task_id="source-0",
+                repository_id="repo",
+                source_base=STARTING_SHA,
+                reviewed_head_sha="f" * 40,
+                reviewed_tree_sha="e" * 40,
+                review_kind="code",
+                generation=0,
+                verdict="approved",
+                evidence={},
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_batch_members).values(
+                batch_id="batch",
+                ordinal=0,
+                task_id="source-0",
+                repository_id="repo",
+                source_base_sha=STARTING_SHA,
+                reviewed_head_sha="f" * 40,
+                reviewed_tree_sha="e" * 40,
+                review_evidence_id="review-0",
+                review_evidence={},
+            )
+        )
+        await conn.execute(
+            update(integration_batches).where(integration_batches.c.id == "batch").values(
+                lifecycle="testing"
+            )
+        )
+    await service.start(operation_id, candidate, "batch", now=100.0)
+    stage = await _repair_stage(db, operation_id, 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_member_results).values(
+                batch_id="batch",
+                revision=0,
+                member_ordinal=0,
+                input_head_sha=candidate,
+                input_tree_sha="e" * 40,
+                result="conflict",
+                conflict_evidence={
+                    "operation_id": operation_id,
+                    "batch_id": "batch",
+                    "revision": 0,
+                    "ordinal": 0,
+                    "partial_head_sha": "d" * 40,
+                    "source_base_sha": STARTING_SHA,
+                    "source_head_sha": "f" * 40,
+                },
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id
+                )
+            )
+        ).mappings().one()
+        description = await service._delegate_description_on(conn, dict(operation), stage)
+
+    assert "## Candidate member conflict" in description
+    assert f"Partial head: {'d' * 40}" in description
+    assert "## Awaiting candidate CI" not in description
+    assert "push nothing at all to the batch branch" not in description
 
 
 async def test_continuous_batch_timeout_stops_without_advancing_candidate_head(db):
