@@ -597,7 +597,28 @@ class PlaybookEngine:
 
 `DispatchResult` carries `dispatch_id`, `rules_selected: tuple[str, ...]`, `run_ids: tuple[str, ...]`, and `pending: tuple[PendingEventRef, ...]`. Package 6's shadow-parity harness reads `rules_selected` and the recorded `commands`; Package 5's pending-event `dispatch` action calls `dispatch_event`. Both are named in their plans, so the field names are locked here.
 
-`ResumeCause` is a closed union: `EventArrived(event_id, payload)`, `TimerFired(wait_id)`, `ChildTaskCompleted(task_id, status)`, `HumanDecision(decision, payload)`, `OperatorResolution(kind, payload)`.
+`ResumeCause` is a closed union: `EventArrived(event_id, payload)`, `TimerFired(wait_id)`, `ChildTaskCompleted(task_id, status)`, `HumanDecision(decision, payload)`, `OperatorResolution(kind, payload)`, `InterruptedByRestart(process_started_at)`.
+
+**Restart recovery (2026-10-04).** At the end of daemon initialization and on each
+playbook cycle pass, a bounded keyset scan finds live-mode `running` and
+`cancelling` runs whose `updated_at` precedes this process's start. It schedules
+at most ten background resumes; slow executors never hold startup or the cycle.
+The cursor advances past failures so an unreadable artifact cannot starve later
+runs. Runs already driven by this process are excluded, and the shared engine
+guards re-entry before loading state. A resume rechecks the lifecycle and process
+boundary. An ordinary resume that claims a newly paused wait before its driver
+finishes waits for that driver to exit, preserving the cause without overlapping
+execution. Recovery persists the restart cause in snapshot context with its next
+receipt, including an interruption receipt that pauses for operator resolution.
+Safe commands reuse their attempt key; unsafe commands, LLM calls and ambiguous
+child creation retain §4.8's operator stop. Wait and loop boundaries use their
+existing durable identities and frames. Cancellation settles without executing
+the interrupted step. Paused waits and operator decisions stay with their
+existing producers; terminal runs are never retried. The read-only doctor check
+`playbooks.orphaned_runs` names candidates with no current driver, using the
+daemon's process boundary and engine registry rather than inferring ownership
+from elapsed time. Shutdown cancels and joins recovery tasks, leaving their
+durable boundaries for the next process.
 
 `cancel_children=None` means "use each `AgentTaskStep.cancel_child`", which defaults to `False`. An explicit `True` still cannot cancel a child the run does not own (§7.4).
 

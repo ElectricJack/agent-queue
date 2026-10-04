@@ -691,6 +691,21 @@ def bind_step_output(
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class InterruptedRun:
+    """A small projection for restart recovery and its diagnostic read."""
+
+    run_id: str
+    playbook_id: str
+    lifecycle: RunLifecycle
+    current_step_id: str | None
+    updated_at: float
+
+    @property
+    def cursor(self) -> tuple[float, str]:
+        return self.updated_at, self.run_id
+
+
 class RunRepository(Protocol):
     """Declared here so Package 4 never imports the database package."""
 
@@ -725,3 +740,12 @@ class RunRepository(Protocol):
     async def list_receipts(
         self, run_id: str, *, limit: int = 500, offset: int = 0
     ) -> list[StepReceipt]: ...
+
+    async def list_interrupted_runs(
+        self,
+        *,
+        updated_before: float,
+        after: tuple[float, str] | None = None,
+        exclude_ids: Collection[str] = (),
+        limit: int = 100,
+    ) -> list[InterruptedRun]: ...

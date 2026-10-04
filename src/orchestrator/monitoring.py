@@ -728,6 +728,17 @@ class MonitoringMixin:
                 except Exception:
                     pass
 
+    async def _recover_interrupted_playbook_runs(self) -> None:
+        """Schedule a bounded page of runs interrupted by a prior process."""
+        if not self.config.playbooks.enabled or self.playbook_manager is None:
+            return
+        try:
+            scheduled = await self.playbook_manager.recover_interrupted_runs()
+            if scheduled:
+                logger.info("Scheduled V2 restart recovery for runs: %s", scheduled)
+        except Exception:
+            logger.exception("V2 restart recovery scan failed; next cycle will retry")
+
     async def _reconcile_playbook_child_tasks(self) -> None:
         """Resume playbook runs suspended on a child task that has settled.
 

@@ -228,6 +228,14 @@ When collecting an incident, filter or preserve correlation fields where present
 
 ## What doctor fixes — and what it will not do
 
+`aq doctor --check playbooks.orphaned_runs` reports V2 runs left executing by a
+previous daemon with no driver in the current process. Startup and each playbook
+cycle recover bounded pages automatically. The check names the run, playbook,
+step and lifecycle; it is read-only. Recovery replays safe commands with their
+existing attempt keys, preserves waits and loop frames, and pauses ambiguous
+external effects for an operator decision. A paused run is outside this check:
+its wait or decision owns resumption. Disabling playbooks also pauses recovery.
+
 `aq doctor --fix` selects only checks that declared a fix and returned `warn` or `error`, then reruns them. It is not a general "repair the system" button. Prefer `--check ID --fix` during an incident so the intended mutation is obvious.
 
 Automated examples include releasing invalid stale pool claims, returning timed-out prepare claims to the frontier with backoff, detaching stale slot checkouts, re-arming parked branch discards, refreshing missing/stale shipped harness copies while leaving edited copies alone, and resubmitting a daemon-marked stuck composer. Some checks are report-only by design: a stranded integration fence, a busy orphan agent, an operator-edited configuration/profile problem, or a deletion that would require choosing a branch/ref owner needs human evidence and authority.
