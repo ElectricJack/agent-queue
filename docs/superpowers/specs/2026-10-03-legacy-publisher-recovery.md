@@ -32,6 +32,9 @@ recorded in the same terms below.
   they postdate the task's last reopen fence. It never copies a delivery answer
   or fabricates Git evidence. Archived rows retain their former exact locator;
   ambiguous historical decisions still require explicit operator resolution.
+  The one-way SQLite importer omits this PostgreSQL-era column when absent
+  from a legacy source, letting the target default create each identity.
+  Existing source identities are preserved; other required columns still fail closed.
 * A COMPLETED task whose latest completion is its current generation but did not
   pass is attested on a `--reason` too, fenced to that generation. Such a
   generation recorded what it read, not an artifact of its own, so
