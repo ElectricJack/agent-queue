@@ -34,6 +34,7 @@ from src.integration.subjects import (
     WriterLease,
     WriterStatus,
     budget_values,
+    schedule_values,
     subject_key,
     writer_values,
 )
@@ -591,6 +592,10 @@ class RootSubjectRuntime:
             ).first()
             if not batch and not owner:
                 return  # shadow starts after legacy seals, avoiding a stale admitting mirror
+            if project["outstanding_request_id"] is not None:
+                await self._supersede_admitting(
+                    conn, project["id"], repository_id, project["outstanding_request_id"], now
+                )
             repository = await self.db.get_repo(repository_id)
             phase = SubjectPhase.ADMITTING
             head, base, generation = None, None, 0
@@ -636,7 +641,93 @@ class RootSubjectRuntime:
                 created_at=now,
                 updated_at=now,
             )
+            if phase is SubjectPhase.ADMITTING:
+                blocker = (
+                    await conn.execute(
+                        select(t.integration_subjects.c.id).where(
+                            t.integration_subjects.c.project_id == project["id"],
+                            t.integration_subjects.c.repository_id == repository_id,
+                            t.integration_subjects.c.kind == "root_batch",
+                            t.integration_subjects.c.phase == "admitting",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if blocker is not None:
+                    logger.warning(
+                        "integration: root subject for %s waits; admitting subject %s "
+                        "still holds %s",
+                        request_id,
+                        blocker,
+                        repository_id,
+                    )
+                    return
             await self.db.ensure_integration_subject_on(conn, subject.to_row())
+
+    async def _supersede_admitting(self, conn, project_id, repository_id, request_id, now):
+        """Close admitting roots whose sweep request is no longer outstanding.
+
+        Sealing refuses a request that is not outstanding, so such a subject
+        can never form a batch, yet it holds the repository's one admitting
+        slot (``uq_integration_subjects_admitting_root``) against the request
+        that replaced it: a released stale request, or the next one after a
+        promotion. A subject already bound to a batch is never touched.
+        """
+        current = subject_key(SubjectKind.ROOT_BATCH, repository_id, request_id)
+        rows = (
+            (
+                await conn.execute(
+                    select(t.integration_subjects)
+                    .where(
+                        t.integration_subjects.c.project_id == project_id,
+                        t.integration_subjects.c.repository_id == repository_id,
+                        t.integration_subjects.c.kind == "root_batch",
+                        t.integration_subjects.c.engine == "reconciler",
+                        t.integration_subjects.c.phase == "admitting",
+                        t.integration_subjects.c.batch_id.is_(None),
+                        t.integration_subjects.c.subject_key != current,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            subject = Subject.from_row(row)
+            stale = subject.subject_key.removeprefix(f"root_batch:{repository_id}:")
+            reason = f"superseded: request {stale} is no longer outstanding ({request_id} is)"
+            schedule = SubjectSchedule.close(
+                now=now, reason=reason, max_wait_seconds=subject.schedule.max_wait_seconds
+            )
+            closed = await self.db.update_integration_subject_on(
+                conn,
+                subject_id=subject.id,
+                expected_version=subject.version,
+                values={"phase": SubjectPhase.DONE.value, **schedule_values(schedule)},
+                now=now,
+            )
+            if closed is None:
+                continue  # a visit moved it first; the next seed re-reads it
+            await self.db.append_integration_subject_journal_on(
+                conn,
+                {
+                    "subject_id": subject.id,
+                    "entry_kind": "action",
+                    "idempotency_key": f"seed-supersede:{subject.version}",
+                    "visit_id": f"seed:{subject.version}",
+                    "mode": JournalMode.ACTIVE.value,
+                    "policy_artifact_sha256": subject.policy.artifact_sha256,
+                    "subject_version": subject.version,
+                    "phase": subject.phase.value,
+                    "head_sha": subject.head_sha,
+                    "generation": subject.generation,
+                    "primitive": Primitive.RECORD_DECISION.value,
+                    "outcome": "recorded",
+                    "payload": {"reason": reason, "superseded_by": current},
+                    "recorded_at": now,
+                },
+            )
+            logger.warning("integration: %s (subject %s)", reason, subject.id)
 
 
 def root_runtime_for(orchestrator):
@@ -689,17 +780,16 @@ class RootGitObservationReader(GitObservationReader):
         return await super().remote_head(repository, ref)
 
     async def remote_heads(self, repository, refs):
+        heads = {}
         store = self.store_for(repository["id"])
-        heads = None
         if store.exists():
             reader = GitObservationReader(self.git, checkout=lambda _: str(store))
-            heads = await reader.remote_heads(repository, refs)
-            if all(head.state != "unknown" for head in heads):
-                return heads
-        fallback = await super().remote_heads(repository, refs)
-        if heads is None:
-            return fallback
-        return [h if h.state != "unknown" else f for h, f in zip(heads, fallback)]
+            retained = await reader.remote_heads(repository, refs)
+            heads = {ref: head for ref, head in retained.items() if head.state != "unknown"}
+        rest = [ref for ref in refs if ref not in heads]
+        if rest:
+            heads.update(await super().remote_heads(repository, rest))
+        return heads
 
     async def is_ancestor(self, repository, ancestor, descendant):
         result = await self.git.ais_ancestor(

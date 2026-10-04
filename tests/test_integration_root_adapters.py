@@ -1022,6 +1022,123 @@ async def test_runtime_seeds_the_next_request_with_durable_repository_ownership(
     assert new.subject_key == "root_batch:repo:integration-sweep:p:2" and new.policy == PIN
 
 
+async def _outstanding(db, request_id):
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.project_integration_schedules)
+            .where(t.project_integration_schedules.c.project_id == "p")
+            .values(
+                outstanding_request_id=request_id,
+                outstanding_trigger=request_id and "periodic",
+                outstanding_requested_at=request_id and 11,
+                updated_at=11,
+            )
+        )
+
+
+async def _schedule(db, request_id):
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.projects)
+            .where(t.projects.c.id == "p")
+            .values(
+                hierarchical_integration_policy={
+                    "root": {"route": {"artifact": PIN.model_dump(mode="json")}}
+                }
+            )
+        )
+        await conn.execute(
+            insert(t.project_integration_schedules).values(
+                project_id="p",
+                enabled=True,
+                interval_seconds=60,
+                next_due_at=20,
+                outstanding_request_id=request_id,
+                outstanding_trigger="periodic",
+                outstanding_requested_at=10,
+                updated_at=10,
+            )
+        )
+
+
+async def _root_subjects(db, *, besides):
+    async with db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(t.integration_subjects).where(t.integration_subjects.c.id != besides)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return {row["subject_key"].rsplit(":", 1)[-1]: row for row in rows}
+
+
+@pytest.mark.parametrize("path", ["restart", "replaced"])
+async def test_runtime_supersedes_an_admitting_root_whose_request_is_no_longer_outstanding(
+    root, path
+):
+    db, _, subject = root
+    await activate(db, subject)
+    await _schedule(db, "integration-sweep:p:2")
+    runtime = RootSubjectRuntime(db, None, SimpleNamespace(policy_for=AsyncMock()), PrimitivePorts())
+    await runtime.seed(20)
+    stale = (await _root_subjects(db, besides=subject.id))["2"]
+    if path == "restart":
+        # The daemon released the stale request; nothing replaces it yet.
+        await _outstanding(db, None)
+        await runtime.seed(21)
+        assert (await _root_subjects(db, besides=subject.id))["2"] == stale
+    await _outstanding(db, "integration-sweep:p:3")
+    await runtime.seed(22)
+    await runtime.seed(23)
+
+    rows = await _root_subjects(db, besides=subject.id)
+    assert set(rows) == {"2", "3"}
+    old, new = rows["2"], rows["3"]
+    assert old["phase"] == "done" and old["next_due_at"] is None
+    assert old["closed_reason"].startswith("superseded: ")
+    assert "integration-sweep:p:3" in old["closed_reason"]
+    assert old["version"] == stale["version"] + 1
+    assert new["phase"] == "admitting" and new["engine"] == "reconciler"
+    async with db._engine.connect() as conn:
+        journal = (
+            (
+                await conn.execute(
+                    select(t.integration_subject_journal).where(
+                        t.integration_subject_journal.c.subject_id == old["id"]
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [(row["primitive"], row["outcome"], row["phase"]) for row in journal] == [
+        ("record_decision", "recorded", "admitting")
+    ]
+    assert journal[0]["payload"]["superseded_by"] == new["subject_key"]
+
+
+async def test_runtime_never_supersedes_a_bound_admitting_root_and_never_raises(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    async with db.immediate() as conn:
+        await db.update_integration_subject_on(
+            conn,
+            subject_id=subject.id,
+            expected_version=subject.version,
+            values={"phase": "admitting"},
+            now=11,
+        )
+    await _schedule(db, "integration-sweep:p:2")
+    runtime = RootSubjectRuntime(db, None, SimpleNamespace(policy_for=AsyncMock()), PrimitivePorts())
+    await runtime.seed(20)
+    row = await db.get_integration_subject(subject.id)
+    assert row["phase"] == "admitting" and row["closed_reason"] is None
+    assert await _root_subjects(db, besides=subject.id) == {}
+
+
 async def test_runtime_recovers_a_lost_resolved_gate_wake(root):
     db, _, subject = root
     subject = await activate(db, subject)
@@ -1393,3 +1510,31 @@ async def test_only_unsealed_root_defers_member_ancestry_unknown_to_admission(ro
     else:
         assert [m.task_id for m in result.members] == ['new']
         assert result.unknown == ('remote_unknown:refs/heads/main',)
+
+
+async def test_root_remote_heads_batch_the_retained_repository_then_the_base(tmp_path):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.root_runtime import RootGitObservationReader
+
+    store = tmp_path / "repo.git"
+    store.mkdir()
+
+    async def read(path, branches, *, repository_url):
+        if path == str(store):
+            return {
+                branch: RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
+                if branch == "main"
+                else RemoteRefResult(RemoteRefState.ERROR, error="unreadable")
+                for branch in branches
+            }
+        return {branch: RemoteRefResult(RemoteRefState.ABSENT) for branch in branches}
+
+    git = SimpleNamespace(als_remote_refs=AsyncMock(side_effect=read))
+    reader = RootGitObservationReader(git, lambda _: store)
+    repository = {"id": "repo", "checkout_base_path": "/base", "url": "repo-url"}
+    heads = await reader.remote_heads(repository, ["refs/heads/aq/x", "refs/heads/main"])
+    assert heads["refs/heads/main"].sha == HEAD and heads["refs/heads/aq/x"].state == "absent"
+    assert [call.args for call in git.als_remote_refs.await_args_list] == [
+        (str(store), ["aq/x", "main"]),
+        ("/base", ["aq/x"]),
+    ]
