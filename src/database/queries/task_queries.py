@@ -1002,9 +1002,9 @@ class TaskQueryMixin:
                 else TaskStatus.READY
             )
         # Removing an operator hold does not authorize aggregate verification.
-        # A managed container stays with its collector; IN_PROGRESS here used
-        # to bypass the READY-only wake guard and orphan recovery subsequently
-        # blocked it against the previous worker's stopped session.
+        # Every checkpoint state stays under integration ownership. Restoring
+        # a worker status would require a guarded verifier wake and roll back
+        # the hold removal, stranding integration-ready and verifying parents.
         managed_episode = await conn.scalar(
             select(task_integration_checkpoints.c.task_id)
             .join(tasks, tasks.c.id == task_integration_checkpoints.c.task_id)
@@ -1012,7 +1012,6 @@ class TaskQueryMixin:
             .where(
                 tasks.c.id == task_id,
                 task_integration_checkpoints.c.episode_id.is_not(None),
-                task_integration_checkpoints.c.state == "awaiting_children",
                 projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
             )
         )

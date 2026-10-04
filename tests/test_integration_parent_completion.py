@@ -5292,6 +5292,38 @@ async def test_collector_to_parent_verifier_wake_advances_live_head(db):
     assert (await db.get_task("parent")).status is TaskStatus.READY
 
 
+@pytest.mark.parametrize("checkpoint_state", ["integration_ready", "verifying"])
+async def test_manual_resume_allows_guarded_parent_verifier_wake(db, checkpoint_state):
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(state=checkpoint_state))
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    ownership = BranchOwnership(db)
+    owner = await ownership.get_owner(target)
+    worker = Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"])
+    collector = await ownership.transfer(worker, checkpointed["operation_id"], "collector")
+    verifier = await ownership.transfer(collector, "parent", "verifier")
+    snapshot = await db.pause_task("parent")
+    await db.finish_task_pause("parent", snapshot)
+
+    with pytest.raises(HierarchyError, match="operator manual pause is active"):
+        await hierarchy.wake_verifier("parent", verifier)
+    assert (await db.resume_task("parent")).status is TaskStatus.PAUSED
+    with pytest.raises(HierarchyError, match="guarded verifier wake"):
+        await db.transition_task("parent", TaskStatus.READY, force=True)
+
+    result = await hierarchy.wake_verifier("parent", verifier)
+
+    assert result["outcome"] == "woken"
+    assert (await db.get_task("parent")).status is TaskStatus.READY
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["checkpoint_sha"] == "d" * 40
+    assert checkpoint["state"] == "verifying"
+
+
 async def test_parent_prime_summary_uses_receipt_readiness_projection(db):
     from src.prime.sections import build_integration_delivery_summary
 

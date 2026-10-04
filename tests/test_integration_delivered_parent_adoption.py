@@ -164,6 +164,27 @@ async def adopt(incident, **overrides):
     return await service.adopt(**(args | overrides))
 
 
+@pytest.mark.parametrize("checkpoint_state", ["integration_ready", "verifying"])
+async def test_manual_resume_allows_delivered_child_adoption(incident, checkpoint_state):
+    db, *_ = incident[0]
+    async with db.immediate() as conn:
+        await conn.execute(update(t.task_integration_checkpoints).where(
+            t.task_integration_checkpoints.c.task_id == PARENT,
+        ).values(state=checkpoint_state))
+    snapshot = await db.pause_task(PARENT)
+    await db.finish_task_pause(PARENT, snapshot)
+    with pytest.raises(ValueError, match="manual_pause must be resolved"):
+        await adopt(incident, dry_run=True)
+
+    resumed = await db.resume_task(PARENT)
+
+    assert resumed.status is TaskStatus.PAUSED
+    assert await db.get_task_meta(PARENT, "manual_pause") is None
+    result = await adopt(incident)
+    assert result["outcome"] == "adopted"
+    assert (await db.get_task(PARENT)).status is TaskStatus.COMPLETED
+
+
 async def test_settling_delivered_children_retires_parent_and_child_prs(incident, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

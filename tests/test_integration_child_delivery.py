@@ -627,21 +627,32 @@ async def test_doctor_ignores_fresh_and_delivered_children(case):
     assert delivered.severity.value == "ok"
 
 
-async def test_removing_manual_hold_preserves_collecting_parent(case):
+@pytest.mark.parametrize(
+    "checkpoint_state", ["working", "awaiting_children", "integration_ready", "verifying"]
+)
+async def test_removing_manual_hold_preserves_collecting_parent(case, checkpoint_state):
     """Resume removes the hold; it cannot start an unverified parent worker."""
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "epic",
+        ).values(state=checkpoint_state))
     before = await case.db.get_integration_checkpoint("epic")
     snapshot = await case.db.pause_task("epic")
     await case.db.finish_task_pause("epic", snapshot)
+    await case.db.set_task_meta("epic", "needs_attention", "operator_review")
 
     resumed = await case.db.resume_task("epic")
 
     assert resumed.status == TaskStatus.PAUSED
     assert resumed.resume_after is None
+    assert resumed.assigned_agent_id is None
     assert await case.db.get_task_meta("epic", "manual_pause") is None
+    assert await case.db.get_task_meta("epic", "needs_attention") is None
     assert await case.db.get_integration_checkpoint("epic") == before
     assert await case.db.recover_orphaned_pause("epic") is None
-    await _collector(case).tick(10.0)
-    assert len(await _delivery_ready(case.db)) == 1
+    if checkpoint_state == "awaiting_children":
+        await _collector(case).tick(10.0)
+        assert len(await _delivery_ready(case.db)) == 1
 
 
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
