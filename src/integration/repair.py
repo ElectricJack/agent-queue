@@ -411,6 +411,17 @@ class RepairService:
                 and operation["target_kind"] == "parent"
                 and operation["state"] in {"active", "escalated"}
             )
+            # A stage that recorded its conflict's resolution ends ``passed``
+            # while the operation stays live to verify that head. It has no
+            # writer either, so a later child's conflict into the same parent
+            # gets a fresh stage too; a replay of its own start stays idempotent.
+            settled = bool(
+                active_stage is not None
+                and active_stage["state"] == "passed"
+                and (active_stage["dossier"] or {}).get("resolution_verification")
+                and operation["target_kind"] == "parent"
+                and operation["state"] in {"active", "escalated"}
+            )
             # The shipped parent policy passes its operation key on a merge
             # conflict. Resolve that alias to the exact durable intent, never
             # treat the operation ID itself as failure evidence. Older pinned
@@ -448,6 +459,16 @@ class RepairService:
                     return self._start_value(active_stage, outcome="already_started")
                 if operation["target_kind"] != "parent":
                     return {"outcome": "invariant_error", "operation_id": operation_id}
+                if settled:
+                    return await self._start_fresh_parent_stage_on(
+                        conn,
+                        dict(operation),
+                        dict(active_stage),
+                        starting_sha=starting_sha,
+                        trigger_id=trigger_id,
+                        project_id=project_id,
+                        now=activated_at,
+                    )
                 continuation_result = await self._continue_parent_stage_on(
                     conn,
                     operation=dict(operation),
@@ -520,14 +541,18 @@ class RepairService:
         self,
         conn,
         operation: dict[str, Any],
-        cancelled: dict[str, Any],
+        previous: dict[str, Any],
         *,
         starting_sha: str,
         trigger_id: str,
         project_id: str,
         now: float,
     ) -> dict[str, Any]:
-        """Open a writerless stage for a reopened collection's next conflict."""
+        """Open a writerless stage for the next conflict after *previous* ended.
+
+        *previous* is a reopened collection's cancelled stage or a stage that
+        settled ``passed`` on its recorded resolution.
+        """
         stale = {"outcome": "stale", "operation_id": operation["id"]}
         conflict = (
             await conn.execute(
@@ -573,10 +598,10 @@ class RepairService:
             now=now,
             extra={
                 "previous_stage": {
-                    "ordinal": int(cancelled["ordinal"]),
-                    "state": cancelled["state"],
-                    "trigger_id": cancelled["trigger_id"],
-                    "starting_sha": cancelled["starting_sha"],
+                    "ordinal": int(previous["ordinal"]),
+                    "state": previous["state"],
+                    "trigger_id": previous["trigger_id"],
+                    "starting_sha": previous["starting_sha"],
                 },
             },
         )
@@ -586,7 +611,7 @@ class RepairService:
             .where(
                 integration_repair_operations.c.id == operation["id"],
                 integration_repair_operations.c.state == operation["state"],
-                integration_repair_operations.c.active_stage == cancelled["ordinal"],
+                integration_repair_operations.c.active_stage == previous["ordinal"],
             )
             .values(
                 active_stage=ordinal,
