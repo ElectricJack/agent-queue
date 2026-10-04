@@ -178,6 +178,22 @@ async def test_gateway_atomic_rows_stable_brief_outbox_and_event(env):
             "priority": 20,
             "due_at": None,
         },
+        {
+            # Nothing is live to answer, and the input would otherwise sit on
+            # conversation-queued with no word about it (§2.4).
+            "id": "out-3",
+            "owner_id": result["conversation_id"],
+            "kind": "notice",
+            "dedup_key": f"conv-notice:supervisor-missing:{result['conversation_id']}",
+            "payload": {
+                "kind": "supervisor_missing",
+                "channel_id": CHANNEL,
+                "author_id": AUTHOR,
+                "thread_id": None,
+            },
+            "priority": 20,
+            "due_at": None,
+        },
     ]
     handler.orchestrator.bus.emit.assert_any_await(
         "conversation.input_received.v1",
@@ -366,9 +382,17 @@ async def test_replay_spends_no_quota_and_limit_survives_new_handler(env):
     for index in (10, 11):
         result = await post(fresh, args(index))
         assert result["error_code"] == "rate_limited" and result["scope"] == "author"
-    notices = queued(outbox, "notice")
-    assert len(notices) == 1
-    assert notices[0]["dedup_key"] == f"conv-notice:ratelimit:discord:author:{AUTHOR}:9600"
+    notices = [row for row in queued(outbox, "notice")]
+    # The one rate-limit refusal, plus one "no supervisor is running" line per
+    # conversation: no live supervisor must never be silent (§2.4).
+    assert sorted(row["payload"]["kind"] for row in notices) == ["rate_limited"] + [
+        "supervisor_missing"
+    ] * 10
+    assert {
+        row["dedup_key"]
+        for row in notices
+        if row["payload"]["kind"] == "rate_limited"
+    } == {f"conv-notice:ratelimit:discord:author:{AUTHOR}:9600"}
     fresh._clock = lambda: NOW + 601
     assert (await post(fresh, args(12)))["success"] is True
 
@@ -573,8 +597,8 @@ async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
     # The first durable text wins even when a retry carries a changed body.
     replay = await reply(handler, reply_args(first, text="changed"), principal)
     assert replay == {**result, "created": False}
-    # The replay is idempotent: no fourth delivery row.
-    assert len(queued(handler.orchestrator.conversation_outbox)) == 3
+    # The replay is idempotent: no fifth delivery row.
+    assert len(queued(handler.orchestrator.conversation_outbox)) == 4
     handler.orchestrator.bus.emit.assert_any_await(
         "conversation.reply_queued.v1",
         {

@@ -44,6 +44,7 @@ from tests.test_supervisor_inbox_commands import (
     CHANNEL,
     GUILD,
     NOW,
+    args,
     post,
     reply,
     reply_args,
@@ -181,17 +182,37 @@ async def test_recipient_project_then_global_then_queued(env, project_live, glob
     assert message.project_id == (None if expected == "supervisor-global" else "agent-queue")
 
 
-async def test_multiple_projects_require_explicit_discord_project_id(env):
+async def test_a_shared_channel_across_projects_routes_to_the_global_supervisor(env):
+    """Acceptance: a message in a shared channel reaches a supervisor.
+
+    Several projects and no ``discord.project_id`` used to resolve to
+    ``(None, None)`` before the global fallback was ever consulted, so every
+    turn sat on ``conversation-queued`` with nobody to drain it.  The global
+    supervisor is the launch that speaks for the installation.
+    """
     handler, db = env
     for project_id in ("agent-queue", "other"):
         await db.create_project(Project(id=project_id, name=project_id))
         await supervisor(db, project_id)
-    await supervisor(db)
-    assert await db.resolve_conversation_supervisor() == (None, None)
-    handler.config.discord.project_id = "agent-queue"
+    global_row, _global_principal = await supervisor(db)
+    assert await db.resolve_conversation_supervisor() == ("supervisor-global", None)
     accepted = await post(handler)
+    message = await db.get_message(accepted["supervisor_message_id"])
+    assert (message.to_id, message.project_id) == ("supervisor-global", None)
+    # No live supervisor at all: the input stays queued, and says so out loud.
+    await db.update_session(global_row.id, state="stopped")
+    queued = await post(handler, args(1))
+    assert (await db.get_message(queued["supervisor_message_id"])).to_id == "conversation-queued"
+    assert [
+        row["payload"]["kind"]
+        for row in handler.orchestrator.conversation_outbox.rows
+        if row["dedup_key"] == f"conv-notice:supervisor-missing:{queued['conversation_id']}"
+    ] == ["supervisor_missing"]
+    # An explicit project id still wins when the operator sets one.
+    handler.config.discord.project_id = "agent-queue"
+    explicit = await post(handler, args(2))
     assert (
-        await db.get_message(accepted["supervisor_message_id"])
+        await db.get_message(explicit["supervisor_message_id"])
     ).to_id == "supervisor-agent-queue"
 
 
@@ -366,6 +387,132 @@ async def test_offline_status_line_is_one_post_edited_in_place_then_retired(env)
     assert not any("Supervisor is offline" in m.content for m in transport.messages.values())
 
 
+def channel_gateway_message(index, text, *, mentions=()):
+    """A top-level message in the configured channel, exactly as reported."""
+    return SimpleNamespace(
+        id=800000000000000000 + index,
+        guild=SimpleNamespace(id=int(GUILD)),
+        channel=SimpleNamespace(id=int(CHANNEL), parent_id=None),
+        author=SimpleNamespace(id=int(AUTHOR), bot=False),
+        content=text,
+        mentions=[SimpleNamespace(id=int(user)) for user in mentions],
+        webhook_id=None,
+        created_at=datetime.fromtimestamp(NOW, UTC),
+    )
+
+
+async def test_a_plain_message_in_the_channel_is_answered_there_and_opens_no_thread(env):
+    """Acceptance: the main chat works, without threads.
+
+    One plain message in the channel, answered in the channel.  The
+    acknowledgement and the answer are ordinary posts that reply to the human's
+    message for context, and nothing calls the thread creator.
+    """
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    await supervisor(db, "agent-queue")
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+    root = "800000000000000000"
+
+    assert await router.route(
+        channel_gateway_message(0, "why is the release blocked?"), bot_user_id=None
+    ) == "posted:created"
+    await service.pump()
+    conversation = await db.find_channel_conversation(transport="discord", channel_id=CHANNEL)
+    assert (conversation["kind"], conversation["external_thread_id"]) == ("channel", None)
+    # The acknowledgement is a channel post replying to the human's message.
+    acks = [m for m in transport.messages.values() if "will answer here" in m.content]
+    assert len(acks) == 1
+    assert (acks[0].where, acks[0].thread_id, acks[0].reference_message_id) == (
+        CHANNEL,
+        None,
+        root,
+    )
+
+    # The supervisor's answer comes back to the same channel, not a thread.
+    inputs = await db.list_conversation_inputs(conversation["id"])
+    handler._clock = lambda: NOW + 30
+    assert (
+        await reply(
+            handler, reply_args({"conversation_id": conversation["id"], "input_id": inputs[0]["id"]})
+        )
+    )["success"]
+    await service.pump()
+    answers = [m for m in transport.messages.values() if "Answer from the supervisor" in m.content]
+    assert len(answers) == 1
+    assert (answers[0].where, answers[0].thread_id, answers[0].reference_message_id) == (
+        CHANNEL,
+        None,
+        root,
+    )
+    assert transport.threads == {}, "no thread is ever created for a channel conversation"
+    assert "ensure_thread" not in transport.calls
+    assert (await db.get_conversation(conversation["id"]))["state"] == "open"
+
+
+async def test_a_channel_message_with_no_supervisor_running_says_so_in_the_channel(env):
+    """Nothing may sit on conversation-queued without saying so in the channel."""
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+
+    assert await router.route(
+        channel_gateway_message(0, "why is the release blocked?"), bot_user_id=None
+    ) == "posted:created"
+    await service.pump()
+    conversation = await db.find_channel_conversation(transport="discord", channel_id=CHANNEL)
+    assert (
+        await db.get_message(
+            (await db.list_conversation_inputs(conversation["id"]))[0]["supervisor_message_id"]
+        )
+    ).to_id == "conversation-queued"
+    posted = [m for m in transport.messages.values() if "No supervisor is running" in m.content]
+    assert len(posted) == 1
+    assert (posted[0].where, posted[0].thread_id) == (CHANNEL, None)
+    assert transport.threads == {}
+
+    # A supervisor appearing drains the queue by itself; no reply required.
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    await supervisor(db, "agent-queue")
+    assert await db.route_queued_conversation_inputs() == 1
+
+
+async def test_a_follow_up_in_the_channel_continues_the_same_conversation(env):
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    await supervisor(db, "agent-queue")
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+
+    assert await router.route(channel_gateway_message(0, "and the replica?"), bot_user_id=None) == (
+        "posted:created"
+    )
+    conversation = await db.find_channel_conversation(transport="discord", channel_id=CHANNEL)
+    handler._clock = lambda: NOW + 10
+    assert await router.route(
+        channel_gateway_message(1, "still blocked?"), bot_user_id=None
+    ) == "posted:created"
+
+    # One conversation, two turns, and the second answers to the first message.
+    assert (await db.get_conversation(conversation["id"]))["updated_at"] == NOW + 10
+    assert len(await db.list_conversation_inputs(conversation["id"])) == 2
+    await service.pump()
+    assert transport.threads == {}
+    # Every post this conversation makes replies to its first message.
+    assert {
+        message.reference_message_id
+        for message in transport.messages.values()
+        if message.id != "900000000000000000"
+    } == {"800000000000000000"}
+
+
 async def test_a_direct_message_conversation_answers_in_its_own_channel(env):
     from src.conversations.intake import DM_GUILD
 
@@ -388,7 +535,8 @@ async def test_a_direct_message_conversation_answers_in_its_own_channel(env):
     assert (conversation["guild_id"], conversation["kind"]) == (DM_GUILD, "channel")
     await service.pump()
     # No thread is opened in a direct message: the ack posts in the DM itself.
-    assert transport.calls == ["post_root"]
+    # The second post is the §2.4 notice that no supervisor is running.
+    assert transport.calls == ["post_root", "post_root"]
     assert {message.where for message in transport.messages.values()} == {CHANNEL, DM_CHANNEL}
     assert (await db.get_conversation(conversation["id"]))["state"] == "open"
 
@@ -437,7 +585,7 @@ async def test_shared_dispatch_cancels_reply_after_allowlist_revocation(env):
         row for row in rows if row["dedup_key"] == queued_reply["delivery_dedup_key"]
     ]
     assert reply_delivery["state"] == "cancelled"
-    assert len(transport.messages) == 2  # inbound root + acknowledgement
+    assert len(transport.messages) == 3  # inbound root + acknowledgement + no-supervisor notice
 
 
 async def test_ambiguous_reply_is_not_reposted(env):
@@ -458,7 +606,7 @@ async def test_ambiguous_reply_is_not_reposted(env):
         row for row in rows if row["dedup_key"] == queued_reply["delivery_dedup_key"]
     ]
     assert reply_delivery["state"] == "unknown"
-    assert len(transport.messages) == 2
+    assert len(transport.messages) == 3
 
 
 async def test_thread_permission_failure_keeps_input_and_sends_one_bounded_notice(env):
