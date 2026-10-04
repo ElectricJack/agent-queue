@@ -628,9 +628,97 @@ class TestLegacyGitProvenanceMigration:
         await self._completed(db, "failed-close")
         await db.save_task_completion(TaskCompletion(
             id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=4))
-        failed = await migration.run("p", task_id="failed-close", source=source)
-        assert failed["ambiguous"] == [{"task_id": "failed-close", "generation": "failed-g",
-                                        "reason": "current completion is missing or did not pass"}]
+        # A close that did not pass is attested on its own reasoned path.
+        with pytest.raises(ValueError, match="did not pass requires a reason"):
+            await migration.run("p", task_id="failed-close", source=source)
+
+    @pytest.mark.parametrize("no_artifact", [False, True])
+    async def test_operator_attests_a_completion_that_did_not_pass(
+        self, provenance_repo, db, no_artifact,
+    ):
+        """grand-rapids-78: solid-rapids-21 was closed COMPLETED over a failed close."""
+        import json
+
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import TaskCompletion
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "failed-close", branch=False)
+        # The audited base it read, not an artifact of its own, and no pass.
+        await db.save_task_completion(TaskCompletion(
+            id="failed-g", task_id="failed-close", outcome="fail", commits=[base], completed_at=2))
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        before = (await observer.observe(["failed-close"])).get("failed-close")
+        assert (before.state, before.reason) == (
+            DeliveryState.UNKNOWN, "missing_git_provenance")
+        migration = ProvenanceMigration(db, git)
+        with pytest.raises(ValueError, match="requires --task-id and a reason"):
+            await migration.run("p", task_id="failed-close", no_artifact=True, apply=True)
+        if not no_artifact:
+            with pytest.raises(ValueError, match="did not pass requires a reason"):
+                await migration.run("p", task_id="failed-close", source=base, apply=True)
+        applied = await migration.run(
+            "p", task_id="failed-close", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="research close, no code delivered",
+            apply=True, operator_id="supervisor-p",
+        )
+        assert [(i["generation"], i["action"], i["authority"], i["artifact"],
+                 i["completion_outcome"]) for i in applied["inventory"]] == [
+            ("failed-g", "written", "operator", not no_artifact, "fail")]
+        proof = (await observer.observe(["failed-close"])).get("failed-close")
+        assert proof.state == (DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED)
+        assert proof.source_oid == base
+        # No pass is fabricated: the failed close is retained verbatim.
+        assert (await db.get_task_completion("failed-close")).outcome == "fail"
+        assert (await db.get_task("failed-close")).status == TaskStatus.COMPLETED
+        again = await migration.run(
+            "p", task_id="failed-close", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="research close, no code delivered", apply=True,
+        )
+        assert again["inventory"][0]["action"] == "present"
+        audit = await db.get_recent_events(event_type="development.provenance_attested")
+        assert json.loads(audit[-1]["payload"])["results"][0]["completion_outcome"] == "fail"
+
+    @pytest.mark.parametrize("refusal", ["uncontained", "manifest"])
+    async def test_a_failed_completion_attestation_refuses_what_it_cannot_prove(
+        self, provenance_repo, db, refusal,
+    ):
+        from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import TaskCompletion
+
+        git, store, _path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "failed-close", branch=False)
+        await db.save_task_completion(TaskCompletion(
+            id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=2))
+        migration = ProvenanceMigration(db, git)
+        if refusal == "uncontained":
+            # Work the target does not hold is never cleared by an attestation.
+            elsewhere = await _provenance_commit(provenance_repo, "elsewhere")
+            await git.apush_branch(store.checkout, "aq/task")
+            refs = await store.run("ls-remote", "origin")
+            result = await migration.run(
+                "p", task_id="failed-close", source=elsewhere,
+                reason="delivered elsewhere", apply=True)
+            assert result["inventory"] == []
+            assert "not contained in the target branch" in result["ambiguous"][0]["reason"]
+        else:
+            await self._retain(db, [self._delivery("proven", [], created_at=5, evidence={
+                "completion_sources": [{"task_id": "failed-close", "completion_id": "failed-g",
+                                        "source_sha": base}]})])
+            refs = await store.run("ls-remote", "origin")
+            result = await migration.run(
+                "p", task_id="failed-close", no_artifact=True,
+                reason="claimed artifact-free", apply=True)
+            assert result["inventory"] == []
+            assert "conflicts with recorded source" in result["ambiguous"][0]["reason"]
+        assert await store.run("ls-remote", "origin") == refs
+        completion = await db.get_task_completion("failed-close")
+        assert completion is None or completion.outcome == "fail"
+        assert not (await migration.run("p", task_id="failed-close"))["inventory"]
 
     async def test_cli_waits_longer_than_a_page_may_run(self):
         from src.cli.client import _COMMAND_TIMEOUTS
