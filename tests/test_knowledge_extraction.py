@@ -593,7 +593,7 @@ async def test_wake_is_only_a_signal_and_loop_stops_without_command_or_db_when_d
 async def test_failure_circuit_migration_replay_and_nonempty_rollback_guard(setup):
     db, _, _, store, _, _, _ = setup
     migration = importlib.import_module(
-        "migrations.versions.a00000000064_knowledge_failure_circuit"
+        "migrations.versions.a00000000065_knowledge_failure_circuit"
     )
 
     def run(sync, action):

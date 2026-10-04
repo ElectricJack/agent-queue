@@ -753,6 +753,63 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch
     assert restored == [True]
 
 
+def test_s16_logout_stops_late_and_draining_recovery_sessions_once(monkeypatch):
+    smoke = _load_smoke()
+    stopped = []
+    snapshots = iter([
+        [
+            {"id": "recovery", "profile_id": smoke.STD_A},
+            {"id": "draining", "profile_id": smoke.STD_B},
+            {"id": "claude", "profile_id": smoke.POOL_PROFILE},
+        ],
+        [
+            {"id": "recovery", "profile_id": smoke.STD_A},
+            {"id": "late-launch", "profile_id": smoke.SOLO_A},
+        ],
+        [],
+    ])
+
+    def pool_sessions(project_id, *, include_draining):
+        assert project_id is None and include_draining is True
+        return next(snapshots)
+
+    def kill(command, args):
+        assert command == "session_kill"
+        stopped.append(args["session_id"])
+        return {"success": True}
+
+    def provider(key):
+        assert key == smoke.PROVA
+        return {"state": "unauthenticated" if "late-launch" in stopped else "available"}
+
+    def wait(predicate, *, what):
+        assert "the second logout" in what
+        assert predicate() is None
+        assert predicate() is None
+        return predicate()
+
+    monkeypatch.setattr(smoke, "pool_sessions", pool_sessions)
+    monkeypatch.setattr(smoke, "api_checked", kill)
+    monkeypatch.setattr(smoke, "provider", provider)
+    monkeypatch.setattr(smoke, "wait_for", wait)
+
+    assert smoke._wait_for_failover_logout() == {"state": "unauthenticated"}
+    assert stopped == ["recovery", "draining", "late-launch"]
+
+
+def test_s16_logout_still_requires_provider_failure(monkeypatch):
+    smoke = _load_smoke()
+    bounded_wait = smoke.wait_for
+    monkeypatch.setattr(smoke, "provider", lambda _key: {"state": "available"})
+    monkeypatch.setattr(smoke, "pool_sessions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        smoke, "wait_for", lambda predicate, **kwargs: bounded_wait(predicate, timeout=0, **kwargs),
+    )
+
+    with pytest.raises(smoke.Failure, match="the second logout"):
+        smoke._wait_for_failover_logout()
+
+
 def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():
     text = E2E_ENV.read_text()
 

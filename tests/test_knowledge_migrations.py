@@ -27,15 +27,15 @@ def run_migration(conn, action):
         # A current baseline includes later additive knowledge tables. Exercise
         # the real downgrade dependency order before dropping the K01 schema.
         receipts = importlib.import_module(
-            "migrations.versions.a00000000065_knowledge_index_receipts"
+            "migrations.versions.a00000000066_knowledge_index_receipts"
         )
         protection = importlib.import_module("migrations.versions.a00000000059_knowledge_protection")
         inventory = importlib.import_module(
             "migrations.versions.a00000000060_knowledge_import_inventory"
         )
-        context = importlib.import_module("migrations.versions.a00000000062_knowledge_context")
-        extraction = importlib.import_module("migrations.versions.a00000000063_knowledge_extraction")
-        circuit = importlib.import_module("migrations.versions.a00000000064_knowledge_failure_circuit")
+        context = importlib.import_module("migrations.versions.a00000000063_knowledge_context")
+        extraction = importlib.import_module("migrations.versions.a00000000064_knowledge_extraction")
+        circuit = importlib.import_module("migrations.versions.a00000000065_knowledge_failure_circuit")
         if action == "downgrade":
             receipts.downgrade()
             circuit.downgrade()
@@ -131,13 +131,13 @@ async def test_restore_validator_migration_pins_helpers_with_empty_search_path(d
 
 
 def run_context_migration(conn, action):
-    context = importlib.import_module("migrations.versions.a00000000062_knowledge_context")
+    context = importlib.import_module("migrations.versions.a00000000063_knowledge_context")
     with Operations.context(MigrationContext.configure(conn)):
         getattr(context, action)()
 
 
 async def test_context_upgrade_is_idempotent_on_baseline_and_creates_missing_tables(db):
-    context = importlib.import_module("migrations.versions.a00000000062_knowledge_context")
+    context = importlib.import_module("migrations.versions.a00000000063_knowledge_context")
     async with db.immediate() as conn:
         await conn.run_sync(lambda sync: run_context_migration(sync, "upgrade"))
         await conn.run_sync(lambda sync: run_context_migration(sync, "downgrade"))
@@ -152,7 +152,7 @@ async def test_context_upgrade_is_idempotent_on_baseline_and_creates_missing_tab
 async def test_retained_context_refuses_downgrade_without_removing_any_table(db):
     from src.database.tables import knowledge_context_bundles
 
-    context = importlib.import_module("migrations.versions.a00000000062_knowledge_context")
+    context = importlib.import_module("migrations.versions.a00000000063_knowledge_context")
     now = datetime.now(UTC)
     async with db.immediate() as conn:
         await conn.execute(insert(knowledge_context_bundles).values(

@@ -448,9 +448,9 @@ async def test_the_receipt_migration_is_idempotent_and_refuses_a_dataful_downgra
     from sqlalchemy import inspect
 
     migration = importlib.import_module(
-        "migrations.versions.a00000000065_knowledge_index_receipts"
+        "migrations.versions.a00000000066_knowledge_index_receipts"
     )
-    assert migration.down_revision == "a00000000064"
+    assert migration.down_revision == "a00000000065"
 
     def run(conn, action):
         with Operations.context(MigrationContext.configure(conn)):

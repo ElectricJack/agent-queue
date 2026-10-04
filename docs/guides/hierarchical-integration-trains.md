@@ -685,6 +685,9 @@ completion. Equivalent replacements also require `--accept-equivalent`.
 The preview lists branch reservations it will release with their fence tokens.
 A writerless `worker` reservation on a proven child's canonical branch is
 released alongside the parent reservation in the same settlement transaction.
+A historical confirmed pool slot is checked for child-ref writers and unpublished
+local commits. Reuse by another branch does not retain the child's reservation;
+the successor's lock and working tree stay intact.
 The recovery refuses pending or unknown child sources, retained
 writers, manual holds, open gates and reconciler engine ownership. It records
 `not_ci_attested` without adding CI or parent-verification evidence.
@@ -753,6 +756,17 @@ bind, unrelated roots stay refused, and a moved head needs a new authorization.
 Missing legacy root checkpoints still
 require the audited `integration materialize-root` proof; branches without task
 provenance remain outside admission.
+
+A completed parent needs a `parent` review bound to its current completed
+aggregate verification. Parent completion produces authorized evidence immediately;
+the GitHub review poller retries after a restart or delayed PR opening. Under
+authorized admission with `repair.source_ci: true`, a canonical open parent PR
+whose head advances starts a fresh aggregate episode when Git proves it preserves
+the old verified aggregate and receipts. AQ keeps the old evidence, files a fresh
+verifier and waits for trusted checks and parent completion before producing the
+new review. `aq doctor --check integration.unadmitted_parents` and `stall.sweep`
+report moved heads, missing verification or reviews, and admission policy blockers.
+Archived children retain the parent's aggregate identity for train admission.
 
 Failed and terminally cancelled source checks file deduplicated repair roots with
 exact source identity and actionable check links. A newer pending/successful

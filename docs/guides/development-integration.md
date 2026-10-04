@@ -305,12 +305,23 @@ generation. It records the operator, reason and result in the audit log and
 does not fabricate a passing worker completion or CI evidence. A no-artifact
 declaration cannot erase source evidence that the generation already recorded.
 
-A bare pre-train parent episode uses this same completion provenance. An old
-episode alone does not demand a verification that never existed. Any parent
-operation or verification history still requires the exact verified parent
-completion: `invalid_parent_completion` and `parent_provenance_mismatch` name
-broken bindings and require parent verification recovery. They do not mean a
-branch must be pushed again.
+A COMPLETED task whose latest completion did not pass is attested the same way
+on a `--reason`: a research task closed over a blocked close is finished work,
+not work still owed. Its recorded commits are what it read rather than an
+artifact of its own, so `--no-artifact` replaces them and `--source` may name a
+different commit — but an attested source must already be contained in the
+target, so the decision can only clear work the target holds. The failed close
+is retained verbatim; the audit records `completion_outcome: fail`.
+
+A bare pre-train parent episode uses this same completion provenance, and so
+does an episode whose only parent operation was cancelled before it ever
+verified or completed: neither demands a verification that never existed. Any
+real parent operation or verification history still requires the exact verified
+parent completion, and so does a parent an operator already adopted — a stale
+adoption is a decision to redo, not a legacy episode.
+`invalid_parent_completion` and `parent_provenance_mismatch` name broken
+bindings and require parent verification recovery. They do not mean a branch
+must be pushed again.
 
 ## What a worker sees
 

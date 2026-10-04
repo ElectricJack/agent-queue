@@ -549,6 +549,7 @@
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
@@ -640,7 +641,6 @@
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
         "tests/test_knowledge_context.py",
-        "tests/test_knowledge_deprecation.py",
         "tests/test_knowledge_evaluation.py",
         "tests/test_knowledge_extraction.py",
         "tests/test_knowledge_extraction_store.py",
@@ -1399,7 +1399,7 @@
       ]
     }
   },
-  "digest": "sha256:f8e63dd799c5dbd59698ad5578b0a7302ed0acb908fe312508049d1490947ba9",
+  "digest": "sha256:d28accdc21173872e77a79e5e9de23f92fdcf8defc4d52c281fd95b20aaa8434",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7227,6 +7227,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
         "src.database.tables",
         "src.git.manager",
         "src.integration.cancelled_collection_recovery",
@@ -7463,6 +7464,7 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.manager",
         "src.integration.delivered_parent_adoption",
         "src.integration.delivery_truth",
         "src.integration.epic_delivery",
@@ -7879,6 +7881,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
@@ -7944,6 +7947,37 @@
         "parametrize"
       ],
       "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
+    },
+    "tests/test_integration_parent_source.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.git.manager",
+        "src.integration.cancelled_collection_recovery",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.parent_completion",
+        "src.integration.parent_source",
+        "src.integration.promotion",
+        "src.integration.review_evidence",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Two-child aggregate admission survives an advanced canonical PR head."
     },
     "tests/test_integration_parent_subjects.py": {
       "areas": [
@@ -8993,28 +9027,6 @@
         "parametrize"
       ],
       "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
-    },
-    "tests/test_knowledge_deprecation.py": {
-      "areas": [
-        "knowledge-records"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.database",
-        "src.database.engine",
-        "src.database.tables",
-        "src.knowledge.deprecation",
-        "src.knowledge.imports.apply",
-        "src.knowledge.imports.compatibility",
-        "src.knowledge.imports.manifest",
-        "src.knowledge.models",
-        "src.records.models"
-      ],
-      "markers": [
-        "migration",
-        "parametrize"
-      ],
-      "summary": "K14 synthetic reconciliation, honest telemetry and disposable restore proof."
     },
     "tests/test_knowledge_evaluation.py": {
       "areas": [

@@ -403,6 +403,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
+        _unadmitted_parent_findings(ctx, active),
         _reviewed_file_guard_findings(ctx, active),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
@@ -438,6 +439,18 @@ async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) ->
         )
         for row in await _find_reviewed_file_blocked_batches(ctx)
         if row["project_id"] in active
+    ]
+
+
+async def _unadmitted_parent_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    from src.doctor.integration_checks import _find_unadmitted_parents
+
+    return [
+        _finding("unadmitted_parent", row["project_id"],
+                 f"{row['task_id']} completed with PR {row['pr_url']}: {row['reason']}; "
+                 "run aq doctor --check integration.unadmitted_parents",
+                 **{key: value for key, value in row.items() if key != "project_id"})
+        for row in await _find_unadmitted_parents(ctx) if row["project_id"] in active
     ]
 
 

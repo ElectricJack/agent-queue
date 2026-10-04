@@ -277,6 +277,10 @@ tasks = Table(
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    # Missing close rows still have an operator-attestable generation. Only
+    # crossing the COMPLETED boundary rotates it; ordinary edits do not.
+    Column("legacy_completion_id", Text, nullable=False,
+           server_default=text("'legacy:' || gen_random_uuid()::text")),
     # The §10 pool work query's three access paths.  All three carry
     # ``priority, created_at`` as their trailing key columns so
     # ``select_ready_for_profile``'s ``ORDER BY priority, created_at LIMIT 1``
@@ -2129,6 +2133,9 @@ archived_tasks = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
+    # Preserve the live task's generation even after its metadata is deleted.
+    Column("legacy_completion_id", Text, nullable=False,
+           server_default=text("'legacy:' || gen_random_uuid()::text")),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_archived_tasks_provider_intent",

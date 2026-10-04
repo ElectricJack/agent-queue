@@ -156,12 +156,34 @@ class TestCheckMergeConflictsScript:
         _git(git_repo, "push", "origin", "main")
 
         exit_code, data = _run_script(git_repo)
-        assert exit_code == 1
+        assert exit_code == 1, data
         assert data["status"] == "conflicts_found"
         assert data["checked"] == 2
         assert data["clean"] == 1
         assert data["conflict_count"] == 1
         assert data["conflicts"][0]["task_id"] == "bad-task"
+
+    def test_large_conflict_detected(self, git_repo):
+        """A conflict report larger than a pipe buffer must still be detected."""
+        _git(git_repo, "checkout", "-b", "large-task/will-conflict")
+        Path(git_repo, "file.txt").write_text("branch change\n" * 20_000)
+        _git(git_repo, "add", "file.txt")
+        _git(git_repo, "commit", "-m", "Large branch change")
+        _git(git_repo, "push", "origin", "large-task/will-conflict")
+
+        _git(git_repo, "checkout", "main")
+        Path(git_repo, "file.txt").write_text("main change\n" * 20_000)
+        _git(git_repo, "add", "file.txt")
+        _git(git_repo, "commit", "-m", "Large main change")
+        _git(git_repo, "push", "origin", "main")
+
+        exit_code, data = _run_script(git_repo)
+        assert exit_code == 1, data
+        assert data["status"] == "conflicts_found"
+        assert data["checked"] == 1
+        assert data["clean"] == 0
+        assert data["conflict_count"] == 1
+        assert data["conflicts"][0]["task_id"] == "large-task"
 
     def test_branch_without_slash_uses_full_name_as_task_id(self, git_repo):
         """Branches without a slash should use the full name as task_id."""

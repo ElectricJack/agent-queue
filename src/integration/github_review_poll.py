@@ -66,6 +66,7 @@ class GitHubReviewPoller:
         review_refresh_seconds: float = 600.0,
         source_ci_handler=None,
         ancestry_handler=None,
+        parent_head_handler=None,
     ) -> None:
         if interval_seconds <= 0 or page_size <= 0 or review_refresh_seconds <= 0:
             raise ValueError("review poll interval, page size and refresh must be positive")
@@ -79,6 +80,7 @@ class GitHubReviewPoller:
         self.after_id: str | None = None
         self.source_ci_handler = source_ci_handler
         self.ancestry_handler = ancestry_handler
+        self.parent_head_handler = parent_head_handler
         self._observed: dict[str, _Observation] = {}
         self._reported: dict[str, tuple] = {}
         self._cycle_seen: set[str] = set()
@@ -264,15 +266,33 @@ class GitHubReviewPoller:
             unobservable = "closed"
         elif not all(isinstance(item, dict) for item in (head, base, head_repo, base_repo)):
             unobservable = "malformed"
-        elif head.get("sha") != source["head"]:
-            unobservable = "head moved"
         elif head.get("ref") != source["branch"] or head_repo.get("id") != binding.repository_id:
             unobservable = "head branch changed"
         elif base.get("ref") != row["default_branch"] or base_repo.get("id") != binding.repository_id:
             unobservable = "base changed"
+        elif head.get("sha") != source["head"]:
+            unobservable = "head moved"
         else:
             unobservable = None
         if unobservable is not None:
+            if (unobservable == "head moved" and source["review_kind"] == "parent"
+                    and self.parent_head_handler is not None):
+                from src.integration.parent_source import ParentHeadObservation
+
+                result = await self.parent_head_handler(ParentHeadObservation(
+                    task_id=row["id"], source=source, head_sha=head.get("sha"),
+                    policy_generation=row["hierarchical_integration_generation"],
+                ))
+                if (result or {}).get("success"):
+                    self._observed.pop(row["id"], None)
+                    self._report(row["id"], ("reverifying", head.get("sha")))
+                    return
+                self._report(
+                    row["id"], ("reverification_blocked", head.get("sha"), str(result)),
+                    logging.WARNING, "Parent %s PR head advanced; reverification blocked: %s",
+                    row["id"], (result or {}).get("error") or result,
+                )
+                return
             self._report(
                 row["id"], ("unobservable", unobservable),
                 logging.DEBUG if unobservable == "closed" else logging.INFO,
@@ -300,13 +320,19 @@ class GitHubReviewPoller:
             )
         policy = row.get("hierarchical_integration_policy") or {}
         generation = row["hierarchical_integration_generation"]
-        if (
-            policy.get("root", {}).get("admission") == "authorized"
-            and seen.authorized != generation
-            and await self.producer.snapshot_authorized(
+        if (policy.get("root", {}).get("admission") == "authorized"
+                and seen.authorized != generation):
+            evidence = await self.producer.snapshot_authorized(
                 row["id"], reviewed_sha=source["head"], policy_generation=generation,
-            ) is not None
-        ):
+            )
+            if evidence is None:
+                self._report(
+                    row["id"], ("authorization_blocked", identity, generation), logging.WARNING,
+                    "Completed train root %s has no authorized exact %s review; "
+                    "inspect admission, holds and gates (aq doctor --check integration.unadmitted_parents)",
+                    row["id"], source["review_kind"],
+                )
+                return
             seen.authorized = generation
         self._report(row["id"], ("observed",))
 
