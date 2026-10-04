@@ -148,11 +148,22 @@ parent verification. Deployment uses a fresh explicitly authorized repair root
 carrying source and repair-child ancestry, followed by proven supersession of
 covered legacy work; no parent receipt is fabricated.
 
-At sealing, every source in a CI repair chain must still be an exact eligible
-member under the current policy. A later product hold, rejected review or changed
-source generation withholds all downstream repairs, even if their own green CI
-and authorization evidence already exist. The train cannot route around that
-gate by seating the final repair on its own.
+At sealing, every source in a CI repair chain must be an exact eligible member
+under the current policy or have already delivered that source to the designated
+default branch. Git delivery and exact root receipts satisfy the ancestor even
+when it has left the frontier; its source CI may be red or green. Undelivered
+sources retain their product holds, review and generation fences. The repair's
+own review, CI, gates and policy generation still bind, and its approved head
+must retain the original's ancestry.
+
+When a fresh claim-time Git proof establishes delivery of an original, retire
+its unclaimed READY repair as `superseded_by_delivery`, with the source identity,
+default ref/OID, principal and terminal completion recorded for audit. Revalidate
+the source, target, lineage and READY row under the hierarchy/task locks. An
+assigned repair, retained writer/owner, explicit hold, gate or child is preserved.
+Unknown Git evidence cannot retire work. A claimed/completed repair continues
+through normal delivery; a later target rewind or retarget files a fresh repair
+instead of reviving the retired delegate. This corrects `fresh-torrent-75`.
 
 Live rollout needs an independent control read when the full historical delivery
 and external readiness projection is slow or unavailable. `aq integration status

@@ -784,8 +784,10 @@ rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
 `conflict`, and under `repair.conflict_scope: batch` it enters the train so the
 batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
 when a repaired source is green, both it and its covered original source can
-enter the train and receive normal delivery/cleanup receipts. Every final
-candidate still requires its own exact authenticated green CI.
+enter the train and receive normal delivery/cleanup receipts. If the original
+already reached the default branch through another route, that delivery satisfies
+the repair's ancestry requirement and the completed green repair can enter alone.
+Every final candidate still requires its own exact authenticated green CI.
 
 Before filing a repair, AQ asks canonical delivery truth the same way root
 admission does (`src/integration/source_delivery.py`): the exact completion
@@ -799,16 +801,16 @@ retained source, a new checkpoint generation, a reopened task, a different
 target or a source that is genuinely not on the target all file the repair as
 before.
 
-Every eligibility decision observes afresh, and nothing persisted is read back
-to decide one. Admission asks again on each poll, and a claim asks again before
-it withholds a queued delegate — so a retargeted or rewound default branch, a
-target that lost containment, and a delivery or adoption that arrives after an
-earlier negative answer each release the repair again. A claim that cannot
-reach git withholds nothing. The exact source identity is revalidated under the
-hierarchy lock immediately before a proof is used, so a generation that moved
-while git was read is a `stale` refusal rather than a withheld repair. An
-already-filed delegate is never ended by this check, and a claimed one keeps its
-writer.
+Admission asks again on each poll, and a claim takes a fresh proof before retiring
+an unclaimed READY delegate. Delivery arriving after an earlier negative answer
+settles the redundant ticket as `superseded_by_delivery`; task metadata and a
+completion record retain its exact source and target proof. The source identity,
+target, repair lineage and READY state are revalidated under the hierarchy/task
+locks. Explicit holds, gates, children and retained writers/owners are preserved.
+A claim that cannot reach git retires and withholds nothing. A claimed delegate
+keeps its writer, and its completed repair still has a delivery path. If a later
+retarget or rewind loses the original's containment, the next source observation
+files a fresh repair attempt instead of reviving the retired ticket.
 
 With batch conflict scope, the assignment includes the whole frozen source
 manifest. Start at its partial head, merge every remaining source in order, and
