@@ -109,9 +109,10 @@ def _fleet() -> tuple[ProfileFacts, ...]:
         _rung("deep-high", "codex"),
         _rung("standard-high", "claude", slots=4),
         _rung("standard-high", "codex", slots=4),
-        _rung("standard-high", "opencode", slots=1),
-        _rung("fast-low", "opencode", slots=1),
-        _rung("fast-off", "opencode", slots=1),
+        # OpenCode on Ollama: a self-hosted model (``local_models``).
+        _rung("standard-high", "opencode", slots=1, local=True),
+        _rung("fast-low", "opencode", slots=1, local=True),
+        _rung("fast-off", "opencode", slots=1, local=True),
         _rung("fast-high", "claude"),
         _rung("fast-high", "codex"),
     )
@@ -433,6 +434,115 @@ def test_hosted_opencode_gets_only_narrow_test_verified_standard_high_work(
     plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
     assert "opencode-zen" not in {c["harness"] for c in plan["candidates"]}
     assert plan["profile_id"] != "standard-high-opencode-zen"
+
+
+def _local(plan: dict) -> set[str]:
+    return {c["profile_id"] for c in plan["candidates"] if c["local"]}
+
+
+@pytest.mark.parametrize("classification", [NARROW_YES, NARROW_NO])
+def test_a_priority_290_bugfix_never_picks_a_local_profile(classification) -> None:
+    # Every hosted rung full: the local model would win on load, and still is
+    # not a candidate.
+    busy = {
+        "standard-high-claude": 4, "standard-high-codex": 4, "standard-high-opencode-zen": 1,
+    }
+    task = _task(task_type="bugfix", priority=290)
+    plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
+    assert _local(plan) == set()
+    assert plan["profile_id"] != "standard-high-opencode"
+
+
+def test_a_priority_100_docs_task_can_still_run_on_a_local_profile() -> None:
+    task = _task(task_type="docs", priority=100)
+    plan = _planned(task, _snapshot(), {**NARROW_YES, "task_type": "docs"})
+    assert plan["profile_id"] == "standard-high-opencode"
+    assert plan["candidates"][0]["local"] is True
+
+
+@pytest.mark.parametrize(
+    ("changes", "local_allowed"),
+    [
+        ({}, True),
+        ({"priority": 149}, True),
+        ({"priority": 150}, False),
+        ({"on_train": True}, False),
+        # Only the policy's train kinds lose the local model on a train.
+        ({"on_train": True, "task_type": "docs"}, True),
+        ({"blocks_work": True}, False),
+    ],
+    ids=["default", "below", "at-threshold", "train-bugfix", "train-docs", "blocking"],
+)
+def test_the_local_model_gate(changes, local_allowed) -> None:
+    values = {"task_type": "bugfix", "priority": 100, **changes}
+    classification = {**NARROW_YES, "task_type": values["task_type"]}
+    plan = _planned(_task(**values), _snapshot(), classification)
+    assert bool(_local(plan)) is local_allowed
+    assert (plan["profile_id"] == "standard-high-opencode") is local_allowed
+
+
+def test_the_gate_reads_the_classified_kind() -> None:
+    # A kindless task on a train, classified as a bugfix, is a train bugfix.
+    plan = _planned(_task(priority=100, on_train=True), _snapshot(), NARROW_YES)
+    assert plan["task_type"] == "bugfix"
+    assert _local(plan) == set()
+
+
+def test_local_models_policy_knobs() -> None:
+    policy, digest = parse_policy(BALANCED_POLICY + (
+        "local_models:\n"
+        "  harnesses: [opencode-zen]\n"
+        "  below_priority: 300\n"
+        "  train_kinds: []\n"
+        "  allow_blocking: true\n"
+    ))
+
+    def plan(task):
+        result = plan_route(
+            task, policy, _snapshot(_hosted_fleet()), policy_sha256=digest,
+            classification=NARROW_YES,
+        )
+        assert result.outcome == "planned", result
+        return result.value
+
+    def candidates(task):
+        return {c["profile_id"] for c in plan(task)["candidates"]}
+
+    local = {"standard-high-opencode", "standard-high-opencode-zen"}
+    # A raised threshold, no train kinds and allow_blocking admit this task ...
+    task = _task(task_type="bugfix", priority=290, on_train=True, blocks_work=True)
+    assert local <= candidates(task)
+    # ... and a harness the policy names is local, past the threshold, too.
+    assert not candidates(replace(task, priority=300)) & local
+
+
+def test_a_fleet_of_only_local_models_names_the_gate() -> None:
+    policy, digest = parse_policy(
+        BALANCED_POLICY + "local_models: {harnesses: [claude, codex]}\n"
+    )
+    fleet = [p for p in _fleet() if p.harness in {"claude", "codex"}]
+    result = plan_route(
+        _task(task_type="research", priority=290), policy, _snapshot(fleet),
+        policy_sha256=digest,
+    )
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "local_model_gate"
+
+
+def test_an_allowlisted_benchmark_arm_skips_the_local_model_gate() -> None:
+    # The arm names its harness explicitly, so the gate does not second-guess it.
+    policy, digest = parse_policy(BALANCED_POLICY + """
+benchmark_arms:
+  qwen:
+    class: standard-high
+    harness: opencode
+    requested_model: qwen3.8:27b
+    observed_models: [qwen3.8*]
+""")
+    task = _task(task_type="bugfix", priority=290, benchmark_arms=("qwen",))
+    result = plan_route(task, policy, _snapshot(), policy_sha256=digest)
+    assert result.outcome == "planned", result
+    assert result.value["profile_id"] == "standard-high-opencode"
 
 
 def test_work_moves_away_from_a_provider_above_the_usage_soft_limit() -> None:

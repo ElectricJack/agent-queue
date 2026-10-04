@@ -140,8 +140,14 @@ literal `{"failed": true}` when classification failed.
    - **Candidates.** Worker candidates (`catalog.worker_route` plus a slot)
      for the lane or the class, minus reserved cells, `exclude_providers`
      (`tasks.route.constraints`), providers other than the project's
-     `preferred_provider`, and pool profiles when the task needs a workspace
-     kind other than `project-repo`/`vault`. A narrow kind's OpenCode lanes
+     `preferred_provider`, pool profiles when the task needs a workspace
+     kind other than `project-repo`/`vault`, and self-hosted models (a harness
+     whose `provider` is `ollama`, or one `local_models.harnesses` names) for
+     a task the policy's `local_models` gate refuses: priority at or above
+     `below_priority` (default 150), a `train_kinds` kind (default `bugfix`)
+     in a project whose integration mode is `hierarchy`, `train` or
+     `development`, or a task an unfinished task waits on through a blocking
+     edge other than `parent-child` (unless `allow_blocking`). A narrow kind's OpenCode lanes
      form the preferred tier when the classification satisfies their
      `requires`; a harness a narrow lane names is never a general candidate.
    - **Availability.** Unlaunchable providers leave the choice but stay in
@@ -165,7 +171,7 @@ scored can move before the apply, which is why
 |---|---|
 | `rejected`, `code: routing.invalid_policy` | The policy text is not YAML or fails the schema; `error` names the first problem and where. |
 | `rejected` | Missing `task_id` or no such task. |
-| `no_candidates` | `reason` is `no_worker_candidates`, `reserved`, `excluded_providers`, `preferred_provider_unavailable` or `workspace_requirement`; `detail` names the rule and class. `aq agent list-profiles` and `aq pool status` show what exists. |
+| `no_candidates` | `reason` is `no_worker_candidates`, `reserved`, `excluded_providers`, `preferred_provider_unavailable`, `workspace_requirement` or `local_model_gate`; `detail` names the rule and class. `aq agent list-profiles` and `aq pool status` show what exists. |
 | `held` | `providers` lists the unlaunchable ones; `aq provider status` says when they are expected back. |
 
 ## Example step

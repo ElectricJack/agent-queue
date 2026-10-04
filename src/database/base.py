@@ -535,6 +535,7 @@ class DatabaseBackend(Protocol):
     async def get_dependents(
         self, task_id: str, dep_types: frozenset[str] | None = None
     ) -> set[str]: ...
+    async def has_waiting_dependents(self, task_id: str) -> bool: ...
     async def get_dependency_map_for_tasks(
         self,
         task_ids: list[str],
