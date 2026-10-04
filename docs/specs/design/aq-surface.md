@@ -551,6 +551,12 @@ stay unrestricted. `tests/test_command_scope_matrix.py` derives the set of super
 contractless commands that name a project-owned target and dispatches each session-addressing
 member against another project's session.
 
+The provider reroute commands validate and canonicalise task IDs through
+`src/providers/reroute_args.py` before scope checks and again in their handlers.
+Whitespace and comma separators resolve to the same task IDs at both boundaries;
+undeclared aliases are refused. A project supervisor may name only its own project's
+tasks, may not run an unnamed reroute sweep, and may undo only its project's batch moves.
+
 The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.
 Only `provider_allocation_preview` recognizes that nested target path; other commands
@@ -565,10 +571,10 @@ The policy fails closed, because "I could not work out who owns this" is not "al
 | every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
 | a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
 | a named target exists but has no resolved project (including a missing indirect owner) | `out of scope: <cmd> targets a row owned by no project` |
-| the call names no target at all (`list_projects`, provider previews without a project preference) | `out of scope: <cmd> names no project-owned target` |
+| the call names no target at all (`list_projects`, provider previews without a project preference), or every named ID matches no row | `out of scope: <cmd> names no project-owned target` |
 | a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
 | the scope layer has no database | refused rather than admitted unchecked |
-| a target row is gone | no project claim to violate; the handler answers `not_found` |
+| a target row is gone beside a resolved project-owned target | the missing row adds no project claim; the handler answers `not_found` |
 
 One mechanism, no contract gained a field, `extra="forbid"` untouched. A non-elevated agent
 token is unchanged: it still gets the whole ID triple injected, and layer 1c of

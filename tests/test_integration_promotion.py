@@ -4431,7 +4431,9 @@ async def test_cancel_parent_preserves_pending_intent_and_its_recovery(
 ):
     from src.integration.development import DevelopmentBusy, DevelopmentIntegration
     from src.integration.promotion import (
-        PromotionNotApplied, PromotionRecovery, PromotionService,
+        PromotionNotApplied,
+        PromotionRecovery,
+        PromotionService,
     )
 
     case = promotion_case
