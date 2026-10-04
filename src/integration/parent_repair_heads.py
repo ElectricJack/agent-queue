@@ -1438,7 +1438,8 @@ class ParentHeadRecovery:
         """A detached reservation still preserves any unpublished work in its former slot."""
         workspace = proof["workspace"]
         if workspace is None:
-            if proof["empty_verification"]:
+            # Collection reopening also uses this proof without a verification stage.
+            if proof.get("empty_verification"):
                 raise ValueError("empty verification requires a confirmed parent workspace")
             return
         git = self.promotion.git
