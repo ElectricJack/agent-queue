@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import json
 import subprocess
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -13,54 +13,56 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import StaleClaim
 from src.database.tables import (
     archived_tasks,
-    projects,
-    repos,
     gates,
-    task_gates,
-    workspaces,
-    integration_check_evidence,
-    integration_promotion_intents,
-    integration_episode_receipt_acceptances,
-    integration_branch_owners,
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
+    integration_check_evidence,
+    integration_episode_receipt_acceptances,
     integration_operation_artifact_pins,
     integration_outbox,
+    integration_parent_episodes,
     integration_parent_operation_completions,
     integration_parent_verification_evidence,
-    integration_parent_episodes,
     integration_parent_verifications,
-    integration_review_evidence,
+    integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_review_evidence,
     playbook_artifacts,
-    task_delivery_receipts,
+    projects,
+    repos,
     task_branch_origins,
     task_completion_records,
-    task_metadata,
+    task_delivery_receipts,
+    task_gates,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
+    workspaces,
 )
+from src.integration.drain_owners import terminal_reservation_clause
+from src.integration.hierarchy import HierarchyIntegration
 from src.integration.models import (
     ArtifactSnapshot,
+    BranchKey,
+    Fence,
     HierarchicalIntegrationPolicy,
     IntegrationBoundaryPolicy,
     PlaybookRoute,
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.hierarchy import HierarchyIntegration
-from src.integration.parent_completion import (
-    AWAITING_TRUSTED_VERIFICATION,
-    ParentCompletion,
-)
-from src.integration.drain_owners import terminal_reservation_clause
-from src.integration.status import IntegrationStatusService
-from src.database.queries.hierarchy_queries import HierarchyError
-from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
+from src.integration.records import (
+    AWAITING_TRUSTED_VERIFICATION,
+    ParentEpisodeRecords,
+)
+from src.integration.status import IntegrationStatusService
 from src.models import (
     AgentProfile,
     Project,
@@ -71,7 +73,6 @@ from src.models import (
     TaskStatus,
 )
 from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
-from src.database.queries.task_queries import StaleClaim
 
 
 async def _parent_repair_case(db, tmp_path, *, children=1, first_receipt_child=0):
@@ -626,10 +627,10 @@ async def _captured_collection_case(db, tmp_path, *, snapshot=False, damage=None
     """Replay captured identities over a real Git DAG with translated object IDs."""
     from pathlib import Path
 
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
     from src.integration.outbox import enqueue_integration_event
     from src.integration.parent_repair_heads import ParentHeadRecovery
     from src.integration.promotion import PromotionService
-    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 
     captured = json.loads(
         (Path(__file__).parent / "fixtures/integration/parent_recovery_6397.json").read_text()
@@ -2407,7 +2408,7 @@ async def test_attached_repair_close_returns_the_proven_writer_head(
     from src.git.manager import GitManager
     from src.models import SessionRecord
 
-    _recovery, _hierarchy, request, _git, collected, head = await _parent_repair_case(db, tmp_path)
+    _recovery, _hierarchy, _request, _git, collected, head = await _parent_repair_case(db, tmp_path)
     await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await db.create_session(SessionRecord(
         id="repair-session", task_id="repair", project_id="p", profile_id="repairer",
@@ -2961,7 +2962,7 @@ async def test_repair_edge_survives_more_children_in_the_same_episode(db, tmp_pa
 
 
 async def _advanced_parent_repair_case(db, tmp_path, *, edge_exists=False, receipt_case=None):
-    recovery, hierarchy, request, git, collected, repair_head = await _parent_repair_case(
+    recovery, hierarchy, request, git, _collected, repair_head = await _parent_repair_case(
         db, tmp_path
     )
     if edge_exists:
@@ -5432,9 +5433,9 @@ async def _trusted_check(db, checkpointed, head_sha="d" * 40, generation=1, **ov
 
 @pytest.fixture
 async def git_completed_parent(db, tmp_path):
-    """An actual ParentCompletion close, with real Git and no leaf close row."""
+    """An actual ParentEpisodeRecords close, with real Git and no leaf close row."""
     from src.git.manager import GitManager
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
     from tests.test_delivery_consumers import Origin, git
 
     origin = Origin(tmp_path)
@@ -5459,17 +5460,16 @@ async def git_completed_parent(db, tmp_path):
     assert verified["outcome"] == "verified"
     assert (await hierarchy.complete_parent("parent", 6, head))["outcome"] == "completed"
     assert await db.get_task_completion("parent") is None
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
+    service = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=GitManager())
     db.set_delivery_observer(service.delivery_observer)
     await db.update_project("p", hierarchical_integration_mode="train")
     return service, origin, base, partial, head, checkpointed, verified
 
 
-async def test_completed_parent_delivery_and_adoption_use_its_verified_generation(
+async def test_completed_parent_delivery_uses_its_verified_generation(
     db, git_completed_parent,
 ):
     from src.integration.delivery_truth import DeliveryState
-    from src.integration.provenance import CompletionIdentity, GitProvenance
 
     service, origin, _base, _partial, head, checkpointed, verified = git_completed_parent
     before = await service.delivery_observer.observe(["parent"])
@@ -5483,22 +5483,9 @@ async def test_completed_parent_delivery_and_adoption_use_its_verified_generatio
     origin.land("parent")
     view = await service.delivery_observer.observe(["parent"])
     assert view.get("parent").state == DeliveryState.CONTAINED
-    result = await service.adopt(
-        project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-        head_sha=view.get("parent").target_oid, reason="verified aggregate already delivered",
-        operator_id="local",
-    )
-    assert result["manifest"] == [{
-        "task_id": "parent", "source_sha": head, "acceptance": "ancestry",
-    }]
+    # Delivery truth uses the recorded verified generation without a manual
+    # adoption or provenance writer, even though no leaf close exists.
     assert await db.get_task_completion("parent") is None
-    provenance = GitProvenance(service.git, str(origin.clone), repository_url=origin.url)
-    from tests.test_delivery_consumers import git
-    git(origin.clone, "fetch", "origin")
-    record = await provenance.read_completion(CompletionIdentity(
-        "p", "repo", "parent", request.completion_id,
-    ))
-    assert record["source_oid"] == head
     async with db._engine.connect() as conn:
         assert len((await conn.execute(select(integration_check_evidence))).all()) == 1
         assert len((await conn.execute(select(integration_parent_verifications))).all()) == 1
@@ -5507,7 +5494,7 @@ async def test_completed_parent_delivery_and_adoption_use_its_verified_generatio
 
 
 @pytest.mark.parametrize("branch", ["advanced", "deleted"])
-async def test_parent_delivery_and_adoption_keep_the_verified_source_when_its_ref_changes(
+async def test_parent_delivery_keeps_the_verified_source_when_its_ref_changes(
     db, git_completed_parent, branch,
 ):
     from src.integration.delivery_truth import DeliveryState
@@ -5515,18 +5502,13 @@ async def test_parent_delivery_and_adoption_keep_the_verified_source_when_its_re
 
     service, origin, _base, _partial, head, *_rest = git_completed_parent
     origin.land("parent")
-    main = git(origin.clone, "rev-parse", "main")
+    git(origin.clone, "rev-parse", "main")
     if branch == "advanced":
         assert origin.work("parent", "later") != head
     else:
         git(origin.clone, "push", "origin", "--delete", "aq/parent")
     proof = (await service.delivery_observer.observe(["parent"])).get("parent")
     assert (proof.state, proof.source_oid) == (DeliveryState.CONTAINED, head)
-    result = await service.adopt(
-        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha=main,
-        reason="verified source already delivered", operator_id="local",
-    )
-    assert result["manifest"][0]["source_sha"] == head
     assert await db.get_task_completion("parent") is None
 
 
@@ -5540,7 +5522,7 @@ async def test_partial_parent_binding_cannot_fall_back_to_a_retained_old_leaf_cl
 
     service, origin, _base, _partial, head, *_rest = git_completed_parent
     origin.land("parent")
-    main = git(origin.clone, "rev-parse", "main")
+    git(origin.clone, "rev-parse", "main")
     await db.save_task_completion(TaskCompletion(
         id="old-leaf", task_id="parent", outcome="pass", commits=[head], completed_at=1.0,
     ))
@@ -5562,12 +5544,10 @@ async def test_partial_parent_binding_cannot_fall_back_to_a_retained_old_leaf_cl
             ).values(**values))
     proof = (await service.delivery_observer.observe(["parent"])).get("parent")
     assert (proof.state, proof.reason) == (DeliveryState.UNKNOWN, "invalid_parent_completion")
-    with pytest.raises(ValueError, match="current verified parent completion"):
-        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-                            head_sha=main, reason="partial binding", operator_id="local")
 
 
-async def test_parent_adoption_cannot_substitute_a_branch_when_exact_git_observation_fails(
+
+async def test_parent_delivery_cannot_substitute_a_branch_when_exact_git_observation_fails(
     db, git_completed_parent, monkeypatch,
 ):
     from src.git.manager import GitError
@@ -5577,7 +5557,7 @@ async def test_parent_adoption_cannot_substitute_a_branch_when_exact_git_observa
 
     service, origin, _base, _partial, head, *_rest = git_completed_parent
     origin.land("parent")
-    main = git(origin.clone, "rev-parse", "main")
+    git(origin.clone, "rev-parse", "main")
     refs = git(origin.clone, "ls-remote", "origin")
     exact = GitProvenance.exact
 
@@ -5590,17 +5570,13 @@ async def test_parent_adoption_cannot_substitute_a_branch_when_exact_git_observa
     assert (await service.delivery_observer.observe(["parent"])).get("parent").state == (
         DeliveryState.UNKNOWN
     )
-    with pytest.raises(ValueError, match="verified parent source could not be observed"):
-        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-                            head_sha=main, reason="Git unavailable", operator_id="local",
-                            accept_equivalent=True)
     assert git(origin.clone, "ls-remote", "origin") == refs
     assert await service.rows("p") == []
     assert await db.get_task_completion("parent") is None
 
 
 @pytest.mark.parametrize("delivery", ["ancestry", "equivalent"])
-async def test_root_scheduler_and_adoption_agree_on_completed_parent(
+async def test_root_admission_uses_exact_verified_parent_delivery(
     db, git_completed_parent, delivery,
 ):
     from src.integration.delivery_truth import DeliveryState
@@ -5637,7 +5613,7 @@ async def test_root_scheduler_and_adoption_agree_on_completed_parent(
         git(origin.clone, "merge", "--squash", "aq/parent")
         git(origin.clone, "commit", "-m", "reviewed equivalent aggregate")
         git(origin.clone, "push", "origin", "main")
-    main = git(origin.clone, "rev-parse", "main")
+    git(origin.clone, "rev-parse", "main")
     view = await service.delivery_observer.observe(["parent"])
     train = TrainService(db)
     if delivery == "equivalent":
@@ -5645,12 +5621,9 @@ async def test_root_scheduler_and_adoption_agree_on_completed_parent(
         async with db._engine.connect() as conn:
             repository = (await conn.execute(select(repos))).mappings().one()
             assert await train._git_delivered_roots_on(conn, view, "p", repository) == set()
-    result = await service.adopt(
-        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha=main,
-        reason="reviewed aggregate already delivered", operator_id="local",
-        accept_equivalent=delivery == "equivalent",
-    )
-    assert result["manifest"][0]["source_sha"] == head
+        # An equivalent tree is not an ancestry receipt. The retired adoption
+        # control cannot turn this pending exact revision into delivery proof.
+        return
     view = await service.delivery_observer.observe(["parent"])
     async with db._engine.connect() as conn:
         repository = (await conn.execute(select(repos))).mappings().one()
@@ -5676,19 +5649,13 @@ async def test_verified_parent_requires_complete_source_on_the_requested_target(
     from src.integration.delivery_truth import DeliveryState
     from tests.test_delivery_consumers import git
 
-    service, origin, base, partial, _head, *_rest = git_completed_parent
+    service, origin, _base, partial, _head, *_rest = git_completed_parent
     if target == "partial":
         git(origin.clone, "push", "origin", f"{partial}:refs/heads/main")
     else:
         git(origin.clone, "push", "origin", "aq/parent:refs/heads/other")
-    main = partial if target == "partial" else base
     view = await service.delivery_observer.observe(["parent"])
     assert view.get("parent").state == DeliveryState.PENDING
-    with pytest.raises(ValueError, match="not an ancestor"):
-        await service.adopt(
-            project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-            head_sha=main, reason="insufficient containment", operator_id="local",
-        )
     assert await db.get_task_completion("parent") is None
 
 
@@ -5773,17 +5740,13 @@ async def _drift_parent(db, kind, base):
     "designated_repository",
     "project", "new_close", "reclosed", "incomplete_close",
 ])
-async def test_stale_parent_binding_never_borrows_retained_provenance(
+async def test_stale_parent_binding_invalidates_observed_delivery(
     db, git_completed_parent, kind,
 ):
     from src.integration.delivery_truth import DeliveryState
-    from tests.test_delivery_consumers import git
 
     service, origin, base, *_rest = git_completed_parent
     origin.land("parent")
-    main = git(origin.clone, "rev-parse", "main")
-    await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-                        head_sha=main, reason="original delivery", operator_id="local")
     observed = await service.delivery_observer.observe(["parent"])
     await _drift_parent(db, kind, base)
     async with db.immediate() as conn:
@@ -5791,39 +5754,6 @@ async def test_stale_parent_binding_never_borrows_retained_provenance(
     assert (await service.delivery_observer.observe(["parent"])).get("parent").state == (
         DeliveryState.UNKNOWN
     )
-    with pytest.raises(ValueError, match="verified parent completion|repository project"):
-        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-                            head_sha=main, reason="stale delivery", operator_id="local",
-                            accept_equivalent=True)
-
-
-@pytest.mark.parametrize("kind", [
-    "generation", "head", "operation", "episode", "target", "designated_repository", "project",
-])
-async def test_parent_adoption_rechecks_binding_before_any_provenance_write(
-    db, git_completed_parent, monkeypatch, kind,
-):
-    from src.integration.development import DevelopmentBusy
-    from tests.test_delivery_consumers import git
-
-    service, origin, base, *_rest = git_completed_parent
-    origin.land("parent")
-    main = git(origin.clone, "rev-parse", "main")
-    refs = git(origin.clone, "ls-remote", "origin")
-    observe = service._observe_adoption
-
-    async def observe_then_drift(*args):
-        manifest = await observe(*args)
-        await _drift_parent(db, kind, base)
-        return manifest
-
-    monkeypatch.setattr(service, "_observe_adoption", observe_then_drift)
-    with pytest.raises(DevelopmentBusy, match="changed"):
-        await service.adopt(project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-                            head_sha=main, reason="concurrent drift", operator_id="local")
-    assert git(origin.clone, "ls-remote", "origin") == refs
-    assert await service.rows("p") == []
-    assert await db.get_task_completion("parent") is None
 
 
 async def test_completion_without_trusted_binding_names_the_missing_producer(db):
@@ -5834,7 +5764,7 @@ async def test_completion_without_trusted_binding_names_the_missing_producer(db)
     it.  The refusal must say so, and must carry the exact owner action.
     """
     hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
 
     diagnosis = await completion.diagnose_trusted_binding("parent", 1, "d" * 40)
     assert diagnosis is not None
@@ -5851,7 +5781,7 @@ async def test_completion_without_trusted_binding_names_the_missing_producer(db)
     assert refused["verification_id"] is None
     assert refused["next_owner"] == "parent_ci_producer"
     assert "aq integration status" in refused["next_action"]
-    assert "aq integration flush" in refused["next_action"]
+    assert "durable Subject visit" in refused["next_action"]
     assert "do not re-run the local suite" in refused["next_action"]
     # A refusal completes nothing and transitions nothing.
     assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
@@ -5869,8 +5799,8 @@ async def test_completion_without_trusted_binding_names_the_missing_producer(db)
 
 async def test_unchanged_missing_binding_repeats_one_diagnosis(db):
     """Replaying the close on unchanged evidence cannot reach completion."""
-    hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    hierarchy, _checkpointed, _ = await _verified_parent_tree(db)
+    completion = ParentEpisodeRecords(db)
 
     first = await hierarchy.complete_parent("parent", 1, "d" * 40)
     second = await hierarchy.complete_parent("parent", 1, "d" * 40)
@@ -5885,7 +5815,7 @@ async def test_unchanged_missing_binding_repeats_one_diagnosis(db):
 async def test_trusted_evidence_after_the_wait_completes_the_parent(db):
     """The wait ends the same way: real evidence, then ordinary completion."""
     hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
     assert (
         await hierarchy.complete_parent("parent", 1, "d" * 40)
     )["outcome"] == AWAITING_TRUSTED_VERIFICATION
@@ -5906,7 +5836,7 @@ async def test_trusted_evidence_after_the_wait_completes_the_parent(db):
 async def test_verification_of_another_head_is_a_missing_binding_not_a_stale_head(db):
     """A verification recorded against another subject is a wait, not staleness."""
     hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_parent_verifications).values(
@@ -5961,7 +5891,7 @@ async def test_superseded_aggregate_head_still_answers_stale_verification(db):
 async def test_recorded_green_evidence_names_the_playbook_as_the_owner(db):
     """Green CI evidence with no verification belongs to the verify rule."""
     hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
     await _trusted_check(db, checkpointed)
 
     refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
@@ -5979,7 +5909,7 @@ async def test_recorded_green_evidence_names_the_playbook_as_the_owner(db):
 async def test_recorded_failing_evidence_names_the_repair_ladder_as_the_owner(db):
     """Recorded red evidence is a failed aggregate, not a pending CI run."""
     hierarchy, checkpointed, _ = await _verified_parent_tree(db)
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
     await _trusted_check(db, checkpointed, conclusion="failure", checks={"unit": "failure"})
 
     refused = await hierarchy.complete_parent("parent", 1, "d" * 40)
@@ -6087,7 +6017,7 @@ async def test_manual_resume_allows_guarded_parent_verifier_wake(db, checkpoint_
 async def test_parent_prime_summary_uses_receipt_readiness_projection(db):
     from src.prime.sections import build_integration_delivery_summary
 
-    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)
 
     summary = await build_integration_delivery_summary(db, await db.get_task("parent"))
@@ -6394,3 +6324,10 @@ async def test_sealed_batch_member_protects_descendant_mutation(db):
         )
         with pytest.raises(HierarchyError, match="sealed"):
             await db.guard_integration_mutation("root.1", "reopen", conn=conn)
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)

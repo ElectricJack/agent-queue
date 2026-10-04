@@ -1728,11 +1728,11 @@ async def _seed_development_delivery(
     created_at: float = 1.0,
 ) -> None:
     """Append one publisher operation (``development.operation``) naming *task_ids*."""
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
 
     async with db._engine.begin() as conn:
         await conn.execute(
-            DevelopmentIntegration._operation_insert(
+            DevelopmentPrimitives._operation_insert(
                 id=delivery_id,
                 project_id=project_id,
                 repository_id="repo",
@@ -2008,12 +2008,12 @@ async def _journal(
     db: Database, row_id: str, *, state: str, target_ref: str, members: list[tuple[str, str]],
     pid: str = "p-dev", parent_task_id: str | None = None,
 ) -> None:
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
 
     now = time.time()
     async with db._engine.begin() as conn:
         await conn.execute(
-            DevelopmentIntegration._operation_insert(
+            DevelopmentPrimitives._operation_insert(
                 id=row_id, project_id=pid, repository_id="dev-repo", target_ref=target_ref,
                 expected_sha=None, prepared_sha=None, state=state,
                 manifest=[

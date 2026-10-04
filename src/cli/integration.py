@@ -7,8 +7,6 @@ authority are enforced.
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
 from typing import Any
 
 import click
@@ -30,7 +28,7 @@ def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
 
 @cli.group("integration")
 def integration() -> None:
-    """Inspect and control hierarchical integration trains."""
+    """Inspect integration Subjects and apply current recovery proofs."""
 
 
 @integration.command("release-held-gate")
@@ -76,7 +74,7 @@ def _require_transfer_apply_fences(engine: str, versions: dict[str, int], reason
 
 @integration.command("engine-transfer")
 @click.argument("repository_id")
-@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--engine", type=click.Choice(["reconciler"]), required=True)
 @click.option("--parent-task-id", default=None,
               help="Transfer this parent instead of repository roots.")
 @click.option("--expected-subject", "expected_subjects", multiple=True,
@@ -102,7 +100,7 @@ def integration_engine_transfer(
 
 @integration.command("development-engine-transfer")
 @click.argument("project_id")
-@click.option("--engine", type=click.Choice(["legacy", "reconciler"]), required=True)
+@click.option("--engine", type=click.Choice(["reconciler"]), required=True)
 @click.option("--expected-subject", "expected_subjects", multiple=True,
               help="Exact SUBJECT_ID:VERSION from the preview; repeat for every Development subject.")
 @click.option("--reason", default="", help="Required explanation when applying the transfer.")
@@ -117,7 +115,7 @@ def integration_development_engine_transfer(
 ):
     """Preview or transfer Development ownership for every subject of PROJECT_ID.
 
-    The apply is a cutover or a rollback of the whole project: it runs inside
+    The apply activates reconciler ownership of the whole project: it runs inside
     the repository engine fence a publisher shares, needs the exact versions
     the preview printed, and refuses while a publish write is unconfirmed in
     either direction.
@@ -131,50 +129,13 @@ def integration_development_engine_transfer(
     })
 
 
-@integration.command("shadow-report")
-@click.argument("project_id")
-@click.option("--since", type=float, required=True,
-              help="UTC start of the evidence window as epoch seconds.")
-@click.option("--until", type=float, help="UTC end as epoch seconds (defaults to now).")
-@click.option("--acknowledge-unknown", "acknowledge_unknown", multiple=True, type=int,
-              help="Journal sequence of an unknown observation an operator reviewed.")
-@click.option("--output", "output_path", type=click.Path(dir_okay=False, path_type=Path),
-              help="Write the Markdown artifact to PATH.")
-@click.pass_context
-@_handle_errors
-def integration_shadow_report(ctx, project_id, since, until, acknowledge_unknown, output_path):
-    """Compare the shadow loop's decisions against legacy's over one window.
-
-    Both bounds are epoch seconds and the window is never widened for you; a
-    short window is reported incomplete. Read-only: this never transfers a
-    subject or enables the active loop.
-    """
-    end = time.time() if until is None else until
-    if end <= since:
-        raise click.UsageError("--until must be after --since")
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _request():
-        async with _get_client(api_url) as client:
-            return await client.execute("integration_shadow_report", {
-                "project_id": project_id, "since": since, "until": end,
-                "acknowledge_unknown": list(acknowledge_unknown),
-            })
-
-    data = dict(_run(_request()))
-    if output_path:
-        output_path.write_text(data["markdown"], encoding="utf-8")
-        data["written"] = str(output_path)
-    emit(ctx, data, render=lambda value: value["markdown"])
-
-
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
 @click.pass_context
 @_handle_errors
 def integration_status(ctx: click.Context, project_id: str, control_only: bool) -> None:
-    """Show rollout, readiness, active work, and cleanup for PROJECT_ID."""
+    """Show current Subjects, configuration and Git delivery for PROJECT_ID."""
     args: dict[str, Any] = {"project_id": project_id}
     if control_only:
         args["control_only"] = True
@@ -234,120 +195,6 @@ def integration_resolve_candidate_member(
     _execute(ctx, "integration_resolve_candidate_member", args)
 
 
-@integration.command("flush")
-@click.argument("project_id")
-@click.pass_context
-@_handle_errors
-def integration_flush(ctx: click.Context, project_id: str) -> None:
-    """Request an immediate eligibility pass or train sweep for PROJECT_ID."""
-    _execute(ctx, "integration_flush", {"project_id": project_id})
-
-
-@integration.command("eject")
-@click.option("--batch-id", required=True)
-@click.option("--task-id", required=True)
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_eject(ctx: click.Context, batch_id: str, task_id: str, reason: str) -> None:
-    """Remove one epic from a sealed batch while retaining its approval."""
-    _execute(
-        ctx,
-        "integration_eject",
-        {"batch_id": batch_id, "task_id": task_id, "reason": reason},
-    )
-
-
-@integration.command("enable")
-@click.argument("project_id")
-@click.option(
-    "--mode",
-    type=click.Choice(["disabled", "observe", "hierarchy", "train"]),
-    required=True,
-)
-@click.option("--expected-generation", type=click.IntRange(min=0), required=True)
-@click.option("--reason", required=True)
-@click.option("--waiver-id")
-@click.option("--interval-seconds", type=click.IntRange(min=1))
-@click.pass_context
-@_handle_errors
-def integration_enable(
-    ctx: click.Context,
-    project_id: str,
-    mode: str,
-    expected_generation: int,
-    reason: str,
-    waiver_id: str | None,
-    interval_seconds: int | None,
-) -> None:
-    """CAS PROJECT_ID to MODE using the generation reported by status."""
-    args: dict[str, Any] = {
-        "project_id": project_id,
-        "mode": mode,
-        "expected_generation": expected_generation,
-        "reason": reason,
-    }
-    if waiver_id is not None:
-        args["waiver_id"] = waiver_id
-    if interval_seconds is not None:
-        if mode != "train":
-            raise click.UsageError("--interval-seconds is only valid with --mode train")
-        args["interval_seconds"] = interval_seconds
-    _execute(ctx, "integration_enable", args)
-
-
-@integration.command("reconcile-unmaterialized")
-@click.argument("project_id")
-@click.option("--expected-generation", type=click.IntRange(min=0), required=True)
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_reconcile_unmaterialized(
-    ctx: click.Context, project_id: str, expected_generation: int, reason: str
-) -> None:
-    """Bind safe pre-rollout tasks and reserve their hierarchy origins."""
-    _execute(
-        ctx,
-        "integration_reconcile_unmaterialized",
-        {
-            "project_id": project_id,
-            "expected_generation": expected_generation,
-            "reason": reason,
-        },
-    )
-
-
-@integration.command("waive-history")
-@click.argument("project_id")
-@click.option("--reason", required=True)
-@click.option("--blocker-digest", required=True)
-@click.pass_context
-@_handle_errors
-def integration_waive_history(
-    ctx: click.Context,
-    project_id: str,
-    reason: str,
-    blocker_digest: str,
-) -> None:
-    """Waive only the exact historical blockers reported for PROJECT_ID."""
-    _execute(
-        ctx,
-        "integration_waive_history",
-        {
-            "project_id": project_id,
-            "reason": reason,
-            "blocker_digest": blocker_digest,
-        },
-    )
-
-
-@integration.command("resume")
-@click.argument("operation_id")
-@click.pass_context
-@_handle_errors
-def integration_resume(ctx: click.Context, operation_id: str) -> None:
-    """Resume a safe, human-required integration OPERATION_ID."""
-    _execute(ctx, "integration_resume", {"operation_id": operation_id})
 
 
 @integration.command("reevaluate-repair")
@@ -378,48 +225,6 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
     _execute(ctx, "integration_reevaluate_repair", args)
 
 
-@integration.command("abort")
-@click.argument("operation_id")
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_abort(ctx: click.Context, operation_id: str, reason: str) -> None:
-    """Abort a safe, human-required integration OPERATION_ID."""
-    _execute(ctx, "integration_abort", {"operation_id": operation_id, "reason": reason})
-
-
-@integration.command("settle-delivered-batch")
-@click.argument("batch_id")
-@click.option("--apply", is_flag=True, help="Apply the exact preview; default is read-only.")
-@click.option("--candidate", default=None, help="Full candidate SHA from the preview.")
-@click.option("--target-head", default=None, help="Full default-branch SHA from the preview.")
-@click.option("--snapshot", default=None, help="Durable state digest from the preview.")
-@click.option("--reason", default=None)
-@click.pass_context
-@_handle_errors
-def integration_settle_delivered_batch(ctx, batch_id, apply, candidate, target_head, snapshot, reason):
-    """Retire a train whose complete candidate is already on the default branch."""
-    if apply and not (candidate and target_head and snapshot and (reason or "").strip()):
-        raise click.UsageError("--apply requires --candidate, --target-head, --snapshot and --reason")
-    args = {"batch_id": batch_id, "dry_run": not apply}
-    for key, value in (("expected_candidate_sha", candidate), ("expected_target_sha", target_head),
-                       ("expected_snapshot_digest", snapshot), ("reason", reason)):
-        if value is not None:
-            args[key] = value
-    _execute(ctx, "integration_settle_delivered_batch", args)
-
-
-@integration.command("retry-cleanup")
-@click.argument("batch_id")
-@click.pass_context
-@_handle_errors
-def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
-    """Requeue the exact safe cleanup items for BATCH_ID.
-
-    A promoted batch whose cleanup never materialized has no item to requeue;
-    for it, this materializes the cleanup, which the daemon then runs.
-    """
-    _execute(ctx, "integration_retry_cleanup", {"batch_id": batch_id})
 
 
 @integration.command("release-owner")
@@ -479,98 +284,6 @@ def integration_release_stale_owners(
     _execute(ctx, "integration_release_stale_owners", args)
 
 
-@integration.command("adopt-legacy-deliveries")
-@click.option("--project-id", required=True)
-@click.option("--dry-run", is_flag=True, help="Report what would be adopted; change nothing.")
-@click.option(
-    "--supersede",
-    metavar="TASK_ID",
-    help="This child's work was re-delivered as the --by commit (needs --by and --reason).",
-)
-@click.option(
-    "--by",
-    "by",
-    metavar="SHA",
-    help="With --supersede: the commit on the default branch that re-delivered the work.",
-)
-@click.option(
-    "--retire",
-    "retire",
-    multiple=True,
-    metavar="TASK_ID",
-    help="Record this child's work as abandoned; deletes nothing (repeatable; needs --reason).",
-)
-@click.option(
-    "--accept",
-    "accept",
-    multiple=True,
-    metavar="TASK_ID",
-    help="Record this unprovable child as operator-accepted (repeatable; needs --reason).",
-)
-@click.option("--reason", help="Audit reason; required with --supersede, --retire or --accept.")
-@click.pass_context
-@_handle_errors
-def integration_adopt_legacy_deliveries(
-    ctx: click.Context,
-    project_id: str,
-    dry_run: bool,
-    supersede: str | None,
-    by: str | None,
-    retire: tuple[str, ...],
-    accept: tuple[str, ...],
-    reason: str | None,
-) -> None:
-    """Adopt delivered children of parents that finished outside the train.
-
-    Observe-mode status reports `missing_receipt` for a terminal child of a
-    terminal parent with no current parent collection: such a parent is never
-    collected again, so no train receipt can ever exist.  Status already
-    accepts a child the development publisher delivered to the default branch.
-    For every other flagged child this fetches the designated repository and
-    records a legacy delivery when a development delivery's commit or the
-    child's branch tip is an ancestor of the default branch, or when merging
-    the child's work into it changes nothing (re-delivered under other
-    commits).  It lists every child it cannot prove with the reason and, under
-    `undelivered`, what merging its work would still change.
-
-    Decide those one child at a time, with a reason: `--supersede TASK_ID --by
-    SHA` when SHA on the default branch re-delivered the work, `--retire
-    TASK_ID` when the work was abandoned (nothing is deleted), or `--accept
-    TASK_ID` to accept it without proof.  Safe to repeat.
-    """
-    if (supersede is None) != (by is None):
-        raise click.UsageError("--supersede and --by go together")
-    if (supersede or retire or accept) and not reason:
-        raise click.UsageError("--supersede, --retire and --accept require --reason")
-    args: dict[str, Any] = {"project_id": project_id, "dry_run": dry_run}
-    if supersede is not None:
-        args["supersede"] = {supersede: by}
-    if retire:
-        args["retire"] = list(retire)
-    if accept:
-        args["accept"] = list(accept)
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_adopt_legacy_deliveries", args)
-
-
-@integration.command("bind-legacy-repositories")
-@click.argument("project_id")
-@click.option("--apply", is_flag=True, help="Bind proven tasks; default is a dry run.")
-@click.option("--reason", help="Required audit reason when applying bindings.")
-@click.pass_context
-@_handle_errors
-def integration_bind_legacy_repositories(
-    ctx: click.Context, project_id: str, apply: bool, reason: str | None
-) -> None:
-    """List terminal hierarchy members with repository delivery proof, then bind them."""
-    if apply and not reason:
-        raise click.UsageError("--apply requires --reason")
-    _execute(ctx, "integration_bind_legacy_repositories", {
-        "project_id": project_id, "dry_run": not apply, "reason": reason,
-    })
-
-
 @integration.command("close-delivered-pr")
 @click.argument("project_id")
 @click.argument("pr_number", type=click.IntRange(min=1))
@@ -602,41 +315,6 @@ def integration_close_delivered_pr(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_close_delivered_pr", args)
-
-
-@integration.command("clear-stale-request")
-@click.argument("project_id")
-@click.option("--apply", is_flag=True, help="Release the request; default is a dry run.")
-@click.option(
-    "--request-id",
-    help="The outstanding request the dry run reported; required with --apply.",
-)
-@click.option("--reason", help="Required audit reason when applying.")
-@click.pass_context
-@_handle_errors
-def integration_clear_stale_request(
-    ctx: click.Context,
-    project_id: str,
-    apply: bool,
-    request_id: str | None,
-    reason: str | None,
-) -> None:
-    """Say whether PROJECT_ID's outstanding sweep request can still end; free it if not.
-
-    A train request is freed only by releasing its promoted batch.  When its
-    batch was aborted, is gone, or promoted without its lease, every flush
-    answers `coalesced` and no sweep runs.  The dry run prints the verdict
-    (`stale`, `unsealed`, `blocked`, `active`, `in_flight`, `none`) and the
-    request id; `--apply` needs that id and a reason, and refuses `blocked`.
-    """
-    if apply and not (request_id and reason):
-        raise click.UsageError("--apply requires --request-id and --reason")
-    args: dict[str, Any] = {"project_id": project_id, "dry_run": not apply}
-    if request_id is not None:
-        args["expected_request_id"] = request_id
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_clear_stale_request", args)
 
 
 @integration.command("redrive-root")
@@ -678,26 +356,6 @@ def integration_redrive_root(
     _execute(ctx, "integration_redrive_root", args)
 
 
-@integration.command("materialize-root")
-@click.argument("task_id")
-@click.option("--apply", is_flag=True, help="Record the proven root identity.")
-@click.option("--head", "expected_head_sha", help="Exact head reported by the dry run.")
-@click.option("--reason", help="Audit reason required when applying.")
-@click.pass_context
-@_handle_errors
-def integration_materialize_root(
-    ctx: click.Context, task_id: str, apply: bool,
-    expected_head_sha: str | None, reason: str | None,
-) -> None:
-    """Prove a completed legacy train root's PR head and record its missing identity."""
-    if apply and not (expected_head_sha and reason):
-        raise click.UsageError("--apply requires --head and --reason")
-    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
-    if expected_head_sha is not None:
-        args["expected_head_sha"] = expected_head_sha
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_materialize_root", args)
 
 
 @integration.command("authorize-root")
@@ -826,56 +484,6 @@ def integration_reopen_collection(
     _execute(ctx, "integration_reopen_collection", args)
 
 
-@integration.command("rebind-reused-identity")
-@click.option("--task-id", required=True)
-@click.option("--apply", is_flag=True, help="Rebind the identity; default is a dry run.")
-@click.option(
-    "--origin-id",
-    "origin_ids",
-    multiple=True,
-    help="An inherited origin the dry run reported; --apply needs every one.",
-)
-@click.option(
-    "--discard-tip",
-    "discard_tips",
-    multiple=True,
-    help="An unproven predecessor commit the dry run reported, explicitly abandoned.",
-)
-@click.option("--reason", help="Required audit reason when applying.")
-@click.pass_context
-@_handle_errors
-def integration_rebind_reused_identity(
-    ctx: click.Context,
-    task_id: str,
-    apply: bool,
-    origin_ids: tuple[str, ...],
-    discard_tips: tuple[str, ...],
-    reason: str | None,
-) -> None:
-    """Prove a task's inherited branch origin was delivered; retire it if so.
-
-    A task minted onto a deleted task's name inherited its branch origin and
-    checkpoint (`aq doctor --check integration.reused_task_identity`).  The dry
-    run checks every predecessor commit (origin base, checkpoint, the ref's
-    tip) against the default branch and lists what it cannot prove: a live
-    writer, a held owner, dependent integration history, a hierarchy/train
-    project, or a commit not on the default branch.  `--apply` needs every
-    `--origin-id` the dry run reported and a reason; it retires the origins
-    (kept for audit), moves the checkpoint into an audit event and touches no
-    branch.  `--discard-tip SHA` abandons one exact unproven commit.
-    """
-    if apply and not (origin_ids and reason):
-        raise click.UsageError("--apply requires --origin-id and --reason")
-    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
-    if origin_ids:
-        args["expected_origin_ids"] = list(origin_ids)
-    if discard_tips:
-        args["discard_tips"] = list(discard_tips)
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_rebind_reused_identity", args)
-
-
 @integration.command("rebind-repair")
 @click.option("--task-id", required=True)
 @click.option("--dry-run/--apply", default=True, help="Prove only, or reserve the proven candidate.")
@@ -999,30 +607,6 @@ def integration_rebind_detached_repair(
     _execute(ctx, "integration_rebind_detached_repair", args)
 
 
-@integration.command("release-delegates")
-@click.argument("operation_id")
-@click.option("--archive-obsolete", is_flag=True,
-              help="Archive obsolete terminal repair stages after checking owners, claims and gates.")
-@click.pass_context
-@_handle_errors
-def integration_release_delegates(
-    ctx: click.Context, operation_id: str, archive_obsolete: bool
-) -> None:
-    """Settle the delegate tasks of an OPERATION_ID that has already ended.
-
-    For one operation that was cancelled or completed before its delegates were
-    released. The fleet-wide equivalent is
-    `aq doctor --check integration.stranded_delegates --fix`.
-
-    With --archive-obsolete, archive terminal generated repair delegates after
-    proving they hold no authority or gates. Earlier stages of a live operation
-    may qualify; its current delegate and the operation remain untouched.
-    """
-    _execute(ctx, "integration_release_delegates", {
-        "operation_id": operation_id, "archive_obsolete": archive_obsolete,
-    })
-
-
 @integration.command("recover-candidate-member")
 @click.argument("reservation_id")
 @click.pass_context
@@ -1032,551 +616,10 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
     _execute(ctx, "integration_recover_candidate_member", {"reservation_id": reservation_id})
 
 
-@integration.command("develop")
-@click.argument("project_id")
-@click.option("--validation", type=click.Choice(["focused", "advisory", "none"]), default="focused")
-@click.option("--command", "commands", multiple=True,
-              help="Finite validation preset command; repeatable. No shell or wrapper scripts.")
-@click.option("--interval-seconds", type=click.IntRange(min=1), default=300)
-@click.option("--timeout-seconds", type=click.IntRange(1, 3600), default=None,
-              help="Seconds each command may run (default 300); slot wait is not counted.")
-@click.option("--slot-wait-seconds", type=click.IntRange(0, 3600), default=None,
-              help="Seconds a command may queue for a test slot before the batch is "
-                   "deferred (default 600).")
-@click.option("--regenerate", default=None,
-              help="Command that rebuilds the files .gitattributes marks merge=aq-generated, "
-                   "run after a merge both sides changed one in (e.g. "
-                   "scripts/regenerate-generated.sh).")
-@click.option("--regenerate-timeout-seconds", type=click.IntRange(1, 3600), default=None,
-              help="Seconds one regeneration may run (default 600).")
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_develop(
-    ctx, project_id, validation, commands, interval_seconds, timeout_seconds,
-    slot_wait_seconds, regenerate, regenerate_timeout_seconds, reason,
-):
-    """Use automatic development batches with explicit local validation."""
-    policy = {"validation": validation, "commands": list(commands),
-              "interval_seconds": interval_seconds}
-    if timeout_seconds is not None:
-        policy["timeout_seconds"] = timeout_seconds
-    if slot_wait_seconds is not None:
-        policy["slot_wait_seconds"] = slot_wait_seconds
-    if regenerate is not None:
-        policy["regenerate"] = regenerate
-    if regenerate_timeout_seconds is not None:
-        policy["regenerate_timeout_seconds"] = regenerate_timeout_seconds
-    _execute(ctx, "integration_develop", {"project_id": project_id, "reason": reason,
-        "policy": policy})
-
-
-@integration.command("adopt")
-@click.argument("project_id")
-@click.option("--task", "task_ids", multiple=True, required=True)
-@click.option("--target-ref", default="refs/heads/main")
-@click.option("--head-sha", required=True)
-@click.option("--accept-equivalent", is_flag=True, help="Explicitly accept operator-edited or evidence-only delivery.")
-@click.option("--settle-delivered-children", is_flag=True,
-              help="Settle one quiet managed parent after proving every completed child on the default branch.")
-@click.option("--dry-run", is_flag=True, help="Report delivered-child settlement without writing.")
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_adopt(ctx, project_id, task_ids, target_ref, head_sha, accept_equivalent,
-                      settle_delivered_children, dry_run, reason):
-    """Record already-delivered work without replaying old repair checkpoints."""
-    _execute(ctx, "integration_adopt", {"project_id": project_id, "task_ids": list(task_ids),
-        "target_ref": target_ref, "head_sha": head_sha, "accept_equivalent": accept_equivalent,
-        "settle_delivered_children": settle_delivered_children, "dry_run": dry_run, "reason": reason})
-
-
-@integration.command("sweep")
-@click.argument("project_id")
-@click.option("--retry", is_flag=True, help="Retry parked source revisions.")
-@click.option("--recover-child", help="Retry and verify delivery of a completed child task.")
-@click.pass_context
-@_handle_errors
-def integration_development_sweep(ctx, project_id, retry, recover_child):
-    """Build and publish a development batch now."""
-    _execute(ctx, "integration_development_sweep", {
-        "project_id": project_id, "retry": retry, "recover_child": recover_child,
-    })
-
-
-@integration.command("settle-parked")
-@click.argument("project_id")
-@click.argument("operation_id")
-@click.option("--dismiss", is_flag=True,
-              help="Only withdraw the park: its sources are merged again on the next sweep "
-                   "(and park again if they still conflict). Default: settle them as not owed.")
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_settle_parked(ctx, project_id, operation_id, dismiss, reason):
-    """Settle a parked development delivery as not owed, or dismiss it.
-
-    OPERATION_ID is a row from `aq integration status PROJECT_ID` `parked`.
-    Settling records each parked source (and every repair filed for it) as not
-    owed to the row's target: the publisher never merges it there and its
-    dependents are released.
-    """
-    _execute(ctx, "integration_settle_parked", {
-        "project_id": project_id, "operation_id": operation_id, "dismiss": dismiss,
-        "reason": reason,
-    })
-
-
-@integration.command("migrate-provenance")
-@click.argument("project_id")
-@click.option("--apply", is_flag=True, help="Publish verified evidence; default is read-only inventory.")
-@click.option("--limit", type=click.IntRange(1, 1000), default=500)
-@click.option("--offset", type=click.IntRange(min=0), default=0)
-@click.option("--task-id", default=None,
-              help="Only the sources this held task's close needs; ignores --limit/--offset.")
-@click.option("--source", default=None,
-              help="With --task-id: attest the exact 40-hex final source of that COMPLETED "
-                   "task's current completion, for a legacy close that recorded none.")
-@click.option("--no-artifact", is_flag=True,
-              help="With --task-id and --reason: attest that this completed work has no artifact.")
-@click.option("--reason", default=None,
-              help="Audit reason; required for a missing completion row or --no-artifact.")
-@click.pass_context
-@_handle_errors
-def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source,
-                                 no_artifact, reason):
-    """Inventory legacy completion generations and exact repair bindings in Git.
-
-    Each page is bounded in time: follow next_offset (and budget_exhausted);
-    counts summarises the page.
-    """
-    if source and not task_id:
-        raise click.UsageError("--source attests one task's completion; pass --task-id")
-    if no_artifact and (source or not task_id or not (reason or "").strip()):
-        raise click.UsageError("--no-artifact requires --task-id and --reason, without --source")
-    _execute(ctx, "integration_migrate_provenance", {
-        "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
-        **({"task_id": task_id} if task_id else {}),
-        **({"source": source} if source else {}),
-        **({"no_artifact": True} if no_artifact else {}),
-        **({"reason": reason} if reason else {}),
-    })
-
-
-@integration.command("cancel-preserving")
-@click.argument("operation_id")
-@click.option("--reason", required=True)
-@click.pass_context
-@_handle_errors
-def integration_cancel_preserving(ctx, operation_id, reason):
-    """Cancel obsolete repair scheduling while retaining refs and attached workspaces."""
-    _execute(ctx, "integration_cancel_preserving", {"operation_id": operation_id, "reason": reason})
-
-
 # ---------------------------------------------------------------------------
-# aq integration onboard-train
+# App-mode diagnostics and trust manifests
 # ---------------------------------------------------------------------------
 
-#: Top-level files that name a project's stack (``train_onboarding.detect_stack``).
-_STACK_FILES = (
-    "package.json", "package-lock.json", "pnpm-lock.yaml", "pyproject.toml",
-    "requirements.txt", ".nvmrc",
-)
-
-
-def _git(repo: str, *args: str) -> str:
-    import subprocess
-
-    result = subprocess.run(
-        ["git", "-C", repo, *args], capture_output=True, text=True, timeout=30, check=False
-    )
-    if result.returncode != 0:
-        raise click.ClickException(
-            f"git {' '.join(args)} failed in {repo}: {result.stderr.strip() or result.returncode}"
-        )
-    return result.stdout
-
-
-def _read_repository(repo: str, ref: str) -> tuple[str, dict[str, str], dict[str, str]]:
-    """``(commit, workflows, stack files)`` at ``ref``.  Reads objects only: no checkout."""
-    commit = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
-    listing = _git(repo, "ls-tree", "--name-only", commit, ".github/workflows/").split()
-    workflows = {
-        path: _git(repo, "show", f"{commit}:{path}")
-        for path in listing
-        if path.endswith((".yml", ".yaml"))
-    }
-    top = set(_git(repo, "ls-tree", "--name-only", commit).split())
-    files = {name: _git(repo, "show", f"{commit}:{name}") for name in _STACK_FILES if name in top}
-    return commit, workflows, files
-
-
-def _daemon_config() -> dict[str, Any]:
-    import os
-
-    import yaml
-
-    path = os.path.expanduser("~/.agent-queue/config.yaml")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def _github_app_id(config: dict[str, Any]) -> int | None:
-    integration_config = config.get("integration")
-    app = integration_config.get("github_app") if isinstance(integration_config, dict) else None
-    if not isinstance(app, dict):
-        return None
-    try:
-        return int(app.get("app_id"))
-    except (TypeError, ValueError):
-        return None
-
-
-def _gh_json(*args: str) -> str | None:
-    """One best-effort ``gh`` read; ``None`` when gh is absent or refuses."""
-    from urllib.parse import urlsplit
-
-    from src.git.github_cli import ExistingLoginCredentials, GhRunner
-    from src.git.github_contracts import GitHubAccessError
-
-    pr_view = args[:2] == ("pr", "view")
-    if pr_view:
-        parsed = urlsplit(args[2])
-        parts = parsed.path.strip("/").split("/")
-        if parsed.netloc != "github.com" or len(parts) != 4 or parts[2] != "pull":
-            return None
-        args = ("api", f"repos/{parts[0]}/{parts[1]}/pulls/{parts[3]}", "--jq", ".state")
-
-    async def _read() -> str | None:
-        runner = GhRunner(ExistingLoginCredentials(), timeout=20)
-        result = await runner.run(args, hostname="github.com", check=False)
-        if result.returncode != 0:
-            return None
-        value = result.stdout.decode("utf-8").strip()
-        return value.upper() if pr_view else value
-
-    try:
-        return _run(_read())
-    except (GitHubAccessError, OSError, UnicodeDecodeError):
-        return None
-
-
-def _render_onboarding(data: dict[str, Any]) -> None:
-    from .app import console
-
-    console.print(
-        f"[bold]{data['project_id']}[/]: shape [cyan]{data['shape']}[/], "
-        f"path [cyan]{data['path']}[/]"
-    )
-    source = data.get("source") or {}
-    if source:
-        console.print(f"read {source.get('repo')} at {source.get('ref')} ({source.get('commit')})")
-    if data.get("required_checks"):
-        console.print(
-            f"required checks ({data.get('check_version')}, "
-            f"{data.get('credential_mode')} producer):"
-        )
-        for name in data["required_checks"]:
-            console.print(f"  - {name}")
-    for report in data.get("workflows") or []:
-        gate = "gates the train" if report["push_on_train_refs"] else "does not run on train refs"
-        console.print(f"[dim]{report['path']}: {gate}[/]")
-        for job in report["jobs"]:
-            reason = f" ({job['reason']})" if job.get("reason") else ""
-            console.print(f"[dim]  {job['job_id']}: {job['status']}{reason}[/]")
-        for note in report.get("notes") or []:
-            console.print(f"[yellow]  note: {note}[/]")
-    for fix in data.get("trigger_fixes") or []:
-        console.print("[bold]Trigger fix[/]")
-        console.print(fix, markup=False, highlight=False, soft_wrap=True)
-    for command in data.get("validation_commands") or []:
-        console.print(f"validation command: {command}", markup=False, soft_wrap=True)
-    if data.get("trust_manifest"):
-        console.print("App-mode trust manifest: ready (--write-trust-manifest writes it)")
-    audit = data.get("audit_workflow") or {}
-    if audit and data.get("credential_mode") == "app":
-        calls = ", ".join(audit.get("calls") or [])
-        if not calls:
-            does = "fails an Unattested push job (no gating CI it can call)"
-        elif audit.get("fails"):
-            does = f"re-runs {calls}; fails an Unattested push job for the rest"
-        else:
-            does = f"re-runs {calls}"
-        console.print(
-            f"main push audit: {does} (--write-audit-workflow writes it)", highlight=False
-        )
-        for item in audit.get("uncalled") or []:
-            console.print(
-                f"[yellow]  note: not called: {item['path']}: {item['reason']}[/]",
-                highlight=False,
-            )
-    for problem in data.get("problems") or []:
-        console.print(f"[red]problem:[/] {problem}", highlight=False)
-    for path in data.get("written") or []:
-        console.print(f"[green]wrote[/] {path}")
-    for number, step in enumerate(data.get("steps") or [], start=1):
-        console.print(f"\n[bold]{number}. {step['title']}[/]")
-        if step.get("note"):
-            console.print(step["note"], highlight=False)
-        for command in step.get("commands") or []:
-            # Unwrapped, so a long command still pastes as one line.
-            console.print(command, markup=False, highlight=False, soft_wrap=True)
-
-
-@integration.command("onboard-train")
-@click.argument("project_id")
-@click.option("--repo", "repo_path", type=click.Path(exists=True, file_okay=False),
-              help="Checkout to read workflows from (default: the project's workspace).")
-@click.option("--ref", help="Ref to read (default: origin/<default branch>). Fetch first if stale.")
-@click.option("--repo-url", help="Repository URL when the daemon's project record is unreadable.")
-@click.option("--default-branch", help="Default branch when the project record is unreadable.")
-@click.option("--credential-mode", type=click.Choice(["auto", "existing-login", "app"]),
-              default="auto", show_default=True,
-              help="auto reads integration.github_app from ~/.agent-queue/config.yaml.")
-@click.option("--route", type=click.Choice(["auto", "shared", "project"]), default="auto",
-              show_default=True,
-              help="auto: the project's own reviewed pair when shipped, else the shared pair.")
-@click.option("--intelligence-class", default="standard-high", show_default=True,
-              help="Class hint for primary, verifier and debug repair work; the "
-                   "router assigns their profiles.")
-@click.option("--check", "checks", multiple=True,
-              help="Required check name; repeatable. Replaces the derived set.")
-@click.option("--check-version", help="Required-check set version (default: a digest of names).")
-@click.option("--github-repository-id", type=click.IntRange(min=1),
-              help="Numeric GitHub id for the App-mode trust manifest (default: gh api).")
-@click.option("--validation-command", "validation_commands", multiple=True,
-              help="Development-path validation command; repeatable. Must be a job preset "
-                   "(pytest, aq test, ruff check, npm run build); default: none.")
-@click.option("--repository-id",
-              help="The project's integration repository id when status does not report it.")
-@click.option("--test-command", help="Test command for the --write-workflow template.")
-@click.option("--interval-seconds", type=click.IntRange(min=1), default=300, show_default=True)
-@click.option("--write-policy", type=click.Path(dir_okay=False),
-              help="Write the generated train policy JSON here.")
-@click.option("--write-trust-manifest", type=click.Path(dir_okay=False),
-              help="Write the App-mode .github/agent-queue-integration.json here.")
-@click.option("--write-workflow", type=click.Path(dir_okay=False),
-              help="Write a starting CI workflow here (projects without CI).")
-@click.option("--write-audit-workflow", type=click.Path(dir_okay=False),
-              help="Write the App-mode main push audit (main-attestation.yml) here.")
-@click.option("--write-ruleset", type=click.Path(dir_okay=False),
-              help="Write the App-mode default-branch ruleset JSON here.")
-@click.option("--check-prs/--no-check-prs", default=True, show_default=True,
-              help="Ask gh which legacy pull requests are still open.")
-@click.pass_context
-@_handle_errors
-def integration_onboard_train(
-    ctx, project_id, repo_path, ref, repo_url, default_branch, credential_mode, route,
-    intelligence_class,
-    checks, check_version, github_repository_id, validation_commands, repository_id,
-    test_command,
-    interval_seconds, write_policy, write_trust_manifest, write_workflow,
-    write_audit_workflow, write_ruleset, check_prs,
-):
-    """Plan PROJECT_ID's move onto the integration train; print every step.
-
-    Reads the project from the daemon and its workflows from Git, derives the
-    required check-run names, and prints the drain, bind, policy, observe and
-    ready-check commands.  Nothing is changed: the mode flips stay with the
-    supervisor or local operator.  With --repo and --repo-url it plans from Git
-    alone when the daemon's records are out of scope or unreachable.  In App
-    credential mode it adds the trust manifest and main push audit, the Actions
-    variables and the ruleset, in that order around the drain.  Runbooks:
-    docs/config/train-onboarding.md, docs/config/app-mode-train.md.
-    """
-    import json
-    from pathlib import Path
-
-    from src.integration import train_onboarding as onboarding
-    from src.playbooks.required import reviewed_bundle_source
-
-    from .exceptions import CommandError, DaemonNotRunningError
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _reads():
-        reads: dict[str, Any] = {}
-        async with _get_client(api_url) as client:
-            for key, command, args in (
-                ("project", "get_project", {"project_id": project_id}),
-                ("status", "integration_status", {"project_id": project_id}),
-                ("completed", "list_tasks", {"project_id": project_id, "status": "COMPLETED"}),
-                ("blocked", "list_tasks", {"project_id": project_id, "status": "BLOCKED"}),
-            ):
-                try:
-                    reads[key] = await client.execute(command, args)
-                except CommandError:
-                    reads[key] = None
-        return reads
-
-    try:
-        optional = _run(_reads())
-    except DaemonNotRunningError:
-        if not (repo_path and repo_url):
-            raise
-        optional = {}
-    project = optional.get("project") or {}
-    status = optional.get("status") or {}
-    repo = repo_path or project.get("workspace")
-    if not repo or not Path(repo).is_dir():
-        raise click.UsageError(f"{project_id} has no readable workspace; pass --repo PATH")
-    notes: list[str] = []
-    repository_url = repo_url or project.get("repo_url") or ""
-    if not repository_url:
-        # The supervisor's grants omit get_project: fall back to the checkout.
-        try:
-            repository_url = _git(repo, "remote", "get-url", "origin").strip()
-        except click.ClickException as exc:
-            raise click.UsageError(
-                f"cannot read {project_id}'s repository URL; pass --repo-url"
-            ) from exc
-        notes.append(
-            f"repository URL {repository_url!r} read from the checkout's origin; the binding "
-            "requires it to match the project record exactly (pass --repo-url to override)"
-        )
-    branch = default_branch or project.get("repo_default_branch") or "main"
-    ref = ref or f"origin/{branch}"
-    commit, workflows, files = _read_repository(repo, ref)
-    classification = onboarding.classify(repository_url, workflows)
-
-    config = _daemon_config()
-    app_id = _github_app_id(config)
-    if credential_mode == "auto":
-        credential_mode = "app" if app_id is not None else "existing-login"
-    full_name = classification.full_name
-    if (
-        credential_mode == "app"
-        and github_repository_id is None
-        and full_name
-        and classification.shape.startswith("github")
-    ):
-        found = _gh_json("api", f"repos/{full_name}", "--jq", ".id")
-        github_repository_id = int(found) if found and found.isdigit() else None
-
-    parent_route = root_route = None
-    if classification.shape.startswith("github"):
-        parent_route, root_route = onboarding.select_routes(
-            reviewed_bundle_source(), project_id, route
-        )
-
-    def _legacy(result: Any) -> list[dict[str, Any]]:
-        return [task for task in (result or {}).get("tasks") or [] if isinstance(task, dict)]
-
-    legacy = [
-        (task["id"], task["pr_url"])
-        for task in _legacy(optional.get("completed"))
-        if task.get("pr_url") and not task.get("parent_task_id")
-    ]
-    unchecked = 0
-    if check_prs and legacy:
-        # A bounded number of gh reads; the rest are reported, never dropped.
-        checked, unchecked = legacy[:50], max(0, len(legacy) - 50)
-        legacy = [
-            (task_id, url)
-            for task_id, url in checked
-            if _gh_json("pr", "view", url, "--json", "state", "--jq", ".state") in (None, "OPEN")
-        ]
-    completed = optional.get("completed") or {}
-    if completed.get("hidden_completed") or (completed.get("total") or 0) > len(
-        completed.get("tasks") or []
-    ):
-        notes.append("the daemon capped the completed-task list; some legacy PRs may be unlisted")
-    designated = repository_id or status.get("repository_id") or next(
-        (
-            row.get("repository_id")
-            for row in status.get("deliveries") or []
-            if isinstance(row, dict) and row.get("repository_id")
-        ),
-        None,
-    )
-    facts = onboarding.ProjectFacts(
-        project_id=project_id,
-        repository_url=repository_url,
-        default_branch=branch,
-        integration_repository_id=designated,
-        current_mode=status.get("effective_mode"),
-        legacy_pull_requests=tuple(legacy),
-        blocked_tasks=tuple(task["id"] for task in _legacy(optional.get("blocked"))),
-        unchecked_pull_requests=unchecked,
-    )
-    policy_path = write_policy or f"train-policy.{project_id}.json"
-    plan = onboarding.plan_onboarding(
-        facts,
-        classification,
-        parent_route=parent_route,
-        root_route=root_route,
-        credential_mode=credential_mode,
-        intelligence_class=intelligence_class,
-        check_names=checks or None,
-        check_version=check_version,
-        attestation_app_id=app_id,
-        github_repository_id=github_repository_id,
-        validation=validation_commands,
-        interval_seconds=interval_seconds,
-        policy_path=policy_path,
-        manifest_path=write_trust_manifest or onboarding.TRUST_MANIFEST_PATH,
-        workflow_path=write_workflow or ".github/workflows/ci.yml",
-        audit_workflow_path=write_audit_workflow or onboarding.AUDIT_WORKFLOW_PATH,
-        ruleset_path=write_ruleset or f"ruleset.{project_id}.json",
-    )
-
-    written: list[str] = []
-
-    def _write(path: str, text: str) -> None:
-        Path(path).write_text(text, encoding="utf-8")
-        written.append(path)
-
-    if write_policy and plan.policy is not None:
-        _write(write_policy, json.dumps(plan.policy, indent=2) + "\n")
-    if write_trust_manifest and plan.trust_manifest is not None:
-        from src.integration.trust_manifest import canonical_text
-
-        # The same bytes ``aq integration trust-manifest --write`` produces.
-        _write(write_trust_manifest, canonical_text(plan.trust_manifest))
-    if write_workflow:
-        _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
-    if write_audit_workflow:
-        if plan.audit_workflow is None:
-            notes.append(
-                "--write-audit-workflow: only a GitHub project has the main push audit; "
-                "nothing written"
-            )
-        else:
-            _write(
-                write_audit_workflow,
-                onboarding.audit_workflow_template(
-                    onboarding.audit_fallback(classification), default_branch=branch
-                ),
-            )
-    if write_ruleset:
-        if plan.ruleset is None:
-            notes.append(
-                "--write-ruleset: the target ruleset needs App credential mode on a GitHub "
-                "project and the App id; nothing written"
-            )
-        else:
-            _write(write_ruleset, json.dumps(plan.ruleset, indent=2) + "\n")
-    by_path = {report.path: report for report in classification.workflows}
-    data = plan.as_dict()
-    data["problems"] = [*notes, *data["problems"]]
-    data.update(
-        source={"repo": repo, "ref": ref, "commit": commit},
-        trigger_fixes=[
-            onboarding.trigger_fix(by_path[path], workflows[path])
-            for path in classification.trigger_fixes
-        ],
-        written=written,
-    )
-    emit(ctx, data, entity="integration", render=_render_onboarding)
-
-
-# ---------------------------------------------------------------------------
-# aq integration trust-manifest
-# ---------------------------------------------------------------------------
 
 
 def _trust_manifest_write_command(
@@ -1593,72 +636,6 @@ def _trust_manifest_write_command(
         parts += ["--repository-id", repository_id]
     parts += ["--write", TRUST_MANIFEST_PATH]
     return shlex.join(parts)
-
-
-def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:
-    """``(passes, warning codes)`` for ``--check``: identity decides, the check set warns."""
-    passes = bool(committed.get("present") and committed.get("identity_equal"))
-    return passes, list(committed.get("warnings") or []) if passes else []
-
-
-def _render_diff(committed: dict[str, Any], *, indent: str = "  ") -> None:
-    import json
-
-    from .app import console
-
-    for item in committed.get("diff") or []:
-        have = (
-            json.dumps(item.get("committed"))
-            if item.get("committed_present", True)
-            else "<absent>"
-        )
-        console.print(
-            f"{indent}{item['field']} ({item['kind']}): "
-            f"expected {json.dumps(item.get('expected'))}, "
-            f"committed {have}",
-            markup=False, highlight=False, soft_wrap=True,
-        )
-
-
-def _render_trust_manifest(data: dict[str, Any], *, mode: str, fix: str) -> None:
-    from .app import console
-
-    committed = data.get("committed") or {}
-    where = (
-        f"{committed.get('path')} on {committed.get('ref')}"
-        + (f" ({committed['sha']})" if committed.get("sha") else "")
-    )
-    if mode == "print":
-        click.echo(data["text"], nl=False)
-        return
-    if mode == "write":
-        console.print(
-            f"[green]wrote[/] {data['written']} (sha256 {data['sha256']}) for "
-            f"{data['full_name']} ({data['github_repository_id']}), App "
-            f"{data['attestation_app_id']}, {data['policy_source']} policy",
-            highlight=False,
-        )
-    passes, warnings = _check_verdict(committed)
-    if not committed.get("present"):
-        reason = committed.get("error") or "absent"
-        console.print(f"[red]committed copy unavailable[/]: {where}: {reason}", highlight=False)
-    elif passes and not warnings:
-        console.print(f"[green]committed copy matches[/]: {where}", highlight=False)
-    elif passes:
-        console.print(f"committed copy matches on identity: {where}", highlight=False)
-        for code in warnings:
-            console.print(f"[yellow]warning:[/] {code}", highlight=False)
-        _render_diff(committed)
-    else:
-        detail = f": {committed['error']}" if committed.get("error") else ""
-        console.print(
-            f"[red]committed copy differs[/] ({committed.get('code')}): {where}{detail}",
-            highlight=False,
-        )
-        _render_diff(committed)
-    if mode == "check" and not (passes and not warnings):
-        console.print("regenerate with:", highlight=False)
-        console.print(fix, markup=False, highlight=False, soft_wrap=True)
 
 
 @integration.command("trust-manifest")
@@ -1729,13 +706,6 @@ def integration_trust_manifest(
         raise SystemExit(1)
 
 
-# ---------------------------------------------------------------------------
-# aq integration app-verify / app-setup
-# ---------------------------------------------------------------------------
-
-_STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red"}
-
-
 def _app_mode_args(
     project_id: str, policy_path: str | None, repository_id: str | None
 ) -> dict[str, Any]:
@@ -1766,12 +736,6 @@ def _app_verify(ctx: click.Context, args: dict[str, Any]) -> dict[str, Any]:
 
 def _app_item(data: dict[str, Any], item_id: str) -> dict[str, Any]:
     return next((item for item in data.get("items") or [] if item.get("id") == item_id), {})
-
-
-def _compact(value: Any) -> str:
-    import json
-
-    return json.dumps(value, sort_keys=True, separators=(", ", ": "))
 
 
 def _render_app_item(item: dict[str, Any], *, detail: bool = True) -> None:
@@ -1882,12 +846,6 @@ def _run_gh(argv: list[str]) -> dict[str, Any]:
     if result.returncode != 0:
         outcome["error"] = result.stderr.strip() or f"exit {result.returncode}"
     return outcome
-
-
-#: Protection codes the §8.1 target ruleset resolves; any other code keeps its own fix.
-_RULESET_FIXES = frozenset({
-    "main_protection_missing", "branch_protection_incompatible", "main_protection_app_bypass",
-})
 
 
 def _ruleset_commands(full_name: str, ruleset_id: Any) -> list[str]:
@@ -2056,3 +1014,79 @@ def _shlex_join(argv: list[str]) -> str:
     import shlex
 
     return shlex.join(argv)
+
+
+
+def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:
+    """``(passes, warning codes)`` for ``--check``: identity decides, the check set warns."""
+    passes = bool(committed.get("present") and committed.get("identity_equal"))
+    return passes, list(committed.get("warnings") or []) if passes else []
+
+def _render_diff(committed: dict[str, Any], *, indent: str = "  ") -> None:
+    import json
+
+    from .app import console
+
+    for item in committed.get("diff") or []:
+        have = (
+            json.dumps(item.get("committed"))
+            if item.get("committed_present", True)
+            else "<absent>"
+        )
+        console.print(
+            f"{indent}{item['field']} ({item['kind']}): "
+            f"expected {json.dumps(item.get('expected'))}, "
+            f"committed {have}",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+
+def _render_trust_manifest(data: dict[str, Any], *, mode: str, fix: str) -> None:
+    from .app import console
+
+    committed = data.get("committed") or {}
+    where = (
+        f"{committed.get('path')} on {committed.get('ref')}"
+        + (f" ({committed['sha']})" if committed.get("sha") else "")
+    )
+    if mode == "print":
+        click.echo(data["text"], nl=False)
+        return
+    if mode == "write":
+        console.print(
+            f"[green]wrote[/] {data['written']} (sha256 {data['sha256']}) for "
+            f"{data['full_name']} ({data['github_repository_id']}), App "
+            f"{data['attestation_app_id']}, {data['policy_source']} policy",
+            highlight=False,
+        )
+    passes, warnings = _check_verdict(committed)
+    if not committed.get("present"):
+        reason = committed.get("error") or "absent"
+        console.print(f"[red]committed copy unavailable[/]: {where}: {reason}", highlight=False)
+    elif passes and not warnings:
+        console.print(f"[green]committed copy matches[/]: {where}", highlight=False)
+    elif passes:
+        console.print(f"committed copy matches on identity: {where}", highlight=False)
+        for code in warnings:
+            console.print(f"[yellow]warning:[/] {code}", highlight=False)
+        _render_diff(committed)
+    else:
+        detail = f": {committed['error']}" if committed.get("error") else ""
+        console.print(
+            f"[red]committed copy differs[/] ({committed.get('code')}): {where}{detail}",
+            highlight=False,
+        )
+        _render_diff(committed)
+    if mode == "check" and not (passes and not warnings):
+        console.print("regenerate with:", highlight=False)
+        console.print(fix, markup=False, highlight=False, soft_wrap=True)
+
+_STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red"}
+
+def _compact(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(", ", ": "))
+
+_RULESET_FIXES = frozenset({
+    "main_protection_missing", "branch_protection_incompatible", "main_protection_app_bypass",
+})

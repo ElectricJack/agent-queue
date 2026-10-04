@@ -708,9 +708,9 @@ def test_assignment_router_plans_classifies_and_applies() -> None:
     assert definition.steps["route-task--failed"].outcome == "failed"
 
 
-def test_review_dedup_key_matches_doctor() -> None:
+def test_review_dedup_key_matches_shared_key() -> None:
     """The doctor's review key still matches the retired review recording."""
-    from src.doctor.integration_checks import _review_dedup_key
+    from src.review_keys import review_task_dedup_key
 
     definition = load_definition_json(RETIRED_REVIEW_PIPELINE.read_text(encoding="utf-8"))
     step = definition.steps["per-task-review--create-review"]
@@ -720,7 +720,7 @@ def test_review_dedup_key_matches_doctor() -> None:
         part["value"] if part["type"] == "literal" else "TASK-1"
         for part in template["parts"]
     )
-    assert rendered == _review_dedup_key("TASK-1")
+    assert rendered == review_task_dedup_key("TASK-1")
 
 
 def test_artifact_validates_against_the_live_registries() -> None:

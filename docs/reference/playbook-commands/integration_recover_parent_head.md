@@ -106,7 +106,7 @@ and current fence. The result reports attempts, deadline and stage/operation sta
 Apply appends a `parent_head_extensions` edge to the original stage dossier,
 including its authoring identity and operator recovery reason. It advances
 `task_integration_checkpoints.checkpoint_sha` and clears current aggregate
-verification. `ParentCompletion.readiness_on` consumes this edge alongside the
+verification. `ParentEpisodeRecords.readiness_on` consumes this edge alongside the
 immutable receipts. Episode, generation, repair policy, attempts and deadlines
 retain their values. Recovery of a later collected head marks the closed stage
 passed, returns the operation to active verification, and queues a fresh aggregate

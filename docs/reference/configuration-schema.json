@@ -734,7 +734,7 @@
         "merge_required_checks": [],
         "owner_recovery_sweep": true,
         "publisher_stall_after": 5,
-        "reconciler_active": false,
+        "reconciler_active": true,
         "reconciler_shadow": false,
         "scratch_probe": null,
         "service_item_timeout_seconds": 60.0,
@@ -814,7 +814,7 @@
           "type": "integer"
         },
         "reconciler_active": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "reconciler_shadow": {

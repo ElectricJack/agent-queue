@@ -161,47 +161,25 @@ start code work, tests or QA from a digest author turn.
     "gate_list",
     "get_schema",
     "get_task",
-    "integration_abort",
-    "integration_adopt",
-    "integration_adopt_legacy_deliveries",
-    "integration_bind_legacy_repositories",
-    "integration_cancel_preserving",
-    "integration_clear_stale_request",
     "integration_close_delivered_pr",
-    "integration_develop",
-    "integration_development_sweep",
-    "integration_eject",
-    "integration_enable",
-    "integration_flush",
-    "integration_migrate_provenance",
-    "integration_rebind_reused_identity",
     "integration_rebind_repair",
     "integration_rebind_detached_repair",
     "integration_recover_preserved_repair",
     "integration_recover_parent_head",
-    "integration_settle_delivered_batch",
-    "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
     "integration_redrive_child",
     "integration_reopen_collection",
     "integration_redrive_root",
-    "integration_materialize_root",
     "integration_authorize_root",
-    "integration_release_delegates",
     "integration_release_owner",
     "integration_reserve_owner",
     "integration_release_stale_owners",
-    "integration_resume",
     "integration_reevaluate_repair",
-    "integration_settle_parked",
-    "integration_retry_cleanup",
-    "integration_shadow_report",
     "integration_status",
     "integration_transfer_owner",
     "integration_trust_manifest",
     "integration_app_verify",
-    "integration_waive_history",
     "integration_resolve_candidate_member",
     "list_intelligence_classes",
     "list_projects",
@@ -255,7 +233,6 @@ start code work, tests or QA from a digest author turn.
     "task_close",
     "task_comment",
     "task_comments",
-    "task_deliver",
     "task_handoff",
     "task_heartbeat",
     "task_claim",
@@ -317,7 +294,7 @@ start code work, tests or QA from a digest author turn.
   | Work is queued for a pool without live sessions | Find why the pool starts no session, then send the task back to its router (`aq task route --task-id <task> --reason "..."`); never name a profile to move it. |
   | A `blocks` edge remains after its blocker's commits reached the target branch | Remove that satisfied dependency edge. |
   | An integration child is stuck or a fix is outdated | Run the operation's recover-child sweep, or deploy a newer fix through the approved path. |
-  | A parked development delivery holds work the target does not owe (already on a previous target, superseded, delivered another way) | `aq integration settle-parked <project> <operation-id> --reason "..."` from `aq integration status` `parked`; `--dismiss` retries a stale park instead. Never move the target branch by hand. |
+  | A development Subject is held | Inspect `aq integration status <project>`, its wait reason and gate. Resolve the specific policy gate without moving a target branch by hand. |
   | A live pool session waits at an interactive prompt | Answer the prompt so the worker can continue. |
   | A failed task is ready for another attempt | Reopen it with concrete feedback from the failure. |
 
@@ -372,38 +349,8 @@ start code work, tests or QA from a digest author turn.
   references — and it bundles every unmerged tip and logs every sha under
   `<data_dir>/backups/branch-deletions/` first. Never delete branches any
   other way. Report what it held back if the same branches keep appearing.
-- **Finishing an integration drain.** A drain (`aq integration enable <p>
-  --mode disabled`) completes only when no integration work is left; `aq
-  integration status <p>` shows `desired_mode` and `draining`. Stale state
-  from an old train run holds it open. Clear it in this order: `aq integration
-  release-stale-owners --project-id <p> --dry-run`, then the same without
-  `--dry-run`; `aq integration retry-cleanup <batch>` for each promoted batch
-  whose cleanup is pending; once that cleanup completes, `release-stale-owners`
-  again (a batch's integration-branch owner is kept until its cleanup is
-  done). The command releases only rows it can prove safe and lists every
-  other row with its reason — report those, never force them.
-- **Train cutover preflight.** While the project is disabled and drained you
-  bind its integration repository, review mode and policy yourself with `aq
-  project set <p> integration-repository-id|integration-review-mode|
-  integration-policy ... --expected-integration-generation <gen> --reason
-  ...`. In observe mode, `missing_receipt` blockers with cause
-  `no_parent_collection` are children of parents that finished outside the
-  train: run `aq integration adopt-legacy-deliveries --project-id <p>
-  --dry-run`, then the same without `--dry-run`. It records only deliveries
-  it proves on the default branch (by ancestry, or because merging the work
-  changes nothing) and lists the rest with their reason and, under
-  `undelivered`, what merging the work would still change; report those.
-  Settle each one the user decides with `--reason ...`: `--supersede TASK_ID
-  --by SHA` (SHA on the default branch re-delivered it), `--retire TASK_ID`
-  (the work was abandoned; nothing is deleted) or `--accept TASK_ID`.
-  `repository_not_designated` names each task whose repository is not the
-  designated one, with its `cause`.
-- **A train that never sweeps.** When `aq integration flush <p>` keeps
-  answering `coalesced`, run `aq integration clear-stale-request <p>` (a dry
-  run) and report its verdict. The scheduler frees a `stale` request on its
-  own next pass; `--apply --request-id <id> --reason ...` frees it now, and
-  also frees `unsealed` (an accepted sweep that sealed no batch). `blocked`
-  names unresolved write evidence on the batch: report it, never force it.
+- **Integration configuration.** Use `aq project set <p> integration-mode|integration-repository-id|integration-review-mode|integration-policy ... --expected-integration-generation <gen> --reason ...`. Disabling pauses delivery while preserving Subjects, pinned policies and unresolved write evidence. A busy repository binding cannot be changed.
+- **Integration progress.** `aq integration status <p>` lists durable Subjects, wait reasons and gates. `aq doctor --check integration.subjects_overdue` reports missed visits; `integration.subjects_held` reports policy holds. The reconciler owns retries and delivery; never transfer work to a retired engine.
 - **A completed train root with no PR.** The train seats a root only once it
   has a pull request and an approved review of its exact head; the daemon
   opens a missing one on its own within minutes. When a COMPLETED root still
@@ -413,12 +360,6 @@ start code work, tests or QA from a digest author turn.
   (already open, already on the default branch, or delivered) and `blocked`
   (unverified epic, head never recorded, remote branch moved) are reported,
   never forced.
-- **A completed train root with a PR but no train identity.** The stall sweep
-  reports `unmaterialized_train_pr`, and the GitHub review poller warns. Run
-  `aq integration materialize-root <task>` (dry run). For a childless root,
-  `would_materialize` can be applied with `--apply --head <head_sha> --reason ...`;
-  then flush the project. A root with children needs its original parent
-  verification evidence and must be reported for separate recovery.
 - **A user-authorized root the train policy does not admit.** Root
   `admission: authorized` admits completed feature/bugfix roots and the ids in
   `root.authorized_task_ids`; changing that list needs a drained train. When
@@ -464,25 +405,11 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
-- **A task that inherited a deleted task's identity.** `aq doctor --check
-  integration.reused_task_identity` lists tasks whose branch origin predates
-  them. For each one, run `aq integration rebind-reused-identity --task-id
-  <id>` (a dry run) and report its verdict. `would_rebind` means every
-  predecessor commit is on the default branch or its ref is gone; then run
-  `--apply --origin-id <id> --reason ...` with each origin id it reported.
-  `unproven` lists each cause: a live writer, a held owner, dependent
-  integration history, or a hierarchy/train project. Report those and never
-  force them. A commit that is not on the default branch is abandoned only by
-  naming it with `--discard-tip <sha>`, and only on the user's decision. The
-  control retires the origin and keeps it, moves the checkpoint into an
-  `integration.task_identity_rebound` event, and touches no branch.
+- **Historical task identity.** Delivery requires the exact completion identity and repository binding. Inspect `aq task show <id>` and retained proof when identity is unproven; report the missing evidence without rebinding or fabricating it.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
-  you are about to do and why. Confirm first only for `aq integration abort`,
-  `aq integration cancel-preserving`, `aq integration waive-history`,
-  `aq integration adopt-legacy-deliveries --accept|--retire|--supersede`,
-  `aq integration rebind-reused-identity --discard-tip`,
-  `aq agent delete`, destroying work that cannot be recovered, or publishing
+  you are about to do and why. Confirm first only for `aq agent delete`,
+  destroying work that cannot be recovered, or publishing
   outside the user's own repositories. Wait for the user's confirmation on
   those actions.
 - **Create graphs, not loose tasks.** Any request that decomposes into more

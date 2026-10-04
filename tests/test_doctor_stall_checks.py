@@ -132,7 +132,7 @@ async def test_restore_branch_requires_explain_to_name_that_blocker(context, mon
         ]
 
     monkeypatch.setattr(
-        import_module("src.doctor.integration_checks"), "_find_stranded_dependents", candidates
+        import_module("src.doctor.stall_checks"), "_find_stranded_dependents", candidates
     )
     context.handler = Handler({
         "claimed": [reason("blocked_dependency", "status=COMPLETED", "done")],
@@ -258,7 +258,6 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
         return []
 
     monkeypatch.setattr(module, "_branch_findings", branches)
-    monkeypatch.setattr(module, "_unmaterialized_pr_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_unadmitted_parent_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
@@ -283,14 +282,14 @@ async def test_reviewed_file_guard_stall_names_batch_and_recovery(context, monke
         ]
 
     monkeypatch.setattr(
-        import_module("src.doctor.integration_checks"),
+        import_module("src.doctor.stall_checks"),
         "_find_reviewed_file_blocked_batches",
         blocked,
     )
     findings = await module._reviewed_file_guard_findings(context, {"one"})
     assert len(findings) == 1
     assert findings[0]["kind"] == "reviewed_file_guard"
-    assert "batch-one" in findings[0]["detail"] and "eject" in findings[0]["detail"]
+    assert "batch-one" in findings[0]["detail"] and "policy gate" in findings[0]["detail"]
 
 
 async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monkeypatch):
@@ -301,7 +300,7 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
           "branch": "aq/orphan", "age_seconds": 26 * 3600}],
         [{"project_id": "two", "error": "offline"}],
     ))
-    monkeypatch.setattr(import_module("src.doctor.integration_checks"), "_find_orphaned_prs", finder)
+    monkeypatch.setattr(import_module("src.doctor.stall_checks"), "_find_orphaned_prs", finder)
     findings = await module._orphaned_pr_findings(context, {"one", "two"}, NOW)
     finder.assert_awaited_once_with(context, {"one", "two"}, now=NOW)
     assert [item["kind"] for item in findings] == ["orphaned_pr", "pr_inventory_failed"]

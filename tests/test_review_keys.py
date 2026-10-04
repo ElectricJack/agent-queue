@@ -1,7 +1,7 @@
 """``src/review_keys.py`` — the one place the pipeline's review dedup keys live.
 
 The default pipeline writes ``review:task:<id>`` and ``branch-review:<branch>``
-rows; the doctor's ``integration.unreviewed_prs`` looks for the first, and
+rows; the playbook and
 ``Orchestrator._emit_task_event`` flags a finishing task that carries either so
 the review rules never review a review.  All three must agree on the strings.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from src.doctor.integration_checks import _review_dedup_key
 from src.review_keys import (
     BRANCH_REVIEW_DEDUP_PREFIX,
     REVIEW_PROFILE_IDS,
@@ -30,8 +29,6 @@ def test_keys_match_the_shipped_pipeline():
     assert branch_review_dedup_key("aq/x").startswith(BRANCH_REVIEW_DEDUP_PREFIX)
 
 
-def test_doctor_uses_the_same_key():
-    assert _review_dedup_key("t1") == review_task_dedup_key("t1")
 
 
 @pytest.mark.parametrize(

@@ -1,46 +1,8 @@
-"""Recognise, and release, a train sweep request that nothing will ever end.
+"""Release ended batches without discarding unresolved writes or another owner's lease.
 
-``project_integration_schedules.outstanding_request_id`` names the one sweep a
-train project has in flight.  ``IntegrationScheduler.mark_due`` coalesces every
-later trigger into it, and ``IntegrationReleaseService`` is the only thing that
-clears it -- for a batch that *promoted* and still holds the project lease.
-Every other ending left it in place: an operator abort, a development
-``cancel_preserving``, a seal that never produced a batch.  On 2026-09-24
-agent-queue's schedule still named the request of a batch aborted on
-2026-09-09, so every flush answered ``coalesced`` and no sweep ran for two weeks.
-
-This module is the single answer to "can this request still end on its own?".
-The scheduler, the release service, both abort paths, the operator control and
-``aq doctor --check integration.stale_schedule`` all read the same verdict:
-
-``none``       no request is outstanding.
-``active``     its batch is live, or promoted and still holding the lease that
-               release consumes: the train will end the request itself.
-``in_flight``  no batch yet, and the ``integration.sweep_due`` event is still
-               waiting for a playbook to accept it.
-``unsealed``   no batch, the event was accepted, and the seal's grace period has
-               not passed.  Only an operator may release it.
-``blocked``    nothing will end it, but its batch still carries unresolved
-               external-write evidence, or another batch holds the project
-               lease.  Releasing it could orphan a remote write.
-``stale``      nothing will ever end it.  The scheduler releases it on its next
-               pass.
-
-The hour :data:`UNSEALED_GRACE_SECONDS` grants an accepted request assumes the
-seal is still queued *in this process*.  A restart drops that: the asyncio task
-executing the sealing run dies with it, nothing re-drives the run, and the
-request keeps coalescing every flush until the grace runs out.  That is an hour
-of frozen delivery per restart (agent-queue, 2026-10-04), so a caller that knows
-when its process began passes an :class:`OrphanGrace`: a request accepted before
-``since`` is given :data:`RESTART_ORPHAN_GRACE_SECONDS` instead, and the daemon
-frees it on its first pass after start.
-
-Releasing never touches Git or the batch row.  It clears the schedule's request
-(or turns a recorded catch-up into the next request, exactly as release does),
-deletes the ended batch's own fenced lease, and records the reason as an
-``integration.schedule_request_released`` event.
+An unsealed durable request stays active for the root reconciler to seed, including
+across daemon restarts. No playbook event or in-memory sealing run owns that request.
 """
-
 from __future__ import annotations
 
 import json
@@ -55,7 +17,6 @@ from src.database.tables import (
     integration_batches,
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
-    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     project_integration_leases,
@@ -63,11 +24,10 @@ from src.database.tables import (
     projects,
 )
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
-from src.integration.outbox import enqueue_integration_event
 
 logger = logging.getLogger(__name__)
 
-Verdict = Literal["none", "active", "in_flight", "unsealed", "blocked", "stale"]
+Verdict = Literal["none", "active", "blocked", "stale"]
 
 #: Lifecycles a batch never leaves.  ``failed`` is admitted by the schema's
 #: lifecycle constraint; nothing writes it today.
@@ -85,33 +45,8 @@ LIVE_LIFECYCLES = (
 )
 #: Promotion intents in these states have settled their remote write.
 _SETTLED_INTENT_STATES = ("committed", "conflict", "superseded")
-#: The root train's first step seals an accepted ``integration.sweep_due``.  An
-#: hour is twelve default sweep intervals: long past a queued playbook run,
-#: short enough that a seal which failed is recovered the same working session.
-UNSEALED_GRACE_SECONDS = 60 * 60
-#: The grace a request accepted *before this process started* gets instead of
-#: the hour.  Nothing this process started is sealing it, and a seal queued by the
-#: process that accepted it died with it, so waiting buys nothing.  The price is a
-#: run genuinely parked on a wait across the restart: its seal then refuses a
-#: request that is no longer outstanding and that run fails terminally.  One dead
-#: run against an hour of frozen delivery.
-RESTART_ORPHAN_GRACE_SECONDS = 0.0
-#: Verdicts an operator may release.  The scheduler releases only ``stale``.
-OPERATOR_RELEASABLE = frozenset({"stale", "unsealed"})
+RELEASABLE = frozenset({"stale"})
 RELEASED_EVENT = "integration.schedule_request_released"
-
-
-@dataclass(frozen=True, slots=True)
-class OrphanGrace:
-    """The grace given to a request accepted before ``since``, not the hour.
-
-    ``since`` is when the current process started.  A caller that does not know
-    -- a test, a one-shot CLI -- passes ``None`` to the classifier and keeps
-    :data:`UNSEALED_GRACE_SECONDS` for every accepted request.
-    """
-
-    since: float
-    seconds: float = RESTART_ORPHAN_GRACE_SECONDS
 
 
 class RequestChanged(RuntimeError):
@@ -129,8 +64,6 @@ class OutstandingRequest:
     lifecycle: str | None = None
     cleanup_state: str | None = None
     lease: dict[str, Any] | None = None
-    #: The request's ``integration.sweep_due`` outbox row, when no batch exists.
-    event: dict[str, Any] | None = None
     blockers: tuple[dict[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -162,13 +95,11 @@ async def classify_outstanding_request_on(
     *,
     now: float,
     lock: bool = False,
-    orphan_grace: OrphanGrace | None = None,
 ) -> OutstandingRequest:
     """Classify *schedule*'s outstanding request inside the caller's transaction.
 
     ``lock`` takes the batch and lease rows for update; a caller that will
-    release the request passes it, a read-only report does not.  ``orphan_grace``
-    narrows the seal grace for a request a restart may have orphaned.
+    release the request passes it; a read-only report does not.
     """
     request_id = schedule["outstanding_request_id"] if schedule is not None else None
     sequence = int(schedule["request_sequence"]) if schedule is not None else 0
@@ -216,15 +147,12 @@ async def classify_outstanding_request_on(
     }
 
     if batch is None:
-        verdict, reason, event = await _unsealed_verdict_on(
-            conn, request_id, now, orphan_grace=orphan_grace
-        )
         blockers = _foreign_lease(lease, None)
-        if blockers and verdict in OPERATOR_RELEASABLE:
-            return OutstandingRequest(
-                project_id, "blocked", reason, event=event, blockers=blockers, **known
-            )
-        return OutstandingRequest(project_id, verdict, reason, event=event, **known)
+        return OutstandingRequest(
+            project_id, "blocked" if blockers else "active",
+            "the root reconciler will seed and seal this durable request",
+            blockers=blockers, **known,
+        )
 
     known.update(
         batch_id=batch["id"],
@@ -278,61 +206,6 @@ async def classify_outstanding_request_on(
         )
     return OutstandingRequest(project_id, "stale", reason, **known)
 
-
-async def _unsealed_verdict_on(
-    conn: Any,
-    request_id: str,
-    now: float,
-    *,
-    orphan_grace: OrphanGrace | None = None,
-) -> tuple[Verdict, str, dict[str, Any] | None]:
-    row = (
-        await conn.execute(
-            select(
-                integration_outbox.c.delivered_at,
-                integration_outbox.c.attempts,
-                integration_outbox.c.last_error,
-            ).where(integration_outbox.c.id == request_id)
-        )
-    ).mappings().one_or_none()
-    if row is None:
-        return "stale", (
-            "no batch was sealed and no integration.sweep_due event exists for the request, "
-            "so nothing will ever seal it"
-        ), None
-    event = {
-        "delivered_at": row["delivered_at"],
-        "attempts": int(row["attempts"]),
-        "last_error": row["last_error"],
-    }
-    if event["delivered_at"] is None:
-        detail = "integration.sweep_due is still waiting for a playbook to accept it"
-        if event["last_error"]:
-            detail += f" ({event['attempts']} attempt(s); last error: {event['last_error']})"
-        return "in_flight", detail, event
-    accepted_at = float(event["delivered_at"])
-    elapsed = max(0.0, now - accepted_at)
-    orphaned = orphan_grace is not None and accepted_at < orphan_grace.since
-    grace = orphan_grace.seconds if orphaned else UNSEALED_GRACE_SECONDS
-    age = int(elapsed)
-    origin = ", before this process started" if orphaned else ""
-    if elapsed < grace:
-        return "unsealed", (
-            f"integration.sweep_due was accepted {age}s ago{origin} but no batch is sealed yet"
-        ), event
-    return "stale", (
-        f"integration.sweep_due was accepted {age}s ago{origin} and no batch was ever sealed"
-    ), event
-
-
-def _foreign_lease(lease: dict[str, Any] | None, batch_id: str | None) -> tuple[dict[str, str], ...]:
-    if lease is None or lease["batch_id"] == batch_id:
-        return ()
-    return ({
-        "code": "lease",
-        "detail": "the project lease is held by another batch",
-        "ref": str(lease["batch_id"]),
-    },)
 
 
 async def _write_blockers_on(conn: Any, batch_id: str) -> tuple[dict[str, str], ...]:
@@ -411,7 +284,7 @@ async def release_outstanding_request_on(
     does on release; otherwise the schedule is left with no request, and the
     trigger that follows schedules normally.
     """
-    if state.verdict not in OPERATOR_RELEASABLE or state.request_id is None:
+    if state.verdict not in RELEASABLE or state.request_id is None:
         raise ValueError(f"a {state.verdict} request is not releasable")
     project_id = state.project_id
     lease_released = False
@@ -476,16 +349,6 @@ async def release_outstanding_request_on(
     )
     if updated.rowcount != 1:
         raise RequestChanged("the schedule's request changed during release")
-    if catchup_request_id is not None:
-        await enqueue_integration_event(
-            conn,
-            event_id=catchup_request_id,
-            dedup_key=catchup_request_id,
-            project_id=project_id,
-            event_type="integration.sweep_due",
-            payload={"project_id": project_id, "operation_id": catchup_request_id},
-            available_at=now,
-        )
     await db.log_event(
         RELEASED_EVENT,
         project_id=project_id,
@@ -525,14 +388,11 @@ async def release_stale_request(
     dry_run: bool = False,
     expected_request_id: str | None = None,
     releasable: frozenset[str] = frozenset({"stale"}),
-    orphan_grace: OrphanGrace | None = None,
 ) -> dict[str, Any]:
     """Classify, and unless *dry_run* release, one project's outstanding request.
 
     Opens its own transaction and takes the hierarchy lock first, the order
-    every other schedule writer uses.  ``releasable`` widens what may be
-    released; the operator control passes :data:`OPERATOR_RELEASABLE`.
-    ``orphan_grace`` reaches the classifier; see :class:`OrphanGrace`.
+    every other schedule writer uses.
     """
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, project_id)
@@ -549,7 +409,7 @@ async def release_stale_request(
             )
         ).mappings().one_or_none()
         state = await classify_outstanding_request_on(
-            conn, project_id, schedule, now=now, lock=not dry_run, orphan_grace=orphan_grace
+            conn, project_id, schedule, now=now, lock=not dry_run
         )
         result: dict[str, Any] = {
             "project_id": project_id,
@@ -627,11 +487,8 @@ async def release_ended_batch_request(
 __all__ = [
     "ENDED_LIFECYCLES",
     "LIVE_LIFECYCLES",
-    "OPERATOR_RELEASABLE",
+    "RELEASABLE",
     "RELEASED_EVENT",
-    "RESTART_ORPHAN_GRACE_SECONDS",
-    "UNSEALED_GRACE_SECONDS",
-    "OrphanGrace",
     "OutstandingRequest",
     "RequestChanged",
     "RequestRelease",
@@ -640,3 +497,13 @@ __all__ = [
     "release_outstanding_request_on",
     "release_stale_request",
 ]
+
+
+def _foreign_lease(lease: dict[str, Any] | None, batch_id: str | None) -> tuple[dict[str, str], ...]:
+    if lease is None or lease["batch_id"] == batch_id:
+        return ()
+    return ({
+        "code": "lease",
+        "detail": "the project lease is held by another batch",
+        "ref": str(lease["batch_id"]),
+    },)

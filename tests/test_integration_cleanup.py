@@ -437,7 +437,7 @@ async def test_release_atomically_promotes_first_catchup_once(release_db):
     assert schedule["outstanding_requested_at"] == 21.0
     assert schedule["request_sequence"] == 2
     assert schedule["catchup_trigger"] is None
-    assert len(events) == 2
+    assert events == []
 
 
 async def test_release_during_drain_discards_catchup_without_starting_new_train(
@@ -473,7 +473,7 @@ async def test_release_during_drain_discards_catchup_without_starting_new_train(
         ).mappings().all()
     assert schedule["outstanding_request_id"] is None
     assert schedule["catchup_trigger"] is None
-    assert len(sweep_events) == 1
+    assert sweep_events == []
 
 
 async def test_release_replay_is_immutable_after_a_later_train_acquires_lease(
@@ -848,44 +848,6 @@ class CleanupForge:
         self.prs[number]["state"] = "closed"
 
 
-@pytest.mark.parametrize("route", ["abort", "retry", "sweep"])
-async def test_aborted_batch_retires_only_its_audit_pr_and_preserves_sources(release_db, route):
-    from src.integration.controls import IntegrationControlService
-
-    db, _scheduler = release_db
-    app = CleanupApp({BRANCH.removeprefix("refs/heads/"): HEAD, "aq/root": SOURCE})
-    git = CleanupGit(app)
-    forge = CleanupForge()
-    cleanup = IntegrationCleanupService(
-        db, data_dir="/daemon", git_manager=git,
-        github_client_factory=lambda _binding: app, forge_provider=forge, clock=lambda: 30.0,
-    )
-    controls = IntegrationControlService(db, cleanup_service=cleanup, clock=lambda: 30.0)
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_batches).values(
-            lifecycle="human_blocked" if route == "abort" else "aborted",
-            human_abort_reason="retain for diagnosis", final_main_sha=None,
-        ))
-        await conn.execute(update(integration_repair_operations).values(state="human_required"))
-        await conn.execute(update(integration_repair_stages).values(state="failed"))
-    if route == "abort":
-        assert (await controls.abort("op", reason="retain for diagnosis"))["outcome"] == "aborted"
-    elif route == "retry":
-        assert (await controls.retry_cleanup("batch"))["outcome"] == "materialized"
-    else:
-        await cleanup.reconcile_aborted(30.0)
-    async with db._engine.connect() as conn:
-        rows = (await conn.execute(select(integration_cleanup_items))).mappings().all()
-    assert [(row["kind"], row["target_pr_number"]) for row in rows] == [("audit_pr", 9)]
-    await cleanup.advance("batch", now=31.0)
-    assert forge.closed == [9] and forge.prs[1]["state"] == "open"
-    assert len(forge.comments) == 1
-    assert "batch" in forge.comments[0][2] and "aborted" in forge.comments[0][2]
-    assert "retain for diagnosis" in forge.comments[0][2]
-    assert git.remote_deletes == [] and git.local_refs == {BRANCH: HEAD}
-    assert app.refs["aq/root"] == SOURCE
-    assert (await db.get_integration_batch("batch"))["cleanup_state"] == "complete"
-    assert await cleanup.advance("batch", now=32.0) == []
 
 
 async def test_aborted_batch_moved_pr_head_is_retained(release_db):
@@ -936,11 +898,16 @@ async def test_aborted_pr_cleanup_survives_repository_engine_transfer(release_db
     [result] = await cleanup.advance("batch", now=30.0)
     assert result.outcome == "complete" and forge.closed == [9]
     # The terminal audit exception grants no source or ref cleanup authority.
-    denied = await cleanup.execute("batch", "remote_ref", BRANCH, now=31.0)
+    # Call the production guard without the domain fixture's Subject scope.
+    denied = await type(cleanup).execute.__wrapped__(
+        cleanup, "batch", "remote_ref", BRANCH, now=31.0,
+    )
     assert denied.outcome == "wait"
     async with db.immediate() as conn:
         await conn.execute(update(integration_batches).values(lifecycle="human_blocked"))
-    assert (await cleanup.materialize("batch", now=32.0)).outcome == "stale"
+    assert (
+        await type(cleanup).materialize.__wrapped__(cleanup, "batch", now=32.0)
+    ).outcome == "stale"
 
 
 async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
@@ -1876,32 +1843,9 @@ async def test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup(
     assert git.removes == 1
 
 
-@pytest.mark.parametrize("protection", ["none", "attached", "successor", "other_ref"])
-async def test_completed_cleanup_reconciles_only_exact_detached_collector(release_db, protection):
-    from src.integration.controls import IntegrationControlService
 
-    db, _scheduler = release_db
-    service = IntegrationCleanupService(db, data_dir="/daemon", clock=lambda: 30.0)
-    await service.materialize("batch", now=30.0)
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_cleanup_items).values(
-            state="complete", terminal_at=30.0,
-        ))
-        await conn.execute(insert(integration_branch_owners).values(
-            id="delivered-collector", repository_id="repo",
-            ref="refs/heads/other" if protection == "other_ref" else BRANCH,
-            owner_id="op", owner_role="collector",
-            fence_token=8 if protection == "successor" else 7,
-            handoff_state="attached" if protection == "attached" else "reserved",
-            session_id="live" if protection == "attached" else None,
-            workspace_id="checkout" if protection == "attached" else None,
-            created_at=1.0, updated_at=1.0,
-        ))
-    recovered = await IntegrationControlService(
-        db, cleanup_service=service, clock=lambda: 31.0,
-    ).retry_cleanup("batch")
-    assert recovered["outcome"] == "nothing_to_retry"
-    async with db._engine.connect() as conn:
-        state = (await conn.execute(select(integration_branch_owners.c.handoff_state)
-                 .where(integration_branch_owners.c.id == "delivered-collector"))).scalar_one()
-    assert state == {"none": "released", "attached": "attached"}.get(protection, "reserved")
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

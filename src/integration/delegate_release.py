@@ -50,8 +50,8 @@ from src.database.tables import (
 )
 from src.models import TaskStatus
 
-#: What an operator runs to settle every stranded delegate on the install.
-RELEASE_COMMAND = "aq doctor --check integration.stranded_delegates --fix"
+#: The daemon maintenance source that settles stranded terminal delegates.
+RELEASE_COMMAND = "automatic delegate cleanup"
 
 #: Operation states that mean the operation is over.  ``cancelled`` disposes of
 #: its delegates as ``cancelled``; ``completed`` means the operation finished
@@ -90,7 +90,7 @@ def retired_delegate_message(operation_id: str, state: str, *, action: str) -> s
     """
     return (
         f"Integration operation {operation_id} is {state}; its delegate is no longer "
-        f"required and cannot be {action}. Release it with `{RELEASE_COMMAND}`; it "
+        f"required and cannot be {action}. The daemon's {RELEASE_COMMAND} "
         "settles as FAILED. It can be deleted or archived only once no integration "
         "history names it."
     )

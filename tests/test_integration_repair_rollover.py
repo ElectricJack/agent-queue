@@ -21,7 +21,6 @@ from src.git.manager import GitError
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.integration.repair import RepairService
-from src.integration.service import IntegrationService
 from src.models import Agent, AgentState, TaskStatus
 from src.orchestrator.core import Orchestrator
 from tests import test_integration_owner_recovery as owner_tests
@@ -146,19 +145,9 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     case = await _batch_writer(env, dirty=dirty)
     repair = case.repair
 
-    async def dispatch_due(_now):
-        for row in await repair.pending_dispatches():
-            await repair.dispatch(row["operation_id"], row["ordinal"])
-
-    service = IntegrationService(
-        case.db, SimpleNamespace(mark_due=AsyncMock()), repair,
-        SimpleNamespace(dispatch_due=AsyncMock()),
-        repair_dispatch_handler=dispatch_due,
-        clock=lambda: 130.0,
-    )
-    # Natural persisted deadline pass, with no CI event: the writer is still
-    # draining, so the clock neither retires it nor allocates a successor.
-    await service.tick(130.0)
+    # Deadline handling is a shared domain operation invoked by the reviewed
+    # reconciler policy; the retired service has no autonomous deadline source.
+    await repair.expire(case.operation, 0, now=130.0)
     waiting = await _stage(case, 0)
     assert waiting["state"] == "active" and waiting["deadline_at"] == 430.0
     assert waiting["dossier"]["deadline_deferrals"][-1]["reason"] == "writer_live"
@@ -254,63 +243,6 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert remote_sha(env.origin, case.target.branch) == case.partial
 
 
-@pytest.mark.parametrize("on_exhausted", ["human", "continue"])
-async def test_service_retries_a_busy_successor_dispatch_without_any_event(env, on_exhausted):
-    """The lost ``repair_exhausted`` run and a ``busy`` refusal both still advance.
-
-    No playbook runs here: the deadline pass allocates the debug stage, the
-    service's dispatch source finds it under either policy, the attached
-    predecessor makes the first dispatch answer ``busy``, and the paced retry
-    hands the stage to its delegate once the old writer has stopped.
-    """
-    import src.integration.service as service_module
-
-    case = await _batch_writer(env, on_exhausted=on_exhausted)
-    repair = case.repair
-    # A conclusive attempt lets this stage's deadline escalate. A live writer
-    # without an attempt now defers its deadline instead of allocating debug.
-    async with case.db.immediate() as conn:
-        await conn.execute(update(integration_repair_stages).where(
-            integration_repair_stages.c.operation_id == case.operation,
-            integration_repair_stages.c.ordinal == 0,
-        ).values(attempts=1))
-    outcomes = []
-
-    async def dispatcher(row):
-        result = await repair.dispatch(row["operation_id"], int(row["ordinal"]))
-        outcomes.append(result["outcome"])
-        return result
-
-    now = [130.0]
-    # Only the deadline and dispatch sources: the reservation reconciler would
-    # also hand a stopped writer's branch over and hide the retry under test.
-    service = IntegrationService(
-        case.db, SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=repair.expire, pending_dispatches=repair.pending_dispatches),
-        SimpleNamespace(dispatch_due=AsyncMock()),
-        repair_dispatcher=dispatcher, clock=lambda: now[0],
-    )
-    await service.tick(130.0)
-    stage = await _stage(case, 1)
-    assert stage["state"] == "active" and outcomes == ["busy"]
-    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.PAUSED
-
-    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
-    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
-    now[0] = 131.0
-    await service.tick(131.0)
-    assert outcomes == ["busy"]  # paced: the retry is not due yet
-
-    now[0] = 130.0 + service_module.DISPATCH_RETRY_BASE_SECONDS
-    await service.tick(now[0])
-    assert outcomes == ["busy", "dispatched"]
-    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.READY
-    owner = await BranchOwnership(case.db).get_owner(case.target)
-    assert owner["owner_id"] == stage["repair_task_id"] and owner["handoff_state"] == "reserved"
-
-    now[0] += 1000.0
-    await service.tick(now[0])
-    assert outcomes == ["busy", "dispatched"]  # a launched writer leaves the selection
 
 
 @pytest.mark.parametrize("corruption", ["manifest", "ref", "lineage"])
@@ -407,3 +339,10 @@ async def test_accepted_new_revision_supersedes_historical_preservation(env):
     assert await orch._hierarchy_repair_start(
         str(env.base), origin, fence, repository_url=str(env.origin)
     ) == case.head
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)

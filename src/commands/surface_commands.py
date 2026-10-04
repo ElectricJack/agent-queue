@@ -109,9 +109,9 @@ class SurfaceCommandsMixin:
                     "blockers": [],
                 }
             else:
-                from src.integration.parent_completion import ParentCompletion
+                from src.integration.records import ParentEpisodeRecords
 
-                info["integration_delivery"] = await ParentCompletion(self.db).readiness(
+                info["integration_delivery"] = await ParentEpisodeRecords(self.db).readiness(
                     task_id
                 )
         return info

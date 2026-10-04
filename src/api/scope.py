@@ -183,38 +183,17 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
-        "integration_enable",
-        "integration_waive_history",
-        "integration_reconcile_unmaterialized",
-        "integration_resume",
         "integration_reevaluate_repair",
-        "integration_abort",
-        "integration_settle_delivered_batch",
-        "integration_retry_cleanup",
-        "integration_release_delegates",
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
-        "integration_develop",
-        "integration_adopt",
-        "integration_cancel_preserving",
-        "integration_settle_parked",
-        "integration_development_sweep",
         "integration_release_owner",
         "integration_release_stale_owners",
-        "integration_clear_stale_request",
         "integration_redrive_root",
-        "integration_materialize_root",
         "integration_authorize_root",
         "integration_redrive_child",
         "integration_reopen_collection",
-        "integration_rebind_reused_identity",
-        "integration_adopt_legacy_deliveries",
-        "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
-        "integration_flush",
-        "integration_eject",
         "integration_transfer_owner",
-        "task_deliver",
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})

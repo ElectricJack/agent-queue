@@ -65,18 +65,10 @@ async def live_operations_on(conn: Any, project_id: str) -> list[dict[str, Any]]
     ]
 
 
-def cancel_preserving_command(operation_id: str) -> str:
-    """Return the safe operator command for ending a legacy operation."""
-    return (
-        f"aq integration cancel-preserving {operation_id} "
-        "--reason 'ending legacy hierarchy operation before development switch'"
-    )
-
-
 def describe_live_operation(operation: dict[str, Any]) -> str:
-    """Render an operation with its target and safe terminal command."""
+    """Render an operation with its target and current state."""
     target = operation["target"]
     return (
         f"{operation['id']} ({target['kind']} {target['id']}; "
-        f"{cancel_preserving_command(operation['id'])})"
+        f"{operation['state']}; inspect the owning Subject and its gate)"
     )

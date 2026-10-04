@@ -10,14 +10,18 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import epic_dependencies, tasks
 
 
-async def declare(conn, *, dependent_task_id: str, dependency_task_id: str, now: float) -> None:
+async def declare(
+    conn, *, dependent_task_id: str, dependency_task_id: str, now: float
+) -> None:
     """Record an epic dependency without changing an earlier declaration."""
     statement = pg_insert(epic_dependencies).values(
         dependent_task_id=dependent_task_id,
         dependency_task_id=dependency_task_id,
         declared_at=now,
     )
-    await conn.execute(statement.on_conflict_do_nothing(constraint="pk_epic_dependencies"))
+    await conn.execute(
+        statement.on_conflict_do_nothing(constraint="pk_epic_dependencies")
+    )
 
 
 async def dependencies_for(conn, task_ids: list[str]) -> dict[str, set[str]]:
@@ -41,12 +45,16 @@ async def dependencies_for(conn, task_ids: list[str]) -> dict[str, set[str]]:
 async def dependents_of(conn, dependency_task_id: str) -> set[str]:
     """Return live epics that declared a dependency on this epic."""
     rows = (
-        await conn.execute(
-            select(epic_dependencies.c.dependent_task_id)
-            .join(tasks, tasks.c.id == epic_dependencies.c.dependent_task_id)
-            .where(epic_dependencies.c.dependency_task_id == dependency_task_id)
+        (
+            await conn.execute(
+                select(epic_dependencies.c.dependent_task_id)
+                .join(tasks, tasks.c.id == epic_dependencies.c.dependent_task_id)
+                .where(epic_dependencies.c.dependency_task_id == dependency_task_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return set(rows)
 
 
@@ -62,7 +70,9 @@ def order_members(
     if len(by_id) != len(members):
         raise ValueError("integration batch contains duplicate task ids")
 
-    remaining = {task_id: set(edges.get(task_id, set())) - delivered for task_id in by_id}
+    remaining = {
+        task_id: set(edges.get(task_id, set())) - delivered for task_id in by_id
+    }
     dependents: dict[str, set[str]] = {task_id: set() for task_id in by_id}
     for task_id, dependencies in remaining.items():
         for dependency in dependencies & by_id.keys():

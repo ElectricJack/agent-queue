@@ -3,7 +3,7 @@
 
 # `integration_development_engine_transfer`
 
-**Development engine transfer.** Preview or transfer every Development subject of one project between the legacy publisher and the reconciler, at the exact previewed versions; the same command rolls it back.
+**Development engine transfer.** Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back.
 
 | Property | Value |
 |---|---|
@@ -14,14 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:3d562799f1e71cf8bab25e212f468d8530ebf303f4f24bbce0f919b7254e2ec2` |
+| Contract fingerprint | `sha256:e35aeec896e41d27879c4bafebbff38f3fb3aa955c7a2fb3940b6b12e102747c` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | — |
-| `engine` | `"legacy" \| "reconciler"` | yes | — | — |
+| `engine` | `"reconciler"` | yes | — | — |
 | `expected_versions` | `object` | no | — | — |
 | `reason` | `string` | no | `""` | — |
 | `evidence` | `string[]` | no | `[]` | — |
@@ -34,7 +34,7 @@ Redacted in receipts and explanations: `reason`.
 | Field | Type | Description |
 |---|---|---|
 | `project_id` | `string \| null` | — |
-| `engine` | `"legacy" \| "reconciler" \| null` | — |
+| `engine` | `"reconciler" \| null` | — |
 | `subject_ids` | `string[]` | — |
 | `expected_versions` | `object` | — |
 | `current_engines` | `object` | — |

@@ -11,7 +11,7 @@ on 2026-09-21 origin carried 961 of them, 893 already merged.
 Two callers delete them, and both ask the same question first — "does
 anything still need this branch?" (:func:`live_branch_references`):
 
-* :meth:`src.integration.development.DevelopmentIntegration.collect_delivered_branches`
+* :meth:`src.integration.development.DevelopmentPrimitives.collect_delivered_branches`
   after a batch is confirmed on the default branch, for exactly the refs that
   batch's journal names; and
 * ``aq doctor --check git.stale_branches [--fix]`` — also what the
@@ -93,7 +93,7 @@ LIVE_TASK_STATUSES = (
 #: Journal states that still owe work to the revisions their manifest names.
 UNSETTLED_DELIVERY_STATES = ("prepared", "publishing", "parked")
 #: Legacy integration batches that can still read or write their refs.  The
-#: same set ``DevelopmentIntegration.configure`` refuses to switch away from.
+#: same set ``DevelopmentPrimitives.configure`` refuses to switch away from.
 ACTIVE_BATCH_LIFECYCLES = (
     "sealing", "sealed", "building", "testing", "repairing", "human_blocked",
     "promoting", "cleanup_pending",
@@ -401,7 +401,7 @@ async def _branches_of(conn: Any, task_ids: Iterable[str]) -> list[tuple[str, st
 async def remote_heads(run_git, store) -> dict[str, str]:
     """Branch -> head for every remote-tracking ref of ``origin`` in *store*.
 
-    *store* was fetched with ``--prune`` by :meth:`DevelopmentIntegration.store`
+    *store* was fetched with ``--prune`` by :meth:`DevelopmentPrimitives.store`
     a moment earlier, so this is the remote as of that fetch.
     """
     listed = await run_git(

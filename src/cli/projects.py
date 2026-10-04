@@ -262,6 +262,7 @@ def project_set(
         "integration-repository": "integration_repository",
         "integration-repository-id": "integration_repository_id",
         "integration-policy": "hierarchical_integration_policy",
+        "integration-mode": "hierarchical_integration_mode",
         "integration-review-mode": "integration_mode",
         "review-delegate-to": "review_delegate_to",
         "git-identity": "git_identity",
@@ -327,6 +328,7 @@ def project_set(
         "integration_repository",
         "integration_repository_id",
         "hierarchical_integration_policy",
+        "hierarchical_integration_mode",
         "integration_mode",
     }
     if sensitive:

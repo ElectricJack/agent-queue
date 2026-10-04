@@ -781,10 +781,10 @@ class IntegrationDeliveryQueriesMixin:
             and parent_episode is not None
             and hierarchy_mode in {"hierarchy", "train"}
         ):
-            from src.integration.parent_completion import ParentCompletion
+            from src.integration.records import ParentEpisodeRecords
 
             try:
-                await ParentCompletion(self).mark_ready_on(
+                await ParentEpisodeRecords(self).mark_ready_on(
                     conn, intent["target_task_id"]
                 )
             except Exception as exc:

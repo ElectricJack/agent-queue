@@ -25,7 +25,7 @@ from src.database.tables import (
     integration_source_ci,
 )
 from src.git.manager import RemoteRefState
-from src.integration.epic_dependencies import dependents_of
+from src.task_graph.integration_dependencies import dependents_of
 from src.integration.settling import note_approval
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on

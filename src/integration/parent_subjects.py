@@ -2,7 +2,7 @@
 
 No cutover is performed here. Command owners call ``ensure_on`` in their
 transaction; the future parent visit uses ``ParentIntegrationObserver``.
-Receipt eligibility remains owned by ``ParentCompletion.readiness_on``.
+Receipt eligibility remains owned by ``ParentEpisodeRecords.readiness_on``.
 Reopening failed verification remains owned by keen-stone-14's recovery.
 """
 
@@ -28,7 +28,7 @@ from src.integration.observe import (
     _operation,
     _ref,
 )
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 from src.integration.subjects import (
     SHA_PATTERN,
     HoldFacts,
@@ -129,7 +129,7 @@ def parent_subject_from_rows(
     policy: PolicyArtifactPin,
     now: float,
     max_wait_seconds: int,
-    engine: SubjectEngine = SubjectEngine.LEGACY,
+    engine: SubjectEngine = SubjectEngine.RECONCILER,
 ) -> Subject:
     """Snapshot a legacy episode without resetting any budget or failure evidence."""
     if (
@@ -191,7 +191,7 @@ class ParentSubjectAdapter:
         *,
         policy: PolicyArtifactPin,
         max_wait_seconds: int,
-        engine: SubjectEngine = SubjectEngine.LEGACY,
+        engine: SubjectEngine = SubjectEngine.RECONCILER,
     ) -> tuple[Subject, bool]:
         async def one(table, *conditions, lock=False):
             statement = select(table).where(*conditions)
@@ -328,7 +328,7 @@ class ParentDatabaseObservationReader(DatabaseObservationReader):
             and checkpoint["episode_id"] == subject.parent_episode_id
         ):
             rows["parent_readiness"] = (
-                await ParentCompletion(self.db).readiness_on(
+                await ParentEpisodeRecords(self.db).readiness_on(
                     conn,
                     parent=dict(parent),
                     project=dict(snapshot.project),

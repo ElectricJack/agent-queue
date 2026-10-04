@@ -35,7 +35,7 @@ TERMINAL_STATUSES = (
 )
 
 #: Metadata key holding a development repair's source manifest, written by
-#: :meth:`src.integration.development.DevelopmentIntegration.ensure_repair`.
+#: :meth:`src.integration.development.DevelopmentPrimitives.ensure_repair`.
 DEVELOPMENT_REPAIR_SOURCES_KEY = "development_repair_sources"
 
 

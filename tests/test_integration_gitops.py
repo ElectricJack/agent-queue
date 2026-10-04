@@ -484,14 +484,11 @@ async def test_materialization_and_preservation_are_exact_and_do_not_overwrite(s
     assert git(ops.git.remote_path, "rev-parse", "aq/preserved/s") == head
 
 
-async def test_repository_publisher_fence_is_shared_with_legacy_and_independent_of_ref(setup):
+async def test_repository_publisher_exclusion_is_shared_and_independent_of_ref(setup):
     db, ops, s, fence, _, base, head, _ = setup
-    # This repository's root is reconciler-owned, so the *unnamed* legacy
-    # publisher is refused by the cut-over itself. The lock below is shared,
-    # not a second fence, so the refusal has to be asked for outside it.
-    with pytest.raises(DevelopmentBusy, match="belongs to the reconciler"):
-        async with publisher_exclusion(db, "r"):
-            pass
+    # Shared Git cleanup can take exclusion without acquiring root authority.
+    async with publisher_exclusion(db, "r"):
+        pass
     # The primitives take that same lock, naming the subject they act for, so a
     # publisher already holding it is exactly the "already running" outcome.
     async with publisher_exclusion(db, "r", s):

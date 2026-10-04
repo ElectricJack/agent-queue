@@ -18,10 +18,8 @@ async def test_tick_isolates_an_owner_recovery_failure_and_runs_other_sources():
     # Every source observes the service clock, not the tick's argument.
     service = IntegrationService(
         SimpleNamespace(),
-        SimpleNamespace(),
-        repair,
         outbox,
-        owner_recovery_handler=recovery,
+        maintenance={"owner recovery": recovery, "delegate cleanup": repair.retire_terminal_delegates},
         clock=lambda: 100.0,
     )
 

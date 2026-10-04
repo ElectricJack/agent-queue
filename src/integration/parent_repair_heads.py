@@ -28,9 +28,9 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState, is_valid_git_oid
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 from src.integration.parent_engine import parent_engine_guard
-from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.writers import OperationSafety
 from src.integration.repair_lineage import introduced_repair_commits_on
 
 EXTENSIONS = "parent_head_extensions"
@@ -41,7 +41,7 @@ RECEIPT_COVERED_EXTENSIONS = "receipt_covered_extensions"
 
 def receipt_covers_extension(receipt, edge):
     """Match immutable receipt identity; Git also proves the range of squash merges."""
-    if not ParentCompletion._trusted_code_receipt(receipt):
+    if not ParentEpisodeRecords._trusted_code_receipt(receipt):
         return False
     commits = (
         [receipt["squash_sha"]]
@@ -185,7 +185,7 @@ class ParentHeadRecovery:
     def __init__(self, promotion):
         self.promotion = promotion
         self.db = promotion.db
-        self.parent = ParentCompletion(self.db)
+        self.parent = ParentEpisodeRecords(self.db)
 
     async def run(self, request, *, principal):
         return await self._run(request.operation_id, request, principal=principal)
@@ -780,7 +780,7 @@ class ParentHeadRecovery:
             .limit(1)
         ):
             raise ValueError("unresolved promotion or external write")
-        if await IntegrationRecoveryControls._ambiguous_writes_on(
+        if await OperationSafety._ambiguous_writes_on(
             conn,
             operation,
             allowed_writer_id=owner["id"],

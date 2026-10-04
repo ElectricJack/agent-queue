@@ -769,12 +769,12 @@ class SessionCommandsMixin:
 
         An operator or supervisor decision (``integration_operator``), never a
         worker's: it releases the task's branch owners and drops it from parked
-        development batches (:mod:`src.integration.obsolete_close`).  No
+        development batches (:mod:`src.sessions.obsolete`).  No
         completion pipeline runs and nothing is published.
         """
         from src.commands.supervisor_authority import integration_operator
         from src.database.queries.hierarchy_queries import HierarchyError
-        from src.integration.obsolete_close import (
+        from src.sessions.obsolete import (
             ObsoleteClose,
             ObsoleteCloseRefused,
             obsolete_owner_release_for,

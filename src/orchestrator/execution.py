@@ -1626,13 +1626,13 @@ class ExecutionMixin:
                             # producer leg.  Aggregate evidence must already
                             # pin this exact generation/head; otherwise keep
                             # the live verifier attached so it can finish.
-                            from src.integration.parent_completion import (
+                            from src.integration.records import (
                                 AWAITING_TRUSTED_VERIFICATION,
-                                ParentCompletion,
+                                ParentEpisodeRecords,
                             )
 
                             generation = int(checkpoint["generation"])
-                            binding = await ParentCompletion(
+                            binding = await ParentEpisodeRecords(
                                 self.db, git_manager=self.git
                             ).diagnose_trusted_binding(task.id, generation, head)
                             if binding is not None:
@@ -1640,7 +1640,7 @@ class ExecutionMixin:
                                 # on the CI producer, not a fixable git issue.
                                 await self._trusted_evidence_refusal(ctx, task.id, binding)
                             else:
-                                completion = await ParentCompletion(
+                                completion = await ParentEpisodeRecords(
                                     self.db, git_manager=self.git
                                 ).complete_parent(
                                     task.id, generation, head,
@@ -1903,7 +1903,7 @@ class ExecutionMixin:
         # failure must not undo a committed COMPLETED, and the root PR
         # reconciler (``src/integration/root_pull_requests.py``) retries it.
         if train_leaf_root and new_status == TaskStatus.COMPLETED:
-            from src.integration.epic_pr import EpicPullRequestService
+            from src.integration.root_pull_requests import EpicPullRequestService
 
             try:
                 opened = await EpicPullRequestService(

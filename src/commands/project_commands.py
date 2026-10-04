@@ -302,8 +302,9 @@ class ProjectCommandsMixin:
                     "error_code": "local_operator_only",
                     "error": "review_delegate_to must be user, supervisor, or empty",
                 }
+        from src.integration.records import PolicyActivation
+
         rollout_fields = {
-            "hierarchical_integration_mode",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
@@ -311,13 +312,14 @@ class ProjectCommandsMixin:
         if rollout_fields.intersection(args):
             return {
                 "error": (
-                    "Rollout fields cannot be edited directly; use integration_enable "
+                    "Derived rollout fields cannot be edited directly; configure policy "
                     "with an explicit expected generation."
                 )
             }
         sensitive = {
             key: args[key]
             for key in (
+                "hierarchical_integration_mode",
                 "integration_repository",
                 "integration_repository_id",
                 "hierarchical_integration_policy",
@@ -352,7 +354,7 @@ class ProjectCommandsMixin:
                 }
             if "expected_integration_generation" not in args:
                 return {"error": "expected_integration_generation is required"}
-            return await self._integration_control_service().configure(
+            return await PolicyActivation(self.db).configure(
                 pid,
                 updates=sensitive,
                 expected_generation=int(args["expected_integration_generation"]),
@@ -566,11 +568,13 @@ class ProjectCommandsMixin:
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        from src.integration.records import PolicyActivation
+
         if (
             project.hierarchical_integration_mode != "disabled"
             or project.hierarchical_integration_desired_mode != "disabled"
             or project.hierarchical_integration_draining
-            or await self._integration_control_service().has_active_work(pid)
+            or await PolicyActivation(self.db).has_active_work(pid)
         ):
             return {
                 "error": (

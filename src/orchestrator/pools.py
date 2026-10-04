@@ -212,11 +212,11 @@ class PoolsMixin:
 
     async def _delivery_admission(self, task_ids):
         from src.integration.admission import observe_admission
-        from src.integration.development import DevelopmentIntegration
+        from src.integration.development import DevelopmentPrimitives
 
         service = getattr(self, "development_integration", None)
         if service is None:
-            service = DevelopmentIntegration(self.db, data_dir=self.config.data_dir, git=self.git)
+            service = DevelopmentPrimitives(self.db, data_dir=self.config.data_dir, git=self.git)
         return await observe_admission(self.db, task_ids, service)
 
     async def _measure_pools(self, project_ids: set[str] | None = None) -> PoolMeasurement:

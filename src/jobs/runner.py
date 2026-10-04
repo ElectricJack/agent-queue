@@ -16,7 +16,7 @@ from pathlib import Path
 from src.jobs.artifacts import OutputStore, atomic_json, read_json, open_artifact
 from src.jobs.identity import identity, processes, stop_tree
 from src.jobs.result import build_result, report_json
-from src.integration.development_result_parser import PytestOutputParser, parse_junit
+from src.jobs.pytest_output import PytestOutputParser, parse_junit
 from src.resources.box_lock import BoxLock, IncompatibleLockClient
 from src.resources.semaphore import SlotTimeout
 from src.git.manager import GitManager

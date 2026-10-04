@@ -1,4 +1,4 @@
-"""Close a task as obsolete and release everything it still holds.
+"""Close a task as obsolete and safely release its stopped branch owners.
 
 ``aq task close <id> --obsolete --reason "..."`` is the supported way to retire
 work that was superseded (a duplicate fix that landed another way, a plan that
@@ -23,11 +23,9 @@ never be deleted (solid-cascade and crisp-apex, 2026-09-26).
      is gone, anything origin lacks is pushed to ``aq/preserved/<row>``, then a
      fenced compare-and-swap releases the row.  A refused proof stays pending
      with its reason;
-   * a *parked* development publisher operation (``development.operation``
-     event) that lists the task is cancelled under the publisher's lock.  Its other members return to the publisher and are
-     batched again without the obsolete source.  A batch still being published
-     (``prepared``/``publishing``), an open development repair naming the task,
-     and an active train batch are left alone and stay pending.
+   * durable integration Subjects keep their own lifecycle; an obsolete task
+     cannot mutate a Subject that still owns its work. Historical train and
+     development operation records are retained unchanged.
 
    Whatever is still pending is recorded in the marker's ``cleanup``, and the
    lifecycle sweep retries it (:meth:`ObsoleteClose.retry_pending`) until
@@ -50,14 +48,12 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from src.database.queries.archive_queries import DEVELOPMENT_REPAIR_SOURCES_KEY
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.database.queries.hierarchy_queries import HIERARCHY_MODES, LIVE_SESSION_STATES
 from src.database.queries.task_queries import STALE_OPEN_DETAIL_KEY, TransitionResult
 from src.database.tables import (
-    integration_batch_members,
-    integration_batches,
     integration_branch_owners,
+    integration_subjects,
     projects,
     sessions,
     task_metadata,
@@ -101,16 +97,7 @@ _CLEARED_KEYS = (
     STALE_OPEN_DETAIL_KEY,
     "development_publisher_skip",
 )
-_ACTIVE_TRAIN_LIFECYCLES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
-    "cleanup_pending",
-)
+
 
 #: ``(owner_row_id, principal) -> outcome``: the release-owner proof for one row.
 ReleaseOwner = Callable[[str, str], Awaitable[RecoveryOutcome]]
@@ -145,7 +132,10 @@ def obsolete_owner_release_for(orchestrator: Any) -> ReleaseOwner | None:
     if db is None or git is None or confirm_stopped is None:
         return None
     service = ObsoleteOwnerRelease(
-        db, git, getattr(orchestrator, "_git_mutex", None), confirm_stopped=confirm_stopped
+        db,
+        git,
+        getattr(orchestrator, "_git_mutex", None),
+        confirm_stopped=confirm_stopped,
     )
 
     async def release(owner_row_id: str, principal: str) -> RecoveryOutcome:
@@ -172,14 +162,18 @@ class ObsoleteClose:
 
     # -- the close --------------------------------------------------------------
 
-    async def close(self, task_id: str, *, reason: str, principal: str) -> dict[str, Any]:
+    async def close(
+        self, task_id: str, *, reason: str, principal: str
+    ) -> dict[str, Any]:
         """Close *task_id* as obsolete, then run its cleanup.
 
         Raises :class:`ObsoleteCloseRefused` when the task cannot be closed.
         """
         reason = (reason or "").strip()
         if not reason:
-            raise ObsoleteCloseRefused("obsolete.reason_required", "--obsolete requires --reason")
+            raise ObsoleteCloseRefused(
+                "obsolete.reason_required", "--obsolete requires --reason"
+            )
         task = await self.db.get_task(task_id)
         if task is None:
             raise ObsoleteCloseRefused("obsolete.not_found", f"no task {task_id!r}")
@@ -189,7 +183,11 @@ class ObsoleteClose:
             )
         async with self.db.immediate() as conn:
             row = (
-                (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
+                (
+                    await conn.execute(
+                        select(tasks).where(tasks.c.id == task_id).with_for_update()
+                    )
+                )
                 .mappings()
                 .one()
             )
@@ -207,7 +205,8 @@ class ObsoleteClose:
             await self.db._upsert_meta(task_id, "work_outcome", "abandoned", conn=conn)
             await conn.execute(
                 delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id, task_metadata.c.key.in_(_CLEARED_KEYS)
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key.in_(_CLEARED_KEYS),
                 )
             )
             if previous != TaskStatus.COMPLETED.value:
@@ -240,7 +239,11 @@ class ObsoleteClose:
                     project_id=row["project_id"],
                     task_id=task_id,
                     payload=json.dumps(
-                        {"reason": reason, "closed_by": principal, "previous_status": previous}
+                        {
+                            "reason": reason,
+                            "closed_by": principal,
+                            "previous_status": previous,
+                        }
                     ),
                     conn=conn,
                 )
@@ -273,10 +276,24 @@ class ObsoleteClose:
                 "belongs to its parent's collection; abandon it through the container close "
                 "or `aq task archive --abandon-undelivered` instead",
             )
+        subject_id = await conn.scalar(
+            select(integration_subjects.c.id)
+            .where(
+                integration_subjects.c.task_id == task_id,
+                integration_subjects.c.phase != "done",
+            )
+            .limit(1)
+        )
+        if subject_id is not None:
+            raise ObsoleteCloseRefused(
+                "obsolete.live_subject",
+                f"integration subject {subject_id} still owns this work",
+            )
         live = (
             await conn.execute(
                 select(sessions.c.id).where(
-                    sessions.c.task_id == task_id, sessions.c.state.in_(LIVE_SESSION_STATES)
+                    sessions.c.task_id == task_id,
+                    sessions.c.state.in_(LIVE_SESSION_STATES),
                 )
             )
         ).scalar_one_or_none()
@@ -347,12 +364,21 @@ class ObsoleteClose:
         pending: list[dict] = []
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"state": "gone", "released_owners": [], "dropped_batches": [], "pending": []}
+            return {
+                "state": "gone",
+                "released_owners": [],
+                "dropped_batches": [],
+                "pending": [],
+            }
 
         for row in await self._owner_rows(task_id):
             if self.release_owner is None:
                 pending.append(
-                    _pending_owner(row, "owner_recovery_unavailable", "no stop probe in this process")
+                    _pending_owner(
+                        row,
+                        "owner_recovery_unavailable",
+                        "no stop probe in this process",
+                    )
                 )
                 continue
             try:
@@ -372,48 +398,10 @@ class ObsoleteClose:
                 )
             elif outcome.reason != NOT_FOUND:
                 pending.append(
-                    _pending_owner(row, outcome.reason, outcome.evidence.get("detail", ""))
-                )
-
-        repair = await self._open_repair_naming(task_id, task.project_id)
-        for batch in await self._unsettled_batches(task_id, task.project_id):
-            if batch["state"] != "parked":
-                pending.append(
-                    _pending_batch(batch, "publishing", "retried after the batch finishes")
-                )
-            elif repair is not None:
-                pending.append(
-                    _pending_batch(
-                        batch,
-                        "repair_in_flight",
-                        f"open development repair {repair} lists this task as a source",
+                    _pending_owner(
+                        row, outcome.reason, outcome.evidence.get("detail", "")
                     )
                 )
-            else:
-                verdict = await self._cancel_parked(batch, task_id, principal)
-                if verdict is None:
-                    dropped.append({"batch_id": batch["id"], "state": "parked"})
-                else:
-                    pending.append(_pending_batch(batch, *verdict))
-        if repair is not None and not any(p.get("reason") == "repair_in_flight" for p in pending):
-            pending.append(
-                {
-                    "kind": "development_repair",
-                    "repair_task_id": repair,
-                    "reason": "repair_in_flight",
-                    "detail": "an open development repair lists this task as a source",
-                }
-            )
-        for batch_id, lifecycle in await self._active_train_batches(task_id):
-            pending.append(
-                {
-                    "kind": "integration_batch",
-                    "batch_id": batch_id,
-                    "state": lifecycle,
-                    "reason": "sealed_batch",
-                    "detail": "an active integration batch lists this task",
-                }
-            )
 
         pr_cleanup = None
         if task.pr_url:
@@ -422,15 +410,25 @@ class ObsoleteClose:
             async with self.db._engine.connect() as conn:
                 marker = await self._marker(conn, task_id)
             if self.git is None:
-                pr_cleanup = {"outcome": "blocked", "reason": "GitHub cleanup unavailable"}
+                pr_cleanup = {
+                    "outcome": "blocked",
+                    "reason": "GitHub cleanup unavailable",
+                }
             else:
                 pr_cleanup = await SettledTaskPullRequestClosure(self.db, self.git).run(
-                    task_id, reason=f"Superseded/obsolete: {marker['reason']}",
+                    task_id,
+                    reason=f"Superseded/obsolete: {marker['reason']}",
                     principal=principal,
                 )
             if pr_cleanup["outcome"] == "blocked":
-                pending.append({"kind": "pull_request", "pr_url": task.pr_url,
-                                "reason": "pr_cleanup_failed", "detail": pr_cleanup["reason"]})
+                pending.append(
+                    {
+                        "kind": "pull_request",
+                        "pr_url": task.pr_url,
+                        "reason": "pr_cleanup_failed",
+                        "detail": pr_cleanup["reason"],
+                    }
+                )
 
         state = "pending" if pending else "done"
         summary = {
@@ -462,11 +460,17 @@ class ObsoleteClose:
                 marker = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            if not isinstance(marker, dict) or (marker.get("cleanup") or {}).get("state") == "done":
+            if (
+                not isinstance(marker, dict)
+                or (marker.get("cleanup") or {}).get("state") == "done"
+            ):
                 continue
             try:
                 results.append(
-                    {"task_id": task_id, **await self.cleanup(task_id, principal=principal)}
+                    {
+                        "task_id": task_id,
+                        **await self.cleanup(task_id, principal=principal),
+                    }
                 )
             except Exception:
                 logger.exception("Obsolete cleanup retry for %s failed", task_id)
@@ -490,119 +494,9 @@ class ObsoleteClose:
                 ).mappings()
             ]
 
-    async def _unsettled_batches(self, task_id: str, project_id: str) -> list[dict]:
-        """Publisher operations still in flight whose manifest lists *task_id*."""
-        from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
-
-        async with self.db._engine.connect() as conn:
-            rows = await operation_rows_on(conn, [project_id], states=OPEN_OPERATION_STATES)
-        return [row for row in rows if self.db._named_task_ids(row["manifest"], {task_id})]
-
-    async def _open_repair_naming(self, task_id: str, project_id: str) -> str | None:
-        repair = tasks.alias("obsolete_repair")
-        async with self.db._engine.connect() as conn:
-            rows = (
-                await conn.execute(
-                    select(task_metadata.c.task_id, task_metadata.c.value)
-                    .join(repair, repair.c.id == task_metadata.c.task_id)
-                    .where(
-                        task_metadata.c.key == DEVELOPMENT_REPAIR_SOURCES_KEY,
-                        repair.c.project_id == project_id,
-                        repair.c.status.notin_(
-                            (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
-                        ),
-                    )
-                    .order_by(task_metadata.c.task_id)
-                )
-            ).all()
-        for repair_id, raw in rows:
-            try:
-                manifest = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if self.db._named_task_ids(manifest, {task_id}):
-                return repair_id
-        return None
-
-    async def _active_train_batches(self, task_id: str) -> list[tuple[str, str]]:
-        async with self.db._engine.connect() as conn:
-            return [
-                (row[0], row[1])
-                for row in await conn.execute(
-                    select(integration_batches.c.id, integration_batches.c.lifecycle)
-                    .join(
-                        integration_batch_members,
-                        integration_batch_members.c.batch_id == integration_batches.c.id,
-                    )
-                    .where(
-                        integration_batch_members.c.task_id == task_id,
-                        integration_batches.c.lifecycle.in_(_ACTIVE_TRAIN_LIFECYCLES),
-                    )
-                    .order_by(integration_batches.c.id)
-                )
-            ]
-
-    async def _cancel_parked(
-        self, batch: dict, task_id: str, principal: str
-    ) -> tuple[str, str] | None:
-        """Cancel one parked batch under the publisher's lock; ``None`` on success."""
-        from src.integration.development import (
-            DevelopmentBusy,
-            publisher_exclusion,
-            revise_operation_on,
-        )
-
-        try:
-            async with publisher_exclusion(self.db, batch["repository_id"]):
-                now = self.clock()
-
-                def cancel(current):
-                    if current["state"] != "parked":
-                        return None
-                    return {
-                        "state": "cancelled",
-                        "evidence": {
-                            **(current["evidence"] or {}),
-                            "released": {
-                                "at": now,
-                                "conclusion": "obsolete_member",
-                                "task_id": task_id,
-                                "by": principal,
-                            },
-                        },
-                    }
-
-                async with self.db._engine.begin() as conn:
-                    current = await revise_operation_on(conn, batch["id"], cancel)
-                    if current is None or current["state"] != "parked":
-                        return None  # settled meanwhile: nothing left to drop
-                    members = {
-                        member["task_id"]
-                        for member in current["manifest"] or []
-                        if isinstance(member, dict) and member.get("task_id")
-                    }
-                    flipped = await self.db.recompute_blocked(members, conn=conn)
-                    ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
-                    await self.db.log_event(
-                        "integration.development_batch_released",
-                        project_id=current["project_id"],
-                        task_id=task_id,
-                        payload=json.dumps(
-                            {
-                                "batch_id": batch["id"],
-                                "reason": "obsolete_member",
-                                "members": sorted(members),
-                            }
-                        ),
-                        conn=conn,
-                    )
-        except DevelopmentBusy:
-            return "publisher_busy", "the development publisher holds the repository lock"
-        await self.db.log_blocked_flips(flipped)
-        await self.db._notify_ready([(tid, "unblocked") for tid in ready])
-        return None
-
-    async def _record_cleanup(self, task_id: str, project_id: str, summary: dict) -> None:
+    async def _record_cleanup(
+        self, task_id: str, project_id: str, summary: dict
+    ) -> None:
         async with self.db.immediate() as conn:
             marker = await self._marker(conn, task_id)
             if marker is None:

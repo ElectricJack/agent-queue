@@ -2582,12 +2582,12 @@ class IntegrationConfig:
 
     #: Install root subject observations without performing primitives.
     reconciler_shadow: bool = False
-    #: Visit roots explicitly transferred to the reconciler. This setting
-    #: never transfers ownership; disabling it requires an audited rollback.
+    #: Run the subject reconciler. New subjects belong to it by default;
+    #: disabling visits preserves ownership and pauses delivery.
     #: A Development subject transfer to the reconciler is refused while this
     #: is off, so the reconciler can never be handed a project it may only
     #: mirror (``aq integration development-engine-transfer``).
-    reconciler_active: bool = False
+    reconciler_active: bool = True
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -5347,7 +5347,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             reconciler_shadow=integ.get("reconciler_shadow", False),
-            reconciler_active=integ.get("reconciler_active", False),
+            reconciler_active=integ.get("reconciler_active", True),
             owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),

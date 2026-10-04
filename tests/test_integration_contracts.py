@@ -11,22 +11,13 @@ from pydantic import ValidationError
 from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
-    DESIGN_INTEGRATION_COMMANDS,
-    IntegrationAdoptArgs,
     IntegrationReevaluateRepairArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.handler import CommandHandler
-from src.database.tables import (
-    integration_batches,
-    integration_cleanup_items,
-    project_integration_schedules,
-)
 from src.event_schemas import EVENT_SCHEMAS, validate_event
-from src.integration.controls import IntegrationControlService
-from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.explanation import can_render
 
 
@@ -94,49 +85,8 @@ async def test_noop_recovery_adapter_preserves_snapshot_and_claim_release_plan()
     assert result.value.apply_command.endswith("--apply")
 
 
-@pytest.mark.parametrize("overrides", [
-    {"dry_run": True},
-    {"settle_delivered_children": True, "task_ids": ["first", "second"]},
-])
-def test_delivered_parent_adoption_contract_rejects_ambiguous_scope(overrides):
-    with pytest.raises(ValidationError):
-        IntegrationAdoptArgs(**(dict(
-            project_id="p", task_ids=["parent"], target_ref="refs/heads/main",
-            head_sha="a" * 40, reason="children delivered",
-        ) | overrides))
 
 
-@pytest.mark.parametrize("outcome", ["would_adopt_parent", "adopted"])
-async def test_parent_adoption_adapter_retains_child_proof_and_delegate_plan(outcome):
-    class Handler:
-        async def execute(self, name, payload):
-            assert name == "integration_adopt"
-            assert payload["settle_delivered_children"] is True
-            return {
-                "outcome": outcome, "task_id": "parent", "head_sha": "a" * 40,
-                "verifier_task_id": "stale", "retire_delegates": ["stale"],
-                "children": [{"task_id": "child", "state": "contained"}],
-                "ownership": [{"id": "child-owner", "owner_id": "child", "fence_token": 7}],
-                "conclusion": "not_ci_attested",
-            }
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_adopt")
-    args = IntegrationAdoptArgs(
-        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha="a" * 40,
-        settle_delivered_children=True, dry_run=outcome == "would_adopt_parent", reason="delivered",
-    )
-    set_handler_provider(Handler)
-    try:
-        result = await registration.invoke(args, None)
-    finally:
-        set_handler_provider(None)
-    assert result.outcome == outcome
-    assert result.value.children == ({"task_id": "child", "state": "contained"},)
-    assert result.value.retire_delegates == ("stale",)
-    assert result.value.ownership == ({"id": "child-owner", "owner_id": "child", "fence_token": 7},)
-    assert result.value.conclusion == "not_ci_attested"
 
 
 def test_all_design_events_require_project_and_operation_identity():
@@ -322,136 +272,10 @@ def test_builtin_registration_invokes_integration_registration(monkeypatch):
     assert called == 1
 
 
-def test_unimplemented_integration_operations_are_not_registered():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    implemented = {
-        "integration_schedule_due",
-        "integration_seal",
-        "integration_transfer_owner",
-        "integration_file_children",
-        "integration_checkpoint_parent",
-        "integration_delivery_readiness",
-        "integration_record_noop",
-        "integration_parent_verify",
-        "integration_complete_parent",
-        "integration_mutate_hierarchy",
-        "delivery_promote",
-        "delivery_receipts",
-        "integration_reconcile_promotion",
-        "integration_resolve_conflict",
-        "integration_push_conflict_resolution",
-        "integration_resolve_candidate_member",
-        "integration_promote_main",
-        "integration_build_candidate",
-        "integration_repair_close_current",
-        "integration_ci_evidence",
-        "integration_release",
-        "integration_cleanup",
-        "integration_repair_start",
-        "integration_repair_dispatch",
-        "integration_record_repair",
-        "integration_repair_timeout",
-        "integration_status",
-        "integration_trust_manifest",
-        "integration_app_verify",
-        "integration_flush",
-        "integration_eject",
-        "integration_enable",
-        "integration_reconcile_unmaterialized",
-        "integration_waive_history",
-        "integration_resume",
-        "integration_reevaluate_repair",
-        "integration_abort",
-        "integration_settle_delivered_batch",
-        "integration_develop",
-        "integration_adopt",
-        "integration_migrate_provenance",
-        "integration_cancel_preserving",
-        "integration_settle_parked",
-        "integration_development_sweep",
-        "integration_retry_cleanup",
-        "integration_release_delegates",
-        "integration_release_owner",
-        "integration_reserve_owner",
-        "integration_release_stale_owners",
-        "integration_clear_stale_request",
-        "integration_redrive_root",
-        "integration_materialize_root",
-        "integration_authorize_root",
-        "integration_redrive_child",
-        "integration_reopen_collection",
-        "integration_rebind_reused_identity",
-        "integration_rebind_repair",
-        "integration_rebind_detached_repair",
-        "integration_recover_preserved_repair",
-        "integration_recover_parent_head",
-        "integration_adopt_legacy_deliveries",
-        "integration_bind_legacy_repositories",
-        "integration_close_delivered_pr",
-        "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
-    }
-    assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
-    assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["would_settle", "settled", "already_settled", "changed", "blocked"])
-async def test_delivered_batch_contract_preserves_preview_identity_and_audit(outcome):
-    payload = dict(batch_id="batch", candidate_sha="a" * 40, target_sha="b" * 40,
-                   snapshot_digest="c" * 64, validation="external delivery; not CI attested",
-                   apply_command="aq integration settle-delivered-batch batch --apply",
-                   repair_completion_ids=["completion"])
-
-    class Handler:
-        async def execute(self, command, args):
-            assert command == "integration_settle_delivered_batch"
-            assert args["batch_id"] == "batch" and args["dry_run"] is True
-            return {"success": outcome in {"would_settle", "settled", "already_settled"},
-                    "outcome": outcome, **payload}
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_settle_delivered_batch")
-    set_handler_provider(Handler)
-    try:
-        result = await registration.invoke(
-            registration.contract.execution.args_model(batch_id="batch"), None)
-    finally:
-        set_handler_provider(None)
-    assert result.outcome == outcome
-    assert result.value.candidate_sha == payload["candidate_sha"]
-    assert result.value.snapshot_digest == payload["snapshot_digest"]
-    assert result.value.apply_command == payload["apply_command"]
-    assert result.value.repair_completion_ids == ("completion",)
 
 
-@pytest.mark.asyncio
-async def test_legacy_binding_contract_preserves_preview_and_unproven_tasks():
-    class StubHandler:
-        async def execute(self, command, payload):
-            assert command == "integration_bind_legacy_repositories"
-            assert payload["dry_run"] is True
-            return {
-                "outcome": "bound", "project_id": "p", "repository_id": "repo",
-                "dry_run": True,
-                "bound": [{"task_id": "child", "proof": "development_delivery"}],
-                "unproven": ["other"],
-            }
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_bind_legacy_repositories")
-    args = registration.contract.execution.args_model(project_id="p")
-    set_handler_provider(StubHandler)
-    try:
-        result = await registration.invoke(args, None)
-    finally:
-        set_handler_provider(None)
-    assert result.outcome == "bound"
-    assert result.value.bound == ({"task_id": "child", "proof": "development_delivery"},)
-    assert result.value.unproven == ("other",)
 
 
 def test_schedule_contract_is_typed_and_retry_safe():
@@ -472,20 +296,6 @@ def test_schedule_contract_is_typed_and_retry_safe():
         schedule.args_model(project_id="p", now=1.0, trigger="caller-defined")
 
 
-@pytest.mark.parametrize("interval_seconds", [True, "60"])
-def test_enable_contract_rejects_coercible_non_integer_intervals(interval_seconds):
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    args_model = registry.require("integration_enable").contract.execution.args_model
-
-    with pytest.raises(ValidationError):
-        args_model(
-            project_id="p",
-            mode="train",
-            expected_generation=0,
-            reason="strict cadence",
-            interval_seconds=interval_seconds,
-        )
 
 
 def test_repair_contracts_expose_exact_typed_public_protocol():
@@ -957,114 +767,3 @@ async def test_root_promotion_command_is_registered_and_strictly_typed():
     )
     result = await handler.execute("integration_promote_main", {})
     assert result["outcome"] == "runtime_error"
-
-
-@pytest.mark.asyncio
-async def test_operational_adapters_preserve_real_outcomes_blockers_and_status_details(
-    command_handler_factory,
-):
-    handler = await command_handler_factory()
-    await handler.db.create_project(Project(id="p", name="project"))
-    await handler.db.create_project(Project(id="idle", name="idle project"))
-    await handler.db.create_repo(
-        RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/acme/widgets.git",
-            default_branch="main",
-        )
-    )
-    async with handler.db.immediate() as conn:
-        await conn.execute(
-            project_integration_schedules.insert().values(
-                project_id="p",
-                enabled=False,
-                interval_seconds=300,
-                next_due_at=400.0,
-                updated_at=100.0,
-            )
-        )
-        await conn.execute(
-            integration_batches.insert().values(
-                id="cleanup-batch",
-                project_id="p",
-                repository_id="repo",
-                request_id="cleanup-request",
-                trigger="manual",
-                source_manifest_digest="sha256:" + "d" * 64,
-                base_sha="a" * 40,
-                lifecycle="promoted",
-                integration_branch="refs/heads/aq/integration/cleanup",
-                final_main_sha="b" * 40,
-                policy_snapshot={},
-                artifact_snapshot={},
-                cleanup_state="conflict",
-                created_at=100.0,
-                updated_at=100.0,
-            )
-        )
-        await conn.execute(
-            integration_cleanup_items.insert().values(
-                batch_id="cleanup-batch",
-                kind="remote_ref",
-                identity="ambiguous",
-                domain_key="cleanup:ambiguous",
-                project_id="p",
-                repository_id="repo",
-                repository_numeric_id=303,
-                repository_full_name="acme/widgets",
-                revision=0,
-                target_ref="refs/heads/aq/integration/ambiguous",
-                expected_sha="b" * 40,
-                state="retryable",
-                attempts=1,
-                next_attempt_at=999.0,
-                irreversible_nonce="posted",
-                irreversible_prewrite_at=99.0,
-                created_at=90.0,
-                updated_at=99.0,
-            )
-        )
-    handler.orchestrator.integration_control_service = IntegrationControlService(
-        handler.db, clock=lambda: 100.0
-    )
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    set_handler_provider(lambda: handler)
-    try:
-        status_registration = registry.require("integration_status")
-        status = await status_registration.invoke(
-            status_registration.contract.execution.args_model(project_id="p"), None
-        )
-        enable_registration = registry.require("integration_enable")
-        disabled = await enable_registration.invoke(
-            enable_registration.contract.execution.args_model(
-                project_id="idle",
-                mode="disabled",
-                expected_generation=0,
-                reason="remain disabled",
-            ),
-            None,
-        )
-        retry_registration = registry.require("integration_retry_cleanup")
-        ambiguous = await retry_registration.invoke(
-            retry_registration.contract.execution.args_model(batch_id="cleanup-batch"),
-            None,
-        )
-    finally:
-        set_handler_provider(None)
-
-    assert status.outcome == "status"
-    assert status.value.schedule["next_due_at"] == 400.0
-    assert status.value.cleanup_pending[0]["identity"] == "ambiguous"
-    assert disabled.outcome == "disabled"
-    assert ambiguous.outcome == "ambiguous"
-    assert ambiguous.value.blockers == (
-        {
-            "code": "cleanup_irreversible",
-            "detail": "cleanup item has an unresolved irreversible write marker",
-            "ref": "cleanup:ambiguous",
-        },
-    )
-    await handler.db.close()

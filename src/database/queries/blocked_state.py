@@ -81,7 +81,7 @@ _WITHHOLDING_PARENT_STATUSES = (
 #: ``task_metadata`` key an obsolete close writes (``aq task close --obsolete``):
 #: the task's work was superseded, so there is nothing of it to publish.  JSON:
 #: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
-#: ``cleanup`` it still owes (src/integration/obsolete_close.py).
+#: ``cleanup`` it still owes (src/sessions/obsolete.py).
 OBSOLETE_META_KEY = "obsolete"
 
 

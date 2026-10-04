@@ -400,9 +400,9 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                 if extra_session or extra_workspace:
                     return refuse("the held verifier has another session or workspace holder")
         report["owner"] = dict(owner)
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
-        ambiguous = await IntegrationRecoveryControls._ambiguous_writes_on(
+        ambiguous = await OperationSafety._ambiguous_writes_on(
             conn, operation, allowed_writer_id=owner["id"]
         )
         unsettled = await conn.scalar(

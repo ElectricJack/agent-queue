@@ -8,6 +8,7 @@ human summary.  No probe in this module changes daemon, git or Docker state.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from collections import Counter
@@ -15,12 +16,14 @@ from pathlib import Path
 
 from sqlalchemy import and_, or_, select
 
-from src.database.tables import projects as project_table, task_branch_origins, task_integration_checkpoints, tasks as task_table
-
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
 
 CHECK_ID = "stall.sweep"
+_STUCK_CHILD_AFTER_SECONDS = 5 * 60
+_MAX_PR_PROBES = 20
+_PARENT_PR_PROBE_SECONDS = 2.0
+_PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
 _READY_AGE = 20 * 60
 _DEFINED_AGE = 30 * 60
 _DELIVERY_LAG = 45 * 60
@@ -159,7 +162,6 @@ async def _branch_findings(ctx: DoctorContext, active: set[str], explains: _Expl
     # The integration check already proves a receipt named the delivered SHA
     # and branch cleanup deleted it.  Explain provides the final authority:
     # an unclaimed dependent with no blocked_dependency reason is not stranded.
-    from src.doctor.integration_checks import _find_stranded_dependents
 
     candidates = [
         item for item in await _find_stranded_dependents(
@@ -349,36 +351,6 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     return findings
 
 
-async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
-    checkpoint = task_integration_checkpoints
-    origin = task_branch_origins
-    async with ctx.db._engine.connect() as conn:
-        rows = (await conn.execute(
-            select(task_table.c.id, task_table.c.project_id, task_table.c.pr_url)
-            .select_from(
-                task_table.join(project_table, project_table.c.id == task_table.c.project_id)
-                .outerjoin(checkpoint, checkpoint.c.task_id == task_table.c.id)
-                .outerjoin(origin, and_(origin.c.task_id == task_table.c.id,
-                                        origin.c.retired_at.is_(None)))
-            )
-            .where(
-                task_table.c.project_id.in_(active),
-                project_table.c.hierarchical_integration_mode == "train",
-                project_table.c.integration_repository_id == task_table.c.repo_id,
-                task_table.c.parent_task_id.is_(None),
-                task_table.c.status == TaskStatus.COMPLETED.value,
-                task_table.c.pr_url.is_not(None), task_table.c.pr_url != "",
-                or_(checkpoint.c.task_id.is_(None), origin.c.id.is_(None)),
-            )
-            .order_by(task_table.c.id).limit(100)
-        )).mappings().all()
-    return [
-        _finding("unmaterialized_train_pr", row["project_id"],
-                 f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
-                 f"run aq integration materialize-root {row['id']}",
-                 task_id=row["id"], pr_url=row["pr_url"])
-        for row in rows
-    ]
 
 
 async def _check_sweep(ctx: DoctorContext) -> CheckResult:
@@ -402,7 +374,6 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
-        _unmaterialized_pr_findings(ctx, active),
         _unadmitted_parent_findings(ctx, active),
         _reviewed_file_guard_findings(ctx, active),
         _orphaned_pr_findings(ctx, active, now),
@@ -427,15 +398,14 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
 
 
 async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
-    from src.doctor.integration_checks import _find_reviewed_file_blocked_batches
 
     return [
         _finding(
             "reviewed_file_guard",
             row["project_id"],
             f"batch {row['batch_id']} repair blocked by {row['invariant']}; "
-            "detach the repair writer, recover pending resolutions, and eject the "
-            "conflicting member before rebuilding",
+            f"inspect aq integration status {row['project_id']} and resolve the "
+            "durable Subject's policy gate before rebuilding",
             **{key: value for key, value in row.items() if key != "project_id"},
         )
         for row in await _find_reviewed_file_blocked_batches(ctx)
@@ -444,7 +414,6 @@ async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) ->
 
 
 async def _orphaned_pr_findings(ctx: DoctorContext, active: set[str], now: float) -> list[dict]:
-    from src.doctor.integration_checks import _find_orphaned_prs
 
     pulls, errors = await _find_orphaned_prs(ctx, active, now=now)
     return [
@@ -461,12 +430,11 @@ async def _orphaned_pr_findings(ctx: DoctorContext, active: set[str], now: float
 
 
 async def _unadmitted_parent_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
-    from src.doctor.integration_checks import _find_unadmitted_parents
 
     return [
         _finding("unadmitted_parent", row["project_id"],
                  f"{row['task_id']} completed with PR {row['pr_url']}: {row['reason']}; "
-                 "run aq doctor --check integration.unadmitted_parents",
+                 "inspect the parent subject and its exact review evidence",
                  **{key: value for key, value in row.items() if key != "project_id"})
         for row in await _find_unadmitted_parents(ctx) if row["project_id"] in active
     ]
@@ -485,3 +453,364 @@ async def _validation_findings() -> list[dict]:
 
 def stall_checks() -> list[DoctorCheck]:
     return [DoctorCheck(id=CHECK_ID, run=_check_sweep, owner="operations", timeout_s=55)]
+
+
+async def _parent_pr_observation(ctx: DoctorContext, row: dict) -> dict:
+    """Use the configured repository credential; unavailable reads stay unknown."""
+    git = getattr(getattr(ctx.handler, "orchestrator", None), "git", None)
+    if git is None or not row["repo_url"]:
+        return {"pr_open": None, "pr_head": None}
+    try:
+        binding = await git.bind_github_repository(row["repo_url"])
+        pull = await git._github_client(binding).pull_request(row["pr_url"])
+        head = pull.get("head") or {}
+        base = pull.get("base") or {}
+        canonical = (
+            head.get("ref") == row["branch_name"]
+            and (head.get("repo") or {}).get("id") == binding.repository_id
+            and base.get("ref") == row["default_branch"]
+            and (base.get("repo") or {}).get("id") == binding.repository_id
+        )
+        return {"pr_open": pull.get("state") == "open", "pr_head": head.get("sha"),
+                "pr_canonical": canonical}
+    except Exception:
+        return {"pr_open": None, "pr_head": None}
+
+
+async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
+    """Completed aggregate PRs invisible to the frontier, with exact blockers."""
+    from sqlalchemy import exists
+
+    from src.database import tables as t
+    from src.database.queries.integration_train_queries import (
+        _ACTIVE_BATCH_LIFECYCLES,
+        _root_delivery_receipt_conditions,
+    )
+    from src.integration.review_evidence import ReviewEvidenceProducer
+
+    child, archived = t.tasks.alias("unadmitted_child"), t.archived_tasks.alias("unadmitted_archived")
+    statement = select(
+        t.tasks.c.id.label("task_id"), t.tasks.c.project_id, t.tasks.c.pr_url,
+        t.tasks.c.branch_name, t.tasks.c.task_type,
+        t.repos.c.url.label("repo_url"), t.repos.c.default_branch,
+        t.projects.c.hierarchical_integration_generation.label("policy_generation"),
+        t.task_integration_checkpoints.c.checkpoint_sha,
+        t.task_integration_checkpoints.c.current_verification_id,
+        t.task_integration_checkpoints.c.last_completed_verification_id,
+    ).select_from(t.tasks.join(t.projects, t.projects.c.id == t.tasks.c.project_id).join(
+        t.repos, and_(t.repos.c.id == t.tasks.c.repo_id, t.repos.c.project_id == t.tasks.c.project_id),
+    ).outerjoin(t.task_integration_checkpoints,
+                t.task_integration_checkpoints.c.task_id == t.tasks.c.id)).where(
+        t.projects.c.status == "ACTIVE", t.projects.c.hierarchical_integration_mode == "train",
+        t.projects.c.integration_repository_id == t.tasks.c.repo_id,
+        t.tasks.c.parent_task_id.is_(None), t.tasks.c.status == "COMPLETED",
+        t.tasks.c.pr_url.is_not(None), t.tasks.c.pr_url != "",
+        t.tasks.c.updated_at < time.time() - _STUCK_CHILD_AFTER_SECONDS,
+        or_(exists(select(child.c.id).where(child.c.parent_task_id == t.tasks.c.id)),
+            exists(select(archived.c.id).where(archived.c.parent_task_id == t.tasks.c.id))),
+        ~exists(select(t.integration_batch_members.c.task_id).join(
+            t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
+        ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
+                t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
+        ~exists(select(t.task_delivery_receipts.c.id).where(
+            t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
+            *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
+        )),
+    ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
+    producer = ReviewEvidenceProducer(ctx.db, None)
+    findings = []
+    probe_deadline = time.monotonic() + _PARENT_PR_PROBE_BUDGET_SECONDS
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement)).mappings().all()
+        for index, record in enumerate(rows):
+            row = dict(record)
+            observed = {"pr_open": None, "pr_head": None}
+            remaining = probe_deadline - time.monotonic()
+            if index < _MAX_PR_PROBES and remaining > 0:
+                try:
+                    async with asyncio.timeout(min(_PARENT_PR_PROBE_SECONDS, remaining)):
+                        observed = await _parent_pr_observation(ctx, row)
+                except TimeoutError:
+                    pass  # Local findings remain visible when GitHub cannot answer.
+            if observed["pr_open"] is False:
+                continue
+            source = await producer._pull_request_source_on(conn, row["task_id"])
+            review = None
+            if source:
+                review = (await conn.execute(select(t.integration_review_evidence).where(
+                    t.integration_review_evidence.c.source_task_id == row["task_id"],
+                    t.integration_review_evidence.c.repository_id == source["repository_id"],
+                    t.integration_review_evidence.c.source_base == source["base"],
+                    t.integration_review_evidence.c.reviewed_head_sha == source["head"],
+                    t.integration_review_evidence.c.generation == source["generation"],
+                ).order_by(t.integration_review_evidence.c.created_at.desc(),
+                           t.integration_review_evidence.c.id.desc()).limit(1))).mappings().first()
+            if observed.get("pr_canonical") is False:
+                reason = "pr_identity_changed"
+            elif observed["pr_head"] and observed["pr_head"] != row["checkpoint_sha"]:
+                reason = "parent_head_moved"
+            elif source is None:
+                reason = "aggregate_verification_missing_or_stale"
+            elif review is not None and review["verdict"] == "rejected":
+                reason = "parent_review_rejected"
+            elif review is None and not await producer._authorization_on(
+                conn, row["task_id"], source, row["policy_generation"],
+            ):
+                reason = "parent_admission_not_authorized"
+            elif (review is None or review["review_kind"] != "parent"
+                  or (review["evidence"] or {}).get("verification_id") != source["verification_id"]):
+                reason = "exact_parent_review_missing"
+            else:
+                reason = "awaiting_train_admission"
+            findings.append({**row, **observed, "reason": reason,
+                             "review_evidence_id": review["id"] if review else None})
+    return findings
+
+
+async def _find_stranded_dependents(
+    ctx: DoctorContext,
+    *,
+    candidate_statuses: tuple[TaskStatus, ...] = (TaskStatus.COMPLETED,),
+) -> list[dict]:
+    """Find candidates held behind a cleaned-up commits-less delivery.
+
+    A delivered manifest normally makes its source durable enough to survive
+    branch cleanup. Older publisher builds consulted an empty completion first,
+    however, and silently marked that blocker unavailable. The cleanup record
+    is the durable evidence that this is that specific failure mode; a merely
+    completed task with no commits is not enough to warrant an alarm.  Whether
+    the dependent itself is already delivered is git's answer.
+    """
+
+    from src.database.tables import (
+        projects,
+        task_completion_records,
+        task_dependencies,
+        tasks,
+    )
+
+    async with ctx.db._engine.connect() as conn:
+        development = set(
+            (
+                await conn.execute(
+                    select(projects.c.id).where(
+                        projects.c.hierarchical_integration_mode == "development"
+                    )
+                )
+            ).scalars()
+        )
+        if not development:
+            return []
+        candidates = (
+            (
+                await conn.execute(
+                    select(tasks.c.id, tasks.c.project_id)
+                    .where(
+                        tasks.c.project_id.in_(development),
+                        tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        candidate_projects = {row["id"]: row["project_id"] for row in candidates}
+        if not candidate_projects:
+            return []
+        links = (
+            (
+                await conn.execute(
+                    select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+                    .where(
+                        task_dependencies.c.task_id.in_(candidate_projects),
+                        task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        blocker_ids = {link["depends_on_task_id"] for link in links}
+        if not blocker_ids:
+            return []
+        blockers = {
+            row["id"]: row
+            for row in (
+                (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.project_id, tasks.c.status)
+                        .where(tasks.c.id.in_(blocker_ids))
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        }
+        completions = {}
+        for row in (
+            (
+                await conn.execute(
+                    select(
+                        task_completion_records.c.task_id,
+                        task_completion_records.c.id,
+                        task_completion_records.c.commits,
+                    )
+                    .where(task_completion_records.c.task_id.in_(blocker_ids))
+                    .order_by(
+                        task_completion_records.c.task_id,
+                        task_completion_records.c.completed_at.desc(),
+                        task_completion_records.c.id.desc(),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            completions.setdefault(row["task_id"], row)
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
+
+
+    stranded = {}
+    for row in rows:
+        cleanup = (row["evidence"] or {}).get("branch_cleanup") or {}
+        deleted = cleanup.get("deleted") or []
+        if not deleted:
+            continue
+        for member in row["manifest"] or []:
+            blocker_id = member.get("task_id")
+            source_sha = member.get("source_sha")
+            blocker = blockers.get(blocker_id)
+            completion = completions.get(blocker_id)
+            if (
+                blocker is None
+                or blocker["project_id"] != row["project_id"]
+                or blocker["status"] != TaskStatus.COMPLETED.value
+                or completion is None
+                or json.loads(completion["commits"])
+                or not any(entry.get("sha") == source_sha for entry in deleted)
+            ):
+                continue
+            for link in links:
+                if link["depends_on_task_id"] != blocker_id:
+                    continue
+                dependent_id = link["task_id"]
+                if candidate_projects.get(dependent_id) != row["project_id"]:
+                    continue
+                key = (dependent_id, blocker_id)
+                stranded.setdefault(
+                    key,
+                    {
+                        "project_id": row["project_id"],
+                        "dependent_task_id": dependent_id,
+                        "blocker_task_id": blocker_id,
+                        "delivery_id": row["id"],
+                        "source_sha": source_sha,
+                    },
+                )
+    # A dependent whose own work git already finds on its target is not
+    # stranded, whatever its blocker's history.  Git answers that, not a
+    # delivery row; without an observer nothing is proven and all are listed.
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    dependents = {item["dependent_task_id"] for item in stranded.values()}
+    if observer is not None and dependents:
+        from src.integration.delivery_truth import DeliveryState
+
+        view = await observer.observe(dependents)
+        stranded = {
+            key: item for key, item in stranded.items()
+            if not (
+                (evidence := view.get(item["dependent_task_id"])) is not None
+                and evidence.state is DeliveryState.CONTAINED
+            )
+        }
+    return sorted(stranded.values(), key=lambda item: (item["project_id"], item["dependent_task_id"]))
+
+
+async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
+
+    from src.database.tables import (
+        integration_batches,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    from src.integration.migration_heads import REVIEWED_FILE_GUARDS
+
+    batch, operation, stage = (
+        integration_batches,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        batch.c.id.label("batch_id"),
+                        batch.c.project_id,
+                        batch.c.current_revision,
+                        operation.c.id.label("operation_id"),
+                        stage.c.repair_task_id,
+                        stage.c.dossier,
+                    )
+                    .select_from(
+                        batch.join(operation, operation.c.batch_id == batch.c.id).join(
+                            stage,
+                            (stage.c.operation_id == operation.c.id)
+                            & (stage.c.ordinal == operation.c.active_stage),
+                        )
+                    )
+                    .where(
+                        batch.c.lifecycle.in_(("repairing", "human_blocked")),
+                        operation.c.state.in_(("active", "escalated", "human_required")),
+                        stage.c.dossier["reviewed_file_guard"]["invariant"]
+                        .as_string()
+                        .in_(REVIEWED_FILE_GUARDS),
+                    )
+                    .order_by(batch.c.id)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    findings = []
+    for row in rows:
+        guard = row["dossier"]["reviewed_file_guard"]
+        if guard.get("revision") != row["current_revision"]:
+            continue
+        findings.append(
+            {key: row[key] for key in ("batch_id", "project_id", "operation_id", "repair_task_id")}
+            | guard
+        )
+    return findings
+
+
+async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
+
+    from src.database.tables import projects
+    from src.git.github import GitHubAccess
+    from src.git.manager import GitManager
+    from src.integration.pr_cleanup import orphaned_pull_requests
+
+    if ctx.db is None or not hasattr(ctx.db, "_engine"):
+        return [], []
+    factory = getattr(ctx.handler, "_integration_promotion_service", None)
+    if factory is not None:
+        git = factory().git
+    else:
+        integration = getattr(ctx.config, "integration", None)
+        git = GitManager(github_access=GitHubAccess.from_config(
+            getattr(integration, "github_app", None),
+        ))
+    statement = select(projects.c.id).where(projects.c.integration_repository_id.is_not(None))
+    if project_ids is not None:
+        statement = statement.where(projects.c.id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        ids = list((await conn.execute(statement.order_by(projects.c.id))).scalars())
+    findings, errors = [], []
+    for project_id in ids:
+        try:
+            findings.extend(await orphaned_pull_requests(ctx.db, git, project_id, now=now))
+        except Exception as exc:
+            errors.append({"project_id": project_id, "error": str(exc)})
+    return findings, errors

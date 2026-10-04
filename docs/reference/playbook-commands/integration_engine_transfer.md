@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:97715b304c4516b6363522691728aa95ea21abd86b44bc70c969e5c47c3f1124` |
+| Contract fingerprint | `sha256:c64ddd1c81e25de816455de1e5be3b1adf1a5a03124ce57e376185def3a38ede` |
 
 ## Parameters
 
@@ -22,7 +22,7 @@
 |---|---|---|---|---|
 | `parent_task_id` | `string \| null` | no | `null` | — |
 | `repository_id` | `string` | yes | — | — |
-| `engine` | `"legacy" \| "reconciler"` | yes | — | — |
+| `engine` | `"reconciler"` | yes | — | — |
 | `expected_versions` | `object` | no | — | — |
 | `reason` | `string` | no | `""` | — |
 | `evidence` | `string[]` | no | `[]` | — |
@@ -35,7 +35,7 @@ Redacted in receipts and explanations: `reason`.
 | Field | Type | Description |
 |---|---|---|
 | `repository_id` | `string \| null` | — |
-| `engine` | `"legacy" \| "reconciler" \| null` | — |
+| `engine` | `"reconciler" \| null` | — |
 | `subject_ids` | `string[]` | — |
 | `expected_versions` | `object` | — |
 | `current_engines` | `object` | — |

@@ -1407,9 +1407,9 @@ class TestEndToEndOnFakeProvider:
         assert close["escalated"] is True
         assert "you can still fix from this workspace" not in close["error"]
         assert "daemon state this workspace cannot change" in close["error"]
-        # An unlabelled source names the migration scoped to this held task.
-        scope = " --task-id t1" if failure in {"empty_commits", "mismatched_commits"} else ""
-        assert f"Operator remedy: aq integration migrate-provenance p1{scope} --apply" in close["error"]
+        # An unlabelled source names the diagnostic scoped to this held task.
+        remedy = "aq task show t1" if failure in {"empty_commits", "mismatched_commits"} else "aq integration status p1"
+        assert f"Operator remedy: {remedy}" in close["error"]
         reason = "delivery_provenance_migration"
         assert await db.get_task_meta("t1", "needs_attention") == reason
         assert ("task.needs_attention", {
@@ -1493,7 +1493,7 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
 
         from src.database.tables import events
-        from src.integration.development import DevelopmentIntegration
+        from src.integration.development import DevelopmentPrimitives
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
         await git._arun(["checkout", "-b", "aq/" + source_id, base], cwd=wd)
@@ -1528,7 +1528,7 @@ class TestEndToEndOnFakeProvider:
         }
         async with db._engine.begin() as conn:
             if filing == "operation":
-                await conn.execute(DevelopmentIntegration._operation_insert(
+                await conn.execute(DevelopmentPrimitives._operation_insert(
                     id="parked", state="parked", evidence={"kind": "merge_conflict"},
                     reason="source conflict", updated_at=parked_at, **filed,
                 ))
@@ -1612,7 +1612,7 @@ class TestEndToEndOnFakeProvider:
         )
         assert close["result"] == "verification_failed"
         assert "requires exact provenance migration" in str(close)
-        assert "--task-id t1" in str(close)
+        assert "aq task show t1" in str(close)
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
         assert await db.get_task_completion("t1") is None
 
@@ -3075,7 +3075,7 @@ class TestEndToEndOnFakeProvider:
 
     async def _aggregate_failure_session(self, db, provider, tmp_path):
         from src.integration.hierarchy import HierarchyIntegration
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         await self._setup(db, tmp_path)
         ownership, worker_fence = await self._enable_hierarchy_launch(db, tmp_path)
@@ -3091,7 +3091,7 @@ class TestEndToEndOnFakeProvider:
                 conn, "t1", TaskStatus.PAUSED, context="integration_parent_suspended",
                 assigned_agent_id=None, _manual_pause_control=True,
             )
-        completion = ParentCompletion(db)
+        completion = ParentEpisodeRecords(db)
         async with db.immediate() as conn:
             assert (await completion.mark_ready_on(conn, "t1"))["outcome"] == "ready"
         operation = await db.get_active_parent_integration_operation("t1")
@@ -3184,7 +3184,7 @@ class TestEndToEndOnFakeProvider:
 
         from src.git.manager import RemoteRefState
         from src.integration.hierarchy import HierarchyIntegration
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         wd = await self._setup(db, tmp_path)
         ownership, worker_fence = await self._enable_hierarchy_launch(
@@ -3216,7 +3216,7 @@ class TestEndToEndOnFakeProvider:
                 conn, "t1", TaskStatus.PAUSED, context="integration_parent_suspended",
                 assigned_agent_id=None, _manual_pause_control=True,
             )
-        completion = ParentCompletion(db)
+        completion = ParentEpisodeRecords(db)
         async with db.immediate() as conn:
             ready = await completion.mark_ready_on(conn, "t1")
         assert ready["state"] == "integration_ready"
@@ -3319,7 +3319,7 @@ class TestEndToEndOnFakeProvider:
 
         from src.git.manager import RemoteRefState
         from src.integration.hierarchy import HierarchyIntegration
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         wd = await self._setup(db, tmp_path)
         ownership, worker_fence = await self._enable_hierarchy_launch(
@@ -3351,7 +3351,7 @@ class TestEndToEndOnFakeProvider:
                 conn, "t1", TaskStatus.PAUSED, context="integration_parent_suspended",
                 assigned_agent_id=None, _manual_pause_control=True,
             )
-        completion = ParentCompletion(db)
+        completion = ParentEpisodeRecords(db)
         async with db.immediate() as conn:
             assert (await completion.mark_ready_on(conn, "t1"))["state"] == "integration_ready"
         operation = await db.get_active_parent_integration_operation("t1")
@@ -3456,10 +3456,10 @@ class TestEndToEndOnFakeProvider:
         from unittest.mock import AsyncMock
 
         from src.git.manager import RemoteRefState
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
-        completion = ParentCompletion(db)
+        completion = ParentEpisodeRecords(db)
         wd = tmp_path / "wd"
 
         async def git_run(args, *, cwd):

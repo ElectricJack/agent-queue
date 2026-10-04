@@ -27,7 +27,7 @@ is narrow on purpose:
   locked by it, a candidate ref mutation is in flight on the branch, or a
   running integration operation owns the task;
 * an ``attached``/``handoff_pending`` row additionally needs the stop proof
-  ``DevelopmentIntegration.preserve_stopped_owners`` uses: its session row is
+  ``DevelopmentPrimitives.preserve_stopped_owners`` uses: its session row is
   stopped in both ``state`` and ``desired_state``, and the session provider
   confirms, by a fresh probe, that the process is gone.
 

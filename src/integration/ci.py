@@ -1,33 +1,121 @@
 """Strict trusted CI manifest, attestation, and durable evidence contracts."""
 
 from __future__ import annotations
-
-import hashlib
-import json
-import re
 import time
-from dataclasses import dataclass
-from collections.abc import Mapping
-from typing import Any, Literal
-from urllib.parse import quote
-
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+import uuid
+import re
+from typing import Any
 from sqlalchemy import insert, select, update
-
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    integration_batches,
-    integration_candidate_revisions,
     integration_check_evidence,
+    integration_branch_owners,
+    integration_parent_verification_evidence,
+    integration_parent_verifications,
     integration_repair_operations,
     integration_repair_stages,
     projects,
     task_integration_checkpoints,
     tasks,
 )
+from src.integration.parent_engine import (
+    parent_engine_guard,
+)
+from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.outbox import enqueue_integration_event
+import hashlib
+import json
+from dataclasses import dataclass
+from collections.abc import Mapping
+from typing import Literal
+from urllib.parse import quote
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from src.database.tables import (
+    integration_batches,
+    integration_candidate_revisions,
+)
 from src.git.github_contracts import (
     GitHubCredentialMode,
     credential_identity_from_client,
 )
+
+
+
+
+
+
+
+
+_OID = re.compile(r"^[0-9a-f]{40}$")
+
+def required_checks(operation: dict[str, Any]) -> dict[str, Any]:
+    policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
+    return policy.parent.required_checks.model_dump(mode="json")
+
+
+def binding_diagnosis(
+    checkpoint: dict[str, Any],
+    generation: int,
+    head_sha: str,
+    required: dict[str, Any],
+    *,
+    force_reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Describe why no trusted verification binds this subject, or ``None``.
+
+    ``verification_not_recorded`` is the plain wait (nothing has verified this
+    generation and head); ``verified_other_head`` and
+    ``verified_other_generation`` mean a verification exists for a different
+    subject, so this one still has to be run; ``verification_record_missing`` is
+    passed in by the caller for a checkpoint naming a verification that does not
+    resolve to this operation. Every reason is a wait on somebody else's step --
+    the aggregate's producer, its repair ladder, or the playbook rule -- and
+    never a superseded subject, which is answered separately as
+    ``stale_verification``.
+    """
+    verification_id = checkpoint["current_verification_id"]
+    verified_generation = checkpoint["verified_generation"]
+    verified_sha = checkpoint["verified_sha"]
+    if force_reason is not None:
+        reason = force_reason
+    elif verification_id is None and verified_generation is None and verified_sha is None:
+        reason = "verification_not_recorded"
+    elif verified_sha is not None and verified_sha != head_sha:
+        reason = "verified_other_head"
+    elif verified_generation is not None and verified_generation != generation:
+        reason = "verified_other_generation"
+    elif verification_id is None:
+        reason = "verification_not_recorded"
+    else:
+        return None
+    return {
+        "reason": reason,
+        "generation": generation,
+        "head_sha": head_sha,
+        "verified_generation": verified_generation,
+        "verified_sha": verified_sha,
+        "verification_id": verification_id,
+        "checkpoint_state": checkpoint["state"],
+        "required_producer_id": required["producer_id"],
+        "required_check_version": required["version"],
+        "required_check_names": list(required["names"]),
+        "next_owner": "parent_ci_producer",
+        "next_action": (
+            "Trusted integration check evidence is recorded by the daemon's "
+            "parent CI producer and the parent-integration playbook, never by a "
+            "worker's own test run. Read the parent blockers with "
+            "`aq integration status <project_id>`; the durable Subject visit "
+            "rechecks its CI evidence. When the producer records "
+            "`task.integration_verified` for this generation and head, close "
+            "again -- do not re-run the local suite."
+        ),
+    }
+
+
+
+
+
+
 
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
@@ -1405,3 +1493,303 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _strict_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class ParentVerification:
+    """Shared receipt and trusted-verification invariants for parent subjects."""
+
+    async def diagnose_trusted_binding(
+        self, task_id: str, generation: int, head_sha: str
+    ) -> dict[str, Any] | None:
+        """Why no trusted verification binds this subject, or ``None``.
+
+        The read side of :meth:`complete_parent`'s guard, for callers that must
+        decide *before* attempting completion (the aggregate verifier's close).
+        It never writes and never reads an unverified worker's output: the
+        answer is derived from the checkpoint's own verification columns plus
+        the evidence rows recorded for this exact subject, so calling it twice
+        on unchanged state returns the same diagnosis.
+        """
+        async with self.db.immediate() as conn:
+            _parent, _project, checkpoint, operation = await self._locked_context_on(
+                conn, task_id
+            )
+            if int(checkpoint["generation"]) != generation:
+                return None
+            diagnosis = binding_diagnosis(
+                checkpoint, generation, head_sha, required_checks(operation)
+            )
+            if diagnosis is None:
+                return None
+            return diagnosis | await self._awaiting_evidence_detail_on(
+                conn, operation["id"], task_id, generation, head_sha
+            )
+
+
+    async def _awaiting_evidence_detail_on(
+        self, conn, operation_id: str, task_id: str, generation: int, head_sha: str
+    ) -> dict[str, Any]:
+        """Name which owner the wait belongs to, from recorded CI evidence.
+
+        "No trusted evidence yet" is three different waits: CI has not run, CI
+        ran and reported a failure the repair ladder owns, or CI went green and
+        the parent-integration playbook has not accepted its evidence. Only the
+        recorded evidence for this exact subject can tell them apart, and the
+        next action differs in all three.
+        """
+        rows = (
+            await conn.execute(
+                select(
+                    integration_check_evidence.c.id,
+                    integration_check_evidence.c.conclusion,
+                    integration_check_evidence.c.classification,
+                    integration_check_evidence.c.producer_id,
+                )
+                .where(
+                    integration_check_evidence.c.operation_id == operation_id,
+                    integration_check_evidence.c.parent_task_id == task_id,
+                    integration_check_evidence.c.parent_generation == generation,
+                    integration_check_evidence.c.parent_head_sha == head_sha,
+                )
+                .order_by(
+                    integration_check_evidence.c.observed_at, integration_check_evidence.c.id
+                )
+            )
+        ).mappings().all()
+        detail: dict[str, Any] = {
+            "recorded_evidence_ids": [row["id"] for row in rows],
+            "recorded_conclusions": sorted({row["conclusion"] for row in rows}),
+            "recorded_producer_ids": sorted({row["producer_id"] for row in rows}),
+            "recorded_classifications": sorted({row["classification"] for row in rows}),
+        }
+        if not rows:
+            return detail
+        conclusions = set(detail["recorded_conclusions"])
+        if conclusions != {"success"}:
+            detail["next_owner"] = "parent_repair_ladder"
+            detail["next_action"] = (
+                "Trusted check evidence for this generation and head already records "
+                f"{', '.join(sorted(conclusions))}: the aggregate did not pass its required "
+                "checks, so the repair ladder owns the next step. Read its active stage "
+                "with `aq integration status <project_id>`; a new aggregate needs "
+                "a new CI run, not a re-run of the local suite."
+            )
+            return detail
+        detail["next_owner"] = "parent_integration_playbook"
+        detail["next_action"] = (
+            "Trusted check evidence for this generation and head is already green but no "
+            "verification binds it: the parent-integration playbook's verify rule has to "
+            "accept it with `integration_parent_verify`, whose own outcome says why it "
+            "did not. Re-running the local suite changes nothing."
+        )
+        return detail
+
+
+    @parent_engine_guard(outcome="stale_generation")
+    async def verify_parent(
+        self, task_id: str, generation: int, head_sha: str, evidence_ids: list[str]
+    ) -> dict[str, Any]:
+        if not evidence_ids or len(set(evidence_ids)) != len(evidence_ids):
+            return {"outcome": "invalid_evidence", "task_id": task_id}
+        async with self.db.immediate() as conn:
+            parent, project, checkpoint, operation = await self._locked_context_on(
+                conn, task_id
+            )
+            if int(checkpoint["generation"]) != generation:
+                return {"outcome": "stale_generation", "task_id": task_id}
+            readiness = await self.readiness_on(
+                conn,
+                parent=parent,
+                project=project,
+                checkpoint=checkpoint,
+                operation=operation,
+            )
+            if readiness["outcome"] != "ready":
+                return readiness
+            if readiness["head_sha"] != head_sha:
+                return {"outcome": "stale_head", "task_id": task_id}
+            evidence = [
+                dict(row)
+                for row in (
+                    await conn.execute(
+                        select(integration_check_evidence).where(
+                            integration_check_evidence.c.id.in_(evidence_ids)
+                        )
+                    )
+                ).mappings().all()
+            ]
+            policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
+            required = policy.parent.required_checks
+            valid = len(evidence) == len(evidence_ids)
+            covered: set[str] = set()
+            for row in evidence:
+                valid = valid and all(
+                    (
+                        row["operation_id"] == operation["id"],
+                        row["parent_task_id"] == task_id,
+                        row["parent_generation"] == generation,
+                        row["parent_head_sha"] == head_sha,
+                        row["producer_id"] == required.producer_id,
+                        row["required_check_version"] == required.version,
+                        row["conclusion"] == "success",
+                        row["classification"] != "infrastructure",
+                    )
+                )
+                covered.update(
+                    name for name, result in (row["checks"] or {}).items() if result == "success"
+                )
+            valid = valid and covered == set(required.names)
+            if not valid:
+                return {"outcome": "invalid_evidence", "task_id": task_id}
+            existing = (
+                await conn.execute(
+                    select(integration_parent_verifications).where(
+                        integration_parent_verifications.c.operation_id == operation["id"],
+                        integration_parent_verifications.c.generation == generation,
+                        integration_parent_verifications.c.head_sha == head_sha,
+                    )
+                )
+            ).mappings().one_or_none()
+            verification_id = existing["id"] if existing else str(uuid.uuid4())
+            if existing is None:
+                await conn.execute(
+                    insert(integration_parent_verifications).values(
+                        id=verification_id,
+                        operation_id=operation["id"],
+                        parent_task_id=task_id,
+                        episode_id=checkpoint["episode_id"],
+                        generation=generation,
+                        head_sha=head_sha,
+                        required_check_version=required.version,
+                        created_at=self.clock(),
+                    )
+                )
+                for evidence_id in sorted(evidence_ids):
+                    await conn.execute(
+                        insert(integration_parent_verification_evidence).values(
+                            verification_id=verification_id,
+                            evidence_id=evidence_id,
+                        )
+                    )
+            else:
+                linked = set(
+                    (
+                        await conn.execute(
+                            select(integration_parent_verification_evidence.c.evidence_id).where(
+                                integration_parent_verification_evidence.c.verification_id
+                                == verification_id
+                            )
+                        )
+                    ).scalars().all()
+                )
+                if linked != set(evidence_ids):
+                    return {"outcome": "invalid_evidence", "task_id": task_id}
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .values(
+                    checkpoint_sha=head_sha,
+                    verified_sha=head_sha,
+                    verified_generation=generation,
+                    current_verification_id=verification_id,
+                    state="verifying",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=self.clock(),
+                )
+            )
+            await enqueue_integration_event(
+                conn,
+                event_id=f"parent-verified-{verification_id}",
+                dedup_key=f"task.integration_verified:{verification_id}",
+                project_id=parent["project_id"],
+                event_type="task.integration_verified",
+                payload={
+                    "project_id": parent["project_id"],
+                    "operation_id": operation["id"],
+                    "task_id": task_id,
+                    "title": parent["title"],
+                    "generation": generation,
+                    "head_sha": head_sha,
+                    "verification_id": verification_id,
+                },
+                available_at=self.clock(),
+            )
+            return {
+                "outcome": "verified",
+                "task_id": task_id,
+                "generation": generation,
+                "head_sha": head_sha,
+                "verification_id": verification_id,
+            }
+
+
+    @parent_engine_guard()
+    async def wake_verifier(self, task_id: str, fence) -> dict[str, Any]:
+        """Wake only the exact transferred verifier on the collected head."""
+        from src.database.queries.task_queries import _INTEGRATION_WAKE_TOKEN
+        from src.models import TaskStatus
+
+        async with self.db.immediate() as conn:
+            parent, project, checkpoint, operation = await self._locked_context_on(
+                conn, task_id
+            )
+            readiness = await self.readiness_on(
+                conn,
+                parent=parent,
+                project=project,
+                checkpoint=checkpoint,
+                operation=operation,
+            )
+            if readiness["outcome"] != "ready":
+                return readiness
+            expected_owner = operation["verifier_task_id"] or task_id
+            owner = (
+                await conn.execute(
+                    select(integration_branch_owners).where(
+                        integration_branch_owners.c.repository_id
+                        == checkpoint["repository_id"],
+                        integration_branch_owners.c.ref == checkpoint["branch"],
+                    )
+                )
+            ).mappings().one_or_none()
+            if (
+                fence.owner_id != expected_owner
+                or fence.target.repository_id != checkpoint["repository_id"]
+                or fence.target.branch != checkpoint["branch"]
+                or owner is None
+                or owner["owner_id"] != expected_owner
+                or owner["owner_role"] != "verifier"
+                or int(owner["fence_token"]) != fence.token
+                or owner["handoff_state"] != "reserved"
+            ):
+                raise HierarchyError("invariant_error", "verifier handoff is not current")
+            wake_task_id = expected_owner if operation["verifier_task_id"] else task_id
+            if (
+                await self.db._read_manual_pause(conn, task_id) is not None
+                or await self.db._read_manual_pause(conn, wake_task_id) is not None
+            ):
+                raise HierarchyError("human_required", "operator manual pause is active")
+            transition = await self.db._apply_transition(
+                conn,
+                wake_task_id,
+                TaskStatus.READY,
+                context="integration_verifier_handoff",
+                assigned_agent_id=None,
+                _manual_pause_control=True,
+                _integration_wake_token=_INTEGRATION_WAKE_TOKEN,
+            )
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.episode_id == checkpoint["episode_id"])
+                .values(
+                    checkpoint_sha=readiness["head_sha"],
+                    branch_owner_id=expected_owner,
+                    state="verifying",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=self.clock(),
+                )
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_ready(transition.ready)
+        return readiness | {"outcome": "woken", "owner_id": expected_owner}

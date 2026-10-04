@@ -157,7 +157,7 @@ consumes only terminal exact main-delivery evidence".
 
 A train stuck on `wait` is the common one: `aq integration status <project>`
 reports `pending_publications` and `ownership`, and
-[publication pending](../../guides/integration-troubleshooting.md#publication-pending)
+[publication pending](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery)
 walks the reconciliation. Repeated `invariant_error` is a doctor case —
 `aq doctor --check integration.operational`.
 
@@ -177,5 +177,5 @@ main-delivery evidence.
 
 * [`integration_promote_main`](integration_promote_main.md) — emits the `integration.batch_promoted` fact.
 * [`integration_cleanup`](integration_cleanup.md) — the separately scheduled tidy-up.
-* [`integration_retry_cleanup`](integration_retry_cleanup.md) — requeues cleanup items that failed.
+* [Subject delivery and cleanup](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery) — durable visits retry eligible work.
 * Spec: [Integration lease](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#116-integration-lease).

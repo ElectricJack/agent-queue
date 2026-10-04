@@ -37,6 +37,7 @@ class EditProjectRequest:
         integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
         hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
             only complete typed hierarchical integration policy.
+        hierarchical_integration_mode (None | str | Unset): LOCAL-only integration mode for new reconciler subjects.
         expected_integration_generation (int | None | Unset): Required generation CAS for integration configuration.
         reason (None | str | Unset): Operator reason recorded for integration configuration.
     """
@@ -53,6 +54,7 @@ class EditProjectRequest:
     git_identity_email: None | str | Unset = UNSET
     integration_repository_id: None | str | Unset = UNSET
     hierarchical_integration_policy: EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset = UNSET
+    hierarchical_integration_mode: None | str | Unset = UNSET
     expected_integration_generation: int | None | Unset = UNSET
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -132,6 +134,12 @@ class EditProjectRequest:
         else:
             hierarchical_integration_policy = self.hierarchical_integration_policy
 
+        hierarchical_integration_mode: None | str | Unset
+        if isinstance(self.hierarchical_integration_mode, Unset):
+            hierarchical_integration_mode = UNSET
+        else:
+            hierarchical_integration_mode = self.hierarchical_integration_mode
+
         expected_integration_generation: int | None | Unset
         if isinstance(self.expected_integration_generation, Unset):
             expected_integration_generation = UNSET
@@ -173,6 +181,8 @@ class EditProjectRequest:
             field_dict["integration_repository_id"] = integration_repository_id
         if hierarchical_integration_policy is not UNSET:
             field_dict["hierarchical_integration_policy"] = hierarchical_integration_policy
+        if hierarchical_integration_mode is not UNSET:
+            field_dict["hierarchical_integration_mode"] = hierarchical_integration_mode
         if expected_integration_generation is not UNSET:
             field_dict["expected_integration_generation"] = expected_integration_generation
         if reason is not UNSET:
@@ -302,6 +312,17 @@ class EditProjectRequest:
             d.pop("hierarchical_integration_policy", UNSET)
         )
 
+        def _parse_hierarchical_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        hierarchical_integration_mode = _parse_hierarchical_integration_mode(
+            d.pop("hierarchical_integration_mode", UNSET)
+        )
+
         def _parse_expected_integration_generation(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -335,6 +356,7 @@ class EditProjectRequest:
             git_identity_email=git_identity_email,
             integration_repository_id=integration_repository_id,
             hierarchical_integration_policy=hierarchical_integration_policy,
+            hierarchical_integration_mode=hierarchical_integration_mode,
             expected_integration_generation=expected_integration_generation,
             reason=reason,
         )

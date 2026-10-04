@@ -346,22 +346,13 @@ async def assert_integration_permits_removal(
     )
     if owner is not None:
         state = owner["state"]
-        if state == "human_required":
-            control = (
-                f"Run `aq integration resume {owner['operation_id']}` to let it finish, or "
-                f"`aq integration abort {owner['operation_id']} --reason \"...\"`"
-            )
-        else:
-            control = (
-                f"Wait for it, or cancel obsolete work with `aq integration cancel-preserving "
-                f"{owner['operation_id']} --reason \"...\"`"
-            )
+        control = "Inspect the owning Subject and its gate; wait for it to settle"
         task_id = owner.get("task_id") or root_id
         raise _error(
             "integration_owned",
             f"integration operation {owner['operation_id']} is {state} and owns {task_id} as its "
             f"{owner['role']}; {mutation} is refused while it runs. {control}, then "
-            f"`{RELEASE_COMMAND}`.",
+            f"the daemon performs {RELEASE_COMMAND}.",
             {"integration_operation": owner},
         )
 

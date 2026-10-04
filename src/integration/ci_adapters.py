@@ -74,7 +74,11 @@ class CIAdapters:
 
     async def _current(self, subject: Subject, head: HeadIdentity) -> bool:
         row = await self.db.get_integration_subject(subject.id)
-        return row is not None and self._matches(Subject.from_row(row), subject, head)
+        return (
+            row is not None
+            and row.get("engine") == SubjectEngine.RECONCILER.value
+            and self._matches(Subject.from_row(row), subject, head)
+        )
 
     async def _record(
         self,

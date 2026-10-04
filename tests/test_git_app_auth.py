@@ -29,7 +29,6 @@ from src.git.manager import (
     RemoteRefResult,
     RemoteRefState,
 )
-from src.integration.development import DevelopmentIntegration
 from src.orchestrator.worktree_manager import WorktreeSlotManager
 
 
@@ -1587,9 +1586,15 @@ async def test_authenticated_git_failure_reports_exit_and_scrubs_stderr_and_publ
     message = str(caught.value)
     assert "returncode 7" in message
     assert "fatal: upstream unavailable" in message
-    publisher = DevelopmentIntegration(None, data_dir=tmp_path, git=manager)
-    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
-        publisher._note_project_fault("agent-queue", caught.value)
+    from src.integration.service import IntegrationService
+
+    async def failed_source(_now):
+        raise caught.value
+
+    service = IntegrationService(None, SimpleNamespace(dispatch_due=AsyncMock()))
+    with caplog.at_level(logging.WARNING, logger="src.integration.service"):
+        await service._source("Git publication", failed_source, 1.0)
+    assert "Git publication" in caplog.text
     for output in (message, caplog.text):
         assert token not in output
         assert "password" not in output

@@ -1,5 +1,11 @@
 # Shadow week and the guarded root cutover
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 The root subject engine ships **off**. `integration.reconciler_shadow` and
 `integration.reconciler_active` both default to `false`, and nothing in this
 guide turns either of them on for you. The procedure is: observe for a week

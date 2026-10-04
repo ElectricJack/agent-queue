@@ -220,11 +220,8 @@ class RepairService:
         """Settle unfinished delegates whose owning operation has already ended.
 
         One line of glue over :mod:`src.integration.delegate_release`, which
-        the orchestrator tick, ``integration_abort`` and
-        ``aq doctor --check integration.stranded_delegates --fix`` all share.
-        Keeping one implementation is the point: three callers settling a
-        delegate three slightly different ways is how the earlier version
-        left tickets ``PAUSED`` that a later one had to roll forward.
+        the daemon maintenance source and explicit recovery primitives share.
+        The same transition settles tickets and records their release evidence.
         """
         from src.integration.delegate_release import release_delegates
 
@@ -1821,7 +1818,7 @@ class RepairService:
         ):
             return None
         from src.integration.noop_repair import delegate_proof_on, remote_matches
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
         project_id = await self._operation_project_id_on(conn, operation)
         proof = await delegate_proof_on(
@@ -1829,7 +1826,7 @@ class RepairService:
             head_sha=self._subject_sha(stage["current_subject"]),
             confirm_stopped=getattr(self._owner_recovery, "confirm_stopped", None),
         )
-        if await IntegrationRecoveryControls._ambiguous_writes_on(
+        if await OperationSafety._ambiguous_writes_on(
             conn, operation, allowed_writer_id=proof["owner_id"], allow_reserved_delegate=True
         ):
             return None
@@ -1849,9 +1846,9 @@ class RepairService:
                 proof["branch"].removeprefix("refs/heads/") != checkpoint["branch"].removeprefix("refs/heads/")
             ):
                 return None
-            from src.integration.parent_completion import ParentCompletion
+            from src.integration.records import ParentEpisodeRecords
 
-            parent_completion = ParentCompletion(self.db, clock=self.clock)
+            parent_completion = ParentEpisodeRecords(self.db, clock=self.clock)
             parent, project, current_checkpoint, current_operation = await parent_completion._locked_context_on(
                 conn, operation["parent_task_id"],
             )
@@ -1924,7 +1921,7 @@ class RepairService:
             integration_repair_operations.c.id == operation["id"]
         ).values(state="active", updated_at=now))
         if operation["target_kind"] == "parent":
-            from src.integration.parent_completion import ParentCompletion
+            from src.integration.records import ParentEpisodeRecords
 
             stale_parent = proof.get("stale_parent_claim")
             if stale_parent:
@@ -1947,7 +1944,7 @@ class RepairService:
                 task_integration_checkpoints.c.task_id == operation["parent_task_id"]
             ).values(state="awaiting_children", verified_sha=None, verified_generation=None,
                      current_verification_id=None))
-            ready = await ParentCompletion(self.db, clock=self.clock).mark_ready_on(
+            ready = await ParentEpisodeRecords(self.db, clock=self.clock).mark_ready_on(
                 conn, operation["parent_task_id"], require_verifier=True,
                 event_suffix=f":green-noop:{stage['ordinal']}",
             )
@@ -2167,10 +2164,10 @@ class RepairService:
         — a head that is not ready yet simply keeps collecting.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         try:
-            return await ParentCompletion(self.db).mark_ready_on(
+            return await ParentEpisodeRecords(self.db).mark_ready_on(
                 conn, operation["parent_task_id"]
             )
         except (HierarchyError, ValueError):
@@ -4604,7 +4601,7 @@ class RepairService:
         exactly one trusted receipt bound to this operation, episode, parent and
         branch proves nothing, and the ordinary extension edge is recorded.
         """
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         intents = (
             (
@@ -4654,7 +4651,7 @@ class RepairService:
             .mappings()
             .one_or_none()
         )
-        if receipt is None or not ParentCompletion._trusted_code_receipt(dict(receipt)):
+        if receipt is None or not ParentEpisodeRecords._trusted_code_receipt(dict(receipt)):
             return None
         child = await conn.scalar(
             select(tasks.c.id).where(
@@ -5977,9 +5974,8 @@ class RepairService:
                   f"Dossier and retained owners: {dossier}; {owners}. "
                   "Reconcile the conflict/fence and preserved writer through supported "
                   "integration controls before authorizing further work. Human gates, "
-                  "branches and workspace authority remain preserved. Archive only obsolete "
-                  f"delegates with aq integration release-delegates {operation['id']} "
-                  "--archive-obsolete."),
+                  "branches and workspace authority remain preserved. The daemon retires "
+                  "obsolete delegates through automatic delegate cleanup."),
             created_at=now, priority=50, archive_after_inject=1,
             body_kind="integration_repair_no_progress",
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))

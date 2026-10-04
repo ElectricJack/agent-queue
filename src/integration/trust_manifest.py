@@ -2,15 +2,13 @@
 
 ``.github/agent-queue-integration.json`` (schema ``aq.integration-trust.v1``,
 :class:`src.integration.ci.IntegrationTrustManifest`) is how a repository names
-the identities the daemon trusts in App credential mode.  Three callers build
+the identities the daemon trusts in App credential mode.  Its callers build
 it and must agree byte for byte, so the rules live here once:
 
 * ``aq integration trust-manifest`` (``integration_trust_manifest`` in
   ``src/commands/integration_commands.py``) renders it from the policy, the
   authenticated binding and the daemon's App, and compares it with the
   default-branch copy;
-* ``aq integration onboard-train`` (``train_onboarding.build_trust_manifest``,
-  a thin wrapper over :func:`build_trust_manifest`) plans it for a project;
 * the App-mode preflight compares a committed copy on the same fields.
 
 Nothing here reads Git, GitHub or the database.  Fields fall in two groups

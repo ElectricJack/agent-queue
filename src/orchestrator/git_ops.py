@@ -254,16 +254,16 @@ class GitOpsMixin:
         That task is deliberately not an ordinary source-branch producer:
         requiring a PR for it would create a spurious parent-to-main merge.
         Prove its real checkout instead, retain the normal reserved-path
-        guard, and let :class:`ParentCompletion` re-check the generation,
+        guard, and let :class:`ParentEpisodeRecords` re-check the generation,
         trusted check evidence, receipt chain, and owner fence atomically.
         """
         from src.git.manager import is_valid_git_oid
         from src.integration.hierarchy import resolve_workspace_checkpoint
         from src.integration.models import BranchKey
         from src.integration.ownership import BranchOwnership
-        from src.integration.parent_completion import (
+        from src.integration.records import (
             AWAITING_TRUSTED_VERIFICATION,
-            ParentCompletion,
+            ParentEpisodeRecords,
         )
 
         task = ctx.task
@@ -354,7 +354,7 @@ class GitOpsMixin:
         if delivery_failure:
             return self._aggregate_verifier_retry(ctx, delivery_failure[0])
 
-        completion = await ParentCompletion(self.db, git_manager=self.git).complete_parent(
+        completion = await ParentEpisodeRecords(self.db, git_manager=self.git).complete_parent(
             parent_id, int(checkpoint["generation"]), head
         )
         if completion["outcome"] == AWAITING_TRUSTED_VERIFICATION:

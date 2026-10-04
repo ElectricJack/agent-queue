@@ -1280,3 +1280,9 @@ async def test_ci_service_rejects_noncurrent_root_authority(ci_db, mutation):
     assert result == {"outcome": "stale_subject", "evidence_ids": []}
     async with ci_db._engine.connect() as conn:
         assert not (await conn.execute(select(integration_check_evidence))).all()
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

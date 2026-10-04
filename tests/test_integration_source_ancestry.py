@@ -42,7 +42,6 @@ from src.git.manager import GitManager
 from src.integration.candidates import CONSTRUCTION_RETRY_SECONDS, CandidateService
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.promotion import PromotionService
-from src.integration.repair import CONSTRUCTION_REDRIVE_GRACE_SECONDS, RepairService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import IntegrationScheduler, TrainService
 from src.integration.source_ancestry import (
@@ -301,7 +300,7 @@ async def test_stacked_source_is_withdrawn_and_the_valid_source_reseals_on_its_o
     schedule = await _one(db, project_integration_schedules)
     assert schedule["outstanding_request_id"] == catchup
     assert schedule["catchup_trigger"] is None
-    assert await _rows(db, integration_outbox, integration_outbox.c.id == catchup)
+    assert await _rows(db, integration_outbox, integration_outbox.c.id == catchup) == []
     assert await _sealed_events(db, "integration-construction-retry:") == []
     # One exact, attributable withdrawal; the valid source is untouched.
     rejection = await _latest_evidence(db, FRESH, train["fresh"])
@@ -525,70 +524,8 @@ async def _strand_like_the_incident(train, monkeypatch) -> dict:
     return {**sealed, "deadline": float(stage["deadline_at"]), "attempts": stage["attempts"]}
 
 
-async def test_incident_shape_is_redriven_at_its_stage_deadline_and_withdrawn(train, monkeypatch):
-    db = train["db"]
-    stranded = await _strand_like_the_incident(train, monkeypatch)
-    operation_id, deadline = stranded["operation_id"], stranded["deadline"]
-    repair = RepairService(db, clock=lambda: deadline + 1)
-
-    early = await repair.expire(operation_id, 0, now=deadline - 1)
-    assert early["outcome"] == "not_due"
-    due = await repair.expire(operation_id, 0, now=deadline + 1)
-    assert due["outcome"] == "not_due"
-    again = await repair.expire(operation_id, 0, now=deadline + 2)
-    assert again["outcome"] == "not_due"
-    redrives = await _sealed_events(db, "integration-construction-redrive:")
-    assert [row["payload"]["batch_id"] for row in redrives] == [stranded["batch_id"]]
-    assert redrives[0]["payload"]["operation_id"] == operation_id
-    stage = await _one(
-        db, integration_repair_stages, integration_repair_stages.c.operation_id == operation_id
-    )
-    # No debug writer, and the finite budget is untouched.
-    assert (stage["state"], stage["attempts"], stage["deadline_at"]) == (
-        "active", stranded["attempts"], deadline
-    )
-    assert (await _one(
-        db, integration_repair_operations, integration_repair_operations.c.id == operation_id
-    ))["active_stage"] == 0
-
-    # The playbook accepts the re-drive and runs construct-and-test again.
-    result = await _candidate(train, deadline + 3).build(stranded["batch_id"])
-    assert result.outcome == "source_moved"
-    batch = await _one(db, integration_batches, integration_batches.c.id == stranded["batch_id"])
-    assert batch["lifecycle"] == "aborted"
-    assert await _rows(db, project_integration_leases) == []
-    settled = await repair.expire(operation_id, 0, now=deadline + 4)
-    assert (settled["outcome"], settled["action"]) == ("already_terminal", "none")
 
 
-@pytest.mark.parametrize("delivered", [True, False])
-async def test_unfinished_construction_escalates_after_its_redrive_grace(
-    train, monkeypatch, delivered
-):
-    """A re-drive buys one grace period, from delivery or, if no route takes it, enqueue."""
-    db = train["db"]
-    stranded = await _strand_like_the_incident(train, monkeypatch)
-    operation_id, deadline = stranded["operation_id"], stranded["deadline"]
-    repair = RepairService(db)
-    assert (await repair.expire(operation_id, 0, now=deadline + 1))["outcome"] == "not_due"
-    start = deadline + 1
-    if delivered:
-        start = deadline + 5
-        async with db.immediate() as conn:
-            await conn.execute(
-                update(integration_outbox)
-                .where(integration_outbox.c.id.like("integration-construction-redrive:%"))
-                .values(delivered_at=start)
-            )
-    within = await repair.expire(
-        operation_id, 0, now=start + CONSTRUCTION_REDRIVE_GRACE_SECONDS - 1
-    )
-    assert within["outcome"] == "not_due"
-    escalated = await repair.expire(
-        operation_id, 0, now=start + CONSTRUCTION_REDRIVE_GRACE_SECONDS
-    )
-    assert (escalated["outcome"], escalated["action"]) == ("expired", "dispatch_debug")
-    assert len(await _sealed_events(db, "integration-construction-redrive:")) == 1
 
 
 async def test_withdrawal_waits_for_a_live_writer_and_keeps_a_continuation(train, monkeypatch):
@@ -691,3 +628,9 @@ async def test_reviewer_task_cannot_approve_a_train_root_that_dropped_its_base(
         feedback="merge the recorded base",
     )
     assert rejected["verdict"] == "rejected"
+
+
+@pytest.fixture(autouse=True)
+def _current_root_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

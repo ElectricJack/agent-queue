@@ -160,16 +160,7 @@ class IntegrationCommandsMixin:
         return {"success": True, **result}
 
     async def _cmd_integration_development_engine_transfer(self, args: dict) -> dict:
-        """The audited per-project Development cutover, and the way back.
-
-        This is the only supported route to
-        :func:`~src.integration.development_runtime.transfer_development_engine`:
-        it keeps the exclusive repository engine fence, the exact-version CAS,
-        the unresolved-publication refusal and the reversible journal row inside
-        the mechanism, so no operator is left calling the helper from Python.
-        Rollback is this same command with ``engine: legacy`` and the
-        then-current versions.
-        """
+        """Activate the project's subjects under the reconciler's exclusive fence."""
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import (
@@ -206,59 +197,6 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
-    async def _cmd_integration_shadow_report(self, args: dict) -> dict:
-        """One read-only shadow-versus-legacy comparison over an explicit window.
-
-        Nothing here mutates, transfers or enables the active loop: the report
-        is evidence an operator reads, and it renders the commands a human
-        would run next.
-        """
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationShadowReportArgs
-        from src.integration.shadow_report import build_report
-
-        try:
-            request = IntegrationShadowReportArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("refused", str(exc))
-        project = await self.db.get_project(request.project_id)
-        if project is None:
-            return _failure("refused", "project does not exist")
-        _, error = await integration_operator(self.db, request.project_id)
-        if error:
-            return _failure("refused", error)
-        report = await build_report(
-            request.project_id,
-            self.db,
-            since=request.since,
-            until=request.until,
-            acknowledged_unknowns=request.acknowledge_unknown,
-        )
-        document = report.as_dict()
-        return {
-            "success": True,
-            "outcome": "report",
-            "digest": report.digest,
-            "window_start": report.window.start,
-            "window_end": report.window.end,
-            "window_complete": report.window.complete,
-            "observed_span_seconds": round(report.observed_span_seconds, 3),
-            "policy_artifacts": document["policy_artifacts"],
-            "legacy_decisions": report.legacy_decisions,
-            "agreements": report.agreements,
-            "divergences": report.divergences,
-            "missing_comparisons": report.missing_comparisons,
-            "unrouted_decisions": report.unrouted_decisions,
-            "unexplained_batches": document["unexplained_batches"],
-            "unknown_observations": report.unknown_observations,
-            "blocking_reasons": document["blocking_reasons"],
-            "cleared_for_review": report.cleared_for_review,
-            "operator_commands": document["operator_commands"],
-            "rollback_commands": document["rollback_commands"],
-            "report": document,
-            "markdown": report.render_markdown(),
-        }
 
     """Implemented integration command handlers are registered incrementally."""
 
@@ -822,22 +760,6 @@ class IntegrationCommandsMixin:
 
         return IntegrationScheduler(self.db)
 
-    def _integration_control_service(self):
-        service = getattr(self.orchestrator, "integration_control_service", None)
-        if service is not None:
-            return service
-        from src.integration.controls import IntegrationControlService
-
-        attestation = getattr(self.orchestrator, "integration_attestation_service", None)
-        return IntegrationControlService(
-            self.db,
-            scheduler=self._integration_scheduler(),
-            cleanup_service=getattr(self.orchestrator, "integration_cleanup_service", None),
-            legacy_resolution_observer=(
-                self._integration_promotion_service().observe_legacy_resolution_target
-            ),
-            subject_trust_reader=getattr(attestation, "subject_trust_blockers", None),
-        )
 
     async def _integration_operator_for_operation(
         self, operation_id: str
@@ -891,9 +813,14 @@ class IntegrationCommandsMixin:
             authorized = principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
         if not authorized:
             return _failure("unauthorized", "integration status is outside the caller project")
-        if args.get("control_only"):
-            return await self._integration_control_service().status(project_id, control_only=True)
-        return await self._integration_control_service().status(project_id)
+        from src.integration.status import IntegrationStatusService
+
+        service = IntegrationStatusService(self.db)
+        status = await (service.control_status(project_id) if args.get("control_only")
+                        else service.status(project_id))
+        return {"outcome": "not_found", "project_id": project_id} if status is None else {
+            "outcome": "status", **status}
+
 
     async def _integration_app_inputs(
         self, args: dict
@@ -1097,23 +1024,6 @@ class IntegrationCommandsMixin:
             **report.as_dict(),
         }
 
-    async def _cmd_integration_flush(self, args: dict) -> dict:
-        project_id = str(args.get("project_id") or "")
-        if not project_id:
-            return _failure("not_found", "project_id is required")
-        principal = current_principal() or TRUSTED_LOCAL
-        if principal.kind is PrincipalKind.PLAYBOOK:
-            authorized = await self._integration_delivery_authorized(project_id, "integration_flush")
-        else:
-            _label, refusal = await integration_operator(getattr(self, "db", None), project_id)
-            authorized = refusal is None
-        if not authorized:
-            return _failure("unauthorized", "integration flush is outside the caller authority")
-        project = await self.db.get_project(project_id)
-        if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
-            return await self._development_integration().sweep(project_id)
-        await self._reconcile_integration_completion(project_id)
-        return await self._integration_control_service().flush(project_id)
 
     async def _cmd_integration_eject(self, args: dict) -> dict:
         from src.integration.engine import current_policy_ejection
@@ -1124,12 +1034,9 @@ class IntegrationCommandsMixin:
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
         policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
-        if policy_ejection is not None:
-            operator_id = "service:root-reconciler"
-        else:
-            operator_id, refusal = await self._integration_operator_for_batch(batch_id)
-            if refusal is not None:
-                return _failure("unauthorized", refusal)
+        if policy_ejection is None:
+            return _failure("unauthorized", "ejection requires the active root policy visit")
+        operator_id = "service:root-reconciler"
 
         async def observe_resolution(resolution):
             batch = await self.db.get_integration_batch(resolution["batch_id"])
@@ -1140,13 +1047,15 @@ class IntegrationCommandsMixin:
                 resolution["target_branch"].removeprefix("refs/heads/"),
             )
 
-        return await self._integration_control_service().eject(
+        from src.integration.gates import RootMemberEjection
+
+        return await RootMemberEjection(self.db).eject(
             batch_id,
             task_id=task_id,
             reason=reason,
             operator_id=operator_id,
             resolution_observer=observe_resolution,
-            **({"policy_ejection": policy_ejection} if policy_ejection is not None else {}),
+            policy_ejection=policy_ejection,
         )
 
     async def _reconcile_integration_completion(self, project_id: str) -> None:
@@ -1165,74 +1074,9 @@ class IntegrationCommandsMixin:
             )
 
 
-    async def _cmd_integration_enable(self, args: dict) -> dict:
-        project_id = str(args.get("project_id") or "")
-        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            project_id = str(args["project_id"])
-            mode = str(args["mode"])
-            expected_generation = int(args["expected_generation"])
-            reason = str(args["reason"])
-            interval_seconds = args.get("interval_seconds")
-        except (KeyError, TypeError, ValueError):
-            return _failure("blocked", "project_id, mode, expected_generation, and reason are required")
-        return await self._integration_control_service().enable(
-            project_id,
-            mode=mode,
-            expected_generation=expected_generation,
-            reason=reason,
-            operator_id=operator_id,
-            waiver_id=args.get("waiver_id"),
-            interval_seconds=interval_seconds,
-        )
 
-    async def _cmd_integration_waive_history(self, args: dict) -> dict:
-        project_id = str(args.get("project_id") or "")
-        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            return await self._integration_control_service().waive_history(
-                str(args["project_id"]),
-                reason=str(args["reason"]),
-                blocker_digest=str(args["blocker_digest"]),
-                operator_id=operator_id,
-            )
-        except KeyError:
-            return _failure("not_waivable", "project_id, reason, and blocker_digest are required")
 
-    async def _cmd_integration_reconcile_unmaterialized(self, args: dict) -> dict:
-        project_id = str(args.get("project_id") or "")
-        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            project_id = str(args["project_id"])
-            expected_generation = int(args["expected_generation"])
-            reason = str(args["reason"])
-        except (KeyError, TypeError, ValueError):
-            return _failure("blocked", "project_id, expected_generation, and reason are required")
-        try:
-            return await self._integration_control_service().reconcile_unmaterialized_tasks(
-                project_id,
-                expected_generation=expected_generation,
-                reason=reason,
-                operator_id=operator_id,
-                hierarchy=self._hierarchy_integration_service(),
-            )
-        except HierarchyError as exc:
-            return _failure(f"hierarchy.{exc.code}", exc.detail)
 
-    async def _cmd_integration_resume(self, args: dict) -> dict:
-        operation_id = str(args.get("operation_id") or "")
-        if not operation_id:
-            return _failure("not_found", "operation_id is required")
-        _label, refusal = await self._integration_operator_for_operation(operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        return await self._integration_control_service().resume(operation_id)
 
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
@@ -1263,57 +1107,9 @@ class IntegrationCommandsMixin:
             "would_reevaluate", "reevaluated", "already_settled",
         }, result)
 
-    async def _cmd_integration_abort(self, args: dict) -> dict:
-        operation_id = str(args.get("operation_id") or "")
-        reason = str(args.get("reason") or "")
-        if not operation_id or not reason.strip():
-            return _failure("invalid_state", "operation_id and reason are required")
-        _label, refusal = await self._integration_operator_for_operation(operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        return await self._integration_control_service().abort(operation_id, reason=reason)
 
-    async def _cmd_integration_settle_delivered_batch(self, args: dict) -> dict:
-        from src.commands.contracts.integration import IntegrationSettleDeliveredBatchArgs
-        from src.integration.batch_settlement import DeliveredBatchSettlement
-        from src.integration.promotion import PromotionError
 
-        try:
-            request = IntegrationSettleDeliveredBatchArgs.model_validate(args)
-        except ValueError as exc:
-            return _failure("blocked", str(exc))
-        principal, refusal = await self._integration_operator_for_batch(request.batch_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await DeliveredBatchSettlement(self._integration_promotion_service()).run(
-                request, principal=principal,
-            )
-        except (PromotionError, GitError, ValueError) as exc:
-            return _failure("blocked", str(exc))
-        return {"success": result["outcome"] in {"would_settle", "settled", "already_settled"},
-                **result}
 
-    async def _cmd_integration_retry_cleanup(self, args: dict) -> dict:
-        batch_id = str(args.get("batch_id") or "")
-        if not batch_id:
-            return _failure("not_found", "batch_id is required")
-        _label, refusal = await self._integration_operator_for_batch(batch_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        return await self._integration_control_service().retry_cleanup(batch_id)
-
-    async def _cmd_integration_release_delegates(self, args: dict) -> dict:
-        """Settle the delegates of one operation that already ended."""
-        operation_id = str(args.get("operation_id") or "")
-        if not operation_id:
-            return _failure("not_found", "operation_id is required")
-        _label, refusal = await self._integration_operator_for_operation(operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        return await self._integration_control_service().release_delegates(
-            operation_id, archive_obsolete=bool(args.get("archive_obsolete", False))
-        )
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
         """Recover a durable pushed root-candidate repair."""
@@ -1467,30 +1263,6 @@ class IntegrationCommandsMixin:
         )
         return {"success": result["outcome"] != "not_found", **result}
 
-    async def _cmd_integration_clear_stale_request(self, args: dict) -> dict:
-        """Classify a project's outstanding sweep request; release it if it can never end."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationClearStaleRequestArgs
-
-        try:
-            request = IntegrationClearStaleRequestArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invalid", f"invalid stale request release: {exc}")
-        operator_id, refusal = await integration_operator(self.db, request.project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        result = await self._integration_control_service().clear_stale_request(
-            request.project_id,
-            dry_run=request.dry_run,
-            expected_request_id=request.expected_request_id,
-            reason=request.reason,
-            operator_id=operator_id,
-        )
-        return {
-            "success": result["outcome"] in {"cleared", "would_clear", "nothing_to_clear"},
-            **result,
-        }
 
     async def _cmd_integration_redrive_root(self, args: dict) -> dict:
         """Diagnose a completed train root's missing PR; open it for the reported head."""
@@ -1524,34 +1296,6 @@ class IntegrationCommandsMixin:
             **result,
         }
 
-    async def _cmd_integration_materialize_root(self, args: dict) -> dict:
-        """Prove and record a completed legacy root's PR source identity."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationMaterializeRootArgs
-        from src.integration.root_materialization import RootMaterialization
-
-        try:
-            request = IntegrationMaterializeRootArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invalid", f"invalid root materialization request: {exc}")
-        task = await self.db.get_task(request.task_id)
-        principal, refusal = await integration_operator(
-            self.db, task.project_id if task is not None else None
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        result = await RootMaterialization(
-            self.db, self._integration_promotion_service()
-        ).run(
-            request.task_id, dry_run=request.dry_run,
-            expected_head_sha=request.expected_head_sha, reason=request.reason,
-            operator_id=principal,
-        )
-        return {
-            "success": result["outcome"] in {"would_materialize", "materialized"},
-            "dry_run": request.dry_run, **result,
-        }
 
     async def _cmd_integration_authorize_root(self, args: dict) -> dict:
         """Record an operator's authorization of one exact completed train root source."""
@@ -1692,38 +1436,6 @@ class IntegrationCommandsMixin:
             **result,
         }
 
-    async def _cmd_integration_rebind_reused_identity(self, args: dict) -> dict:
-        """Prove a task's inherited integration identity; rebind it once settled."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationRebindReusedIdentityArgs
-        from src.integration.identity_rebind import reused_identity_rebind_for
-
-        try:
-            request = IntegrationRebindReusedIdentityArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invalid", f"invalid identity rebind request: {exc}")
-        task = await self.db.get_task(request.task_id)
-        if task is None:
-            return _failure("not_found", f"task {request.task_id} not found")
-        principal, refusal = await integration_operator(self.db, task.project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        service = reused_identity_rebind_for(self)
-        if service is None:
-            return _failure("runtime_error", "identity rebind is unavailable")
-        result = await service.run(
-            request.task_id,
-            principal=principal,
-            dry_run=request.dry_run,
-            expected_origin_ids=request.expected_origin_ids,
-            discard_tips=request.discard_tips,
-            reason=request.reason,
-        )
-        return {
-            "success": result["outcome"] in {"rebound", "would_rebind", "nothing_to_rebind"},
-            **result,
-        }
 
     async def _cmd_integration_rebind_repair(self, args: dict) -> dict:
         """Prove a live repair candidate and reserve it under the current intent."""
@@ -1841,53 +1553,7 @@ class IntegrationCommandsMixin:
             **result,
         }
 
-    async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
-        """Record provable pre-train deliveries of children no train will collect."""
-        from pydantic import ValidationError
 
-        from src.commands.contracts.integration import IntegrationAdoptLegacyDeliveriesArgs
-        from src.integration.legacy_deliveries import legacy_delivery_adoption_for
-
-        try:
-            request = IntegrationAdoptLegacyDeliveriesArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invalid", f"invalid legacy delivery adoption request: {exc}")
-        principal, refusal = await integration_operator(self.db, request.project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        service = legacy_delivery_adoption_for(self)
-        if service is None:
-            return _failure("runtime_error", "legacy delivery adoption is unavailable")
-        result = await service.run(
-            request.project_id,
-            principal=principal,
-            dry_run=request.dry_run,
-            accept=request.accept,
-            retire=request.retire,
-            supersede=request.supersede,
-            reason=request.reason,
-        )
-        return {"success": result["outcome"] in {"adopted", "nothing_to_adopt"}, **result}
-
-    async def _cmd_integration_bind_legacy_repositories(self, args: dict) -> dict:
-        """Bind terminal hierarchy members with designated-repository delivery proof."""
-        from pydantic import ValidationError
-
-        from src.commands.contracts.integration import IntegrationBindLegacyRepositoriesArgs
-        from src.integration.legacy_repositories import LegacyRepositoryBinding
-
-        try:
-            request = IntegrationBindLegacyRepositoriesArgs.model_validate(args)
-        except ValidationError as exc:
-            return _failure("invalid", f"invalid legacy repository binding request: {exc}")
-        principal, refusal = await integration_operator(self.db, request.project_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        result = await LegacyRepositoryBinding(self.db).run(
-            request.project_id, principal=principal, dry_run=request.dry_run,
-            reason=request.reason,
-        )
-        return {"success": result["outcome"] in {"bound", "nothing_to_bind"}, **result}
 
     async def _cmd_integration_close_delivered_pr(self, args: dict) -> dict:
         """Close one open PR only once Git proves its work is on the default branch."""
@@ -3427,105 +3093,13 @@ class IntegrationCommandsMixin:
 
 
     def _development_integration(self):
-        from src.integration.development import DevelopmentIntegration
+        from src.integration.development import DevelopmentPrimitives
         from src.jobs.adapters import PublisherJobs
         service = getattr(self.orchestrator, "development_integration", None)
         if service is not None:
             service.job_client = PublisherJobs(self)
             return service
-        return DevelopmentIntegration(
+        return DevelopmentPrimitives(
             self.db, data_dir=self.config.data_dir, git=self.orchestrator.git,
             job_client=PublisherJobs(self),
-            stall_after=self.config.integration.publisher_stall_after,
         )
-
-    async def _cmd_integration_develop(self, args: dict) -> dict:
-        operator_id, refusal = await integration_operator(
-            getattr(self, "db", None), str(args.get("project_id") or "")
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        from src.git.github_contracts import GitHubCredentialIdentity
-        from src.integration import protection
-
-        orchestrator = getattr(self, "orchestrator", None)
-        resolver = getattr(orchestrator, "github_repository_binding_resolver", None)
-        factory = getattr(orchestrator, "github_client_factory", None)
-        identity = getattr(getattr(orchestrator, "github_access", None), "credential_identity", None)
-        guard = None
-        if resolver is not None and factory is not None:
-            # The App's push must get past the default branch's protection
-            # (App-mode spec §8.2); never a rules write.
-            async def guard(repository):
-                project = await self.db.get_project(args["project_id"])
-                return await protection.development_guard(
-                    repository,
-                    binding_resolver=resolver,
-                    client_factory=factory,
-                    identity=identity if isinstance(identity, GitHubCredentialIdentity) else None,
-                    policy=protection.bound_policy(project),
-                )
-        try:
-            return await self._development_integration().configure(
-                args["project_id"], args["policy"], reason=args["reason"], operator_id=operator_id,
-                protection_guard=guard)
-        except protection.DevelopmentPublisherBlocked as exc:
-            return {**_failure("blocked", str(exc)), "blockers": [exc.blocker()]}
-        except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc))
-
-    async def _cmd_integration_adopt(self, args: dict) -> dict:
-        operator_id, refusal = await integration_operator(
-            getattr(self, "db", None), str(args.get("project_id") or "")
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            return await self._development_integration().adopt(
-                project_id=args["project_id"], task_ids=args["task_ids"],
-                target_ref=args["target_ref"], head_sha=args["head_sha"], reason=args["reason"],
-                operator_id=operator_id, accept_equivalent=args.get("accept_equivalent", False),
-                settle_delivered_children=args.get("settle_delivered_children", False),
-                dry_run=args.get("dry_run", False))
-        except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc))
-
-    async def _cmd_integration_development_sweep(self, args: dict) -> dict:
-        _label, refusal = await integration_operator(
-            getattr(self, "db", None), str(args.get("project_id") or "")
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            service = self._development_integration()
-            if args.get("recover_child"):
-                return await service.recover_child(
-                    args["project_id"], args["recover_child"], retry=args.get("retry", False)
-                )
-            return await service.sweep(args["project_id"], retry=args.get("retry", False))
-        except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc).strip() or repr(exc))
-
-    async def _cmd_integration_settle_parked(self, args: dict) -> dict:
-        operator_id, refusal = await integration_operator(
-            getattr(self, "db", None), str(args.get("project_id") or "")
-        )
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            return await self._development_integration().settle_parked(
-                args["project_id"], args["operation_id"], reason=args["reason"],
-                operator_id=operator_id, dismiss=args.get("dismiss", False),
-            )
-        except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc).strip() or repr(exc))
-
-    async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
-        operation_id = str(args.get("operation_id") or "")
-        _label, refusal = await self._integration_operator_for_operation(operation_id)
-        if refusal is not None:
-            return _failure("unauthorized", refusal)
-        try:
-            return await self._development_integration().cancel_preserving(args["operation_id"], reason=args["reason"])
-        except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc))

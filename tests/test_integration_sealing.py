@@ -209,7 +209,7 @@ async def test_seal_defers_alembic_collisions_and_notifies_once(db, second_revis
 
 async def test_collision_deferral_also_defers_its_declared_dependent(db):
     from src.integration.scheduler import TrainService
-    from src.integration.epic_dependencies import declare
+    from src.task_graph.integration_dependencies import declare
 
     await _enable_train(db)
     for index, task in enumerate(("first", "second", "dependent", "independent"), start=1):
@@ -306,7 +306,9 @@ async def test_continuously_changing_frontier_gets_a_bounded_durable_retry(db):
             .mappings()
             .all()
         )
-    assert len(retries) == 1 and retries[0]["available_at"] == 25.0
+        schedule = (await conn.execute(select(project_integration_schedules))).mappings().one()
+    assert retries == []
+    assert schedule["outstanding_request_id"] == request["request_id"]
 
 
 def _artifact() -> ArtifactSnapshot:
@@ -432,9 +434,9 @@ async def _seed_leaf(db, task_id: str, head: str, *, source_base=BASE_SHA, **tas
 
 @pytest.fixture
 async def adopted_root(db, tmp_path, request):
-    """Real adoption proof with no root receipt or manufactured CI evidence."""
+    """Retained Git proof with no root receipt or manufactured CI evidence."""
     from src.git.manager import GitManager
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
     from tests.test_integration_candidates import _git, _make_origin
 
     origin, work, base, sources = _make_origin(tmp_path)
@@ -458,14 +460,18 @@ async def adopted_root(db, tmp_path, request):
     else:
         _git(work, "merge", "--no-ff", "-m", "deliver root", "root-0")
     _git(work, "push", "origin", f"HEAD:refs/heads/{target}")
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
-    result = await service.adopt(
-        project_id="p", task_ids=["adopted"], target_ref=f"refs/heads/{target}",
-        head_sha=_git(work, "rev-parse", "HEAD"), reason="already deployed",
-        operator_id="local",
-        accept_equivalent=adoption == "equivalent",
-    )
-    assert result["outcome"] == "adopted"
+    service = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=GitManager())
+    # Retain proof from an already-installed generation; no retired control runs.
+    from src.integration.provenance import CompletionIdentity, CompletedSource, GitProvenance
+    provenance = GitProvenance(service.git, str(work), repository_url=str(origin))
+    original = CompletedSource(CompletionIdentity("p", "repo", "adopted", "adopted-close"), head)
+    await provenance.write_completion(original)
+    if adoption == "equivalent":
+        replacement = _git(work, "rev-parse", "HEAD")
+        await provenance.write_replacement(
+            source_oid=replacement, base_oid=base, replaces=[original],
+            authority="operator", reason="historical operator acceptance",
+        )
     db.set_delivery_observer(service.delivery_observer)
     return service, origin, work, base, sources
 
@@ -585,7 +591,7 @@ async def test_stale_adoption_cannot_hide_current_root(
 async def test_adopted_dependency_satisfies_ordering_without_bypassing_admission(
     db, adopted_root, blocked
 ):
-    from src.integration.epic_dependencies import declare
+    from src.task_graph.integration_dependencies import declare
     from src.integration.scheduler import TrainService
 
     _service, _origin, _work, base, sources = adopted_root
@@ -1115,7 +1121,7 @@ async def test_root_projection_excludes_each_common_near_miss(db, receipt_branch
 
 
 async def test_seal_orders_declared_dependencies_and_defers_missing_ones(db):
-    from src.integration.epic_dependencies import declare
+    from src.task_graph.integration_dependencies import declare
     from src.integration.scheduler import TrainService
 
     await _enable_train(db)
@@ -1141,7 +1147,7 @@ async def test_seal_orders_declared_dependencies_and_defers_missing_ones(db):
 
 
 async def test_seal_accepts_delivered_dependency_after_source_task_is_archived(db):
-    from src.integration.epic_dependencies import declare
+    from src.task_graph.integration_dependencies import declare
     from src.integration.scheduler import TrainService
 
     await _enable_train(db)
@@ -1219,7 +1225,7 @@ async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
 
     assert schedule["outstanding_request_id"] is None
     assert schedule["last_completed_sweep_at"] == 20.0
-    assert [event["event_type"] for event in events] == ["integration.sweep_due"]
+    assert events == []  # Durable Subject visits do not enqueue legacy sweeps.
 
 
 async def test_empty_seal_replay_is_not_busy_while_a_later_train_holds_the_lease(db):
@@ -1550,7 +1556,7 @@ async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coale
     assert schedule["outstanding_trigger"] == "manual"
     assert schedule["outstanding_requested_at"] == 10.0
     assert schedule["request_sequence"] == 1
-    assert len(sweep_events) == 1
+    assert sweep_events == []
 
 
 def test_integration_branch_is_ref_safe_for_adversarial_project_and_request_ids():
@@ -1617,6 +1623,7 @@ async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resume
     async def forbidden_frontier(*_args, **_kwargs):
         raise AssertionError("busy sealing inspected the source frontier")
 
+    original_frontier = db.eligible_root_page_on
     monkeypatch.setattr(db, "eligible_root_page_on", forbidden_frontier)
     busy = await TrainService(db).seal("p", first_request["request_id"], 20.0)
     assert busy == {
@@ -1627,7 +1634,7 @@ async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resume
         "operation_id": None,
     }
 
-    monkeypatch.undo()
+    monkeypatch.setattr(db, "eligible_root_page_on", original_frontier)
     resumed = await TrainService(db, page_size=1).seal("p", first_request["request_id"], 50.0)
     assert resumed["outcome"] == "sealed"
     assert resumed["batch_id"] == "existing-batch"
@@ -1720,7 +1727,7 @@ async def test_failure_after_first_member_insert_rolls_back_every_sealing_write(
                 await conn.execute(
                     select(integration_outbox.c.event_type).order_by(integration_outbox.c.id)
                 )
-            ).scalars().all() == ["integration.sweep_due"]
+            ).scalars().all() == []
             schedule = (
                 (
                     await conn.execute(
@@ -2113,4 +2120,10 @@ async def test_disabled_schedule_maintains_existing_batch_without_new_sweep(db, 
     assert lease["expires_at"] == now + 300
     assert schedule["outstanding_request_id"] == request["request_id"]
     assert schedule["request_sequence"] == request["request_sequence"]
-    assert len(events) == 1
+    assert events == []
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

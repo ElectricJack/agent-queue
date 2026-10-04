@@ -1,4 +1,4 @@
-"""Default-off parent visits share the existing integration remote pass."""
+"""Active parent subject visits share the integration remote pass."""
 
 from __future__ import annotations
 
@@ -309,7 +309,7 @@ async def ensure_parent_subject_on(db, conn, task_id, loader, *, clock=time.time
         definition = await asyncio.to_thread(loader, artifact["artifact_sha256"])
     except (OSError, ValueError) as exc:
         logger.warning(
-            "Parent %s keeps legacy authority: pinned artifact unavailable: %s", task_id, exc
+            "Parent %s awaits a pinned artifact: %s", task_id, exc
         )
         return None
     if (
@@ -323,33 +323,15 @@ async def ensure_parent_subject_on(db, conn, task_id, loader, *, clock=time.time
     )
     if policy.pin != pin:
         raise ValueError("parent artifact pin does not match loaded definition")
-    active = await conn.scalar(
-        select(t.integration_subjects.c.id)
-        .where(
-            t.integration_subjects.c.task_id == task_id,
-            t.integration_subjects.c.kind == "parent_episode",
-            t.integration_subjects.c.engine == "reconciler",
-        )
-        .limit(1)
-    )
     return await ParentSubjectAdapter(db, clock=clock).ensure_on(
         conn,
         task_id,
         policy=pin,
         max_wait_seconds=policy.policy.max_wait_seconds,
-        engine=SubjectEngine.RECONCILER if active else SubjectEngine.LEGACY,
+        engine=SubjectEngine.RECONCILER,
     )
 
 
-class _ParentShadowDB:
-    def __init__(self, db):
-        self.db = db
-
-    def __getattr__(self, name):
-        return getattr(self.db, name)
-
-    async def due_integration_subject_page(self, **kwargs):
-        return await self.db.due_integration_subject_page(**{**kwargs, "engine": "legacy"})
 
 
 class ParentSubjectRuntime:
@@ -371,7 +353,7 @@ class ParentSubjectRuntime:
         ports = adapters.bind(PrimitivePorts())
         self.loops = [
             IntegrationReconciler(
-                _ParentShadowDB(db) if mode is JournalMode.SHADOW else db,
+                db,
                 observer.observe,
                 policy,
                 ports,
@@ -379,7 +361,7 @@ class ParentSubjectRuntime:
                 kinds=(SubjectKind.PARENT_EPISODE,),
                 clock=clock,
             )
-            for enabled, mode in ((active, JournalMode.ACTIVE), (shadow, JournalMode.SHADOW))
+            for enabled, mode in ((active, JournalMode.ACTIVE),)
             if enabled
         ]
 
@@ -447,7 +429,7 @@ class ParentSubjectRuntime:
 
 def parent_runtime_for(orchestrator, parent_ci):
     config = orchestrator.config.integration
-    if not (config.reconciler_shadow or config.reconciler_active):
+    if not config.reconciler_active:
         return None
     observer = ParentVisitObserver(
         ParentDatabaseObservationReader(orchestrator.db),
@@ -464,7 +446,7 @@ def parent_runtime_for(orchestrator, parent_ci):
         PinnedParentPolicy(orchestrator._load_playbook_artifact),
         adapters,
         orchestrator._load_playbook_artifact,
-        shadow=config.reconciler_shadow,
+        shadow=False,
         active=config.reconciler_active,
     )
     runtime.subscribe(orchestrator.bus)

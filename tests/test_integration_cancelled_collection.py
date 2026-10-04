@@ -9,7 +9,7 @@ child's conflict intent had no repair.  ``aq integration redrive-child``
 refused ("no live collection operation") and ``reserve_episode_on`` returned
 the cancelled operation.  ``aq integration reopen-collection`` reactivates it
 in place behind a dry run; these tests drive the real promotion, repair,
-cancellation and archive paths against a real Git origin.
+historical cancellation fixtures and current recovery paths against a real Git origin.
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ from src.integration.cancelled_collection_recovery import (
 from src.integration.child_delivery import ChildDelivery
 from src.integration.collection import CollectionService
 from src.integration.delegate_release import archive_obsolete_delegates
-from src.integration.development import DevelopmentIntegration
 from src.integration.failed_verification_recovery import RECOVERY_EVENT, FailedVerificationRecovery
 from src.integration.hierarchy import HierarchyIntegration
 from src.integration.models import (
@@ -1083,10 +1082,32 @@ async def _deliver_first_and_conflict_second(case) -> dict:
 
 
 async def _cancel(case, reason="obsolete expired repair") -> dict:
-    development = DevelopmentIntegration(case.db, data_dir=case.tmp_path, git=GitManager())
-    result = await development.cancel_preserving(case.operation_id, reason=reason)
-    assert result["outcome"] == "cancelled"
-    return result
+    """Seed a historical cancellation, whose public creation control is retired."""
+    from src.integration.delegate_release import release_delegates
+
+    now = time.time()
+    async with case.db.immediate() as conn:
+        delegates = list((await conn.execute(select(integration_repair_stages.c.repair_task_id).where(
+            integration_repair_stages.c.operation_id == case.operation_id,
+            integration_repair_stages.c.repair_task_id.is_not(None),
+        ))).scalars())
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.owner_id.in_([case.operation_id, *delegates]),
+            integration_branch_owners.c.handoff_state == "reserved",
+            integration_branch_owners.c.session_id.is_(None),
+            integration_branch_owners.c.workspace_id.is_(None),
+        ).values(handoff_state="released", updated_at=now))
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.id == case.operation_id,
+        ).values(state="cancelled", updated_at=now))
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == case.operation_id,
+            integration_repair_stages.c.state.not_in(["passed", "cancelled"]),
+        ).values(state="cancelled", completed_at=now))
+    await release_delegates(
+        case.db, operation_ids=[case.operation_id], now=now, released_by="historical_fixture",
+    )
+    return {"outcome": "cancelled", "operation_id": case.operation_id, "reason": reason}
 
 
 async def _expired_repair_then_cancel(case, conflict) -> str:

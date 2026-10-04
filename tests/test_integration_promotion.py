@@ -1544,7 +1544,7 @@ async def test_resolution_receipt_drives_parent_readiness_verification_and_compl
 ):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
     from src.integration.models import ConflictResolutionInput
-    from src.integration.parent_completion import ParentCompletion
+    from src.integration.records import ParentEpisodeRecords
     from src.integration.promotion import PromotionService
     from src.profiles.capabilities import CapabilityPolicy
 
@@ -1577,7 +1577,7 @@ async def test_resolution_receipt_drives_parent_readiness_verification_and_compl
         await service.push_resolution(case["intent_id"], reservation.fence)
     await service.reconcile(case["intent_id"])
 
-    completion = ParentCompletion(db)
+    completion = ParentEpisodeRecords(db)
     readiness = await completion.readiness("parent")
     assert readiness["outcome"] == "ready"
     assert readiness["head_sha"] == case["resolved_head"]
@@ -2896,8 +2896,6 @@ async def test_supervisor_rebind_repair_proves_and_reserves_current_intent(
     db, conflict_resolution_case, command_handler_factory
 ):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-    from src.doctor.integration_checks import run_check
-    from src.doctor.models import Severity
     from src.integration.promotion import PromotionService, PromotionTargetMoved
     from src.profiles.capabilities import CapabilityPolicy
 
@@ -2934,9 +2932,6 @@ async def test_supervisor_rebind_repair_proves_and_reserves_current_intent(
             integration_repair_stages.c.operation_id == "resolution-op",
             integration_repair_stages.c.ordinal == 0,
         ).values(trigger_id=case["intent_id"], dossier=dossier))
-    finding = await run_check(db, "integration.stale_repair_intents")
-    assert finding.severity is Severity.WARN
-    assert finding.data["delegates"][0]["task_id"] == "repair-task"
     preview = await handler.execute("integration_rebind_repair", {
         "task_id": "repair-task", "dry_run": True,
     })
@@ -2970,7 +2965,6 @@ async def test_supervisor_rebind_repair_proves_and_reserves_current_intent(
     assert (await db.get_integration_promotion_intent(successor.intent_id))[
         "resolution_head_sha"
     ] == case["resolved_head"]
-    assert (await run_check(db, "integration.stale_repair_intents")).severity is Severity.OK
     replayed = await handler.execute("integration_rebind_repair", {
         "task_id": "repair-task", "dry_run": False,
         "expected_head_sha": preview["head_sha"],
@@ -3734,7 +3728,7 @@ async def _preserved_no_progress_case(db, case):
 async def test_preserved_repair_recovers_expired_stage_without_renewing_budget(
     db, conflict_resolution_case, command_handler_factory,
 ):
-    from src.integration.parent_completion import ParentCompletion
+    from src.integration.records import ParentEpisodeRecords
 
     case = await _preserved_no_progress_case(db, conflict_resolution_case)
     handler = await _detached_rebind_handler(db, case, command_handler_factory)
@@ -3771,7 +3765,7 @@ async def test_preserved_repair_recovers_expired_stage_without_renewing_budget(
     assert receipt["after_sha"] == case["candidate"]
     assert receipt["resolution_evidence"]["authoring"]["repair_session_id"] == "resolution-session"
     assert receipt["resolution_evidence"]["push_authority"]["kind"] == "preserved_resolution_push_observed"
-    readiness = await ParentCompletion(db).readiness("parent")
+    readiness = await ParentEpisodeRecords(db).readiness("parent")
     assert readiness["outcome"] == "ready", readiness
     assert (await db.get_task("parent")).status == TaskStatus.PAUSED
 
@@ -4063,260 +4057,20 @@ async def _prepared_intent_refused_by_a_moved_fence(db, case):
     return service, handler, prepared, intent
 
 
-async def test_parent_intent_pass_replays_a_refused_push_under_the_current_collector_fence(
-    db, promotion_case
-):
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-
-    case = promotion_case
-    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
-        db, case
-    )
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-
-    early = await reconciler.reconcile(intent, now=intent["updated_at"] + 1.0)
-    assert early["outcome"] == "pending"
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-
-    assert result["outcome"] == "promoted"
-    committed = await db.get_integration_promotion_intent(prepared.intent_id)
-    assert committed["state"] == "committed"
-    assert committed["prepared_sha"] == prepared.prepared_sha
-    assert (
-        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
-        == prepared.prepared_sha
-    )
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
 
 
-async def test_parent_intent_pass_finalizes_a_push_whose_outcome_was_lost(db, promotion_case):
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-
-    case = promotion_case
-    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
-        db, case
-    )
-    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
-    _git(["push", str(case["origin"]), f"{prepared.prepared_sha}:refs/heads/aq/parent"], retained)
-
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-
-    assert result["outcome"] == "applied"
-    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "committed"
 
 
-async def test_parent_intent_pass_waits_for_a_held_branch_and_backs_off(db, promotion_case):
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-
-    case = promotion_case
-    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
-        db, case
-    )
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_branch_owners)
-            .where(integration_branch_owners.c.ref == "aq/parent")
-            .values(owner_id="repair-writer", owner_role="repair")
-        )
-    calls = []
-    original = handler._cmd_delivery_promote
-
-    async def counted(args):
-        calls.append(args)
-        return await original(args)
-
-    handler._cmd_delivery_promote = counted
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    at = intent["updated_at"] + GRACE_SECONDS
-    busy = await reconciler.reconcile(intent, now=at)
-    paced = await reconciler.reconcile(intent, now=at + 1.0)
-
-    assert busy["outcome"] == "busy" and "repair-writer" in busy["reason"]
-    assert paced["outcome"] == "backoff"
-    assert calls == []
-    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
-    assert (
-        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
-        == case["base"]
-    )
 
 
-@pytest.mark.parametrize("hold", ["operation_cancelled", "operator_paused"])
-async def test_parent_intent_pass_respects_ended_operations_and_operator_holds(
-    db, promotion_case, hold
-):
-    from src.database.tables import task_metadata
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-
-    case = promotion_case
-    _service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
-        db, case
-    )
-    async with db.immediate() as conn:
-        if hold == "operation_cancelled":
-            await conn.execute(
-                update(integration_repair_operations)
-                .where(integration_repair_operations.c.id == "collector-op")
-                .values(state="cancelled")
-            )
-        else:
-            await conn.execute(
-                insert(task_metadata).values(task_id="parent", key="manual_pause", value="{}")
-            )
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-
-    assert result["outcome"] == "held"
-    assert (await db.get_integration_promotion_intent(prepared.intent_id))["state"] == "prepared"
-    assert (
-        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
-        == case["base"]
-    )
 
 
-async def test_parent_intent_pass_supersedes_diverged_attempt_and_collects_again(db, promotion_case):
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-
-    case = promotion_case
-    service, handler, prepared, intent = await _prepared_intent_refused_by_a_moved_fence(
-        db, case
-    )
-    work = case["work"]
-    _git(["switch", "-c", "competing", case["base"]], work)
-    (work / "competing.txt").write_text("other\n")
-    _git(["add", "competing.txt"], work)
-    _git(["commit", "-m", "competing"], work)
-    competing = _git(["rev-parse", "HEAD"], work)
-    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
-
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-
-    assert result["outcome"] == "superseded"
-    retired = await db.get_integration_promotion_intent(prepared.intent_id)
-    assert retired["state"] == "superseded"
-    assert retired["remote_evidence"]["remote_sha"] == competing
-    assert retired["remote_evidence"]["fence"]["token"] == 2
-    assert (
-        _git(["ls-remote", "--heads", "origin", "refs/heads/aq/parent"], work).split()[0]
-        == competing
-    )
-    from src.integration.promotion import PromotionTargetMoved
-
-    with pytest.raises(PromotionTargetMoved, match="superseded"):
-        await service.prepare(case["request"])
-    with pytest.raises(PromotionTargetMoved, match="superseded"):
-        await service.push(prepared.intent_id, await _bump_collector_fence(db))
-    for mutation in (
-        db.mark_integration_promotion_prepared(
-            prepared.intent_id, prepared_sha=prepared.prepared_sha,
-            recovery_ref=retired["recovery_ref"],
-        ),
-        db.mark_integration_promotion_pushed(prepared.intent_id, {}),
-        db.finalize_integration_promotion(prepared.intent_id, {}),
-    ):
-        with pytest.raises(ValueError, match="superseded"):
-            await mutation
-    await _collect_recovered_children(db, case, handler)
-    successor = await db.get_integration_promotion_intent(retired["superseded_by_intent_id"])
-    assert successor["supersedes_intent_id"] == intent["id"]
-    assert successor["receipt_id"] == intent["receipt_id"]
-    assert successor["expected_target"] == competing
 
 
-async def test_parent_intent_pass_supersedes_reserved_intent_after_source_moves(
-    db, promotion_case
-):
-    """A continuation re-requests the frozen head, so a moved child must retire it."""
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-    from src.integration.promotion import PromotionService
-
-    case = promotion_case
-    crashing = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(),
-        crash_hook=CrashOnce("after_object"),
-    )
-    with pytest.raises(InjectedCrash):
-        await crashing.prepare(case["request"])
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-    assert intent["state"] == "reserved"
-    work = case["work"]
-    _git(["switch", "aq/child"], work)
-    (work / "child.txt").write_text("one\ntwo\nthree\n")
-    _git(["commit", "-am", "rework"], work)
-    moved = _git(["rev-parse", "HEAD"], work)
-    _git(["push", "origin", "aq/child"], work)
-    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
-    handler = _intent_commands(db, service)
-    await _bump_collector_fence(db)
-
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-
-    assert result["outcome"] == "superseded"
-    retired = await db.get_integration_promotion_intent(intent["id"])
-    assert retired["state"] == "superseded"
-    assert retired["remote_evidence"]["kind"] == "source_moved"
-    assert retired["remote_evidence"]["source_sha"] == moved
-    assert retired["remote_evidence"]["remote_sha"] == case["base"]
-    async with db._engine.connect() as conn:
-        continuations = (await conn.execute(select(integration_outbox).where(
-            integration_outbox.c.event_type == "delivery.ready",
-        ))).all()
-    assert continuations == []
 
 
-async def test_parent_intent_pass_declines_root_intents():
-    from src.integration.parent_intents import ParentIntentReconciler
-
-    reconciler = ParentIntentReconciler(None, commands=lambda: None)
-    result = await reconciler.reconcile({"id": "root", "intent_kind": "root"}, now=1.0)
-    assert result["outcome"] == "declined"
 
 
-async def test_parent_intent_pass_continues_unprepared_intent_through_playbook(
-    db, promotion_case
-):
-    """Rebuilding a reserved intent can conflict; that repair is the playbook's call."""
-    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
-    from src.integration.promotion import PromotionService
-
-    case = promotion_case
-    crashing = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(),
-        crash_hook=CrashOnce("after_object"),
-    )
-    with pytest.raises(InjectedCrash):
-        await crashing.prepare(case["request"])
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-    assert intent["state"] == "reserved" and intent["prepared_sha"] is None
-    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
-    handler = _intent_commands(db, service)
-    from unittest.mock import patch
-
-    current = await _bump_collector_fence(db)
-
-    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
-    with patch.object(handler, "_cmd_delivery_promote", new_callable=AsyncMock) as promote:
-        result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
-        promote.assert_not_awaited()
-
-    assert result["outcome"] == "continued"
-    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "reserved"
-    # Restarted visitors must see the durable pending continuation and dedup it.
-    restarted = ParentIntentReconciler(db, commands=lambda: handler)
-    repeated = await restarted.reconcile(intent, now=intent["updated_at"] + 600)
-    assert repeated["outcome"] == "waiting"
-    async with db._engine.connect() as conn:
-        event = (await conn.execute(select(integration_outbox).where(
-            integration_outbox.c.event_type == "delivery.ready",
-        ))).mappings().one()
-    assert event["payload"]["fence"] == current.model_dump(mode="json")
-    await _collect_recovered_children(db, case, handler, first_event=event)
 
 
 async def _collect_recovered_children(db, case, handler, *, first_event=None):
@@ -4386,283 +4140,16 @@ async def _collect_recovered_children(db, case, handler, *, first_event=None):
     assert applied == 2
 
 
-async def test_parent_intent_reserved_continuation_retries_after_delivery_and_fence_change(
-    db, promotion_case,
-):
-    from src.integration.parent_intents import ParentIntentReconciler
-    from src.integration.promotion import PromotionService
-
-    case = promotion_case
-    crashing = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(),
-        crash_hook=CrashOnce("after_object"),
-    )
-    with pytest.raises(InjectedCrash):
-        await crashing.prepare(case["request"])
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-    now = intent["updated_at"] + 60
-    service = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(), clock=lambda: now,
-    )
-    handler = _intent_commands(db, service)
-
-    async def visit():
-        return await ParentIntentReconciler(db, commands=lambda: handler).reconcile(intent, now=now)
-
-    assert (await visit())["outcome"] == "continued"
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_outbox).values(delivered_at=now))
-    now += 59
-    assert (await visit())["outcome"] == "waiting"
-    now += 1
-    assert (await visit())["outcome"] == "continued"
-    assert (await visit())["outcome"] == "waiting"
-    await _bump_collector_fence(db)
-    assert (await visit())["outcome"] == "continued"
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 3
-        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
 
 
-@pytest.mark.parametrize("phase", ["after_object", "after_prepare"])
-async def test_cancel_parent_preserves_pending_intent_and_its_recovery(
-    db, promotion_case, phase,
-):
-    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
-    from src.integration.promotion import (
-        PromotionNotApplied,
-        PromotionRecovery,
-        PromotionService,
-    )
-
-    case = promotion_case
-    crashing = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(), crash_hook=CrashOnce(phase),
-    )
-    with pytest.raises(InjectedCrash, match=phase):
-        await crashing.prepare(case["request"])
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-        operation = dict((await conn.execute(
-            select(integration_repair_operations),
-        )).mappings().one())
-    assert intent["state"] == ("reserved" if phase == "after_object" else "prepared")
-    assert (intent["prepared_sha"] is None) == (phase == "after_object")
-    ownership = BranchOwnership(db)
-    owner = await ownership.get_owner(case["fence"].target)
-    development = DevelopmentIntegration(db, data_dir=case["data_dir"], git=GitManager())
-
-    with pytest.raises(
-        DevelopmentBusy, match=f"reconcile unresolved parent promotion {intent['id']}",
-    ):
-        await development.cancel_preserving("collector-op", reason="unstick collection")
-
-    assert await db.get_integration_promotion_intent(intent["id"]) == intent
-    assert await ownership.get_owner(case["fence"].target) == owner
-    async with db._engine.connect() as conn:
-        current = dict((await conn.execute(
-            select(integration_repair_operations),
-        )).mappings().one())
-        assert current == operation
-        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
-    assert await development.rows("project") == []
-    remote = _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
-    assert remote == case["base"]
-
-    # The refusal retains authority for ordinary recovery and later siblings.
-    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
-    expected = PromotionRecovery if phase == "after_object" else PromotionNotApplied
-    with pytest.raises(expected):
-        await service.reconcile(intent["id"], fence=case["fence"])
-    # Prepared attempts replay their original command; collection waits for
-    # that attempt rather than queueing a different promotion.
-    first_event = {"payload": case["request"].model_dump(mode="json")}
-    if phase == "after_object":
-        async with db._engine.connect() as conn:
-            first_event = (await conn.execute(select(integration_outbox).where(
-                integration_outbox.c.event_type == "delivery.ready",
-            ))).mappings().one()
-    await _collect_recovered_children(
-        db, case, _intent_commands(db, service), first_event=first_event,
-    )
-    cancelled = await development.cancel_preserving("collector-op", reason="reconciled")
-    assert cancelled["outcome"] == "cancelled"
 
 
-async def test_cancel_parent_refuses_unresolved_conflict_resolution(db, tmp_path):
-    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
-
-    intent = await db.reserve_integration_promotion_intent(_intent_values() | {
-        "operation_key": "collector-op", "fence_owner_id": "collector-op",
-    })
-    await db.mark_integration_promotion_conflict(intent["id"], {"paths": ["shared.txt"]})
-    async with db.immediate() as conn:
-        await db.reserve_integration_conflict_resolution(conn, intent["id"], {
-            "resolved_head_sha": "e" * 40, "resolved_tree_sha": "f" * 40,
-            "repair_commit_shas": ["e" * 40], "operation_id": "collector-op",
-            "stage_ordinal": 0, "repair_task_id": "repair", "repair_session_id": "writer",
-            "repair_session_instance_token": "instance", "repair_workspace_id": "workspace",
-            "fence_owner_id": "repair", "fence_token": 2,
-        })
-    before = await db.get_integration_promotion_intent(intent["id"])
-    development = DevelopmentIntegration(db, data_dir=tmp_path, git=GitManager())
-    with pytest.raises(DevelopmentBusy, match="reconcile unresolved parent promotion"):
-        await development.cancel_preserving("collector-op", reason="unstick resolution")
-    assert await db.get_integration_promotion_intent(intent["id"]) == before
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
-    assert await development.rows("project") == []
 
 
-async def test_cancel_parent_fences_a_preparation_that_already_validated(
-    db, promotion_case, monkeypatch,
-):
-    from src.integration.development import DevelopmentIntegration
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
-
-    case = promotion_case
-    validated, resume = asyncio.Event(), asyncio.Event()
-    reserve = db.reserve_integration_promotion_intent
-
-    async def paused_reserve(values):
-        validated.set()
-        await resume.wait()
-        return await reserve(values)
-
-    monkeypatch.setattr(db, "reserve_integration_promotion_intent", paused_reserve)
-    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
-    preparing = asyncio.create_task(service.prepare(case["request"]))
-    try:
-        await asyncio.wait_for(validated.wait(), 5)
-        development = DevelopmentIntegration(db, data_dir=case["data_dir"], git=GitManager())
-        cancelled = await development.cancel_preserving("collector-op", reason="cancel first")
-        assert cancelled["outcome"] == "cancelled"
-        resume.set()
-        with pytest.raises(PromotionTargetMoved, match="parent collection is no longer active"):
-            await asyncio.wait_for(preparing, 5)
-    finally:
-        resume.set()
-        if not preparing.done():
-            preparing.cancel()
-        await asyncio.gather(preparing, return_exceptions=True)
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(
-            select(func.count()).select_from(integration_promotion_intents),
-        ) == 0
-    remote = _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
-    assert remote == case["base"]
 
 
-async def test_cancel_parent_waits_for_an_inflight_reservation(db, tmp_path, monkeypatch):
-    from sqlalchemy import text
-
-    from src.integration.development import DevelopmentBusy, DevelopmentIntegration
-
-    reserving, resume = asyncio.Event(), asyncio.Event()
-    by_domain = db._promotion_intent_by_domain
-    reservation_pid = None
-
-    async def paused_domain(conn, domain_key):
-        nonlocal reservation_pid
-        value = await by_domain(conn, domain_key)
-        if not reserving.is_set():
-            reservation_pid = await conn.scalar(text("SELECT pg_backend_pid()"))
-            reserving.set()
-            await resume.wait()
-        return value
-
-    monkeypatch.setattr(db, "_promotion_intent_by_domain", paused_domain)
-    reservation = asyncio.create_task(db.reserve_integration_promotion_intent(_intent_values() | {
-        "operation_key": "collector-op", "fence_owner_id": "collector-op",
-    }))
-    cancellation = None
-    try:
-        await asyncio.wait_for(reserving.wait(), 5)
-        development = DevelopmentIntegration(db, data_dir=tmp_path, git=GitManager())
-        cancellation = asyncio.create_task(
-            development.cancel_preserving("collector-op", reason="race reservation"),
-        )
-
-        async def observe_operation_lock():
-            async with db._engine.connect() as conn:
-                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-                while True:
-                    assert not cancellation.done(), "cancellation bypassed the reservation lock"
-                    if await conn.scalar(text(
-                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
-                        "WHERE datname = current_database() "
-                        "AND :reservation_pid = ANY(pg_blocking_pids(pid)))"
-                    ), {"reservation_pid": reservation_pid}):
-                        return
-                    await asyncio.sleep(0.01)
-
-        # Observe actual PostgreSQL lock contention before letting the first
-        # transaction insert, rather than assuming either task won the race.
-        await asyncio.wait_for(observe_operation_lock(), 5)
-        resume.set()
-        intent = await asyncio.wait_for(reservation, 5)
-        with pytest.raises(DevelopmentBusy, match=intent["id"]):
-            await asyncio.wait_for(cancellation, 5)
-    finally:
-        resume.set()
-        pending = [reservation, *([cancellation] if cancellation is not None else [])]
-        for task in pending:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(integration_repair_operations.c.state)) == "active"
 
 
-async def test_parent_intent_quarantined_continuation_does_not_block_the_next(
-    db, promotion_case,
-):
-    """A continuation the outbox gave up on is a failed delivery, not a pending one."""
-    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX
-    from src.integration.parent_intents import ParentIntentReconciler
-    from src.integration.promotion import PromotionService
-
-    case = promotion_case
-    crashing = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(),
-        crash_hook=CrashOnce("after_object"),
-    )
-    with pytest.raises(InjectedCrash):
-        await crashing.prepare(case["request"])
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-    now = intent["updated_at"] + 60
-    service = PromotionService(
-        db, data_dir=case["data_dir"], git_manager=GitManager(), clock=lambda: now,
-    )
-    handler = _intent_commands(db, service)
-
-    async def visit():
-        return await ParentIntentReconciler(db, commands=lambda: handler).reconcile(intent, now=now)
-
-    assert (await visit())["outcome"] == "continued"
-    # The consumer stayed unavailable until the outbox's max_wait deadline.
-    deadline = now + 3600
-    quarantined = f"{RETRY_EXHAUSTED_PREFIX}max_wait=3600s deadline={deadline:.3f}; 503"
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_outbox).values(
-            attempts=7, available_at=deadline, last_error=quarantined,
-        ))
-    now = deadline + 59
-    assert (await visit())["outcome"] == "waiting"
-    now += 1
-    assert (await visit())["outcome"] == "continued"
-    # The fresh continuation is pending again; the quarantined row stays for inspection.
-    assert (await visit())["outcome"] == "waiting"
-    async with db._engine.connect() as conn:
-        rows = (await conn.execute(select(integration_outbox).order_by(
-            integration_outbox.c.available_at,
-        ))).mappings().all()
-    assert [row["dedup_key"].rsplit(":", 1)[1] for row in rows] == ["0", "1"]
-    assert rows[0]["delivered_at"] is None and rows[0]["last_error"] == quarantined
-    assert rows[1]["delivered_at"] is None and rows[1]["last_error"] is None
-    assert rows[1]["available_at"] == now
 
 
 @pytest.mark.parametrize("blocker", ["stale_fence", "paused", "cancelled", "absent", "error", "fetch_moved"])
@@ -4765,43 +4252,9 @@ async def test_parent_intent_supersede_fences_a_push_that_already_loaded_the_int
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
 
 
-async def test_parent_intent_reserved_continuation_leaves_conflict_decision_to_playbook(
-    db, promotion_case, monkeypatch,
-):
-    from src.commands.principal import ExecutionPrincipal, principal_context
-    from src.integration.parent_intents import ParentIntentReconciler
-    from src.integration.promotion import PromotionService
 
-    case = promotion_case
-    work = case["work"]
-    _git(["switch", "-c", "competing", case["base"]], work)
-    (work / "child.txt").write_text("conflicting parent addition\n")
-    _git(["add", "child.txt"], work)
-    _git(["commit", "-m", "competing"], work)
-    target = _git(["rev-parse", "HEAD"], work)
-    _git(["push", "origin", "HEAD:refs/heads/aq/parent"], work)
-    request = case["request"].model_copy(update={"expected_target": target})
-    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
-    with monkeypatch.context() as crash:
-        crash.setattr(db, "mark_integration_promotion_conflict", AsyncMock(side_effect=InjectedCrash()))
-        with pytest.raises(InjectedCrash):
-            await service.prepare(request)
-    async with db._engine.connect() as conn:
-        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
-    assert intent["state"] == "reserved"
-    handler = _intent_commands(db, service)
-    result = await ParentIntentReconciler(db, commands=lambda: handler).reconcile(
-        intent, now=intent["updated_at"] + 60,
-    )
-    assert result["outcome"] == "continued"
-    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "reserved"
-    async with db._engine.connect() as conn:
-        event = (await conn.execute(select(integration_outbox))).mappings().one()
-    with principal_context(ExecutionPrincipal.service("parent-playbook")):
-        result = await handler._cmd_delivery_promote({
-            key: event["payload"][key] for key in PromotionInput.model_fields
-        })
-    assert result["outcome"] == "conflict"
-    assert (await db.get_integration_promotion_intent(intent["id"]))["state"] == "conflict"
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 0
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

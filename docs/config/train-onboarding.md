@@ -1,5 +1,11 @@
 # Train onboarding for every project
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](../guides/hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 Jack (2026-09-27): every AQ project should deliver through the integration
 train. This runbook covers the other nine active projects. agent-queue keeps
 its own reviewed policy and handoff,

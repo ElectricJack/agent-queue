@@ -18,7 +18,7 @@ from src.database.tables import (
     messages,
     tasks,
 )
-from src.integration.epic_dependencies import declare
+from src.task_graph.integration_dependencies import declare
 from src.integration.repair import RepairService
 from tests.test_epic_pr_review_evidence import case  # noqa: F401 -- pytest fixture
 from tests.test_integration_repair import _boundary, _policy, db  # noqa: F401 -- pytest fixture
@@ -188,42 +188,10 @@ async def _notices(db):
     return [dict(row) for row in rows]
 
 
-async def test_batch_escalates_on_third_failure_with_age_and_members(db, sealed_batch):
-    for number in range(1, 3):
-        await _record(db, sealed_batch, number, "failure")
-    assert await _notices(db) == []
-    await _record(db, sealed_batch, 3, "failure")
-    notices = await _notices(db)
-    assert len(notices) == 1
-    assert notices[0]["to_id"] == "supervisor-p"
-    assert "batch" in notices[0]["body"]
-    assert "93 seconds" in notices[0]["body"]
-    assert "e1" in notices[0]["body"]
 
 
-async def test_batch_escalation_is_once_even_after_more_failures(db, sealed_batch):
-    for number in range(1, 6):
-        await _record(db, sealed_batch, number, "failure")
-    assert len(await _notices(db)) == 1
 
 
-async def test_failure_streak_crosses_primary_and_debug_stages(db, sealed_batch):
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_operations)
-            .where(integration_repair_operations.c.id == sealed_batch["operation_id"])
-            .values(policy_snapshot=_policy())
-        )
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(integration_repair_stages.c.operation_id == sealed_batch["operation_id"])
-            .values(policy=_boundary().repair.model_dump(mode="json"))
-        )
-    await _record(db, sealed_batch, 1, "failure")
-    second = await _record(db, sealed_batch, 2, "failure")
-    assert second["action"] == "dispatch_debug"
-    await _record(db, sealed_batch, 3, "failure")
-    assert len(await _notices(db)) == 1
 
 
 async def test_batch_success_resets_failure_streak(db, sealed_batch):
@@ -239,3 +207,9 @@ async def test_batch_success_resets_failure_streak(db, sealed_batch):
         )
     await _record(db, sealed_batch, 4, "failure")
     assert await _notices(db) == []
+
+
+@pytest.fixture(autouse=True)
+def _current_root_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

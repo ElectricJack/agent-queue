@@ -31,7 +31,7 @@ SCENARIO_GROUPS = {
     "claims": ("S1", "S2", "S3", "S7", "S19"),
     "cli": ("S5", "S8", "S9", "S12", "S17"),
     "graphs": ("S10", "S16b", "S18", "S6"),
-    "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
+    "failover": ("S4", "S11", "S13", "S14", "S16a"),
 }
 PREREQUISITES = {"S2": ("S1",), "S3": ("S1", "S2")}
 

@@ -32,7 +32,7 @@ from src.integration.epic_branch import reserve_branch_name
 from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
 
@@ -307,7 +307,7 @@ class HierarchyIntegration:
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
         self.ownership = ownership or BranchOwnership(db)
-        self.parent_completion = ParentCompletion(db, git_manager=git_manager, clock=clock)
+        self.parent_completion = ParentEpisodeRecords(db, git_manager=git_manager, clock=clock)
         self.clock = clock
 
     async def file_children(
@@ -395,7 +395,7 @@ class HierarchyIntegration:
             task = await self._task_row(conn, task_id)
             await self._enabled_route(conn, task)
         # Hosted CI can finish after the parent releases its writer workspace.
-        # ParentCompletion checks the locked generation, receipt-derived head,
+        # ParentEpisodeRecords checks the locked generation, receipt-derived head,
         # and durable evidence against the frozen operation policy.
         return await self.parent_completion.verify_parent(
             task_id, generation, head_sha, evidence_ids

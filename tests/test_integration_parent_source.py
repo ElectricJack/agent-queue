@@ -11,15 +11,14 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.database import tables as t
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.doctor.integration_checks import _find_unadmitted_parents, run_check
-from src.doctor.models import Severity
+from src.doctor.stall_checks import _find_unadmitted_parents
 from src.doctor.stall_checks import _unadmitted_parent_findings
 from src.git.manager import GitManager
 from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery, _ProofFailed
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 from src.integration.parent_source import ParentHeadObservation, ParentSourceReverification
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
@@ -43,7 +42,7 @@ async def db(reuse_database):
 class _Commands(IntegrationCommandsMixin):
     def __init__(self, database, promotion):
         self.db, self.promotion = database, promotion
-        self.completion = ParentCompletion(database)
+        self.completion = ParentEpisodeRecords(database)
 
     def _hierarchy_integration_service(self):
         return self.completion
@@ -288,7 +287,7 @@ async def _collect_children(case, parent_id, checkpointed, children):
         assert pushed.receipt_id
         head = prepared.prepared_sha
     async with db.immediate() as conn:
-        ready = await ParentCompletion(db).mark_ready_on(conn, parent_id, require_verifier=True)
+        ready = await ParentEpisodeRecords(db).mark_ready_on(conn, parent_id, require_verifier=True)
         assert ready["outcome"] == "ready", ready
     return head
 
@@ -582,14 +581,11 @@ async def test_doctor_and_stall_name_parent_admission_blockers(completed, monkey
         return {"pr_open": True, "pr_head": case.head, "pr_canonical": True}
 
     monkeypatch.setattr(
-        import_module("src.doctor.integration_checks"), "_parent_pr_observation", observation
+        import_module("src.doctor.stall_checks"), "_parent_pr_observation", observation
     )
     async with case.db.immediate() as conn:
         await conn.execute(update(t.tasks).where(t.tasks.c.id == "parent").values(updated_at=1.0))
     assert (await _find_unadmitted_parents(ctx))[0]["reason"] == "exact_parent_review_missing"
-    result = await run_check(case.db, "integration.unadmitted_parents")
-    assert result.severity is Severity.WARN
-    assert result.fixable is False
     assert (await _unadmitted_parent_findings(ctx, {"p"}))[0]["kind"] == "unadmitted_parent"
     async with case.db.immediate() as conn:
         await conn.execute(
@@ -666,7 +662,7 @@ async def test_parent_source_command_requires_server_principal():
 
 
 async def test_doctor_keeps_local_parent_findings_when_github_cannot_answer(completed, monkeypatch):
-    module = import_module("src.doctor.integration_checks")
+    module = import_module("src.doctor.stall_checks")
 
     async def unavailable(ctx, row):
         await asyncio.Event().wait()

@@ -627,7 +627,6 @@ class Orchestrator(
         self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
-        self.integration_control_service = None
         self.root_promotion_service = None
         self.integration_collection = None
         # Reference to the command handler, set by the bot after initialization.
@@ -1759,10 +1758,6 @@ class Orchestrator(
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
-        from src.integration.controls import (
-            IntegrationControlService,
-            daemon_functional_preflight,
-        )
         from src.integration.main_promotion import RootPromotionService
         from src.integration.models import integration_max_wait_seconds
         from src.integration.outbox import IntegrationOutbox
@@ -1774,7 +1769,6 @@ class Orchestrator(
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
-        from src.integration.stale_schedule import OrphanGrace
 
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
@@ -1795,10 +1789,7 @@ class Orchestrator(
                 None if project is None else project.hierarchical_integration_policy
             )
 
-        self.integration_scheduler = IntegrationScheduler(
-            self.db,
-            orphan_grace=OrphanGrace(since=self._process_started_at),
-        )
+        self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             before_dispatch=self.integration_scheduler.maintain_lease,
@@ -1887,51 +1878,14 @@ class Orchestrator(
             github_client_factory=self.github_client_factory,
             github_repository_binding_resolver=self.github_repository_binding_resolver,
         )
-        self.integration_control_service = IntegrationControlService(
-            self.db,
-            scheduler=self.integration_scheduler,
-            cleanup_service=self.integration_cleanup_service,
-            external_preflight=lambda project_id, repository_id: daemon_functional_preflight(
-                self, project_id, repository_id
-            ),
-            legacy_resolution_observer=self.promotion_service.observe_legacy_resolution_target,
-            subject_trust_reader=self.integration_attestation_service.subject_trust_blockers,
-        )
-
-        async def reconcile_root_intent(row: dict[str, Any], _now: float):
-            if row.get("intent_kind") != "root":
-                return {"outcome": "declined"}
-            return await self.root_promotion_service.reconcile(row["id"])
-
-        from src.integration.candidate_ci import CandidateCIService
-        from src.integration.child_delivery import ChildDelivery
-        from src.integration.collection import CollectionService
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(
             self.integration_attestation_service, self.github_repository_binding_resolver
         )
-        collection = CollectionService(
-            self.db,
-            hierarchy_service_factory=self._branch_materialization_hierarchy,
-            child_delivery=ChildDelivery(self.db, self.promotion_service),
-        )
-        # ``aq integration redrive-child`` queues a parent's collection now.
-        self.integration_collection = collection
-        async def candidate_service_for_row(row):
-            if self._command_handler is None:
-                return None
-            return await self._command_handler._integration_candidate_service(row)
-
-        candidate_ci = CandidateCIService(
-            self.db, candidate_service_factory=candidate_service_for_row,
-            attestation=self.integration_attestation_service,
-        )
-        from src.integration.development import DevelopmentIntegration
+        from src.integration.development import DevelopmentPrimitives
         from src.integration.github_review_poll import GitHubReviewPoller
-        from src.integration.green_continuation import GreenPromotionReconciler
         from src.integration.owner_recovery import owner_recovery_for
-        from src.integration.parent_intents import ParentIntentReconciler
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
         from src.integration.pr_cleanup import PullRequestReconciler
@@ -1943,81 +1897,47 @@ class Orchestrator(
 
         from src.jobs.adapters import PublisherJobs
 
-        self.development_integration = DevelopmentIntegration(
+        self.development_integration = DevelopmentPrimitives(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
             job_client=PublisherJobs(lambda: self._command_handler),
-            stall_after=self.config.integration.publisher_stall_after,
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
-        if self._development_completion_unsub is not None:
-            self._development_completion_unsub()
-        self._development_completion_unsub = self.bus.subscribe(
-            "task.completed", self.development_integration.on_task_completed,
-        )
         from src.integration.root_runtime import root_runtime_for
         from src.integration.parent_runtime import parent_runtime_for
         from src.integration.development_runtime import development_runtime_for
 
         self.parent_owner_recovery = owner_recovery
         self.parent_subject_runtime = parent_runtime_for(self, parent_ci)
-        # Default off: None until a reconciler flag is on and a development
-        # project is adopted, so the old engine stays authoritative.
+        # A disabled reconciler pauses delivery; it never selects another engine.
         self.development_subject_runtime = development_runtime_for(self)
         self.integration_service = IntegrationService(
-            self.db,
-            self.integration_scheduler,
-            RepairService(
-                self.db,
-                owner_recovery=owner_recovery,
-                promotion=self.promotion_service,
-            ),
-            self.integration_outbox,
-            candidate_ci_handler=candidate_ci.handle,
-            parent_ci_handler=parent_ci.tick,
-            collection_handler=collection.tick,
-            development_handler=self.development_integration.tick,
-            unresolved_intent_handler=reconcile_root_intent,
-            parent_intent_handler=ParentIntentReconciler(
-                self.db, commands=lambda: self._command_handler
-            ).reconcile,
-            cleanup_handler=self.integration_cleanup_service.handle_item,
-            drain_handler=self.integration_control_service.reconcile_drains,
-            branch_discard_handler=self._drain_branch_discards,
-            branch_materialization_handler=self._drain_branch_materializations,
-            owner_recovery_handler=self._sweep_stranded_owners,
-            review_handler=GitHubReviewPoller(
-                self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
-                source_ci_handler=self._observe_integration_source_ci,
-                ancestry_handler=self._repair_integration_source_ancestry,
-                parent_head_handler=self._reverify_integration_parent_source,
-            ).tick,
-            root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
-            pr_cleanup_handler=PullRequestReconciler(
-                self.db, self.git, commands=lambda: self._command_handler,
-            ).tick,
-            aborted_cleanup_handler=self.integration_cleanup_service.reconcile_aborted,
-            repair_dispatcher=self._dispatch_integration_repair_stage,
-            green_promotion_handler=GreenPromotionReconciler(
-                self.db, promotion=self.root_promotion_service
-            ).tick,
+            self.db, self.integration_outbox,
             subject_runtime=root_runtime_for(self),
             parent_subject_runtime=self.parent_subject_runtime,
             development_subject_runtime=self.development_subject_runtime,
+            maintenance={
+                "branch discard": self._drain_branch_discards,
+                "branch materialization": self._drain_branch_materializations,
+                "owner recovery": self._sweep_stranded_owners,
+                "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
+                "GitHub PR reviews": GitHubReviewPoller(
+                    self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
+                    source_ci_handler=self._observe_integration_source_ci,
+                    ancestry_handler=self._repair_integration_source_ancestry,
+                    parent_head_handler=self._reverify_integration_parent_source,
+                ).tick,
+                "root pull requests": RootPullRequestReconciler(self.db, self.git).tick,
+                "delivered PR cleanup": PullRequestReconciler(
+                    self.db, self.git, commands=lambda: self._command_handler,
+                ).tick,
+            },
             source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
             item_timeout_seconds=self.config.integration.service_item_timeout_seconds,
             source_timeouts=self.config.integration.service_source_timeouts,
         )
         self.integration_service.start()
-        # A restart drops whatever seal was in flight, and nothing re-drives the
-        # run that held it, so a request this process did not start is freed now
-        # rather than after the unsealed grace.  Best effort: the next due tick
-        # reaches the same verdict, and a failure must not block startup.
-        try:
-            await self.integration_service.release_orphaned_sweep_requests(time.time())
-        except Exception:
-            logger.exception("Orphaned integration sweep sweep on start failed")
 
         # Record intents have their own bounded lifecycle and concurrency.
         # No scheduling cascade, integration lease, or optional plugin owns

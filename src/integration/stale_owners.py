@@ -5,8 +5,7 @@ is the bulk, project-scoped form of ``release-owner`` for the rows that
 command cannot take: ``reserved`` branch-owner rows, which name no writer,
 left behind when a train run's tasks finished, were archived or were deleted.
 Every ``integration_branch_owners`` row that is not ``released`` counts as
-active integration work, so a requested drain (``aq integration enable
---mode disabled``) never completes while one remains.
+active integration work; disabling delivery preserves these reservations.
 
 A row is released only when it is provably safe:
 
@@ -18,7 +17,7 @@ A row is released only when it is provably safe:
   for it: no live session, workspace lock, in-flight candidate ref mutation
   or running operation, and no hierarchy/train project owns the row
   (:func:`src.integration.finished_owners._blocker`, the questions the
-  ``integration.finished_branch_owners`` doctor check asks);
+  finished-owner maintenance source asks);
 * nothing still relies on its fence: no active integration batch lists the
   branch and no unsettled promotion intent names it.  A promoted batch whose
   cleanup is pending keeps its integration branch's owner, because cleanup of

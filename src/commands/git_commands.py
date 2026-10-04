@@ -24,26 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class GitCommandsMixin:
-    """Git PR and provenance migration commands for CommandHandler."""
+    """Git publication and pull request commands for CommandHandler."""
 
-    async def _cmd_integration_migrate_provenance(self, args: dict) -> dict:
-        from src.commands.integration_commands import integration_operator
-        from src.git.manager import GitError
-        from src.integration.provenance_migration import ProvenanceMigration
-
-        operator, refusal = await integration_operator(self.db, args["project_id"])
-        if refusal is not None:
-            return {"success": False, "outcome": "blocked", "error": refusal}
-        try:
-            return await ProvenanceMigration(self.db, self.orchestrator.git).run(
-                args["project_id"], apply=args.get("apply", False),
-                limit=args.get("limit", 500), offset=args.get("offset", 0),
-                task_id=args.get("task_id") or None, source=args.get("source") or None,
-                no_artifact=args.get("no_artifact", False), reason=args.get("reason"),
-                operator_id=operator,
-            )
-        except (ValueError, RuntimeError, GitError) as exc:
-            return {"success": False, "outcome": "blocked", "error": str(exc)}
 
     async def _cmd_pr_merge(self, args: dict) -> dict:
         """Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool.
@@ -214,63 +196,6 @@ class GitCommandsMixin:
                 logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
         return response
 
-    async def _cmd_task_deliver(self, args: dict) -> dict:
-        """Deliver a BLOCKED task's pushed branch into its default branch by hand.
-
-        Backs ``aq task deliver``: the supervisor's control for a task whose
-        worker passed and pushed but whose close stopped at git verification
-        (agile-ridge: "Could not authorize PR repository" on a project that
-        pushes to a bare repository on disk).  The merge and push run in a
-        private bare repository (:mod:`src.integration.manual_delivery`); the
-        task then completes with context ``operator_delivery`` and
-        ``task.completed`` is announced as for any close.
-
-        Args:
-            task_id: The BLOCKED task whose recorded branch is delivered.
-            reason: Audit reason, recorded on the task and in the merge commit.
-            dry_run: Report what would be delivered without pushing.
-            expected_head: The branch head the caller inspected (a dry run
-                reports it); a branch that moved since is refused.
-        """
-        from src.commands.supervisor_authority import integration_operator
-        from src.integration.manual_delivery import ManualDelivery
-        from src.review_keys import is_review_completion
-
-        task_id = str(args.get("task_id") or "")
-        task = await self.db.get_task(task_id) if task_id else None
-        if task is None:
-            return {"success": False, "outcome": "not_found",
-                    "error": f"task '{task_id}' not found"}
-        operator_id, refusal = await integration_operator(self.db, task.project_id)
-        if refusal is not None:
-            return {"success": False, "outcome": "unauthorized", "error": refusal}
-        result = await ManualDelivery(
-            self.db, self.orchestrator.git, data_dir=self.config.data_dir,
-            event_bus=getattr(self.orchestrator, "bus", None),
-        ).deliver(
-            task_id,
-            reason=str(args.get("reason") or ""),
-            operator_id=operator_id,
-            default_mode=self.config.integration.default_mode,
-            dry_run=bool(args.get("dry_run") or False),
-            expected_head=args.get("expected_head") or None,
-        )
-        if result.get("outcome") == "delivered":
-            # Best-effort, exactly like session close: a subscriber failing
-            # must not undo a committed COMPLETED.
-            try:
-                completed = await self.db.get_task(task_id)
-                await self.orchestrator._emit_task_event(
-                    "task.completed",
-                    completed,
-                    agent_id=completed.assigned_agent_id,
-                    agent_type=completed.profile_id,
-                    no_code=False,
-                    review_task=is_review_completion(completed.dedup_key, completed.profile_id),
-                )
-            except Exception:
-                logger.warning("Task %s: task.completed emit failed", task_id, exc_info=True)
-        return result
 
     async def _check_ci_before_merge(
         self, cwd: str, pr_url: str, *, force: bool, repository=None

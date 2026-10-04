@@ -98,7 +98,8 @@ def _subject(**overrides) -> Subject:
 def test_schema_vocabularies_match_the_typed_model():
     assert tables.INTEGRATION_SUBJECT_KINDS == tuple(SubjectKind)
     assert tables.INTEGRATION_SUBJECT_PHASES == tuple(SubjectPhase)
-    assert tables.INTEGRATION_SUBJECT_ENGINES == tuple(SubjectEngine)
+    assert set(SubjectEngine) <= set(tables.INTEGRATION_SUBJECT_ENGINES)
+    assert tuple(SubjectEngine) == (SubjectEngine.RECONCILER,)
     assert tables.INTEGRATION_WRITER_STATUSES == tuple(WriterStatus)
     assert tables.INTEGRATION_JOURNAL_KINDS == tuple(JournalKind)
     assert tables.INTEGRATION_JOURNAL_MODES == tuple(JournalMode)
@@ -267,7 +268,7 @@ def test_subject_identity_rules():
     assert subject.head == HeadIdentity(
         repository_id="repo", ref="refs/heads/main", sha=HEAD, generation=2, base_sha=BASE
     )
-    assert subject.engine is SubjectEngine.LEGACY and subject.is_live
+    assert subject.engine is SubjectEngine.RECONCILER and subject.is_live
     with pytest.raises(ValidationError, match="not bound to a task"):
         _subject(task_id="t1")
     with pytest.raises(ValidationError, match="requires its task id"):
@@ -488,7 +489,7 @@ async def _insert_raw(db, **overrides):
 
 async def test_creation_is_idempotent_and_never_overwrites(db):
     first, created = await db.ensure_integration_subject(_row(_subject()))
-    assert created and first["version"] == 0 and first["engine"] == "legacy"
+    assert created and first["version"] == 0 and first["engine"] == "reconciler"
     again, created = await db.ensure_integration_subject(
         _row(_subject(id="subject-2", phase=SubjectPhase.TESTING))
     )
@@ -596,10 +597,9 @@ async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
     assert (
         await db.due_integration_subject_page(now=NOW, after=None, limit=10, kinds=["source"]) == []
     )
-    assert (
-        await db.due_integration_subject_page(now=NOW, after=None, limit=10, engine="reconciler")
-        == []
-    )
+    assert [row["id"] for row in await db.due_integration_subject_page(
+        now=NOW, after=None, limit=10, engine="reconciler"
+    )] == ["s0", "s1", "s2"]
     with pytest.raises(ValueError):
         await db.due_integration_subject_page(now=NOW, after=None, limit=0)
 

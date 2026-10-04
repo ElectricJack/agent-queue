@@ -145,8 +145,8 @@ parent verifier on the collected head".
    `BranchBusy` becomes `busy`; `StaleFence` becomes `stale_owner`.
 8. **Waking the verifier** — after a successful transfer to a verifier,
    `HierarchyIntegration.wake_verifier` →
-   `ParentCompletion.wake_verifier`
-   (`src/integration/parent_completion.py:935`) wakes the exact persisted
+   `ParentEpisodeRecords.wake_verifier`
+   (`src/integration/records.py:935`) wakes the exact persisted
    verifier task on the collected head under the new fence. A `HierarchyError`
    there is `human_required`.
 9. **Result** — the new `Fence` is returned. Both `expected_token` and
@@ -176,7 +176,7 @@ parent verifier on the collected head".
 
 A branch whose owner is gone but whose fence is still held is the classic
 stranded case: `aq doctor --check integration.stranded_fences`, and
-[a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone).
+[a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-finished-task-still-owns-its-branch).
 
 ## Example step
 

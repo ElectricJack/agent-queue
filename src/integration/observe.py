@@ -9,6 +9,7 @@ This module adds no command surface and does not activate the reconciler.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -17,8 +18,25 @@ from typing import Any, Protocol
 from sqlalchemy import or_, select, text
 
 from src.database import tables as t
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
+from src.database.tables import (
+    archived_tasks,
+    integration_child_dispositions,
+    integration_episode_receipt_acceptances,
+    integration_parent_episodes,
+    integration_parent_operation_completions,
+    integration_parent_verifications,
+    integration_repair_operations,
+    projects,
+    task_branch_origins,
+    task_delivery_receipts,
+    task_integration_checkpoints,
+    task_metadata,
+    tasks,
+)
 from src.git.manager import GitManager, RemoteRefState
-from src.integration.models import BranchKey, Fence
+from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.subjects import (
     CIEvidence,
     CIState,
@@ -39,6 +57,13 @@ from src.integration.subjects import (
     WriterLease,
     WriterStatus,
 )
+
+_OID = re.compile(r"^[0-9a-f]{40}$")
+
+
+
+
+
 
 Row = Mapping[str, Any]
 logger = logging.getLogger(__name__)
@@ -1185,3 +1210,412 @@ class IntegrationObserver:
             unknown=tuple(sorted(set(unknown))),
             **extra,
         )
+
+
+class ParentReadiness:
+    """Shared receipt and trusted-verification invariants for parent subjects."""
+
+    def __init__(
+        self, db, *, git_manager=None, clock: Callable[[], float] = time.time
+    ) -> None:
+        self.db = db
+        self.git_manager = git_manager
+        self.clock = clock
+
+
+    async def readiness(self, task_id: str) -> dict[str, Any]:
+        async with self.db.immediate() as conn:
+            parent, project, checkpoint, operation = await self._locked_context_on(
+                conn, task_id
+            )
+            return await self.readiness_on(
+                conn,
+                parent=parent,
+                project=project,
+                checkpoint=checkpoint,
+                operation=operation,
+            )
+
+
+    async def readiness_on(
+        self,
+        conn,
+        *,
+        parent: dict[str, Any],
+        project: dict[str, Any],
+        checkpoint: dict[str, Any],
+        operation: dict[str, Any],
+        additional_extension: dict[str, Any] | None = None,
+        receipt_covered_extensions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        episode = (
+            await conn.execute(
+                select(integration_parent_episodes).where(
+                    integration_parent_episodes.c.id == checkpoint["episode_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        if episode is None or episode["parent_task_id"] != parent["id"]:
+            raise HierarchyError("invariant_error", "parent episode is missing")
+
+        child_rows = (
+            await conn.execute(
+                select(
+                    tasks.c.id,
+                    tasks.c.status,
+                    tasks.c.pr_url,
+                    task_integration_checkpoints.c.checkpoint_sha.label("source_head"),
+                )
+                .outerjoin(
+                    task_integration_checkpoints,
+                    task_integration_checkpoints.c.task_id == tasks.c.id,
+                )
+                .where(tasks.c.parent_task_id == parent["id"])
+                .order_by(tasks.c.id)
+            )
+        ).mappings().all()
+        origins = {
+            row["task_id"]: dict(row)
+            for row in (
+                await conn.execute(
+                    select(task_branch_origins).where(
+                        task_branch_origins.c.task_id.in_([row["id"] for row in child_rows]),
+                        task_branch_origins.c.retired_at.is_(None),
+                    )
+                )
+            ).mappings().all()
+        } if child_rows else {}
+        receipts = [
+            dict(row)
+            for row in (
+                await conn.execute(
+                    select(task_delivery_receipts)
+                    .where(
+                        task_delivery_receipts.c.target_task_id == parent["id"],
+                        task_delivery_receipts.c.repository_id == checkpoint["repository_id"],
+                        task_delivery_receipts.c.target_branch == checkpoint["branch"],
+                    )
+                    .order_by(task_delivery_receipts.c.created_at, task_delivery_receipts.c.id)
+                )
+            ).mappings().all()
+        ]
+        rework_cutoffs = {}
+        if child_rows:
+            markers = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        task_metadata.c.task_id.in_([row["id"] for row in child_rows]),
+                        task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
+                    )
+                )
+            ).all()
+            rework_cutoffs = {task_id: float(value) for task_id, value in markers}
+        dispositions = {
+            row["child_task_id"]: dict(row)
+            for row in (
+                await conn.execute(
+                    select(integration_child_dispositions).where(
+                        integration_child_dispositions.c.parent_task_id == parent["id"]
+                    )
+                )
+            ).mappings().all()
+        }
+
+        blockers: list[dict[str, str]] = []
+        selected: list[dict[str, Any]] = []
+        terminal = {"COMPLETED", "FAILED"}
+        by_child: dict[str, list[dict[str, Any]]] = {}
+        carried_receipt_ids = set(
+            (
+                await conn.execute(
+                    select(integration_episode_receipt_acceptances.c.receipt_id)
+                    .select_from(
+                        integration_episode_receipt_acceptances.join(
+                            integration_parent_verifications,
+                            integration_parent_verifications.c.id
+                            == integration_episode_receipt_acceptances.c.previous_verification_id,
+                        ).join(
+                            integration_repair_operations,
+                            integration_repair_operations.c.id
+                            == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        ).join(
+                            integration_parent_operation_completions,
+                            integration_parent_operation_completions.c.operation_id
+                            == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        )
+                    )
+                    .where(
+                        integration_episode_receipt_acceptances.c.episode_id
+                        == checkpoint["episode_id"],
+                        integration_episode_receipt_acceptances.c.operation_id
+                        == operation["id"],
+                        integration_episode_receipt_acceptances.c.ancestry_to_sha
+                        == episode["pre_collection_checkpoint_sha"],
+                        integration_parent_verifications.c.operation_id
+                        == integration_episode_receipt_acceptances.c.previous_operation_id,
+                        integration_parent_verifications.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
+                        integration_parent_verifications.c.parent_task_id == parent["id"],
+                        integration_parent_verifications.c.head_sha
+                        == integration_episode_receipt_acceptances.c.ancestry_from_sha,
+                        integration_parent_operation_completions.c.verification_id
+                        == integration_episode_receipt_acceptances.c.previous_verification_id,
+                        integration_parent_operation_completions.c.parent_task_id
+                        == parent["id"],
+                        integration_parent_operation_completions.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
+                        integration_repair_operations.c.parent_task_id == parent["id"],
+                        integration_repair_operations.c.episode_id
+                        == integration_episode_receipt_acceptances.c.previous_episode_id,
+                        integration_repair_operations.c.state == "completed",
+                    )
+                )
+            ).scalars().all()
+        )
+        for receipt in receipts:
+            directly_bound = (
+                receipt["parent_operation_id"] == operation["id"]
+                and receipt["parent_episode_id"] == checkpoint["episode_id"]
+            )
+            if receipt["source_task_id"] and (
+                directly_bound or receipt["id"] in carried_receipt_ids
+            ):
+                by_child.setdefault(receipt["source_task_id"], []).append(receipt)
+        for child in child_rows:
+            child_id = child["id"]
+            origin = origins.get(child_id)
+            if (
+                origin is None
+                or origin["parent_task_id"] != parent["id"]
+                or origin["parent_repository_id"] != checkpoint["repository_id"]
+                or origin["parent_ref"] != checkpoint["branch"]
+            ):
+                blockers.append({"task_id": child_id, "reason": "origin_mismatch"})
+                continue
+            candidates = by_child.get(child_id, [])
+            code = [
+                row
+                for row in candidates
+                if row["disposition"] == "code"
+                and row["reviewed_head_sha"] == child["source_head"]
+                and row["created_at"] >= rework_cutoffs.get(child_id, 0)
+            ]
+            if len(code) == 1 and child["status"] == "COMPLETED":
+                selected.append(code[0])
+                continue
+            current = dispositions.get(child_id)
+            disposed = [
+                row
+                for row in candidates
+                if row["disposition"] in {"noop", "ineligible", "skipped"}
+                and current is not None
+                and row["disposition"] == current["disposition"]
+                and row["disposition_revision"] == current["revision"]
+                and row["reviewed_head_sha"] == child["source_head"]
+                and row["resolution_evidence"]
+                and (row["disposition"] != "noop" or row["verification_evidence"])
+            ]
+            if len(disposed) == 1 and child["status"] in terminal:
+                selected.append(disposed[0])
+                continue
+            blockers.append(
+                {
+                    "task_id": child_id,
+                    "reason": "failed_child" if child["status"] == "FAILED" else "receipt_missing",
+                }
+            )
+
+        code_chain = sorted(
+            (
+                row
+                for row in selected
+                if row["disposition"] == "code"
+                and row["parent_operation_id"] == operation["id"]
+                and row["parent_episode_id"] == checkpoint["episode_id"]
+            ),
+            key=lambda row: (row["created_at"], row["id"]),
+        )
+        head_sha = episode["pre_collection_checkpoint_sha"]
+        from src.integration.parent_repair_heads import extensions_on
+
+        try:
+            extensions = await extensions_on(conn, operation, checkpoint)
+        except ValueError:
+            extensions = []
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_proof"})
+        if receipt_covered_extensions:
+            # Operator recovery proves these duplicate records against their
+            # receipts and Git before persisting the coverage on apply.
+            extensions = [edge for edge in extensions if edge not in receipt_covered_extensions]
+        if additional_extension is not None:
+            # Recovery previews a strictly audited edge before committing it.
+            # Ordinary readiness reads only the durable stage dossiers.
+            extensions.append(additional_extension)
+
+        def extend_head(head):
+            while True:
+                matching = [edge for edge in extensions if edge["before_sha"] == head]
+                if not matching:
+                    return head
+                if len(matching) != 1:
+                    blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
+                    return head
+                edge = matching[0]
+                extensions.remove(edge)
+                head = edge["after_sha"]
+
+        for row in code_chain:
+            if row["before_sha"] != head_sha:
+                head_sha = extend_head(head_sha)
+            if row["before_sha"] != head_sha or not self._trusted_code_receipt(row):
+                blockers.append({"task_id": row["source_task_id"], "reason": "receipt_chain"})
+                break
+            head_sha = row["after_sha"]
+        head_sha = extend_head(head_sha)
+        if extensions:
+            blockers.append({"task_id": parent["id"], "reason": "repair_head_chain"})
+        from src.integration.failed_verification_recovery import FAILED_AGGREGATE_META_KEY
+
+        failed_aggregate = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == parent["id"],
+            task_metadata.c.key == FAILED_AGGREGATE_META_KEY,
+        ))
+        if failed_aggregate is not None:
+            import json
+
+            failed_aggregate = json.loads(failed_aggregate)
+            if (failed_aggregate["operation_id"] == operation["id"]
+                    and failed_aggregate["episode_id"] == checkpoint["episode_id"]
+                    and failed_aggregate["head_sha"] == head_sha):
+                blockers.append({"task_id": parent["id"], "reason": "failed_aggregate_head_unchanged"})
+        outcome = "ready" if not blockers else (
+            "failed" if any(row["reason"] == "failed_child" for row in blockers) else "waiting"
+        )
+        policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
+        return {
+            "outcome": outcome,
+            "task_id": parent["id"],
+            "episode_id": checkpoint["episode_id"],
+            "operation_id": operation["id"],
+            "generation": int(checkpoint["generation"]),
+            "checkpoint_sha": episode["pre_collection_checkpoint_sha"],
+            "head_sha": head_sha,
+            "receipts": sorted(selected, key=lambda row: row["source_task_id"]),
+            "blockers": blockers,
+            "required_checks": policy.parent.required_checks.model_dump(mode="json"),
+            "on_failed_child": policy.on_failed_child,
+        }
+
+
+    @staticmethod
+    def _trusted_code_receipt(receipt: dict[str, Any]) -> bool:
+        """Accept clean squash edges or the exact conflict-resolution proof shape."""
+        if receipt["squash_sha"] is not None:
+            return bool(
+                receipt["after_sha"] == receipt["squash_sha"]
+                and receipt["resolution_evidence"] is None
+            )
+        evidence = receipt["resolution_evidence"]
+        if not isinstance(evidence, dict) or evidence.get("kind") != "conflict_resolution":
+            return False
+        review_snapshot = receipt["review_evidence"]
+        review = review_snapshot.get("review") if isinstance(review_snapshot, dict) else None
+        authoring = evidence.get("authoring")
+        fence = authoring.get("fence") if isinstance(authoring, dict) else None
+        proof = evidence.get("remote_proof")
+        commits = evidence.get("repair_commit_shas")
+        if (
+            not isinstance(review, dict)
+            or not isinstance(authoring, dict)
+            or not isinstance(fence, dict)
+            or not isinstance(proof, dict)
+            or not isinstance(commits, list)
+            or not commits
+            or len(set(commits)) != len(commits)
+            or any(not isinstance(oid, str) or not _OID.fullmatch(oid) for oid in commits)
+        ):
+            return False
+        required_strings = (
+            authoring.get("repair_task_id"),
+            authoring.get("repair_session_id"),
+            authoring.get("repair_session_instance_token"),
+            authoring.get("repair_workspace_id"),
+        )
+        return bool(
+            evidence.get("original_source_base") == review.get("source_base")
+            and evidence.get("original_source_head") == receipt["reviewed_head_sha"]
+            and evidence.get("original_source_tree") == receipt["reviewed_tree_sha"]
+            and evidence.get("original_expected_target") == receipt["before_sha"]
+            and evidence.get("resolved_head_sha") == receipt["after_sha"]
+            and isinstance(evidence.get("resolved_tree_sha"), str)
+            and _OID.fullmatch(evidence["resolved_tree_sha"])
+            and commits[-1] == receipt["after_sha"]
+            and authoring.get("operation_id") == receipt["parent_operation_id"]
+            and isinstance(authoring.get("stage_ordinal"), int)
+            and not isinstance(authoring.get("stage_ordinal"), bool)
+            and authoring["stage_ordinal"] >= 0
+            and all(isinstance(value, str) and value for value in required_strings)
+            and fence.get("repository_id") == receipt["repository_id"]
+            and fence.get("branch") == receipt["target_branch"]
+            and fence.get("owner_id") == authoring.get("repair_task_id")
+            and isinstance(fence.get("token"), int)
+            and not isinstance(fence.get("token"), bool)
+            and fence["token"] >= 0
+            and proof
+            == {
+                "kind": "exact_resolution_tip",
+                "remote_sha": receipt["after_sha"],
+                "resolved_tree_sha": evidence["resolved_tree_sha"],
+                "repair_commit_shas": commits,
+            }
+        )
+
+
+    async def _locked_context_on(self, conn, task_id: str):
+        parent = (
+            await conn.execute(select(tasks).where(tasks.c.id == task_id))
+        ).mappings().one_or_none()
+        archived_parent = False
+        if parent is None:
+            # A verifier can replay its close after the completed parent has
+            # legitimately archived.  Preserve the historical identity just
+            # long enough to confirm that exact completed operation below;
+            # no active hierarchy mutation may proceed against this row.
+            parent = (
+                await conn.execute(select(archived_tasks).where(archived_tasks.c.id == task_id))
+            ).mappings().one_or_none()
+            archived_parent = parent is not None
+        if parent is None:
+            raise HierarchyError("invariant_error", "parent task does not exist")
+        project = (
+            await conn.execute(select(projects).where(projects.c.id == parent["project_id"]))
+        ).mappings().one()
+        if project["hierarchical_integration_mode"] not in {"hierarchy", "train"}:
+            raise HierarchyError("invariant_error", "hierarchical integration is disabled")
+        await self.db.lock_hierarchy_project(conn, project["id"])
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if checkpoint is None or checkpoint["episode_id"] is None:
+            raise HierarchyError("invariant_error", "parent has no active integration episode")
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations)
+                .where(
+                    integration_repair_operations.c.parent_task_id == task_id,
+                    integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                )
+                .with_for_update()
+            )
+        ).mappings().one_or_none()
+        if operation is None:
+            raise HierarchyError("invariant_error", "parent episode operation is missing")
+        if archived_parent and operation["state"] != "completed":
+            raise HierarchyError("invariant_error", "archived parent has a live integration operation")
+        result_parent = dict(parent)
+        result_parent["_archived"] = archived_parent
+        return result_parent, dict(project), dict(checkpoint), dict(operation)
