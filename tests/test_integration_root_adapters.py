@@ -1334,3 +1334,35 @@ async def test_service_owns_root_runtime_remote_pass_and_shutdown():
     await service._reconciliation_task
     await service.stop()
     runtime.stop.assert_awaited_once()
+
+
+async def test_root_ancestry_uses_retained_objects_and_falls_back_before_construction():
+    from src.integration.root_runtime import RootGitObservationReader
+    from unittest.mock import AsyncMock
+
+    git = SimpleNamespace(ais_ancestor=AsyncMock(side_effect=[True, None, False]))
+    reader = RootGitObservationReader(git, lambda repository_id: "/retained/" + repository_id)
+    repository = {"id": "repo", "checkout_base_path": "/base"}
+    assert await reader.is_ancestor(repository, BASE, HEAD) is True
+    assert await reader.is_ancestor(repository, HEAD, BASE) is False
+    assert [call.args[0] for call in git.ais_ancestor.await_args_list] == [
+        "/retained/repo", "/retained/repo", "/base"]
+
+
+async def test_root_remote_reads_use_retained_repository_when_base_is_unavailable(tmp_path):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.root_runtime import RootGitObservationReader
+    from unittest.mock import AsyncMock
+
+    store = tmp_path / "repo.git"
+    store.mkdir()
+    git = SimpleNamespace(als_remote_ref=AsyncMock(return_value=RemoteRefResult(
+        RemoteRefState.PRESENT, oid=HEAD
+    )))
+    reader = RootGitObservationReader(git, lambda _: store)
+    repository = {"id": "repo", "checkout_base_path": "/unavailable", "url": "repo-url"}
+    assert (await reader.remote_head(repository, "refs/heads/main")).sha == HEAD
+    git.als_remote_ref.assert_awaited_once_with(str(store), "main", repository_url="repo-url")
+    store.rmdir()
+    await reader.remote_head(repository, "refs/heads/main")
+    assert git.als_remote_ref.await_args.args[0] == "/unavailable"

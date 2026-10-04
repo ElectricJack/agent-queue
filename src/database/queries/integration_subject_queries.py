@@ -22,7 +22,7 @@ from sqlalchemy import Float, and_, case, func, literal, null, or_, select, upda
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from src.database.tables import integration_subject_journal, integration_subjects
+from src.database.tables import integration_subject_journal, integration_subjects, projects
 
 #: Columns a visit may write.  Identity, the pinned policy, the version and
 #: the timestamps are maintained here, never by the caller.
@@ -169,6 +169,7 @@ class IntegrationSubjectQueriesMixin:
         limit: int,
         kinds: Sequence[str] | None = None,
         engine: str | None = None,
+        integration_modes: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Live subjects due at ``now``, oldest due first, keyset-paged by ``(due, id)``."""
         _require_limit(limit)
@@ -184,6 +185,9 @@ class IntegrationSubjectQueriesMixin:
             .order_by(due_at, subject_id)
             .limit(limit)
         )
+        if integration_modes is not None:
+            statement = statement.join(projects, projects.c.id == integration_subjects.c.project_id)
+            statement = statement.where(projects.c.hierarchical_integration_mode.in_(integration_modes))
         if kinds is not None:
             statement = statement.where(integration_subjects.c.kind.in_(list(kinds)))
         if engine is not None:

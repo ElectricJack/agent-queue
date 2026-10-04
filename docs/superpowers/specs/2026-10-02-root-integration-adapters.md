@@ -152,3 +152,25 @@ CI registration seam. CLI transport is checked in `tests/test_cli_integration.py
 The affected integration area and adjacent promotion/repair checks are recorded
 on the task with their exact results. The operator's shadow week and live
 cutover scenarios remain production gates, not worker test results.
+
+## Candidate observation correction (2026-10-04)
+
+Reconciler-owned candidates read authenticated GitHub checks for the exact candidate
+SHA on every observation. The frozen batch policy supplies the required checks and
+producer; App credentials retain the existing exact-tree trust verification. Missing
+legacy evidence rows do not make these facts `none` or `pending`. Transport failures
+remain infrastructure facts and cannot reuse old green evidence. Shadow observation
+keeps the legacy snapshot path. Existing command-backed CI and promotion ports still
+own durable attestation and publication bookkeeping.
+
+Ancestry reads use the retained integration repository, where construction retains
+candidate and member objects, rather than the unrelated base checkout. Persistent
+`unknown-facts` decisions or observation failures become an error in `stall.sweep`
+after five minutes. The sweep reports the subject, batch and journal facts; it never
+changes ownership or overrides the policy's wait decision.
+
+Root and development adapters share the `root_batch` kind. Runtime due pages
+filter project integration mode before the keyset limit: root visits `train` and
+`hierarchy`, and development visits `development`. Development writer projection
+and resolved-gate scans follow the same ownership boundary. A train artifact must
+never be interpreted as a development policy.

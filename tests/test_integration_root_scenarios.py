@@ -1393,3 +1393,34 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     # Ejection is not rejection: both members keep their branch, PR and review.
     await assert_preserved(train, "bravo", 2)
     await assert_preserved(train, "charlie", 3)
+
+
+async def test_live_green_candidate_promotes_without_prior_ci_evidence_or_operator_action(train):
+    from src.integration.subjects import CIEvidence, CIState
+
+    await train.open()
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    current = await train.subject(subject.id)
+    async with train.db._engine.connect() as conn:
+        evidence = (await conn.execute(select(t.integration_check_evidence).where(
+            t.integration_check_evidence.c.batch_id == subject.batch_id
+        ))).all()
+    assert not evidence
+    train.ci.finish(current.head_sha, "success", run=66)
+
+    async def live(snapshot, head):
+        observation = train.ci.runs.get(head.sha)
+        return CIEvidence(head_sha=head.sha, observed_at=train.clock(),
+                          state=CIState.GREEN if observation else CIState.NONE)
+
+    train.observer.candidate_ci = live
+    facts = await train.observer.observe(current)
+    assert facts.ci_state is CIState.GREEN and facts.ci[0].evidence_id is None
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="published")
+    assert train.remote("refs/heads/main") == current.head_sha
+    journal = await train.journal(subject.id)
+    assert any(row.get("rule") == "promote-exact-green" for row in journal)
+    await assert_reconciler_only(train)

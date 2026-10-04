@@ -618,6 +618,7 @@ class PlaybookCommandsMixin:
                     compiler_build=proposal.compiler_build,
                     version=artifact.version,
                 )
+                store.put_source(ref.artifact_sha256, markdown)
                 await self.db.upsert_playbook_artifact(
                     ref,
                     scope=artifact_scope,
