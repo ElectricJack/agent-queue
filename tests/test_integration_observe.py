@@ -1230,3 +1230,49 @@ async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkey
     assert state["policy_snapshot"]["root"]["required_checks"]["names"] == ["unit"]
     assert all(HEAD in call.args[0] or "jobs" in call.args[0]
                for call in client.paged_items.await_args_list)
+
+
+async def test_git_adapter_reads_many_heads_in_batched_round_trips():
+    git = AsyncMock()
+    refs = [f"refs/heads/aq/member-{index:03d}" for index in range(250)]
+
+    async def batch(path, branches, *, repository_url):
+        return {
+            branch: RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
+            if branch.endswith("0")
+            else RemoteRefResult(RemoteRefState.ABSENT)
+            for branch in branches
+        }
+
+    git.als_remote_refs.side_effect = batch
+    adapter = GitObservationReader(git)
+    repository = snapshot().repository
+    heads = await adapter.remote_heads(repository, [*refs, "refs/tags/v1"])
+    assert [head.ref for head in heads] == [*refs, "refs/tags/v1"]
+    assert heads[0].state == "present" and heads[0].sha == HEAD
+    assert heads[1].state == "absent" and heads[-1].state == "unknown"
+    assert git.als_remote_refs.await_count == 2  # chunked, never one call per ref
+    git.als_remote_ref.assert_not_called()
+
+
+async def test_observer_prefers_batched_remote_heads_and_keeps_errors_unknown():
+    class Batched(Git):
+        batches = 0
+
+        async def remote_heads(self, repository, refs):
+            self.batches += 1
+            return [await Git.remote_head(self, repository, ref) for ref in refs]
+
+        async def remote_head(self, repository, ref):  # pragma: no cover - must not be used
+            raise AssertionError("per-ref read used despite batch support")
+
+    git = Batched()
+    facts = await observe(snapshot(), git)
+    assert git.batches == 1 and facts.remote_heads
+
+    class Broken(Git):
+        async def remote_heads(self, repository, refs):
+            raise ConnectionError("down")
+
+    facts = await observe(snapshot(), Broken())
+    assert all(head.state == "unknown" for head in facts.remote_heads)
