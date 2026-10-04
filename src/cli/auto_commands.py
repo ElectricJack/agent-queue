@@ -9,7 +9,7 @@ Category prefixes are stripped from command names for cleaner UX:
 ``git_commit`` becomes ``aq git commit``, ``memory_search`` becomes
 ``aq memory search``.
 
-Tool definitions are imported from ``src.tools.definitions._ALL_TOOL_DEFINITIONS``
+Tool definitions are loaded from the generated ``src/tools/command_catalogue.json``
 (a pure data structure, no heavy deps) so commands appear in ``--help``
 even when the daemon is down.  Execution still goes through the REST API.
 """
@@ -22,12 +22,13 @@ from collections import defaultdict
 import click
 from rich.console import Console
 
-from src.tools import (
-    CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
-    _CLI_CATEGORY_OVERRIDES,
-    _TOOL_CATEGORIES,
-)
+from src.tools.command_catalogue import load_command_catalogue
+
+_CATALOGUE = load_command_catalogue()
+_ALL_TOOL_DEFINITIONS = _CATALOGUE["explicit"]
+_CATEGORY_DESCRIPTIONS = _CATALOGUE["categories"]
+_CLI_CATEGORY_OVERRIDES = _CATALOGUE["cli_category_overrides"]
+_TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
@@ -522,12 +523,11 @@ def _make_auto_command(
         )
 
     def _make_callback(name: str):
-        from .formatter_registry import apply_formatter, command_output
-
         @click.pass_context
         def callback(ctx, **kwargs):
             # Late-bind imports so mock patches take effect in tests
             from . import app as _app
+            from .formatter_registry import apply_formatter, command_output
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
             if name == "knowledge_propose" and kwargs.get("claim_epoch") is None:
@@ -673,39 +673,29 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     hand-crafted group (task, hook, project, agent, plugin) or creates
     a new one (git, memory, file, system).
     """
-    # Build complete tool map: explicit defs + auto-discovered
+    # Discovery belongs to generation: importing the live handler here makes
+    # every CLI invocation load the daemon and database dependencies.
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    for name, defn in _CATALOGUE["fallback"].items():
+        if name not in tool_map:
+            tool_map[name] = defn
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions (no daemon needed)
+    # Internal schemas are packaged too, avoiding plugin implementation imports.
     plugin_categories: dict[str, str] = {}
     plugin_owners: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-                plugin_owners[name] = {
-                    "files": "aq-files",
-                    "git": "aq-git",
-                    "notes": "aq-notes",
-                    "vibecop": "aq-vibecop",
-                }.get(category, f"internal:{category}")
-    except Exception:
-        pass
+    for category, tool_defs in _CATALOGUE["internal"]:
+        for defn in tool_defs:
+            name = defn["name"]
+            if name not in tool_map:
+                tool_map[name] = defn
+            if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
+                plugin_categories[name] = category
+            plugin_owners[name] = {
+                "files": "aq-files",
+                "git": "aq-git",
+                "notes": "aq-notes",
+                "vibecop": "aq-vibecop",
+            }.get(category, f"internal:{category}")
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -725,7 +715,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             categorized_names.add(cmd_name)
 
     # Register commands into each category's CLI group
-    for cat_name in sorted(CATEGORIES.keys()):
+    for cat_name in sorted(_CATEGORY_DESCRIPTIONS):
         cli_name = CATEGORY_CLI_NAMES.get(cat_name, cat_name)
         tools = category_tools.get(cat_name, [])
         if not tools:
@@ -739,7 +729,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             # Create a new group for this category
             desc = CATEGORY_CLI_DESCRIPTIONS.get(
                 cli_name,
-                CATEGORIES[cat_name].description,
+                _CATEGORY_DESCRIPTIONS[cat_name],
             )
 
             @click.group(cli_name, help=desc)

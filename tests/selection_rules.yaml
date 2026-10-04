@@ -102,7 +102,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
-  - { paths: ["scripts/generate-cli-command-inventory.py"], areas: ["cli-framework"] }
+  - { paths: ["scripts/generate-cli-command-inventory.py", "scripts/generate-command-catalogue.py"], areas: ["cli-framework"] }
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }

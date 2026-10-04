@@ -1,8 +1,8 @@
 """``python -m src.cli.app`` must expose the same commands as the ``aq`` script.
 
-Running the CLI as a module imports ``src/cli/app.py`` twice (as ``__main__``
-and as ``src.cli.app``); the hand-crafted commands register on the latter.
-Without the delegation in ``app.py``'s ``__main__`` block they vanish from
+Running the CLI as a module must reuse ``__main__`` as ``src.cli.app``;
+the hand-crafted commands import that canonical name while registering.
+Without that alias they vanish from
 ``python -m src.cli.app --help`` — which is how a pool worker's bootstrap
 prompt ended up telling an agent to run an ``aq inbox`` that "did not exist".
 """
@@ -29,6 +29,21 @@ def test_module_entry_exposes_hand_crafted_commands(command):
     )
     assert proc.returncode == 0, proc.stderr
     assert "No such command" not in proc.stderr
+
+
+def test_runpy_entry_preserves_callers_main_module():
+    """Profilers can execute a module without replacing their own __main__."""
+    code = (
+        "import runpy, sys\n"
+        "sys.argv = ['aq', 'inbox', '--help']\n"
+        "runpy.run_module('src.cli.app', run_name='__main__')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=REPO,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Usage:" in proc.stdout
 
 
 # ---------------------------------------------------------------------------

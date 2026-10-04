@@ -32,6 +32,7 @@ This page is the list, in the order a change is most likely to reach them.
 | `packages/aq-ts-client/src/` | `openapi.json` + `@hey-api/openapi-ts` | `./scripts/regenerate-ts-client.sh --from-file` | **no** — gitignored |
 | [`src/playbook_v2_schema.json`](../../src/playbook_v2_schema.json) | The Playbook V2 Pydantic model | `python scripts/generate-playbook-schema.py` | yes |
 | [`docs/reference/cli-command-inventory.json`](../reference/cli-command-inventory.json) | The live `aq` Click tree | `python scripts/generate-cli-command-inventory.py` | yes |
+| [`src/tools/command_catalogue.json`](../../src/tools/command_catalogue.json) | Explicit tool definitions, categories, handler discovery, typed contracts and internal plugin schemas | `python scripts/generate-command-catalogue.py` | yes |
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
 | [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
 | [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |

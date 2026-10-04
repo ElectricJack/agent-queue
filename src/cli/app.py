@@ -19,7 +19,6 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
 import re
@@ -33,6 +32,11 @@ from .global_options import AQGroup as GlobalOptionsAQGroup
 from .styles import AQ_THEME
 
 logger = logging.getLogger(__name__)
+
+# Command modules import this canonical name while registering. Reuse the
+# running module so ``python -m src.cli.app`` builds the tree only once.
+if __name__ == "__main__" and sys.modules[__name__].__dict__ is globals():
+    sys.modules["src.cli.app"] = sys.modules[__name__]
 
 
 def _installed_version() -> str:
@@ -56,6 +60,8 @@ console = Console(theme=AQ_THEME)
 
 def _run(coro):
     """Run an async coroutine synchronously."""
+    import asyncio
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -491,6 +497,8 @@ def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
     reader exposes no mutation methods, and the outer timeout bounds both
     connecting and querying an unavailable PostgreSQL server.
     """
+    import asyncio
+
     from .client import PluginConfigReader
 
     async def _fetch():
@@ -696,12 +704,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # ``python -m src.cli.app`` executes this file as ``__main__`` and then
-    # imports it AGAIN as ``src.cli.app`` when the submodules above run
-    # ``from .app import cli`` — so every hand-crafted command (inbox, reply,
-    # message, schema, prime, handoff, …) registers on the *other* module's
-    # ``cli`` group and silently vanishes from this one.  Delegate to the
-    # canonical module so both entry points see the same command set.
+    # Direct module execution reuses the alias above. runpy callers that keep
+    # their own __main__ module still need the canonical command tree.
     from src.cli.app import main as _canonical_main
 
     _canonical_main()

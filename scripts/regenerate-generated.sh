@@ -36,6 +36,7 @@ GENERATED=(
     docs/reference/configuration-schema.json
     docs/reference/playbook-commands/README.md
     src/playbook_v2_schema.json
+    src/tools/command_catalogue.json
     openapi.json
     packages/aq-client
     scripts/aq-client-boilerplate.sha256
@@ -89,6 +90,10 @@ regenerate() {
         names+=("$name")
     }
     step selection-catalogue "$PYTHON" scripts/generate-selection-catalogue.py
+    # CLI inventory reads the packaged catalogue, so rebuild it first.
+    if ! (cd "$root" && "$PYTHON" scripts/generate-command-catalogue.py); then
+        return 1
+    fi
     step cli-command-inventory "$PYTHON" scripts/generate-cli-command-inventory.py
     step configuration-schema "$PYTHON" scripts/generate-config-schema-inventory.py
     step playbook-command-docs "$PYTHON" scripts/gen-command-docs.py

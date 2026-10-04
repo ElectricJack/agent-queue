@@ -27,7 +27,6 @@ import os
 import textwrap
 from typing import TYPE_CHECKING, Any
 
-from src.database import Database
 from src.models import AgentState, TaskStatus
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
@@ -40,6 +39,7 @@ from src.mcp_interfaces import (
 
 if TYPE_CHECKING:
     from mcp.server import FastMCP
+    from src.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -176,10 +176,10 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
     ``_needs_arguments``).
 
     That warning is opt-in via *warn_on_empty_schema*, and only
-    ``register_command_tools`` asks for it: discovery also runs on every ``aq``
-    invocation (``src.cli.auto_commands.register_auto_commands``) and on every
-    app build, where a logger with no handlers writes straight to the user's
-    stderr.  Once per daemon start, into the daemon log, is loud enough — the
+    ``register_command_tools`` asks for it: discovery also runs during CLI
+    catalogue generation and on every app build, where a logger with no
+    handlers writes straight to the user's stderr. Once per daemon start,
+    into the daemon log, is loud enough — the
     hard gate is ``tests/test_command_surface.py``.
     """
     # Lazy import to avoid circular dependency at module level.
