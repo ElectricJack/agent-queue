@@ -1389,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:cadd3789539a5ec002bb5df2b6f43cfd091d204af591e23ffa208b35f7e41f72",
+  "digest": "sha256:d6feae4984b47dc17a72487ec3d4fdde8c177651779c3130872cfc31a67cd8d3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7453,6 +7453,7 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.manager",
         "src.integration.delivered_parent_adoption",
         "src.integration.delivery_truth",
         "src.integration.epic_delivery",
