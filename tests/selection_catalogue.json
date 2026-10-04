@@ -562,7 +562,7 @@
       ]
     },
     "integration-trains": {
-      "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
+      "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix.",
       "modules": [
         "tests/test_attestation_check_run_id.py",
         "tests/test_hosted_attestation.py",
@@ -596,7 +596,8 @@
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
-        "tests/test_integration_subjects.py"
+        "tests/test_integration_subjects.py",
+        "tests/test_integration_train_regressions.py"
       ]
     },
     "intelligence-classes": {
@@ -1390,7 +1391,7 @@
       ]
     }
   },
-  "digest": "sha256:f6cdb133b6dd91408af7aaea1a60f04998a502e421494e62213cdfd1770e8634",
+  "digest": "sha256:0b6b957efac8e35c4d30ffb207baec56a104c7abb8b99f74a5c7895a1f279180",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8535,6 +8536,39 @@
         "parametrize"
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
+    },
+    "tests/test_integration_train_regressions.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.promotion",
+        "src.integration.service",
+        "src.models",
+        "src.orchestrator.core",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
+        "src.sessions.reconciler",
+        "src.test_selection.catalogue"
+      ],
+      "markers": [
+        "parametrize",
+        "xfail"
+      ],
+      "summary": "Integration-train regressions: the 2026-10-03/04 overnight failure modes."
     },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
