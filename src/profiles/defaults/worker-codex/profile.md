@@ -71,6 +71,8 @@ somehow declares none.
     "knowledge_create_task",
     "knowledge_list",
     "knowledge_show",
+    "knowledge_cite",
+    "knowledge_context_deliver",
     "knowledge_update",
     "knowledge_history",
     "knowledge_diff",

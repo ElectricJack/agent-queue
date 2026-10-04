@@ -20,6 +20,7 @@ import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, insert, select, update
@@ -68,7 +69,9 @@ from src.integration.models import (
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.repair import RepairService
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import (
+    Agent, AgentState, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus, Workspace,
+)
 
 _AMBIENT_IDENTITY_KEYS = (
     "GIT_AUTHOR_NAME",
@@ -306,6 +309,245 @@ async def _failed_aggregate(case):
                            .where(task_integration_checkpoints.c.task_id == "epic.3")
                            .values(checkpoint_sha=fix))
     return red_head, verifier_id
+
+
+async def _held_red_aggregate(case, orchestrator, *, evidence_changes=None):
+    """Keep the verifier's actual pool claim/checkout while trusted exact CI is red."""
+    red_head, verifier = await _failed_aggregate(case)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    owner = await _owner(case)
+    checkout = case.tmp_path / "held-verifier"
+    _git(["clone", "--branch", "aq/epic", str(case.origin), str(checkout)])
+    _git(["config", "user.name", "Test"], checkout)
+    _git(["config", "user.email", "test@example.com"], checkout)
+    await case.db.create_agent(Agent(
+        id="held-agent", name="held verifier", profile_id="worker",
+        state=AgentState.BUSY, current_task_id=verifier,
+    ))
+    await case.db.create_workspace(Workspace(
+        id="held-workspace", project_id="p", workspace_path=str(checkout),
+        source_type=RepoSourceType.CLONE, locked_by_task_id=verifier,
+        locked_by_agent_id="held-agent",
+    ))
+    await case.db.create_session(SessionRecord(
+        id="held-session", task_id=verifier, project_id="p", agent_id="held-agent",
+        profile_id="worker", harness="codex", provider="fake", name="held-verifier",
+        lifecycle="pool", work_dir=str(checkout), epoch="epoch", instance_token="instance",
+        started_at=time.time(), state="running", desired_state="running",
+        claim_phase="active", last_claim_epoch=1,
+    ))
+    subject = {
+        "project_id": "p", "operation_id": case.operation_id, "task_id": "epic",
+        "episode_id": checkpoint["episode_id"], "generation": checkpoint["generation"],
+        "head_sha": red_head, "verifier_task_id": verifier,
+        "target": {"repository_id": "repo", "branch": "aq/epic"},
+        "expected_token": owner["fence_token"] - 1,
+        "next_owner_id": verifier, "next_role": "verifier",
+    }
+    async with case.db.immediate() as conn:
+        await conn.execute(delete(task_completion_records))
+        await conn.execute(update(tasks).where(tasks.c.id == verifier).values(
+            status="IN_PROGRESS", assigned_agent_id="held-agent", claim_epoch=1, retry_count=2,
+        ))
+        await conn.execute(update(integration_branch_owners)
+                           .where(integration_branch_owners.c.id == owner["id"])
+                           .values(handoff_state="attached", session_id="held-session",
+                                   workspace_id="held-workspace"))
+        await conn.execute(insert(integration_outbox).values(
+            id="held-subject", dedup_key="held-subject", project_id="p",
+            event_type="task.integration_ready", payload=subject,
+            created_at=time.time(), available_at=time.time(),
+        ))
+        evidence = dict(
+            id="held-red", operation_id=case.operation_id, parent_task_id="epic",
+            parent_generation=checkpoint["generation"], parent_head_sha=red_head,
+            producer_id="forge", workflow_id="aggregate", run_id="red-run", attempt=1,
+            required_check_version="test", checks={"unit": "failure"},
+            conclusion="failure", classification="conclusive", observed_at=time.time(),
+        )
+        await conn.execute(insert(integration_check_evidence).values(
+            **{**evidence, **(evidence_changes or {})}
+        ))
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=True))
+    orchestrator.db, orchestrator.git = case.db, GitManager()
+    orchestrator.session_providers.create = lambda *_args: provider
+    return red_head, verifier, checkout, provider
+
+
+@pytest.mark.parametrize("failed_check", ["failure", "skipped", "neutral"])
+async def test_held_red_verifier_recovery_preserves_evidence_and_detach_proof(
+    case, orchestrator_factory, failed_check,
+):
+    orchestrator = await orchestrator_factory()
+    red_head, verifier, checkout, provider = await _held_red_aggregate(
+        case, orchestrator, evidence_changes={"checks": {"unit": failed_check}},
+    )
+    [red] = await _rows(case.db, integration_check_evidence)
+    # Sibling suites share the observation time; a green sibling does not
+    # supersede this observation's failed required check.
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(**dict(
+            red, id="sibling-suite", workflow_id="other", run_id="sibling-run",
+            checks={"other": "success"},
+        )))
+    original_evidence = await _rows(case.db, integration_check_evidence)
+    original_receipts = await _rows(case.db, task_delivery_receipts)
+    original_owner = await _owner(case)
+    recovery = FailedVerificationRecovery(
+        case.db, case.promotion, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff,
+    )
+    diagnosis = await recovery.run("epic")
+    assert diagnosis["outcome"] == "would_reopen", diagnosis
+    provider.stop.assert_not_awaited()
+    assert await _owner(case) == original_owner
+    assert (await case.db.get_session("held-session")).claim_phase == "active"
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                                reason="collect completed fix")
+    assert result["outcome"] == "reopened", result
+    provider.stop.assert_awaited_once()
+    provider.confirm_stopped.assert_awaited_once()
+    [handle] = provider.stop.await_args.args
+    assert handle.instance_token == "instance"
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], checkout) == "HEAD"
+    session = await case.db.get_session("held-session")
+    assert session.state == "stopped" and session.claim_phase is None and session.task_id is None
+    assert (await case.db.get_workspace("held-workspace")).locked_by_task_id is None
+    failed = await case.db.get_task(verifier)
+    assert failed.status == TaskStatus.FAILED and failed.assigned_agent_id is None
+    assert failed.retry_count == 2
+    [completion] = await _rows(case.db, task_completion_records)
+    assert completion["outcome"] == "fail" and json.loads(completion["commits"]) == [red_head]
+    assert json.loads(completion["verification"]) == red
+    assert await _rows(case.db, integration_check_evidence) == original_evidence
+    assert await _rows(case.db, task_delivery_receipts) == original_receipts
+    [audit] = await _rows(case.db, events, events.c.event_type == RECOVERY_EVENT)
+    payload = json.loads(audit["payload"])
+    assert payload["ci_failure_evidence_id"] == "held-red"
+    assert payload["previous_attachment"] == original_owner
+    assert payload["failure_subject"]["outbox_id"] == "held-subject"
+    assert (await _owner(case))["fence_token"] == original_owner["fence_token"] + 1
+    # A replay neither appends another completion nor touches the stopped process.
+    assert (await recovery.run("epic", dry_run=False, expected_head_sha=red_head,
+                               reason="replay"))["outcome"] == "not_eligible"
+    assert len(await _rows(case.db, task_completion_records)) == 1
+    provider.stop.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mismatch", [
+    "head", "generation", "producer", "version", "classification", "subject", "fence",
+    "newer_green", "before_handoff",
+])
+async def test_held_verifier_requires_current_trusted_exact_red_ci(
+    case, orchestrator_factory, mismatch,
+):
+    orchestrator = await orchestrator_factory()
+    changes = {
+        "head": {"parent_head_sha": case.base}, "generation": {"parent_generation": 999},
+        "producer": {"producer_id": "untrusted"}, "version": {"required_check_version": "old"},
+        "classification": {"classification": "full_suite_fallback"},
+        "before_handoff": {"observed_at": 0},
+    }
+    head, verifier, _, provider = await _held_red_aggregate(
+        case, orchestrator, evidence_changes=changes.get(mismatch),
+    )
+    async with case.db.immediate() as conn:
+        if mismatch == "subject":
+            await conn.execute(delete(integration_outbox)
+                               .where(integration_outbox.c.id == "held-subject"))
+        elif mismatch == "fence":
+            await conn.execute(update(integration_branch_owners)
+                               .values(fence_token=999))
+        elif mismatch == "newer_green":
+            [red] = await _rows(case.db, integration_check_evidence)
+            await conn.execute(insert(integration_check_evidence).values(**dict(
+                red, id="newer-green", conclusion="success", checks={"unit": "success"},
+                run_id="rerun", observed_at=red["observed_at"] + 1,
+            )))
+    recovery = FailedVerificationRecovery(
+        case.db, case.promotion, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff,
+    )
+    result = await recovery.run("epic", dry_run=False, expected_head_sha=head, reason="fix")
+    assert result["outcome"] in {"blocked", "ambiguous"}, result
+    provider.stop.assert_not_awaited()
+    assert (await case.db.get_task(verifier)).status == TaskStatus.IN_PROGRESS
+    assert not await _rows(case.db, task_completion_records)
+    assert (await case.db.get_integration_checkpoint("epic"))["state"] == "verifying"
+
+
+@pytest.mark.parametrize("unproved", ["running", "dirty", "unpublished", "no_callback"])
+async def test_red_verifier_cannot_reopen_without_process_and_checkout_proof(
+    case, orchestrator_factory, unproved,
+):
+    orchestrator = await orchestrator_factory()
+    head, verifier, checkout, provider = await _held_red_aggregate(case, orchestrator)
+    if unproved == "running":
+        provider.confirm_stopped.return_value = False
+    elif unproved in {"dirty", "unpublished"}:
+        (checkout / "work.txt").write_text("unfinished verifier fix\n")
+        if unproved == "unpublished":
+            _git(["add", "work.txt"], checkout)
+            _git(["commit", "-m", "unpublished verifier fix"], checkout)
+    callback = None if unproved == "no_callback" else orchestrator.aconfirm_integration_owner_handoff
+    result = await FailedVerificationRecovery(
+        case.db, case.promotion, confirm_handoff=callback,
+    ).run("epic", dry_run=False, expected_head_sha=head, reason="fix")
+    assert result["outcome"] == "blocked", result
+    assert (await _owner(case))["handoff_state"] in {"attached", "handoff_pending"}
+    assert (await case.db.get_workspace("held-workspace")).locked_by_task_id == verifier
+    assert (await case.db.get_task(verifier)).status == TaskStatus.IN_PROGRESS
+    assert not await _rows(case.db, task_completion_records)
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], checkout) == "aq/epic"
+    if unproved in {"dirty", "unpublished"}:
+        assert (checkout / "work.txt").read_text() == "unfinished verifier fix\n"
+
+
+@pytest.mark.parametrize("holder", ["parent_hold", "verifier_hold", "another_workspace"])
+async def test_held_red_verifier_keeps_operator_holds_and_other_holders(
+    case, orchestrator_factory, holder,
+):
+    orchestrator = await orchestrator_factory()
+    head, verifier, _, provider = await _held_red_aggregate(case, orchestrator)
+    if holder == "another_workspace":
+        await case.db.create_workspace(Workspace(
+            id="another", project_id="p", workspace_path=str(case.tmp_path / "another"),
+            source_type=RepoSourceType.CLONE, locked_by_task_id=verifier,
+        ))
+    else:
+        subject = "epic" if holder == "parent_hold" else verifier
+        async with case.db.immediate() as conn:
+            await case.db._upsert_meta(subject, "manual_pause", {"reason": "operator hold"}, conn=conn)
+    result = await FailedVerificationRecovery(
+        case.db, case.promotion, confirm_handoff=orchestrator.aconfirm_integration_owner_handoff,
+    ).run("epic", dry_run=False, expected_head_sha=head, reason="fix")
+    assert result["outcome"] == "blocked", result
+    provider.stop.assert_not_awaited()
+    assert (await _owner(case))["handoff_state"] == "attached"
+    assert not await _rows(case.db, task_completion_records)
+
+
+async def test_held_red_verifier_rechecks_ci_after_external_handoff(case, orchestrator_factory):
+    orchestrator = await orchestrator_factory()
+    head, verifier, _, provider = await _held_red_aggregate(case, orchestrator)
+
+    async def handoff_then_green(owner):
+        assert await orchestrator.aconfirm_integration_owner_handoff(owner)
+        [red] = await _rows(case.db, integration_check_evidence)
+        async with case.db.immediate() as conn:
+            await conn.execute(insert(integration_check_evidence).values(**dict(
+                red, id="green-after-stop", conclusion="success", checks={"unit": "success"},
+                run_id="rerun", observed_at=red["observed_at"] + 1,
+            )))
+        return True
+
+    result = await FailedVerificationRecovery(
+        case.db, case.promotion, confirm_handoff=handoff_then_green,
+    ).run("epic", dry_run=False, expected_head_sha=head, reason="fix")
+    assert result["outcome"] == "blocked", result
+    provider.stop.assert_awaited_once()
+    assert (await case.db.get_task(verifier)).status == TaskStatus.PAUSED
+    assert (await _owner(case))["handoff_state"] == "released"
+    assert not await _rows(case.db, task_completion_records)
+    assert (await case.db.get_integration_checkpoint("epic"))["state"] == "verifying"
 
 
 async def test_failed_verification_reopens_then_receipts_fix_and_wakes_fresh_verifier(case):

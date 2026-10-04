@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.knowledge.models import ContextBundle
 
 # Canonical section order (design §5.2, table order 1-10). Slots 7-8 (L1/L2
 # memory) exist from day one, rendered empty while memory is paused
@@ -58,6 +62,7 @@ class PrimeSection:
     key: str  # one of SECTION_KEYS
     title: str
     body: str
+    message_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ class PrimeDocument:
     # override template body, which replaces the default assembly
     # entirely (design §5.3).
     override_markdown: str | None = field(default=None, repr=False)
+    context_bundle: ContextBundle | None = field(default=None, repr=False)
 
     def to_markdown(self) -> str:
         """Render the document to a single markdown string.

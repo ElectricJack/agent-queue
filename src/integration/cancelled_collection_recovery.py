@@ -147,6 +147,10 @@ class CancelledCollectionRecovery:
         diagnosis, _facts = await self._diagnose(task_id)
         return diagnosis
 
+    async def _prepare_apply(self, task_id, facts):
+        """Allow a specialized recovery to prove an external handoff before its CAS."""
+        return None, facts
+
     @parent_engine_guard()
     async def run(
         self,
@@ -166,6 +170,9 @@ class CancelledCollectionRecovery:
                 "outcome": "changed",
                 "reason": "supply the head the dry run reported and an audit reason",
             }
+        refusal, facts = await self._prepare_apply(task_id, facts)
+        if refusal is not None:
+            return {**diagnosis, **refusal}
         now = self.clock()
         transition = None
         try:

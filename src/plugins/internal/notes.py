@@ -31,7 +31,7 @@ def _ownership_guard(operation):
                 if not slug:
                     return await fn(self, args)
                 path = os.path.join(notes_dir, f"{slug}.md")
-            async with self._db.note_ownership(project_id, path) as mapping:
+            async with self._db.note_ownership(project_id, path, operation=operation) as mapping:
                 if mapping:
                     if operation == "read":
                         result = await self._ctx.execute_command("knowledge_show", {
@@ -390,7 +390,7 @@ class NotesPlugin(InternalPlugin):
             if not fname.endswith(".md"):
                 continue
             fpath = os.path.join(notes_dir, fname)
-            async with self._db.note_ownership(project.id, fpath) as mapping:
+            async with self._db.note_ownership(project.id, fpath, operation="list") as mapping:
                 if mapping:
                     canonical = await self._ctx.execute_command("knowledge_show", {
                         "identity": f"record:{mapping['record_id']}", "project_id": project.id,
