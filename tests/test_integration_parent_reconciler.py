@@ -19,7 +19,11 @@ from src.database import tables as t
 from src.integration.collection import CollectionService
 from src.integration.child_delivery import ChildDelivery
 from src.integration.engine import EngineRefused
-from src.integration.parent_adapters import ParentPolicyFacts, ParentPrimitiveAdapters
+from src.integration.parent_adapters import (
+    REOPEN_REFUSED_META_KEY,
+    ParentPolicyFacts,
+    ParentPrimitiveAdapters,
+)
 from src.integration.parent_engine import ParentEngineOwnership
 from src.integration.parent_ci import ParentCIService
 from src.integration.promotion import PromotionService
@@ -709,6 +713,60 @@ async def test_held_red_verifier_does_not_strand_completed_fix_child(case, orche
     assert current["head_sha"] == fix["after_sha"]
     assert not await _rows(case.db, t.integration_repair_stages)
     provider.stop.assert_awaited_once()
+
+
+async def test_durably_refused_reopen_reaches_red_gate_instead_of_backing_off(
+    case, orchestrator_factory
+):
+    """A refusal no retry can satisfy is a human decision, not a backoff loop."""
+    orchestrator = await orchestrator_factory()
+    red_head, verifier, _, provider = await _held_red_aggregate(case, orchestrator)
+    original = await _rows(case.db, t.task_delivery_receipts)
+    env = await setup(case.db, case.hierarchy, task_id="epic", promotion=case.promotion)
+    # No provider stop/detach proof, so the reopen is durably refused and the
+    # held verifier's work must survive the refusal untouched.
+    await visit(env)
+    refused = await case.db.get_integration_subject(env.subject.id)
+    assert refused["refusal_streak"] == 1 and refused["gate_id"] is None
+    assert env.commands.calls == [
+        "integration_parent_action",
+        "integration_reopen_collection",
+    ]
+    provider.stop.assert_not_awaited()
+    provider.confirm_stopped.assert_not_awaited()
+    assert (await case.db.get_task(verifier)).status == TaskStatus.IN_PROGRESS
+    assert (await case.db.get_session("held-session")).claim_phase == "active"
+    assert await _rows(case.db, t.task_delivery_receipts) == original
+    [action] = [
+        row
+        for row in await case.db.list_integration_subject_journal(env.subject.id)
+        if row["entry_kind"] == "action" and row["primitive"] == "git_merge_members"
+    ]
+    assert action["outcome"] == "unknown"
+    assert action["payload"]["result"]["reason"] == "reopen_refused:blocked"
+    assert action["payload"]["result"]["detail"]["refusal_reason"] == (
+        "server-side verifier stop/detach proof is unavailable"
+    )
+    [marker] = await _rows(
+        case.db, t.task_metadata, t.task_metadata.c.key == REOPEN_REFUSED_META_KEY
+    )
+    refusal = json.loads(marker["value"])
+    assert refusal["refusal"] == "blocked" and refusal["head_sha"] == red_head
+    assert refusal["episode_id"] == env.subject.parent_episode_id
+    assert refusal["generation"] == env.subject.generation
+    assert refusal["reason"] == "server-side verifier stop/detach proof is unavailable"
+
+    await visit(env)  # The recorded refusal routes to the red human gate.
+    held = await case.db.get_integration_subject(env.subject.id)
+    [gate] = await _rows(case.db, t.gates)
+    assert gate["status"] == "open"
+    assert gate["question"] == (
+        "Aggregate CI is red. Choose retry after a new child fix, or hold."
+    )
+    assert held["gate_id"] == gate["id"] and held["next_due_at"] is None
+    assert env.commands.calls.count("integration_reopen_collection") == 1
+    assert (await case.db.get_task(verifier)).status == TaskStatus.IN_PROGRESS
+    assert await _rows(case.db, t.task_delivery_receipts) == original
 
 
 async def test_failed_verifier_collects_new_fix_in_same_episode_without_redrives(case):

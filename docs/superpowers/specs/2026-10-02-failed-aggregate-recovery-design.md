@@ -55,6 +55,22 @@ The recovery audit retains the original attachment as well as the final fence.
 The parent observer treats exact trusted red as verifier failure so the existing
 policy can collect the new fix; existing manual holds and human gates still bind.
 
+## Durably refused reopens reach a human gate
+
+A reopen refusal no retry can satisfy — an ambiguous verifier subject, a manual
+hold, a dirty checkout — is not an unknown answer forever. `blocked` and
+`ambiguous` are durable; `changed`, `not_eligible` and every other refusal still
+retries, because re-diagnosing can still succeed and a false human gate is worse
+than a retry. The adapter records a durable refusal as `integration_reopen_refused`
+metadata naming the episode, operation, head and generation, with its refusal and
+reason, and the merge primitive still answers `unknown` — it cannot merge. The
+observer reports `reopen_refused` only for that exact identity, so a later
+generation or a malformed marker never holds a parent, and the pinned policy's
+`blocked-reopen` case routes it, together with a failed verifier, to the existing
+no-default `red` gate: the same human gate a held red verifier reached before
+trusted red counted as a failure. A successful reopen clears the marker, and the
+refusal never settles, skips or discards anything.
+
 ## Legacy failures with an empty commit list
 
 An otherwise settled failed completion with exactly `commits=[]` may use the

@@ -1,7 +1,7 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:50d3d9756bc705767a470e0f20d779da88bd9d5dc083a93846ce7f92fb6e0224
-source_sha256: sha256:03d93a7232ce3a39b1f1fa1d35fc4a8cc47969bf284bf268c7894ba8314fe710
+artifact_sha256: sha256:67a4f1e68ce35dc2c2ec53611d246c84c709bf88d48e352ff1f15105c5ddfdf0
+source_sha256: sha256:793c749076c57ca2590b293b1a13296f5ec71764e787675566545215f0ae03ea
 contract_fingerprint: sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0
 questions_resolved: 0
 capabilities_granted:
@@ -55,3 +55,10 @@ Failed children, conflicts, old repair dossiers and expired writer budgets use
 explicit no-default gates. Import remains write-if-absent and no activation or
 engine transfer is authorized by this bundle. Operator rollout review binds the
 new digest before cutover.
+
+A durably refused collection reopen now reaches the red human gate instead of
+backing off forever. The `blocked-reopen` case matches the recorded
+`reopen_refused` fact together with a failed verifier and routes to the
+existing no-default `red` gate; it adds no command, transition or capability,
+and the marker it reads is scoped to one episode, operation, head and
+generation, so a later generation clears it.
