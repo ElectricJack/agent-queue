@@ -15,12 +15,16 @@ from src.doctor.integration_checks import _find_unadmitted_parents, run_check
 from src.doctor.models import Severity
 from src.doctor.stall_checks import _unadmitted_parent_findings
 from src.git.manager import GitManager
-from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery, _ProofFailed
+from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.integration.parent_completion import ParentCompletion
-from src.integration.parent_source import ParentHeadObservation, ParentSourceReverification
+from src.integration.parent_source import (
+    ESCALATION_SOURCE_KIND,
+    ParentHeadObservation,
+    ParentSourceReverification,
+)
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import TrainService
@@ -44,6 +48,7 @@ class _Commands(IntegrationCommandsMixin):
     def __init__(self, database, promotion):
         self.db, self.promotion = database, promotion
         self.completion = ParentCompletion(database)
+        self.escalation_events = []
 
     def _hierarchy_integration_service(self):
         return self.completion
@@ -53,6 +58,9 @@ class _Commands(IntegrationCommandsMixin):
 
     async def _integration_delivery_authorized(self, *args):
         return True
+
+    async def _emit_escalation(self, event_type, payload):
+        self.escalation_events.append((event_type, payload))
 
 
 async def _finish(case, *, hook=True):
@@ -389,10 +397,20 @@ async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_ad
 
 
 @pytest.mark.parametrize(
-    "blocker", ["hold", "rejected", "owner", "rewritten", "stale", "delivered", "gate"]
+    ("blocker", "code"),
+    [
+        ("hold", "waiting"),
+        ("rejected", "rejected"),
+        ("owner", "waiting"),
+        ("rewritten", "unproven"),
+        ("stale", "stale"),
+        ("delivered", "delivered"),
+        ("gate", "waiting"),
+        ("policy", "unauthorized"),
+    ],
 )
 async def test_moved_parent_refuses_binding_blockers_without_changing_checkpoint(
-    completed, blocker
+    completed, monkeypatch, blocker, code
 ):
     case = completed
     source = await _source(case)
@@ -440,6 +458,13 @@ async def test_moved_parent_refuses_binding_blockers_without_changing_checkpoint
                 )
             )
             await conn.execute(insert(t.task_gates).values(task_id="parent", gate_id="gate"))
+        elif blocker == "policy":
+            policy = dict(
+                (await conn.execute(select(t.projects.c.hierarchical_integration_policy)))
+                .scalar_one()
+            )
+            policy["root"]["repair"]["source_ci"] = False
+            await conn.execute(update(t.projects).values(hierarchical_integration_policy=policy))
     if blocker == "rejected":
         git(
             case.origin.clone, "push", "--force", "origin", source["head"] + ":refs/heads/aq/parent"
@@ -458,13 +483,175 @@ async def test_moved_parent_refuses_binding_blockers_without_changing_checkpoint
         async with case.db.immediate() as conn:
             await conn.execute(update(t.projects).values(hierarchical_integration_generation=1))
     before = await case.db.get_integration_checkpoint("parent")
-    with pytest.raises((HierarchyError, _ProofFailed)):
+    if blocker != "rewritten":
+
+        async def unreachable(service, facts):
+            raise AssertionError("a refusal Postgres decides costs no remote proof")
+
+        monkeypatch.setattr(CancelledCollectionRecovery, "_prove", unreachable)
+    with pytest.raises(HierarchyError) as refused:
         await ParentSourceReverification(case.db, case.promotion).run(
             "parent",
             ParentHeadObservation("parent", source, head, 0),
         )
+    assert refused.value.code == code
     assert await case.db.get_integration_checkpoint("parent") == before
     assert (await case.db.get_task("parent")).status.value == "COMPLETED"
+
+
+def _poller(case, client, calls=None):
+    async def reverify(observation):
+        if calls is not None:
+            calls.append(observation)
+        with principal_context(ExecutionPrincipal.service("test-parent-source")):
+            return await case.commands.reverify_integration_parent_source(observation)
+
+    return GitHubReviewPoller(
+        case.db, case.producer, _ReviewGit(client), parent_head_handler=reverify
+    )
+
+
+async def _incidents(case):
+    rows = await case.db.list_escalations(task_id="parent", source_kind=ESCALATION_SOURCE_KIND)
+    return {row["incident_key"]: row for row in rows}
+
+
+def _review(review_id, login, state, commit):
+    return {
+        "id": review_id,
+        "state": state,
+        "user": {"type": "User", "login": login},
+        "commit_id": commit,
+    }
+
+
+async def test_rejected_parent_head_escalates_until_its_reviewer_approves_the_fix(completed):
+    case = completed
+    source = await _source(case)
+    await case.producer.snapshot_from_pull_request(
+        "parent", verdict="rejected", reviewer_login="human", reviewed_sha=source["head"]
+    )
+    fixed = case.origin.work("parent", "fix")
+    client = _ParentClient(fixed, [_review(1, "human", "CHANGES_REQUESTED", source["head"])])
+    poller = _poller(case, client)
+    before = await case.db.get_integration_checkpoint("parent")
+
+    await poller.tick(1031.0)
+    assert (await case.db.get_task("parent")).status.value == "COMPLETED"
+    assert "reviews" not in client.calls
+    [(key, incident)] = (await _incidents(case)).items()
+    assert key == f"parent-head:parent:{fixed}:rejected"
+    assert incident["state"] == "needs_human"
+    assert incident["supervisor_owner"] == "supervisor-p"
+    assert f"approve PR head {fixed}" in incident["decision_requested"]
+    assert "github:human rejected" in incident["investigation"]
+    assert [event for event, _ in case.commands.escalation_events] == ["escalation.created.v1"]
+
+    # Another reviewer's approval does not outvote a standing request for changes.
+    client.reviews.append(_review(2, "other", "APPROVED", fixed))
+    client.updated_at = "2026-10-02T00:01:00Z"
+    await poller.tick(1062.0)
+    assert client.calls.count("reviews") == 1
+    assert await case.db.get_integration_checkpoint("parent") == before
+    assert list(await _incidents(case)) == [key]
+    assert len(case.commands.escalation_events) == 1
+
+    # The rejecting reviewer approves exactly the fixed head: reverification starts.
+    client.reviews.append(_review(3, "human", "APPROVED", fixed))
+    client.updated_at = "2026-10-02T00:02:00Z"
+    await poller.tick(1093.0)
+    assert (await case.db.get_task("parent")).status.value == "PAUSED"
+    checkpoint = await case.db.get_integration_checkpoint("parent")
+    assert checkpoint["checkpoint_sha"] == fixed
+    assert checkpoint["generation"] == source["generation"] + 1
+    resolved = (await _incidents(case))[key]
+    assert resolved["state"] == "resolved"
+    assert fixed in resolved["terminal_outcome"]
+    assert case.commands.escalation_events[-1][0] == "escalation.updated.v1"
+    async with case.db._engine.connect() as conn:
+        payload = await conn.scalar(
+            select(t.events.c.payload).where(
+                t.events.c.event_type == "integration.parent_source_advanced"
+            )
+        )
+    assert '"superseding_approval": {"review_id": 3, "reviewer_login": "human"}' in payload
+
+
+async def test_unproven_parent_head_escalates_once_and_is_not_probed_until_it_moves(
+    completed, monkeypatch
+):
+    case = completed
+    rewritten = case.origin.work("other", "unrelated")
+    git(case.origin.clone, "push", "--force", "origin", rewritten + ":refs/heads/aq/parent")
+    proofs = []
+    prove = CancelledCollectionRecovery._prove
+
+    async def counting(service, facts):
+        proofs.append(facts["expected_tip"])
+        return await prove(service, facts)
+
+    monkeypatch.setattr(CancelledCollectionRecovery, "_prove", counting)
+    client = _ParentClient(rewritten, [])
+    calls = []
+    poller = _poller(case, client, calls)
+    before = await case.db.get_integration_checkpoint("parent")
+
+    await poller.tick(1031.0)
+    await poller.tick(1062.0)
+    assert proofs == [rewritten]
+    assert len(calls) == 1
+    [incident] = (await _incidents(case)).values()
+    assert incident["incident_key"] == f"parent-head:parent:{rewritten}:unproven"
+    assert "on top of " + (await _source(case))["head"] in incident["decision_requested"]
+
+    again = case.origin.work("other", "again")
+    git(case.origin.clone, "push", "--force", "origin", again + ":refs/heads/aq/parent")
+    client.head = again
+    await poller.tick(1093.0)
+    assert proofs == [rewritten, again]
+    incidents = await _incidents(case)
+    assert incidents[f"parent-head:parent:{rewritten}:unproven"]["state"] == "resolved"
+    assert incidents[f"parent-head:parent:{again}:unproven"]["state"] == "needs_human"
+    assert await case.db.get_integration_checkpoint("parent") == before
+    assert (await case.db.get_task("parent")).status.value == "COMPLETED"
+
+
+async def test_parent_head_waiting_answer_keeps_the_incident_open(completed, monkeypatch, caplog):
+    case = completed
+    source = await _source(case)
+    await case.producer.snapshot_from_pull_request(
+        "parent", verdict="rejected", reviewer_login="human", reviewed_sha=source["head"]
+    )
+    observation = ParentHeadObservation(
+        "parent", source, case.origin.work("parent", "fix"), 0
+    )
+
+    async def reverify():
+        with principal_context(ExecutionPrincipal.service("test-parent-source")):
+            return await case.commands.reverify_integration_parent_source(observation)
+
+    assert (await reverify())["outcome"] == "rejected"
+    [key] = await _incidents(case)
+
+    # A busy parent engine answers ``waiting`` without raising; that decides nothing.
+    async def busy(self, task_id, observation):
+        return {"outcome": "waiting", "reason": "parent engine is busy"}
+
+    monkeypatch.setattr(ParentSourceReverification, "run", busy)
+    result = await reverify()
+    assert result == {"success": False, "outcome": "waiting", "error": "parent engine is busy"}
+    assert (await _incidents(case))[key]["state"] == "needs_human"
+
+    # Bookkeeping that fails is logged; the answer still reaches the poller.
+    async def broken(*args, **kwargs):
+        raise RuntimeError("escalation store unavailable")
+
+    monkeypatch.setattr(
+        import_module("src.integration.parent_source"), "settle_refusal_escalation", broken
+    )
+    with caplog.at_level("WARNING"):
+        assert (await reverify())["outcome"] == "waiting"
+    assert "escalation bookkeeping failed" in caplog.text
 
 
 async def test_doctor_and_stall_name_parent_admission_blockers(completed, monkeypatch):
