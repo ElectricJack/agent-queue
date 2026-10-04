@@ -34,6 +34,10 @@ def notice_text(kind: str, **facts) -> str:
         "rate_limited": f"Too many messages. Please try again after {WINDOW_SECONDS // 60} minutes.",
         "conversation_closed": "This conversation is closed. Send a new message to start another one.",
         "delay": "The supervisor is delayed. Your message is still queued; it has not been answered.",
+        "supervisor_missing": (
+            "No supervisor is running, so nothing is watching this channel. "
+            "Your message is queued."
+        ),
         "open_failed": "Unable to open a conversation thread. Your message remains visible in the dashboard.",
     }
     return notices[kind]

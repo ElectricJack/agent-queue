@@ -3,9 +3,11 @@
 An allowlisted operator can talk to the supervisor in the configured channel.
 By default that means mentioning the bot user, for example `@Agent Q what is
 blocking the build?`; with `discord.conversation.require_mention: false` any
-message in the channel joins that channel's one conversation. Either way the
-supervisor answers in a thread under the operator's message, falling back from
-the project supervisor to the global one. This route is off by default.
+message in the channel joins that channel's one conversation, and the next
+plain message continues it. The supervisor answers in the channel itself, as a
+reply to the operator's message, falling back from the project supervisor to
+the global one. A mention-created or operator-created *thread* still carries its
+own conversation. This route is off by default.
 It deliberately relaxes the
 2026-09-08 Discord simplification without restoring slash commands, task
 controls, gate buttons, worker input or unrestricted channel chat.
@@ -32,10 +34,12 @@ session exists.
 
 The approved 2026-10-03 chat-extension spec adds project routing. Set
 `discord.project_id` to the project served by this channel. AQ infers it when
-there is exactly one project; installations with multiple projects must set it
-explicitly. Inputs go to that project's live named supervisor, then to the live
-global supervisor. When neither is running, inputs remain queued until a
-supervisor starts; conversation intake does not cold-start a session.
+there is exactly one project. Inputs go to that project's live named
+supervisor, then to the live global supervisor. With several projects and no
+`discord.project_id`, a shared channel belongs to none of them in particular,
+so the global supervisor answers for it rather than the input being queued for
+nobody. When no supervisor is running at all, the input remains queued and the
+channel says so; conversation intake does not cold-start a session.
 
 ## Enable the route
 
@@ -127,17 +131,25 @@ With `require_mention: false`, no mention is needed and one changes nothing:
 
 The tag is `<kind>:<id>` from the durable post receipt AQ recorded for the parent
 message. A producer that records no receipt (today's review-ready post) yields
-no tag, and the thread simply becomes a conversation of its own. Replies go back
-to the originating thread, or to the DM channel itself; no thread is created in a
-direct message.
+no tag, and the thread simply becomes a conversation of its own.
+
+A conversation that *is* a thread answers inside it. A conversation the channel
+carries — a plain top-level message, or a direct message — never creates one:
+its acknowledgement, answer, status line and notices are ordinary posts in that
+channel, each carrying a Discord reply reference to the conversation's first
+message so the thread of conversation is visible without a Discord thread. If
+that referenced message has been deleted, Discord posts the answer without the
+reference rather than refusing it. An escalation incident still owns its own
+thread (§escalations.md); nothing here changes that.
 
 AQ persists the conversation, verified author and input before queuing any
-Discord delivery. It queues one thread-open acknowledgement on the operator's
-root message and addresses a durable input notice to `supervisor-<project_id>`
-or `supervisor-global`. If both are offline, the pending notice is assigned when
-a supervisor becomes available. Follow-up
-messages in the bound thread need no new mention; each is checked against the
-current allowlist and conversation audience.
+Discord delivery. It queues one acknowledgement on the operator's message —
+posted in the channel for a channel conversation, or in the thread it is bound
+to — and addresses a durable input notice to `supervisor-<project_id>` or
+`supervisor-global`. If both are offline, the pending notice is assigned when
+a supervisor becomes available. Follow-up messages in the channel continue that
+conversation, and messages in a bound thread need no new mention; each is
+checked against the current allowlist and conversation audience.
 
 An explicit `supervisor_inbox_reply` or `message_reply` to the input notice from
 the assigned supervisor or local operator queues one answer per input. The
@@ -149,7 +161,8 @@ a longer answer stays in conversation content with a dashboard pointer. Sends
 disable all mentions, remove control characters and mention tokens, and retain
 only links beginning with the configured dashboard base URL.
 
-If thread creation fails, AQ queues one bounded failure reply in the channel
+If creating the thread of a thread-bound conversation fails, AQ queues one
+bounded failure reply in the channel
 and marks delivery blocked; the accepted input remains visible internally.
 It does not start inline channel chat. If an input remains unanswered after
 15 minutes, one deduplicated delay notice says it is still queued. An
@@ -159,15 +172,25 @@ to the newly restricted audience.
 
 ## When no supervisor is live
 
-A turn whose supervisor is offline stays durable and queued. The channel says
-so in one status line per conversation, edited in place as the count grows:
-`⏸ Supervisor is offline. 2 messages queued; I'll answer when it starts.` When
-the supervisor answers, the line is retired rather than left claiming the
-supervisor is away. Edits count against the shared outbound budget (20
-operations per minute) and the thread-open ack is always sent before the line,
+A turn whose supervisor is offline stays durable and queued, and the channel says
+so out loud rather than letting the message disappear into a queue: one status
+line per conversation, edited in place as the count grows —
+`⏸ Supervisor is offline. 2 messages queued; I'll answer when it starts.` — and
+one notice per conversation reading `No supervisor is running, so nothing is
+watching this channel. Your message is queued.` When the supervisor answers, the
+status line is retired rather than left claiming the supervisor is away. Edits
+count against the shared outbound budget (20
+operations per minute) and the acknowledgement is always sent before the line,
 so a line never posts into a thread that does not exist yet. A queued turn that
 stays unanswered for 15 minutes is also escalated internally through the
 `supervisor_delivery` incident family, which never posts in the human channel.
+
+Nothing in the daemon's health reports an input that no supervisor is live to
+answer, so `aq doctor --check stall.sweep` does: it reports one
+`conversation_unowned` line naming how many such inputs there are and how old
+the oldest is. That line is the operator's evidence that a message went
+unanswered; on an install with conversations enabled it appears whether or not
+any project is active.
 
 The durable outbox leases work, prioritizes escalations and reconciles stable
 markers after an ambiguous send. Unknown delivery is not proof of failure or

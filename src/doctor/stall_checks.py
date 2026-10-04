@@ -381,14 +381,57 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
+async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Conversation inputs no supervisor session is live to answer.
+
+    A Discord input accepted while no supervisor was running stays addressed
+    to ``session:conversation-queued``.  Nothing delivers it, nothing retries
+    it, and both the channel and the daemon look healthy while it sits there,
+    so the sweep is what says so out loud.
+    """
+    queue = await ctx.db.stalled_conversation_queue()
+    if not queue["unowned"]:
+        return []
+    oldest = queue["oldest_at"]
+    return [_finding(
+        "conversation_unowned",
+        None,
+        f"{queue['unowned']} Discord conversation input(s) have no live supervisor "
+        f"(oldest {int((now - oldest) / 60) if oldest else '?'}m); they stay queued "
+        "until one starts -- start the supervisor, or set discord.project_id",
+        unowned=queue["unowned"],
+        oldest_at=oldest,
+    )]
+
+
+def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
+    summary = (
+        f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
+        else f"no stalls across {active} active project(s)"
+    )
+    detail = summary + "".join(
+        f"\n{item['kind']} {item['project_id'] or '-'}: {item['detail']}"
+        for item in findings
+    )
+    return CheckResult(
+        CHECK_ID, Severity.WARN if findings else Severity.OK,
+        detail,
+        data={"findings": findings, "count": len(findings),
+              "vault_root": str(Path(ctx.config.vault_root).expanduser())},
+    )
+
+
 async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None or ctx.handler is None:
         return CheckResult(CHECK_ID, Severity.INFO, "database and command handler required")
     now = time.time()
     projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
     active = {project.id for project in projects}
+    # An unowned conversation input is a stall whether or not a project is
+    # active, so this line is read before the empty-install return.
+    conversation = await _conversation_findings(ctx, now)
     if not active:
-        return CheckResult(CHECK_ID, Severity.OK, "no active projects", data={"findings": []})
+        return _sweep_result(ctx, conversation, 0)
     tasks_by_project = await asyncio.gather(
         *(ctx.db.list_tasks(project_id=pid) for pid in sorted(active))
     )
@@ -409,21 +452,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
     )
-    findings = [item for group in groups for item in group] + _route_findings(tasks)
-    summary = (
-        f"{len(findings)} stall finding(s) across {len(active)} active project(s)" if findings
-        else f"no stalls across {len(active)} active project(s)"
-    )
-    detail = summary + "".join(
-        f"\n{item['kind']} {item['project_id'] or '-'}: {item['detail']}"
-        for item in findings
-    )
-    return CheckResult(
-        CHECK_ID, Severity.WARN if findings else Severity.OK,
-        detail,
-        data={"findings": findings, "count": len(findings),
-              "vault_root": str(Path(ctx.config.vault_root).expanduser())},
-    )
+    findings = [item for group in groups for item in group] + _route_findings(tasks) + conversation
+    return _sweep_result(ctx, findings, len(active))
 
 
 async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:

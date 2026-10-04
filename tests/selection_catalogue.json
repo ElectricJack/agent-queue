@@ -1414,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:53db945ffe547b85d00463bc685f0657a4d4f5b83c3cb353af1b66c23bf4f3ef",
+  "digest": "sha256:3978139d12304240f0c6b54d074e053b959be8ddc7b60488d8899b80fe7c390e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4311,7 +4311,8 @@
       "imports": [
         "src.database",
         "src.database.queries.conversation_queries",
-        "src.database.tables"
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."

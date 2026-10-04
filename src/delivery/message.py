@@ -35,6 +35,9 @@ class FrozenMessage:
     thread_id: str | None = None
     last_error: str | None = None
     reclaimed: bool = False
+    #: The message this post replies to, for a chat channel that has no thread
+    #: to hold the context.  Ignored when ``thread_id`` is set.
+    reference_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,12 @@ class MessageDelivery:
             if message.thread_id:
                 outcome = await self.transport.post_thread_message(
                     thread_id=message.thread_id, content=content
+                )
+            elif message.reference_message_id:
+                outcome = await self.transport.post_root(
+                    channel_id=message.channel_id,
+                    content=content,
+                    reference_message_id=message.reference_message_id,
                 )
             else:
                 outcome = await self.transport.post_root(

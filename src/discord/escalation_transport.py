@@ -159,6 +159,22 @@ class DiscordEscalationTransport:
         return cls._view(buttons) or discord.ui.View(timeout=None)
 
     @staticmethod
+    def _reference(channel_id: str, message_id: str | None) -> Any:
+        """The reply reference a channel post carries, or ``None`` for none.
+
+        Discord answers a reference to a message that no longer exists by
+        posting without it, so a deleted root degrades to an ordinary post
+        instead of refusing the answer.
+        """
+        if not message_id or not message_id.isdigit():
+            return None
+        return discord.MessageReference(
+            message_id=int(message_id),
+            channel_id=int(channel_id) if str(channel_id).isdigit() else 0,
+            fail_if_not_exists=False,
+        )
+
+    @staticmethod
     def _release(view: Any) -> None:
         """Drop the in-memory dispatch entry for a view we have already sent.
 
@@ -214,14 +230,22 @@ class DiscordEscalationTransport:
             raise self._http_error(exc) from exc
 
     async def post_root(
-        self, *, channel_id: str, content: str, buttons: Sequence[ButtonSpec] = ()
+        self,
+        *,
+        channel_id: str,
+        content: str,
+        buttons: Sequence[ButtonSpec] = (),
+        reference_message_id: str | None = None,
     ) -> SendOutcome:
         self._outbound_guard()
         channel = await self._channel(channel_id)
         view = self._view(buttons)
         try:
             message = await channel.send(
-                bound_content(content), allowed_mentions=_allowed_mentions(self._settings), view=view
+                bound_content(content),
+                allowed_mentions=_allowed_mentions(self._settings),
+                view=view,
+                reference=self._reference(channel_id, reference_message_id),
             )
         except discord.Forbidden as exc:
             self._record(403)
