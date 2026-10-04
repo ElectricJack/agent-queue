@@ -5,16 +5,13 @@ from __future__ import annotations
 import logging
 import time
 
-from src.discord.notifications import (
-    format_failed_blocked_report,
-    format_failed_blocked_report_embed,
-)
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
     BudgetWarningEvent,
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
+from src.notifications.render import format_failed_blocked_report
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
@@ -654,7 +651,6 @@ class MonitoringMixin:
 
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
-            format_failed_blocked_report_embed(proj_failed, proj_blocked)
             await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:
