@@ -1401,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:64ff98f3b17ef3ac742b77d6778fc70926f5f1f70f13318cf2cae44a7ed631fc",
+  "digest": "sha256:85917a248b6bf3b27625dcb05f95fa1f5687f5cb720432c230b2087af112f955",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3290,7 +3290,8 @@
         "src.cli.auto_commands",
         "src.cli.exceptions",
         "src.cli.integration",
-        "src.git.github_cli"
+        "src.git.github_cli",
+        "src.profiles.parser"
       ],
       "markers": [
         "parametrize"
@@ -7249,6 +7250,7 @@
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.repair",
+        "src.integration.verifier_subject",
         "src.models"
       ],
       "markers": [

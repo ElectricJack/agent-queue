@@ -12,22 +12,23 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, update
 
-from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.gate_commands import GateCommandsMixin
+from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import tables as t
-from src.integration.collection import CollectionService
+from src.git.manager import GitManager
 from src.integration.child_delivery import ChildDelivery
+from src.integration.collection import CollectionService
 from src.integration.engine import EngineRefused
 from src.integration.gates import GatePrimitives
+from src.integration.models import PromotionInput
 from src.integration.parent_adapters import (
     REOPEN_REFUSED_META_KEY,
     ParentPolicyFacts,
     ParentPrimitiveAdapters,
 )
-from src.integration.parent_engine import ParentEngineOwnership
 from src.integration.parent_ci import ParentCIService
-from src.integration.promotion import PromotionService
+from src.integration.parent_engine import ParentEngineOwnership
 from src.integration.parent_runtime import (
     ParentSubjectRuntime,
     ParentVisitObserver,
@@ -35,30 +36,30 @@ from src.integration.parent_runtime import (
     ensure_parent_subject_on,
 )
 from src.integration.parent_subjects import ParentDatabaseObservationReader, ParentSubjectAdapter
-from src.integration.models import PromotionInput
+from src.integration.promotion import PromotionService
 from src.integration.repair import RepairService
 from src.integration.subjects import (
     GateArgs,
     PolicyArtifactPin,
     Subject,
 )
+from src.integration.writers import WriterPrimitives
 from src.models import Project, Task, TaskStatus
-from src.git.manager import GitManager
 from src.playbooks.definition import load_definition_json
 from src.playbooks.integration_policy import IntegrationPolicy
 from src.profiles.capabilities import DENY_ALL
-from src.integration.writers import WriterPrimitives
-from tests.test_integration_cancelled_collection import (  # noqa: F401
-    _failed_aggregate,
-    _held_red_aggregate,
-    _rows,
+from tests.test_integration_cancelled_collection import (
     _commit_on,
+    _failed_aggregate,
     _git,
+    _held_red_aggregate,
     _promote_next,
+    _rows,
+)
+from tests.test_integration_cancelled_collection import (
     case as case_fixture,
 )
-from tests.test_integration_parent_completion import _parent_tree, _code_receipt
-
+from tests.test_integration_parent_completion import _code_receipt, _parent_tree
 
 case = case_fixture
 
@@ -649,9 +650,9 @@ async def test_green_call_cannot_attach_to_successor_stage_after_waiting_for_aut
 ):
     from tests.test_integration_repair import (
         STARTING_SHA,
+        _add_parent_evidence,
         _configure_db,
         _seed_parent_operation,
-        _add_parent_evidence,
     )
 
     database = await reuse_database("parent-reconciler-stage-race")
