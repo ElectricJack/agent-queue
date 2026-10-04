@@ -331,6 +331,34 @@ def integration_resume(ctx: click.Context, operation_id: str) -> None:
     _execute(ctx, "integration_resume", {"operation_id": operation_id})
 
 
+@integration.command("reevaluate-repair")
+@click.argument("operation_id")
+@click.option("--apply", is_flag=True, help="Apply the exact preview; default is read-only.")
+@click.option("--head", default=None)
+@click.option("--episode", default=None)
+@click.option("--generation", type=int, default=None)
+@click.option("--stage", type=int, default=None)
+@click.option("--fence", type=int, default=None)
+@click.option("--snapshot", default=None)
+@click.option("--reason", default=None)
+@click.pass_context
+@_handle_errors
+def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, generation, stage, fence, snapshot, reason):
+    """Preview settlement of an audited no-op repair with trusted exact-head green CI."""
+    if apply and (not head or generation is None or stage is None or fence is None
+                  or not snapshot or not (reason or "").strip()):
+        raise click.UsageError("--apply requires --head, --generation, --stage, --fence, --snapshot and --reason")
+    args = {"operation_id": operation_id, "dry_run": not apply}
+    for key, value in (("expected_head_sha", head), ("expected_episode_id", episode),
+                       ("expected_generation", generation), ("expected_stage", stage),
+                       ("expected_fence_token", fence), ("reason", reason)):
+        if value is not None:
+            args[key] = value
+    if snapshot is not None:
+        args["expected_snapshot_digest"] = snapshot
+    _execute(ctx, "integration_reevaluate_repair", args)
+
+
 @integration.command("abort")
 @click.argument("operation_id")
 @click.option("--reason", required=True)
