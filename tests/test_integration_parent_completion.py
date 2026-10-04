@@ -70,7 +70,7 @@ from src.models import (
     TaskCompletion,
     TaskStatus,
 )
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
 from src.database.queries.task_queries import StaleClaim
 
 
@@ -4417,6 +4417,56 @@ async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
     assert revised["revision"] == 1
     assert revised["receipt_id"] != recorded["receipt_id"]
     assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+
+
+async def test_record_noop_refuses_an_elevated_supervisor_session(db):
+    """A no-code receipt is an operator control, so no session may record one.
+
+    ``integration_record_noop`` is deliberately absent from
+    ``_SUPERVISOR_REDRIVE_CAPABILITIES``: even a live, elevated supervisor
+    session carrying a granting policy is refused, before the child is checked.
+    That is why the guide and the supervisor profile hand the command to a
+    local operator instead of telling a session to run it.
+    """
+    from src.commands.integration_commands import _SUPERVISOR_REDRIVE_CAPABILITIES
+
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    child_id = children[0]
+    child = await db.get_task(child_id)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="supervisor-noop", task_id=child_id, outcome="pass", work_outcome="no-op",
+            branch=child.branch_name, completed_at=2.0,
+        )
+    )
+
+    class Handler(IntegrationCommandsMixin):
+        orchestrator = SimpleNamespace(hierarchy_integration=hierarchy)
+
+    handler = Handler()
+    handler.db = db
+    supervisor = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        session_id="supervisor-1",
+        profile_id="supervisor",
+        project_id="p",
+        elevated=True,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=frozenset({"integration_record_noop"})
+        ),
+    )
+    with principal_context(supervisor):
+        refused = await handler._cmd_integration_record_noop(
+            {"child_task_id": child_id, "expected_head_sha": "b" * 40}
+        )
+
+    assert refused == {
+        "success": False,
+        "outcome": "unauthorized",
+        "error": "caller cannot dispose this child",
+    }
+    assert "integration_record_noop" not in _SUPERVISOR_REDRIVE_CAPABILITIES
+    assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
 
 
 async def test_verified_noop_refuses_a_child_branch_advanced_from_its_reserved_base(db):
