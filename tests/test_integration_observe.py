@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import replace
 from unittest.mock import AsyncMock
@@ -1091,6 +1092,137 @@ async def test_git_adapter_uses_authorized_repository_and_strict_reads_only():
     git.ais_ancestor.assert_awaited_once_with("/checkout", BASE, HEAD, strict=True)
     git.afetch_origin.assert_not_called()
     git.apush_branch.assert_not_called()
+
+
+async def test_git_adapter_reads_remote_heads_in_batched_chunks(monkeypatch):
+    from src.integration import observe as observe_module
+
+    monkeypatch.setattr(observe_module, "_REMOTE_REF_CHUNK", 2)
+
+    async def read(path, branches, *, repository_url):
+        if "boom" in branches:
+            raise ConnectionError("do not expose exception detail")
+        return {
+            branch: RemoteRefResult(RemoteRefState.ABSENT)
+            if branch == "gone"
+            else RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
+            for branch in branches
+        }
+
+    git = AsyncMock()
+    git.als_remote_refs.side_effect = read
+    repository = snapshot().repository
+    refs = [
+        "refs/heads/main",
+        "refs/heads/gone",
+        "refs/heads/-bad",
+        "refs/tags/v1",
+        "refs/heads/a",
+        "refs/heads/boom",
+    ]
+    heads = await GitObservationReader(git).remote_heads(repository, refs)
+    assert {ref: (head.ref, head.state) for ref, head in heads.items()} == {
+        "refs/heads/main": ("refs/heads/main", "present"),
+        "refs/heads/gone": ("refs/heads/gone", "absent"),
+        "refs/heads/-bad": ("refs/heads/-bad", "unknown"),
+        "refs/tags/v1": ("refs/tags/v1", "unknown"),
+        "refs/heads/a": ("refs/heads/a", "unknown"),
+        "refs/heads/boom": ("refs/heads/boom", "unknown"),
+    }
+    assert heads["refs/heads/main"].sha == HEAD
+    assert [call.args for call in git.als_remote_refs.await_args_list] == [
+        ("/checkout", ["main", "gone"]),
+        ("/checkout", ["a", "boom"]),
+    ]
+    assert {call.kwargs["repository_url"] for call in git.als_remote_refs.await_args_list} == {
+        repository["url"]
+    }
+    git.als_remote_ref.assert_not_called()
+
+
+async def test_observer_reads_every_remote_head_in_one_batched_port_call():
+    class Batched(Git):
+        async def remote_head(self, repository, ref):
+            raise AssertionError("the batched read covers every ref")
+
+        async def remote_heads(self, repository, refs):
+            self.calls.append(("remote_heads", repository["id"], tuple(refs)))
+            heads = {
+                ref: RemoteHead(
+                    ref=ref,
+                    state="present" if self.heads.get(ref) else "absent",
+                    sha=self.heads.get(ref),
+                )
+                for ref in refs
+            }
+            heads["refs/heads/aq/source"] = RemoteHead(
+                ref="refs/heads/aq/elsewhere", state="present", sha=OTHER
+            )
+            return heads
+
+    git = Batched()
+    facts = await observe(snapshot(), git)
+    assert git.calls[0] == (
+        "remote_heads",
+        "repo",
+        tuple(sorted(head.ref for head in facts.remote_heads)),
+    )
+    assert [call for call in git.calls if call[0] == "remote_heads"] == git.calls[:1]
+    states = {head.ref: head.state for head in facts.remote_heads}
+    assert states["refs/heads/main"] == "present"
+    assert states["refs/heads/aq/source"] == "unknown"  # answered for another ref
+    assert "remote_unknown:refs/heads/aq/source" in facts.unknown
+
+    class Failed(Batched):
+        async def remote_heads(self, repository, refs):
+            raise ConnectionError("do not expose exception detail")
+
+    facts = await observe(snapshot(), Failed())
+    assert facts.remote_heads and all(head.state == "unknown" for head in facts.remote_heads)
+
+
+async def test_observer_reads_single_remote_heads_concurrently():
+    class Slow(Git):
+        in_flight = peak = 0
+
+        async def remote_head(self, repository, ref):
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            await asyncio.sleep(0.01)
+            self.in_flight -= 1
+            return await super().remote_head(repository, ref)
+
+    git = Slow()
+    facts = await observe(snapshot(), git)
+    assert len(facts.remote_heads) > 1 and git.peak == len(facts.remote_heads)
+    assert all(head.state != "unknown" for head in facts.remote_heads)
+
+
+async def test_ancestry_is_cached_by_sha_across_visits_and_unknown_is_retried():
+    data = snapshot()
+    git = Git()
+    observer = IntegrationObserver(Reader(data), git, clock=lambda: NOW)
+    first = await observer.observe_subject(data.subject.id)
+    # Containment settles ancestry; the reverse probe is never made.
+    assert [call for call in git.calls if call[0] == "ancestry"] == [
+        ("ancestry", "repo", SOURCE, HEAD)
+    ]
+    git.calls.clear()
+    second = await observer.observe_subject(data.subject.id)
+    assert not [call for call in git.calls if call[0] == "ancestry"]
+    assert first.members[0].ancestry == second.members[0].ancestry == "contained"
+
+    git = Git(ancestry={(SOURCE, HEAD): False, (HEAD, SOURCE): None})
+    observer = IntegrationObserver(Reader(data), git, clock=lambda: NOW)
+    for _ in range(2):
+        facts = await observer.observe_subject(data.subject.id)
+        assert facts.members[0].ancestry == "unknown"
+    # The definitive "not contained" is reused; the unknown reverse probe is retried.
+    assert [call[2:] for call in git.calls if call[0] == "ancestry"] == [
+        (SOURCE, HEAD),
+        (HEAD, SOURCE),
+        (HEAD, SOURCE),
+    ]
 
 
 async def test_database_reader_enforces_read_only_snapshot_over_real_existing_tables():
