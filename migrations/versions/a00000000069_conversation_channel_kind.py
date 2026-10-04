@@ -1,6 +1,6 @@
 """Name the conversation kind so a channel can carry exactly one.
 
-Revision ID: a00000000063
+Revision ID: a00000000069
 Revises: a00000000062
 
 Chat-extension spec §2.2: a top-level message joins "one durable conversation
@@ -15,8 +15,8 @@ the index so the next message opens a fresh row.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000063"
-down_revision = "a00000000062"
+revision = "a00000000069"
+down_revision = "a00000000068"
 branch_labels = None
 depends_on = None
 

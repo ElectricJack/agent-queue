@@ -1,6 +1,6 @@
 """The ``direction=system`` widening upgrades, is enforced, and refuses to roll back.
 
-``a00000000065`` replaces ``ck_escalation_messages_direction`` so a thread's
+``a00000000071`` replaces ``ck_escalation_messages_direction`` so a thread's
 history can carry a daemon-authored audit note (spec §5.6's sweep trail) beside
 the two conversational directions.  Three things have to hold, and each arm proves
 one: from a database that genuinely carries the two-value constraint the revision
@@ -24,7 +24,7 @@ pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTGRES_DSN = ensure_worker_postgres_dsn()
-SYSTEM_DIRECTION_REVISION = "a00000000065"
+SYSTEM_DIRECTION_REVISION = "a00000000071"
 PRECEDING_REVISION = previous_revision(SYSTEM_DIRECTION_REVISION)
 CONSTRAINT = "ck_escalation_messages_direction"
 NARROWED = "direction IN ('inbound','outbound')"

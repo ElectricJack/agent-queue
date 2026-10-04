@@ -19,15 +19,15 @@ baseline builds ``escalation_messages`` from the live
 widened already carries the three-value constraint, and an unconditional
 drop/recreate would churn every fresh database.
 
-Revision ID: a00000000065
+Revision ID: a00000000071
 Revises: a00000000064
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000065"
-down_revision = "a00000000064"
+revision = "a00000000071"
+down_revision = "a00000000070"
 branch_labels = None
 depends_on = None
 

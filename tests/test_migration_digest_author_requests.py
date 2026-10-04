@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_DSN = ensure_worker_postgres_dsn()
-REVISION = "a00000000064"
+REVISION = "a00000000070"
 PRECEDING = previous_revision(REVISION)
 TABLE = "supervisor_report_requests"
 CONSTRAINT = "ck_supervisor_report_requests_kind"

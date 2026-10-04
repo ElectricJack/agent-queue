@@ -1,6 +1,6 @@
 """The stateful-escalations columns revision upgrades and rolls back on PostgreSQL.
 
-``a00000000062`` adds ``escalations.outcome`` and ``escalations.collapsed_at``
+``a00000000068`` adds ``escalations.outcome`` and ``escalations.collapsed_at``
 plus two named check constraints.  Both the adds and the constraints are
 inspector-guarded, because the squashed baseline builds ``escalations`` from the
 live ``src.database.tables.metadata`` — a database created after these columns
@@ -27,7 +27,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 # The revision that adds the stateful-escalation columns, and whatever it
 # currently chains onto — deriving the predecessor keeps the pair correct when a
 # later revision is inserted ahead of it.
-STATEFUL_REVISION = "a00000000062"
+STATEFUL_REVISION = "a00000000068"
 PRECEDING_REVISION = previous_revision(STATEFUL_REVISION)
 NEW_COLUMNS = frozenset({"outcome", "collapsed_at"})
 NEW_CONSTRAINTS = frozenset({"ck_escalations_outcome", "ck_escalations_collapsed"})

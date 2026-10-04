@@ -1,6 +1,6 @@
 """Allow a supervisor-authored digest window to hold one author request.
 
-Revision ID: a00000000064
+Revision ID: a00000000070
 Revises: a00000000063
 
 The supervisor-authored digest (spec 2026-10-03 §4, phase P3) reuses the durable
@@ -14,8 +14,8 @@ the fallback itself.  Nothing about the request's shape changes -- only the set 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000064"
-down_revision = "a00000000063"
+revision = "a00000000070"
+down_revision = "a00000000069"
 branch_labels = None
 depends_on = None
 

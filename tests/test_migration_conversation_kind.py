@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.migration, pytest.mark.integration]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSTGRES_DSN = ensure_worker_postgres_dsn()
-REVISION = "a00000000063"
+REVISION = "a00000000069"
 PRECEDING = previous_revision(REVISION)
 TABLE = "supervisor_conversations"
 

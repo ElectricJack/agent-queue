@@ -26,15 +26,15 @@ both are idempotent in content: a database that already carries them (because
 it was created from the updated metadata) is left alone rather than dropped and
 recreated.
 
-Revision ID: a00000000062
+Revision ID: a00000000068
 Revises: a00000000061
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000062"
-down_revision = "a00000000061"
+revision = "a00000000068"
+down_revision = "a00000000067"
 branch_labels = None
 depends_on = None
 

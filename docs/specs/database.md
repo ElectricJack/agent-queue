@@ -307,7 +307,7 @@ One operator conversation with the addressed supervisor, opened by an allowliste
 | `updated_at` | FLOAT | NOT NULL, bumped by each input and reply |
 | `closed_at` | FLOAT | nullable |
 
-Unique: (`transport`, `external_root_message_id`), `thread_id`, (`transport`, `external_thread_id`) where the thread is set, and (`transport`, `channel_id`) where `kind = 'channel'` and the conversation is not closed — the last is what makes "one conversation per channel" an invariant rather than a convention. Check: `ck_supervisor_conversations_kind`. Index: `idx_supervisor_conversations_state`. Added by revision `a00000000063`.
+Unique: (`transport`, `external_root_message_id`), `thread_id`, (`transport`, `external_thread_id`) where the thread is set, and (`transport`, `channel_id`) where `kind = 'channel'` and the conversation is not closed — the last is what makes "one conversation per channel" an invariant rather than a convention. Check: `ck_supervisor_conversations_kind`. Index: `idx_supervisor_conversations_state`. Added by revision `a00000000069`.
 
 ### Table: `conversation_inputs`
 
