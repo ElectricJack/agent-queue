@@ -856,6 +856,10 @@ private repair ref remain forensic evidence.
 
 ## 5. Human controls and rollback
 
+For the reconciler's staged production cutover, policy edits, table retirement
+and audited feature-off rollback, use the
+[reconciler rollout guide](integration-reconciler-rollout.md).
+
 ### The operator surface
 
 The integration-train simplification (§5.1 of
