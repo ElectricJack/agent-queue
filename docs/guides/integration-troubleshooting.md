@@ -848,7 +848,9 @@ leave a subject waiting:
   (`human_required`), supervisor-recovery stages and delegates an operator
   paused are never selected.
 - **Green promotion.** See [A green batch never promotes](#a-green-batch-never-promotes);
-  continuations never stop, at most an hour apart.
+  continuations never stop, at most an hour apart, including after the outbox
+  quarantined one (`retry_budget_exhausted:`), which settles at its deadline and
+  paces the next one from there. The quarantined row stays for inspection.
 - **Parent delivery intents.** A child delivery whose exact commit is already on
   the parent branch is finalized. A `prepared` intent whose push did not apply
   is pushed again with its own frozen identity under the parent's *current*

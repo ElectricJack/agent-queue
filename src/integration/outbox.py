@@ -35,6 +35,23 @@ DEFAULT_MAX_WAIT_SECONDS = DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 RETRY_EXHAUSTED_PREFIX = "retry_budget_exhausted: "
 
 
+def settled_at(row: Any) -> float | None:
+    """When an outbox row stopped being a pending delivery, or ``None`` while it is.
+
+    A quarantined row keeps ``delivered_at`` unset because no consumer accepted
+    it, but the outbox will not retry it either: it settled as a failed delivery
+    at its deadline, which quarantine leaves in ``available_at``. Callers that
+    pace their own continuations must not read an undelivered row as still
+    queued, or a single quarantined event stalls their series until a manual
+    replay. The row itself stays for inspection and replay.
+    """
+    if row["delivered_at"] is not None:
+        return float(row["delivered_at"])
+    if (row["last_error"] or "").startswith(RETRY_EXHAUSTED_PREFIX):
+        return float(row["available_at"])
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptanceState:
     manifest: tuple[dict[str, str], ...] | None
