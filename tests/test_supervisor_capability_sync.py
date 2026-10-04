@@ -298,6 +298,33 @@ def test_the_real_shipped_supervisor_restores_the_2026_09_24_denials(data_dir):
     assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
 
 
+def test_the_real_shipped_supervisor_syncs_the_escalation_resolve_grant(data_dir):
+    """§5.3: the supervisor may close what a human answered.
+
+    The grant exists because the command exists: ``escalation_resolve`` is how
+    ``aq escalation resolve <id> --outcome "..."`` reaches the core.  A vault
+    copy seeded before this release must gain it additively, with everything
+    else the operator wrote left alone.
+    """
+    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
+    assert '    "escalation_resolve",\n' in shipped
+    stale = shipped.replace('    "escalation_resolve",\n', "", 1)
+    vault = _vault(data_dir)
+    _write(vault, stale)
+
+    result = sync_profile_capabilities(data_dir, "supervisor")
+
+    assert result.status == STATUS_SYNCED
+    assert result.added == {"aq_commands": ["escalation_resolve"]}
+    assert result.backup_path is not None
+    assert Path(result.backup_path).read_text(encoding="utf-8") == stale
+    assert "escalation_resolve" in _aq_commands(vault)
+    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
+    merged = vault.read_text(encoding="utf-8")
+    assert merged.split("## Capabilities")[0] == stale.split("## Capabilities")[0]
+    assert merged.split("## Rules")[1] == stale.split("## Rules")[1]
+
+
 def test_the_real_shipped_supervisor_syncs_inbox_grants_with_a_backup(data_dir):
     shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
     inbox_grants = [

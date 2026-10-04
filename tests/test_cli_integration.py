@@ -37,6 +37,17 @@ def _client(result):
     return client
 
 
+def test_reevaluate_repair_apply_requires_exact_preview():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "reevaluated"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reevaluate-repair", "operation", "--apply"])
+    assert result.exit_code == 2
+    assert "--apply requires --head, --generation, --stage, --fence, --snapshot and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
@@ -214,6 +225,16 @@ def _client(result):
             },
         ),
         (["resume", "op-1"], "integration_resume", {"operation_id": "op-1"}),
+        (["reevaluate-repair", "op-1"], "integration_reevaluate_repair", {"operation_id": "op-1", "dry_run": True}),
+        (["reevaluate-repair", "op-1", "--apply", "--head", "a" * 40,
+          "--episode", "episode", "--generation", "2", "--stage", "2", "--fence", "9",
+          "--snapshot", "b" * 64,
+          "--reason", "reviewed"], "integration_reevaluate_repair", {
+              "operation_id": "op-1", "dry_run": False, "expected_head_sha": "a" * 40,
+              "expected_episode_id": "episode", "expected_generation": 2,
+              "expected_stage": 2, "expected_fence_token": 9, "reason": "reviewed",
+              "expected_snapshot_digest": "b" * 64,
+          }),
         (
             ["abort", "op-1", "--reason", "operator decision"],
             "integration_abort",
@@ -544,6 +565,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_enable",
         "integration_waive_history",
         "integration_resume",
+        "integration_reevaluate_repair",
         "integration_abort",
         "integration_retry_cleanup",
         "integration_bind_legacy_repositories",
@@ -567,6 +589,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "enable",
         "waive-history",
         "resume",
+        "reevaluate-repair",
         "abort",
         "retry-cleanup",
         "bind-legacy-repositories",
@@ -716,6 +739,51 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
     ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)
+
+
+def test_no_code_receipts_are_documented_as_an_operator_control_not_a_supervisor_one():
+    """`record-noop` carries no ``project_id`` but admits no session either.
+
+    The handler authorizes a session principal only for
+    ``_SUPERVISOR_REDRIVE_CAPABILITIES``, so the guide must not list
+    `record-noop` among the controls a project's own supervisor may run, and
+    the shipped supervisor profile must name it as an operator's action only.
+    """
+    from src.profiles.parser import parse_profile
+
+    root = Path(__file__).parents[1]
+    guide = (root / "docs/guides/hierarchical-integration-trains.md").read_text(
+        encoding="utf-8"
+    )
+    paragraph = guide.split("The controls keyed by a task, operation, batch or reservation")[1]
+    paragraph = paragraph.split("\n\n")[0]
+    controls, _, exception = paragraph.partition("take no `project_id`")
+    assert "record-noop" not in controls
+    assert "local operator records no-code receipts" in exception
+    assert "every* session is refused it" in exception
+
+    section = guide.split("### No-code child receipts")[1].split("\n## ")[0]
+    assert "a local\noperator records the exact no-code disposition" in section
+    assert "No session can invoke it" in section
+
+    profile_text = (root / "src/profiles/defaults/supervisor/profile.md").read_text(
+        encoding="utf-8"
+    )
+    supervisor = parse_profile(profile_text)
+    assert supervisor.errors == []
+    assert "integration_record_noop" not in supervisor.capabilities["aq_commands"]
+    mentions = [line for line in profile_text.splitlines() if "record-noop" in line]
+    assert mentions
+    for line in mentions:
+        assert "operator" in line, line
+
+    troubleshooting = (root / "docs/guides/integration-troubleshooting.md").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "a local operator records a no-code child's disposition with "
+        "`aq integration record-noop`" in troubleshooting
+    )
 
 
 @pytest.mark.parametrize(

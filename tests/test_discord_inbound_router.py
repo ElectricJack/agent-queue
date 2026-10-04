@@ -27,6 +27,7 @@ from tests.test_escalation_intake import (
 
 GUILD = "121212121212121212"
 MESSAGE = "232323232323232323"
+ROOT_POST = "343434343434343434"
 RECEIVED_AT = datetime(2026, 9, 24, tzinfo=UTC)
 
 
@@ -121,6 +122,7 @@ async def test_mention_posts_only_with_gateway_principal_and_observed_envelope(c
             "text": "hello",
             "received_at": RECEIVED_AT.timestamp(),
             "mentions_bot": True,
+            "tag": None,
         },
         "conversation_id": None,
         "source": "gateway",
@@ -400,3 +402,224 @@ async def test_bot_delegation_observes_live_outbox_binding_and_rebuilds_for_new_
 
 def test_edits_have_no_gateway_handler():
     assert not hasattr(AgentQueueBot, "on_message_edit")
+
+
+# ------------------------------- P2 routing (chat-extension spec §2.1, §2.2)
+
+
+def p2_router(handler, *, allow_dm=False, database=None):
+    inbound, config, diagnostics = router(handler)
+    config.discord.conversation.require_mention = False
+    config.discord.conversation.allow_dm = allow_dm
+    return inbound, config, diagnostics
+
+
+def dm_message(**overrides):
+    values = {
+        "id": int(MESSAGE),
+        "guild": None,
+        "channel": SimpleNamespace(id=int(CHANNEL), parent_id=None),
+        "author": SimpleNamespace(id=int(HUMAN), bot=False),
+        "content": "is the release blocked?",
+        "mentions": [],
+        "webhook_id": None,
+        "created_at": RECEIVED_AT,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+async def test_a_top_level_message_needs_no_mention_when_the_flag_is_off():
+    handler = RecordingHandler(
+        SimpleNamespace(find_channel_conversation=AsyncMock(return_value=None))
+    )
+    inbound, _, diagnostics = p2_router(handler)
+
+    assert await inbound.route(message(mention=False), bot_user_id=BOT_USER_ID) == "posted:created"
+    _command, args, _principal = handler.calls[0]
+    assert args["conversation_id"] is None
+    assert args["envelope"] == {
+        "transport": "discord",
+        "guild_id": GUILD,
+        "channel_id": CHANNEL,
+        "external_message_id": MESSAGE,
+        "external_root_message_id": MESSAGE,
+        "external_thread_id": None,
+        "author_id": HUMAN,
+        "text": "hello",
+        "received_at": RECEIVED_AT.timestamp(),
+        "mentions_bot": False,
+        "tag": None,
+    }
+    assert diagnostics.snapshot()["total"] == 0
+
+
+async def test_the_channel_conversation_is_joined_by_message_not_by_mention():
+    row = {
+        "id": "conv-channel",
+        "transport": "discord",
+        "guild_id": GUILD,
+        "channel_id": CHANNEL,
+        "kind": "channel",
+        "external_root_message_id": "232323232323232320",
+        "external_thread_id": None,
+        "state": "open",
+    }
+    lookup = AsyncMock(return_value=row)
+    handler = RecordingHandler(SimpleNamespace(find_channel_conversation=lookup))
+    inbound, _, _ = p2_router(handler)
+
+    assert await inbound.route(message(mention=False), bot_user_id=BOT_USER_ID) == "posted:created"
+    lookup.assert_awaited_once_with(transport="discord", channel_id=CHANNEL)
+    _command, args, _principal = handler.calls[0]
+    assert args["conversation_id"] == "conv-channel"
+    assert args["envelope"]["external_root_message_id"] == "232323232323232320"
+
+
+async def test_a_mention_joins_the_same_channel_conversation():
+    lookup = AsyncMock(return_value=None)
+    handler = RecordingHandler(SimpleNamespace(find_channel_conversation=lookup))
+    inbound, _, _ = p2_router(handler)
+
+    assert await inbound.route(message(), bot_user_id=BOT_USER_ID) == "posted:created"
+    assert handler.calls[0][1]["envelope"]["mentions_bot"] is True
+
+
+async def test_a_thread_the_operator_started_binds_a_conversation():
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value=None),
+        find_conversation_by_thread=AsyncMock(return_value=None),
+        find_conversation_thread_tag=AsyncMock(return_value=None),
+    )
+    handler = RecordingHandler(database)
+    inbound, _, diagnostics = p2_router(handler)
+
+    assert await inbound.route(message(thread=THREAD, mention=False), bot_user_id=BOT_USER_ID) == (
+        "posted:created"
+    )
+    _command, args, _principal = handler.calls[0]
+    assert args["conversation_id"] is None
+    assert args["envelope"]["external_thread_id"] == THREAD
+    assert args["envelope"]["external_root_message_id"] == MESSAGE
+    assert diagnostics.snapshot()["total"] == 0
+
+
+async def test_an_unbound_thread_is_still_refused_with_a_mention_required():
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value=None),
+        find_conversation_by_thread=AsyncMock(return_value=None),
+    )
+    handler = RecordingHandler(database)
+    inbound, config, _diagnostics = router(handler)
+
+    assert await inbound.route(message(thread=THREAD, mention=False), bot_user_id=BOT_USER_ID) == (
+        "ignored:unknown_thread"
+    )
+    assert config.discord.conversation.require_mention is True
+    assert handler.calls == []
+
+
+async def test_a_thread_on_a_tagged_post_carries_the_tag():
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value=None),
+        find_conversation_by_thread=AsyncMock(return_value=None),
+        find_conversation_thread_tag=AsyncMock(return_value="digest:dg-2026-10-03T14:00"),
+    )
+    handler = RecordingHandler(database)
+    inbound, _, _ = p2_router(handler)
+    on_digest = message(
+        thread=THREAD,
+        mention=False,
+        channel=SimpleNamespace(id=int(THREAD), parent_id=int(CHANNEL), message_id=int(ROOT_POST)),
+    )
+
+    await inbound.route(on_digest, bot_user_id=BOT_USER_ID)
+    # The parent post is what durable receipts are looked up by, not the reply.
+    database.find_conversation_thread_tag.assert_awaited_once_with(ROOT_POST)
+    assert handler.calls[0][1]["envelope"]["tag"] == "digest:dg-2026-10-03T14:00"
+
+
+async def test_an_untagged_post_never_invents_a_tag():
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value=None),
+        find_conversation_by_thread=AsyncMock(return_value=None),
+        find_conversation_thread_tag=AsyncMock(return_value="not a tag"),
+    )
+    handler = RecordingHandler(database)
+    inbound, _, _ = p2_router(handler)
+
+    await inbound.route(message(thread=THREAD, mention=False), bot_user_id=BOT_USER_ID)
+    assert handler.calls[0][1]["envelope"]["tag"] is None
+
+
+async def test_a_follow_up_does_not_resolve_a_tag_it_inherits():
+    lookup = AsyncMock(
+        return_value={
+            "id": "conv-1",
+            "transport": "discord",
+            "guild_id": GUILD,
+            "channel_id": CHANNEL,
+            "external_thread_id": THREAD,
+            "external_root_message_id": "232323232323232320",
+            "state": "open",
+        }
+    )
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value=None),
+        find_conversation_by_thread=lookup,
+        find_conversation_thread_tag=AsyncMock(return_value="review:rev-1"),
+    )
+    handler = RecordingHandler(database)
+    inbound, _, _ = p2_router(handler)
+
+    await inbound.route(message(thread=THREAD, mention=False), bot_user_id=BOT_USER_ID)
+    database.find_conversation_thread_tag.assert_not_awaited()
+    assert handler.calls[0][1]["envelope"]["tag"] is None
+
+
+async def test_a_direct_message_is_ignored_until_it_is_opted_in():
+    lookup = AsyncMock(return_value=None)
+    handler = RecordingHandler(SimpleNamespace(find_channel_conversation=lookup))
+    inbound, _, _diagnostics = router(handler)
+
+    assert await inbound.route(dm_message(), bot_user_id=BOT_USER_ID) == "ignored:dm"
+    lookup.assert_not_awaited()
+    assert handler.calls == []
+
+
+async def test_an_opted_in_direct_message_is_the_dm_thread_of_its_channel():
+    lookup = AsyncMock(return_value=None)
+    handler = RecordingHandler(SimpleNamespace(find_channel_conversation=lookup))
+    inbound, _, _ = p2_router(handler, allow_dm=True)
+
+    assert await inbound.route(dm_message(), bot_user_id=BOT_USER_ID) == "posted:created"
+    lookup.assert_awaited_once_with(transport="discord", channel_id=CHANNEL)
+    _command, args, _principal = handler.calls[0]
+    assert args["envelope"]["guild_id"] == "dm"
+    assert args["envelope"]["external_thread_id"] == f"dm:{CHANNEL}"
+    assert args["envelope"]["text"] == "is the release blocked?"
+
+
+async def test_a_direct_message_never_consults_the_escalation_binding():
+    database = SimpleNamespace(
+        find_escalation_by_thread=AsyncMock(return_value={"id": "esc-1"}),
+        find_channel_conversation=AsyncMock(return_value=None),
+    )
+    handler = RecordingHandler(database)
+    inbound, _, _ = p2_router(handler, allow_dm=True)
+
+    assert await inbound.route(dm_message(), bot_user_id=BOT_USER_ID) == "posted:created"
+    database.find_escalation_by_thread.assert_not_awaited()
+
+
+async def test_a_bot_or_stranger_in_a_direct_message_is_still_silent():
+    for author, code in (
+        (SimpleNamespace(id=int(HUMAN), bot=True), "bot_author"),
+        (SimpleNamespace(id=int(HUMAN) + 1, bot=False), "author_not_allowlisted"),
+    ):
+        handler = RecordingHandler(SimpleNamespace(find_channel_conversation=AsyncMock()))
+        inbound, _, _diagnostics = p2_router(handler, allow_dm=True)
+        assert await inbound.route(dm_message(author=author), bot_user_id=BOT_USER_ID) == (
+            f"ignored:{code}"
+        )
+        assert handler.calls == []

@@ -69,6 +69,12 @@ class EscalationUpdateArgs(CommandArgs):
     terminal_evidence: dict[str, Any] | None = None
 
 
+class EscalationResolveArgs(CommandArgs):
+    escalation_id: str
+    outcome: str
+    expected_revision: int | None = None
+
+
 class EscalationApplyReplyArgs(CommandArgs):
     escalation_id: str
     reply_id: str
@@ -108,12 +114,33 @@ class EscalationUpdateValue(CommandValue):
     escalation: dict[str, Any]
 
 
+class EscalationResolveValue(CommandValue):
+    escalation: dict[str, Any]
+    resolved: bool
+
+
 class EscalationApplyReplyValue(CommandValue):
     applied: bool
     replayed: bool
     action: dict[str, Any]
     escalation: dict[str, Any]
     action_result: dict[str, Any] | None = None
+
+
+class EscalationSweepArgs(CommandArgs):
+    project_id: str | None = None
+    apply: bool = False
+    limit: int = 500
+
+
+class EscalationSweepValue(CommandValue):
+    mode: str
+    plan: dict[str, Any]
+    report: dict[str, Any]
+    open_before: int
+    open_after: int
+    target_open_items: int
+    within_target: bool
 
 
 #: Operator-facing copy for every subject the escalation clauses declare.
@@ -157,7 +184,9 @@ def _contract(
                 "escalation_get": "Read one incident and its authoritative history.",
                 "escalation_reply": "Record authenticated human evidence and notify its supervisor.",
                 "escalation_update": "CAS-update an incident owned by the supervisor.",
+                "escalation_resolve": "Close an answered incident with the outcome a human reads.",
                 "escalation_apply_reply": "Apply verified evidence through its bound guarded service.",
+                "escalation_sweep": "Plan the §5.6 back-fill sweep, and apply it on request.",
             }[name],
             outcome_labels={outcome.name: outcome.name.replace("_", " ").title() for outcome in outcomes},
             # Keyed by the subject each command's own clauses declare, not by a
@@ -235,6 +264,12 @@ def register_escalation_contracts(registry: ContractRegistry) -> None:
             IdempotencySpec(mode="natural"), True, lambda raw: "updated",
         ),
         (
+            "escalation_resolve", EscalationResolveArgs, EscalationResolveValue,
+            _outcomes("resolved"), SideEffectClass.RESOLVE,
+            (ResolveClause(subject=EffectSubject.ESCALATION, target_arg="escalation_id"),),
+            IdempotencySpec(mode="natural"), True, lambda raw: "resolved",
+        ),
+        (
             "escalation_apply_reply", EscalationApplyReplyArgs, EscalationApplyReplyValue,
             _outcomes("applied", "replayed"), SideEffectClass.RESOLVE,
             (
@@ -245,6 +280,18 @@ def register_escalation_contracts(registry: ContractRegistry) -> None:
             ),
             IdempotencySpec(mode="keyed", key_field="idempotency_key"), True,
             lambda raw: "applied" if raw["applied"] else "replayed",
+        ),
+        (
+            "escalation_sweep", EscalationSweepArgs, EscalationSweepValue,
+            _outcomes("planned", "applied"), SideEffectClass.UPDATE,
+            (UpdateClause(subject=EffectSubject.ESCALATION),),
+            # Natural rather than keyed, and deliberately so: the sweep's
+            # idempotency is a property of the pile, not of a caller's key.  A
+            # closed incident leaves the open set a plan is built from and an
+            # already-triaged one carries its audit row, so a second run has
+            # nothing left to do.
+            IdempotencySpec(mode="natural"), True,
+            lambda raw: "applied" if raw["mode"] == "apply" else "planned",
         ),
     )
     for name, args, value, outcomes, side_effect, effects, idem, safe, outcome in definitions:

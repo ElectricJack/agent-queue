@@ -117,7 +117,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
   - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
   - { paths: ["scripts/generate-selection-catalogue.py", "scripts/replay-test-selection.py"], areas: ["test-selection"] }
-  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**"], areas: ["knowledge-evaluation"] }
+  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**", "tests/knowledge_fixture_adapter.py", "src/knowledge/delivery.py", "src/prime/hook_envelopes.py"], areas: ["knowledge-evaluation"] }
 
   # ---- test helpers, fixtures and the selection artifacts
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }
@@ -307,6 +307,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/capability_checks.py"], areas: ["capabilities"] }
   - { paths: ["src/doctor/dashboard_*.py"], areas: ["dashboard-server", "dashboard-state"] }
   - { paths: ["src/doctor/db_checks.py"], areas: ["migrations"] }
+  - { paths: ["src/doctor/escalation_checks.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/formula_checks.py"], areas: ["formulas"] }
   - { paths: ["src/doctor/git_checks.py", "src/doctor/integration_checks.py"], areas: ["integration-controls", "integration-ownership", "development-delivery"] }
   - { paths: ["src/doctor/hierarchy_checks.py"], areas: ["task-hierarchy"] }
@@ -336,7 +337,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/repair_progress.py"], areas: ["integration-promotion", "integration-ownership"] }
   - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
-  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }

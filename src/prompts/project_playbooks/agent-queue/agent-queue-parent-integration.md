@@ -141,7 +141,8 @@ The inactive reviewed table chooses one parent primitive per durable visit.
 Identity refresh precedes action. Failed children, conflicts and legacy repair
 dossiers require explicit human decisions. A failed verifier reopens through the
 existing proof-based recovery when a new child fix is available; its unchanged
-failed head waits. Verifier tasks use the shared writer and lease primitives.
+failed head waits, and a reopen the episode durably refuses asks a human at the
+red gate instead of retrying on every visit. Verifier tasks use the shared writer and lease primitives.
 Legacy event rules remain compatibility adapters until explicit engine transfer.
 
 ```integration-policy
@@ -157,6 +158,7 @@ Legacy event rules remain compatibility adapters until explicit engine transfer.
         {"rule": "failed-child", "when": {"type": "comparison", "op": "gt", "left": {"type": "binding_ref", "binding": "s", "path": "failed_child_count"}, "right": {"type": "literal", "value": 0}}, "action": "failed-child"},
         {"rule": "child-conflict", "when": {"type": "comparison", "op": "gt", "left": {"type": "binding_ref", "binding": "s", "path": "conflict_count"}, "right": {"type": "literal", "value": 0}}, "action": "conflict"},
         {"rule": "resume-publication", "when": {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "pending_publication"}, "mode": "present"}, "action": "publish"},
+        {"rule": "blocked-reopen", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "reopen_refused"}, "right": {"type": "literal", "value": true}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "verifier_failed"}, "right": {"type": "literal", "value": true}}]}, "action": "red"},
         {"rule": "collect-after-verifier-failure", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "verifier_failed"}, "right": {"type": "literal", "value": true}}, {"type": "comparison", "op": "ne", "left": {"type": "binding_ref", "binding": "s", "path": "collection_members"}, "right": {"type": "literal", "value": []}}]}, "action": "merge"},
         {"rule": "collect-child", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "collection_state"}, "right": {"type": "literal", "value": "awaiting_children"}}, {"type": "comparison", "op": "ne", "left": {"type": "binding_ref", "binding": "s", "path": "collection_members"}, "right": {"type": "literal", "value": []}}]}, "action": "merge"},
         {"rule": "unchanged-failed-aggregate", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "failed_aggregate_unchanged"}, "right": {"type": "literal", "value": true}}, "action": "unchanged-red"},

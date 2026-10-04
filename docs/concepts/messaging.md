@@ -178,7 +178,7 @@ canonical human recipient is `user:dashboard`.
 | Lane | Input | Output |
 |---|---|---|
 | Messages | `message_send` (`aq message send`), a playbook's `message_send` step, an escalation reply | A row in `messages`; a nudge typed into a session, a block in `aq prime`, or a `message.sent` event the dashboard renders |
-| Digest | Durable evidence recorded by other subsystems — completions, attempt starts, progress comments, `pr_url` | At most one Discord message per interval, ≤1,200 characters, or a persisted silence |
+| Digest | Durable evidence recorded by other subsystems — completions, attempt starts, progress comments, `pr_url` | At most one Discord message per interval, ≤600 characters, or a persisted silence |
 | Escalation | `escalation_create` from a supervisor or trusted core source; `aq question escalate` | One channel post, one thread, and later an acknowledgement, relay or resolution in that thread |
 
 ### Recipient kinds, and what each one means

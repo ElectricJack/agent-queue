@@ -152,12 +152,18 @@ async def test_retention_archives_old_thread_messages_only_and_preserves_boundar
         body="answer",
         now=NOW - 31 * DAY,
     )
-    second_reply = await db.record_conversation_reply(
-        conversation_id=old["conversation"]["id"],
-        input_id=old["input"]["id"],
-        reply_message_id="msg-old-reply-2",
+    # Older installations could have multiple replies per input. Retention
+    # still archives that history after the one-answer intake limit is added.
+    second_reply = await db.create_message(
+        project_id=None,
+        from_kind="session",
+        from_id="supervisor-global",
+        to_kind="user",
+        to_id=f"discord:{AUTHOR}",
+        thread_id=old["conversation"]["thread_id"],
+        reply_to_id=old["supervisor_message_id"],
+        body_kind="conversation_reply",
         body="second answer",
-        now=NOW - 31 * DAY + 1,
     )
     unrelated = await db.create_message(
         project_id=None,
@@ -169,6 +175,9 @@ async def test_retention_archives_old_thread_messages_only_and_preserves_boundar
     )
     async with db._engine.begin() as conn:
         await conn.execute(
+            update(messages).where(messages.c.id == second_reply.id).values(created_at=NOW - 31 * DAY + 1)
+        )
+        await conn.execute(
             update(messages).where(messages.c.id == unrelated.id).values(created_at=NOW - 31 * DAY)
         )
     assert await ConversationMaintenance(db=db, outbox=UnboundOutbox()).tick(now=NOW) == result(
@@ -177,7 +186,7 @@ async def test_retention_archives_old_thread_messages_only_and_preserves_boundar
     for message_id in (
         old["supervisor_message_id"],
         reply["message"]["id"],
-        second_reply["message"]["id"],
+        second_reply.id,
     ):
         assert (await db.get_message(message_id)).archived_at is not None
     for message_id in (

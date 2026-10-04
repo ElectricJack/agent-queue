@@ -423,7 +423,13 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
     assert batch["current_revision"] == 2
     assert batch["tested_candidate_sha"] is None
     assert batch["ci_evidence_id"] is None
-    assert stage["attempts"] == 1
+    # Preserve the prior attempt and count this completed delegate claim once,
+    # even though the rebuilt candidate has not received fresh CI yet.
+    assert stage["attempts"] == 2
+    assert stage["dossier"]["budget"]["attempts"] == 2
+    assert stage["dossier"]["completed_delegate_attempts"] == [
+        {"task_id": active_delegate["id"], "claim_epoch": 0, "recorded_at": 115.0},
+    ]
     assert stage["deadline_at"] == 130.0
     assert "candidate_rebuild_conflict" not in stage["dossier"]
     assert stage["dossier"]["candidate_rebuild_conflicts"][-1][

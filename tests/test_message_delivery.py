@@ -1009,6 +1009,7 @@ class _FakeMessagesConfig:
 class _FakeOrchConfig:
     def __init__(self, enabled: bool, delivery_interval: float = 5.0):
         self.messages = _FakeMessagesConfig(enabled, delivery_interval)
+        self.discord = SimpleNamespace(conversation=SimpleNamespace(enabled=False))
 
 
 class _StubOrch:
@@ -1027,6 +1028,19 @@ class _StubOrch:
 
 
 class TestCascadeWiring:
+    async def test_conversation_routing_failure_does_not_block_other_inbox_delivery(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=True, engine=engine)
+        stub.config.discord = SimpleNamespace(
+            conversation=SimpleNamespace(enabled=True), project_id="p1"
+        )
+        stub.db.route_queued_conversation_inputs = AsyncMock(side_effect=RuntimeError("route failure"))
+        await Orchestrator._deliver_messages(stub)
+        stub.db.route_queued_conversation_inputs.assert_awaited_once_with("p1")
+        assert engine.pass_calls == engine.timeout_calls == 1
+
     async def test_disabled_flag_never_calls_engine(self):
         from src.orchestrator.core import Orchestrator
 

@@ -41,6 +41,7 @@ PLAYBOOK_IDS = (
     "blocked-task-escalation",
     "supervisor-failure-triage",
     "morning-report",
+    "supervisor-digest",
 )
 
 

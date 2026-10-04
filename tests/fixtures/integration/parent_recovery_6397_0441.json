@@ -1,0 +1,2090 @@
+{
+  "operation": {
+    "id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+    "parent_task_id": "captured-parent",
+    "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+    "active_stage": 6,
+    "state": "escalated"
+  },
+  "stages": [
+    {
+      "ordinal": 0,
+      "state": "expired",
+      "starting_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-0",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791056504.7114086
+    },
+    {
+      "ordinal": 1,
+      "state": "expired",
+      "starting_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-1",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791060109.357338
+    },
+    {
+      "ordinal": 2,
+      "state": "expired",
+      "starting_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-2",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "28906934b474265e2eb4d301a198ffe108d638e0"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 2,
+          "before_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "after_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "commits": [
+            "28906934b474265e2eb4d301a198ffe108d638e0"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-2",
+            "session_id": "captured-session-4",
+            "instance_token": "captured-instance-4",
+            "workspace_id": "captured-workspace-3",
+            "fence_token": 12
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791063737.644505
+    },
+    {
+      "ordinal": 3,
+      "state": "expired",
+      "starting_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-3",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 2,
+          "before_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "after_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "commits": [
+            "28906934b474265e2eb4d301a198ffe108d638e0"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-2",
+            "session_id": "captured-session-4",
+            "instance_token": "captured-instance-4",
+            "workspace_id": "captured-workspace-3",
+            "fence_token": 12
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 3,
+          "before_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "after_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "commits": [
+            "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+            "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+            "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-3",
+            "session_id": "captured-session-6",
+            "instance_token": "captured-instance-6",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 18
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791067954.9455955
+    },
+    {
+      "ordinal": 4,
+      "state": "expired",
+      "starting_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-4",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 2,
+          "before_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "after_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "commits": [
+            "28906934b474265e2eb4d301a198ffe108d638e0"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-2",
+            "session_id": "captured-session-4",
+            "instance_token": "captured-instance-4",
+            "workspace_id": "captured-workspace-3",
+            "fence_token": 12
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 3,
+          "before_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "after_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "commits": [
+            "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+            "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+            "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-3",
+            "session_id": "captured-session-6",
+            "instance_token": "captured-instance-6",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 18
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "after_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "commits": [
+            "df6073774b48419f7d8257ce7477c32f2ddd4262"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-7",
+            "instance_token": "captured-instance-7",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 21
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "after_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "commits": [
+            "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+            "b30f874345c98135113f985c446f20b0292c87ec"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-8",
+            "instance_token": "captured-instance-8",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 24
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "after_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "commits": [
+            "d0908fe28460674ee4c671d86e877b5c27e2396d",
+            "51d998ef974b594d69f6cd761d032ed36c58f037"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-9",
+            "instance_token": "captured-instance-9",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 27
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "after_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "commits": [
+            "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+            "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-10",
+            "instance_token": "captured-instance-10",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 30
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791071558.965371
+    },
+    {
+      "ordinal": 5,
+      "state": "expired",
+      "starting_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-5",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "199d11bfa8a3a556930407776e9ad9e4ddf53b13",
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 2,
+          "before_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "after_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "commits": [
+            "28906934b474265e2eb4d301a198ffe108d638e0"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-2",
+            "session_id": "captured-session-4",
+            "instance_token": "captured-instance-4",
+            "workspace_id": "captured-workspace-3",
+            "fence_token": 12
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 3,
+          "before_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "after_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "commits": [
+            "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+            "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+            "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-3",
+            "session_id": "captured-session-6",
+            "instance_token": "captured-instance-6",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 18
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "after_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "commits": [
+            "df6073774b48419f7d8257ce7477c32f2ddd4262"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-7",
+            "instance_token": "captured-instance-7",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 21
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "after_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "commits": [
+            "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+            "b30f874345c98135113f985c446f20b0292c87ec"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-8",
+            "instance_token": "captured-instance-8",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 24
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "after_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "commits": [
+            "d0908fe28460674ee4c671d86e877b5c27e2396d",
+            "51d998ef974b594d69f6cd761d032ed36c58f037"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-9",
+            "instance_token": "captured-instance-9",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 27
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "after_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "commits": [
+            "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+            "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-10",
+            "instance_token": "captured-instance-10",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 30
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 5,
+          "before_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "after_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+          "commits": [
+            "d8276938f89f3dc7cd354fda77d09365d5997c37",
+            "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-5",
+            "session_id": "captured-session-11",
+            "instance_token": "captured-instance-11",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 34
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791075163.10646
+    },
+    {
+      "ordinal": 6,
+      "state": "passed",
+      "starting_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "attempts": 0,
+      "repair_task_id": "captured-repair-6",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+      },
+      "success_subject": null,
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "199d11bfa8a3a556930407776e9ad9e4ddf53b13",
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "5c172492c89bae5180d6f06fef2529008b38bd86",
+        "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+        "6ff98cd1b02465568c2d92671c569f7840b8a109",
+        "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+        "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+      ],
+      "parent_head_extensions": [
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 0,
+          "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+          "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "commits": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-0",
+            "session_id": "captured-session-1",
+            "instance_token": "captured-instance-1",
+            "workspace_id": "captured-workspace-1",
+            "fence_token": 3
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "commits": [
+            "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+            "b9e687acbfc89a0a93117f028c32c64ed59a3665"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-2",
+            "instance_token": "captured-instance-2",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 6
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 1,
+          "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+          "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "commits": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-1",
+            "session_id": "captured-session-3",
+            "instance_token": "captured-instance-3",
+            "workspace_id": "captured-workspace-2",
+            "fence_token": 9
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 2,
+          "before_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "after_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "commits": [
+            "28906934b474265e2eb4d301a198ffe108d638e0"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-2",
+            "session_id": "captured-session-4",
+            "instance_token": "captured-instance-4",
+            "workspace_id": "captured-workspace-3",
+            "fence_token": 12
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 3,
+          "before_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+          "after_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "commits": [
+            "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+            "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+            "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-3",
+            "session_id": "captured-session-6",
+            "instance_token": "captured-instance-6",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 18
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "after_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "commits": [
+            "df6073774b48419f7d8257ce7477c32f2ddd4262"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-7",
+            "instance_token": "captured-instance-7",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 21
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+          "after_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "commits": [
+            "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+            "b30f874345c98135113f985c446f20b0292c87ec"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-8",
+            "instance_token": "captured-instance-8",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 24
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "after_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "commits": [
+            "d0908fe28460674ee4c671d86e877b5c27e2396d",
+            "51d998ef974b594d69f6cd761d032ed36c58f037"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-9",
+            "instance_token": "captured-instance-9",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 27
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 4,
+          "before_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "after_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "commits": [
+            "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+            "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-4",
+            "session_id": "captured-session-10",
+            "instance_token": "captured-instance-10",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 30
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 5,
+          "before_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "after_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+          "commits": [
+            "d8276938f89f3dc7cd354fda77d09365d5997c37",
+            "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-5",
+            "session_id": "captured-session-11",
+            "instance_token": "captured-instance-11",
+            "workspace_id": "captured-workspace-5",
+            "fence_token": 34
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 6,
+          "before_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+          "after_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+          "commits": [
+            "5c172492c89bae5180d6f06fef2529008b38bd86",
+            "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-6",
+            "session_id": "captured-session-12",
+            "instance_token": "captured-instance-12",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 37
+          }
+        },
+        {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+          "generation": 1,
+          "repository_id": "repo",
+          "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+          "stage": 6,
+          "before_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+          "after_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+          "commits": [
+            "6ff98cd1b02465568c2d92671c569f7840b8a109",
+            "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+            "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+          ],
+          "authoring": {
+            "task_id": "captured-repair-6",
+            "session_id": "captured-session-13",
+            "instance_token": "captured-instance-13",
+            "workspace_id": "captured-workspace-6",
+            "fence_token": 40
+          }
+        }
+      ],
+      "receipt_covered_extensions": null,
+      "collection_head_recovery": null,
+      "supervisor_recovery": null,
+      "completed_at": 1791078766.808858
+    }
+  ],
+  "receipts": [
+    {
+      "id": "captured-clean-2",
+      "source_task_id": "captured-parent.2",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "94321e4f970def12fe7d7bbd271595b045544afd",
+      "reviewed_tree_sha": "4e990b6d85d84620764bb7169fbd9ba8d67c3953",
+      "before_sha": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "squash_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "after_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "resolution_evidence": null,
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791053917.899593,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-clean-2"
+    },
+    {
+      "id": "captured-receipt-1",
+      "source_task_id": "captured-parent.1",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "74af88822785b7da1a8cf3b245dd406389fc54e7",
+      "reviewed_tree_sha": "86670bcabb4131e318f69b24142ab99e28b3dfd2",
+      "before_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "squash_sha": null,
+      "after_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "original_source_tree": "86670bcabb4131e318f69b24142ab99e28b3dfd2",
+        "original_expected_target": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+        "resolved_head_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "resolved_tree_sha": "0332824f8246b56f0d49eca51618d56b9a3a430d",
+        "repair_commit_shas": [
+          "74af88822785b7da1a8cf3b245dd406389fc54e7",
+          "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 0,
+          "repair_task_id": "captured-repair-0",
+          "repair_session_id": "captured-session-1",
+          "repair_session_instance_token": "captured-instance-1",
+          "repair_workspace_id": "captured-workspace-1",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-0",
+            "token": 3
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 0,
+          "repair_task_id": "captured-repair-0",
+          "repair_session_id": "captured-session-1",
+          "repair_session_instance_token": "captured-instance-1",
+          "repair_workspace_id": "captured-workspace-1",
+          "fence_owner_id": "captured-repair-0",
+          "fence_token": 3
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+          "resolved_tree_sha": "0332824f8246b56f0d49eca51618d56b9a3a430d",
+          "repair_commit_shas": [
+            "74af88822785b7da1a8cf3b245dd406389fc54e7",
+            "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791055385.0009003,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-1"
+    },
+    {
+      "id": "captured-clean-4",
+      "source_task_id": "captured-parent.4",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+      "reviewed_tree_sha": "96f038b8afc3d07ded8a591ccf106f988064908b",
+      "before_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+      "squash_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "after_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "resolution_evidence": null,
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791056156.864156,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-clean-4"
+    },
+    {
+      "id": "captured-receipt-2",
+      "source_task_id": "captured-parent.3",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "d178494ec6ab88563e9b9192018ebf0a395914be",
+      "reviewed_tree_sha": "ef2940ad22037d3ef7a8687a5eca18ea8b5efc3f",
+      "before_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "squash_sha": null,
+      "after_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "original_source_tree": "ef2940ad22037d3ef7a8687a5eca18ea8b5efc3f",
+        "original_expected_target": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "resolved_head_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "resolved_tree_sha": "14c8e8896b604caee8764310a4046f876109f28c",
+        "repair_commit_shas": [
+          "d178494ec6ab88563e9b9192018ebf0a395914be",
+          "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 1,
+          "repair_task_id": "captured-repair-1",
+          "repair_session_id": "captured-session-3",
+          "repair_session_instance_token": "captured-instance-3",
+          "repair_workspace_id": "captured-workspace-2",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-1",
+            "token": 9
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 1,
+          "repair_task_id": "captured-repair-1",
+          "repair_session_id": "captured-session-3",
+          "repair_session_instance_token": "captured-instance-3",
+          "repair_workspace_id": "captured-workspace-2",
+          "fence_owner_id": "captured-repair-1",
+          "fence_token": 9
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+          "resolved_tree_sha": "14c8e8896b604caee8764310a4046f876109f28c",
+          "repair_commit_shas": [
+            "d178494ec6ab88563e9b9192018ebf0a395914be",
+            "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791058275.4231162,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-2"
+    },
+    {
+      "id": "captured-receipt-3",
+      "source_task_id": "captured-parent.5",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+      "reviewed_tree_sha": "29629229a9f7f1fd090738adb8c016a6d6cd8561",
+      "before_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "squash_sha": null,
+      "after_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "original_source_tree": "29629229a9f7f1fd090738adb8c016a6d6cd8561",
+        "original_expected_target": "28906934b474265e2eb4d301a198ffe108d638e0",
+        "resolved_head_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "resolved_tree_sha": "51046e3eb5d20053586ccb214c4281cccbb203d9",
+        "repair_commit_shas": [
+          "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+          "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+          "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 3,
+          "repair_task_id": "captured-repair-3",
+          "repair_session_id": "captured-session-6",
+          "repair_session_instance_token": "captured-instance-6",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-3",
+            "token": 18
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 3,
+          "repair_task_id": "captured-repair-3",
+          "repair_session_id": "captured-session-6",
+          "repair_session_instance_token": "captured-instance-6",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence_owner_id": "captured-repair-3",
+          "fence_token": 18
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+          "resolved_tree_sha": "51046e3eb5d20053586ccb214c4281cccbb203d9",
+          "repair_commit_shas": [
+            "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+            "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+            "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791067679.7523336,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-3"
+    },
+    {
+      "id": "captured-receipt-4",
+      "source_task_id": "captured-parent.8",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+      "reviewed_tree_sha": "1fae35078033adcdbd922370b8010fba488a1136",
+      "before_sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+      "squash_sha": null,
+      "after_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "original_source_tree": "1fae35078033adcdbd922370b8010fba488a1136",
+        "original_expected_target": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "resolved_head_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+        "resolved_tree_sha": "39eb274a549818fb12a97c6e9e45f3080effe616",
+        "repair_commit_shas": [
+          "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+          "b30f874345c98135113f985c446f20b0292c87ec"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-8",
+          "repair_session_instance_token": "captured-instance-8",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-4",
+            "token": 24
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-8",
+          "repair_session_instance_token": "captured-instance-8",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence_owner_id": "captured-repair-4",
+          "fence_token": 24
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+          "resolved_tree_sha": "39eb274a549818fb12a97c6e9e45f3080effe616",
+          "repair_commit_shas": [
+            "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+            "b30f874345c98135113f985c446f20b0292c87ec"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791069079.3784912,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-4"
+    },
+    {
+      "id": "captured-receipt-5",
+      "source_task_id": "captured-parent.9",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "d0908fe28460674ee4c671d86e877b5c27e2396d",
+      "reviewed_tree_sha": "91a253876e0c2ca30d3baf35c826a43dbb552e88",
+      "before_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+      "squash_sha": null,
+      "after_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "original_source_tree": "91a253876e0c2ca30d3baf35c826a43dbb552e88",
+        "original_expected_target": "b30f874345c98135113f985c446f20b0292c87ec",
+        "resolved_head_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "resolved_tree_sha": "4c98c67c320956a1e5b3a3de41f40343b25c8b26",
+        "repair_commit_shas": [
+          "d0908fe28460674ee4c671d86e877b5c27e2396d",
+          "51d998ef974b594d69f6cd761d032ed36c58f037"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-9",
+          "repair_session_instance_token": "captured-instance-9",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-4",
+            "token": 27
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-9",
+          "repair_session_instance_token": "captured-instance-9",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence_owner_id": "captured-repair-4",
+          "fence_token": 27
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+          "resolved_tree_sha": "4c98c67c320956a1e5b3a3de41f40343b25c8b26",
+          "repair_commit_shas": [
+            "d0908fe28460674ee4c671d86e877b5c27e2396d",
+            "51d998ef974b594d69f6cd761d032ed36c58f037"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791069998.898425,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-5"
+    },
+    {
+      "id": "captured-receipt-6",
+      "source_task_id": "captured-parent.7",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+      "reviewed_tree_sha": "2685865ad97a866f649df87be2e5257ece094616",
+      "before_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+      "squash_sha": null,
+      "after_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "original_source_tree": "2685865ad97a866f649df87be2e5257ece094616",
+        "original_expected_target": "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "resolved_head_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "resolved_tree_sha": "eb93cdc9e580adccab30709fea7c7f1aded9f790",
+        "repair_commit_shas": [
+          "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+          "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-10",
+          "repair_session_instance_token": "captured-instance-10",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-4",
+            "token": 30
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 4,
+          "repair_task_id": "captured-repair-4",
+          "repair_session_id": "captured-session-10",
+          "repair_session_instance_token": "captured-instance-10",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence_owner_id": "captured-repair-4",
+          "fence_token": 30
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+          "resolved_tree_sha": "eb93cdc9e580adccab30709fea7c7f1aded9f790",
+          "repair_commit_shas": [
+            "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+            "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791071222.4143426,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-6"
+    },
+    {
+      "id": "captured-receipt-7",
+      "source_task_id": "captured-parent.6",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "d8276938f89f3dc7cd354fda77d09365d5997c37",
+      "reviewed_tree_sha": "638f53ced62d99b51855f25f46072cfb826f7079",
+      "before_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "squash_sha": null,
+      "after_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "original_source_tree": "638f53ced62d99b51855f25f46072cfb826f7079",
+        "original_expected_target": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "resolved_head_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "resolved_tree_sha": "221151ade2b56fe644b3f91ef55651daa70c75b6",
+        "repair_commit_shas": [
+          "d8276938f89f3dc7cd354fda77d09365d5997c37",
+          "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 5,
+          "repair_task_id": "captured-repair-5",
+          "repair_session_id": "captured-session-11",
+          "repair_session_instance_token": "captured-instance-11",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-5",
+            "token": 34
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 5,
+          "repair_task_id": "captured-repair-5",
+          "repair_session_id": "captured-session-11",
+          "repair_session_instance_token": "captured-instance-11",
+          "repair_workspace_id": "captured-workspace-5",
+          "fence_owner_id": "captured-repair-5",
+          "fence_token": 34
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+          "resolved_tree_sha": "221151ade2b56fe644b3f91ef55651daa70c75b6",
+          "repair_commit_shas": [
+            "d8276938f89f3dc7cd354fda77d09365d5997c37",
+            "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791072012.936776,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-7"
+    },
+    {
+      "id": "captured-clean-11",
+      "source_task_id": "captured-parent.11",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "5c172492c89bae5180d6f06fef2529008b38bd86",
+      "reviewed_tree_sha": "446d3d1628f24be78a41a9503297b83c6c1b9a3e",
+      "before_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+      "squash_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "after_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "resolution_evidence": null,
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791073206.9661458,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-clean-11"
+    },
+    {
+      "id": "captured-receipt-8",
+      "source_task_id": "captured-parent.10",
+      "target_task_id": "captured-parent",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "reviewed_head_sha": "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+      "reviewed_tree_sha": "53744262016a8c27df2e1503f4db427d49a66b3e",
+      "before_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "squash_sha": null,
+      "after_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+      "resolution_evidence": {
+        "kind": "conflict_resolution",
+        "original_source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "original_source_head": "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+        "original_source_tree": "53744262016a8c27df2e1503f4db427d49a66b3e",
+        "original_expected_target": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+        "resolved_head_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+        "resolved_tree_sha": "0258e034db203d1673a4bcfdb663c6f98834927d",
+        "repair_commit_shas": [
+          "6ff98cd1b02465568c2d92671c569f7840b8a109",
+          "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+          "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+        ],
+        "authoring": {
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 6,
+          "repair_task_id": "captured-repair-6",
+          "repair_session_id": "captured-session-13",
+          "repair_session_instance_token": "captured-instance-13",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence": {
+            "repository_id": "repo",
+            "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+            "owner_id": "captured-repair-6",
+            "token": 40
+          }
+        },
+        "push_authority": {
+          "kind": "exact_resolution_push_observed",
+          "remote_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+          "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+          "stage_ordinal": 6,
+          "repair_task_id": "captured-repair-6",
+          "repair_session_id": "captured-session-13",
+          "repair_session_instance_token": "captured-instance-13",
+          "repair_workspace_id": "captured-workspace-6",
+          "fence_owner_id": "captured-repair-6",
+          "fence_token": 40
+        },
+        "remote_proof": {
+          "kind": "exact_resolution_tip",
+          "remote_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+          "resolved_tree_sha": "0258e034db203d1673a4bcfdb663c6f98834927d",
+          "repair_commit_shas": [
+            "6ff98cd1b02465568c2d92671c569f7840b8a109",
+            "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+            "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+          ]
+        }
+      },
+      "disposition": "code",
+      "disposition_revision": null,
+      "parent_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "parent_episode_id": "584afa65-e93c-4194-9195-3df9f3807a68",
+      "created_at": 1791075873.1909723,
+      "review_evidence": {
+        "review": {
+          "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+        }
+      },
+      "domain_key": "captured-receipt-8"
+    }
+  ],
+  "close_audits": [
+    {
+      "created_at": 1791055432.8785238,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 0,
+        "task_id": "captured-repair-0",
+        "session_id": "captured-session-1",
+        "instance_token": "captured-instance-1",
+        "workspace_id": "captured-workspace-1",
+        "fence_token": 3,
+        "project_id": "p",
+        "event_id": "captured-close-1"
+      }
+    },
+    {
+      "created_at": 1791056936.8222597,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 1,
+        "task_id": "captured-repair-1",
+        "session_id": "captured-session-2",
+        "instance_token": "captured-instance-2",
+        "workspace_id": "captured-workspace-2",
+        "fence_token": 6,
+        "project_id": "p",
+        "event_id": "captured-close-2"
+      }
+    },
+    {
+      "created_at": 1791058356.9677324,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 1,
+        "task_id": "captured-repair-1",
+        "session_id": "captured-session-3",
+        "instance_token": "captured-instance-3",
+        "workspace_id": "captured-workspace-2",
+        "fence_token": 9,
+        "project_id": "p",
+        "event_id": "captured-close-3"
+      }
+    },
+    {
+      "created_at": 1791060566.562552,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 2,
+        "task_id": "captured-repair-2",
+        "session_id": "captured-session-4",
+        "instance_token": "captured-instance-4",
+        "workspace_id": "captured-workspace-3",
+        "fence_token": 12,
+        "project_id": "p",
+        "event_id": "captured-close-4"
+      }
+    },
+    {
+      "created_at": 1791064645.3881154,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 3,
+        "task_id": "captured-repair-3",
+        "session_id": "captured-session-5",
+        "instance_token": "captured-instance-5",
+        "workspace_id": "captured-workspace-4",
+        "fence_token": 15,
+        "project_id": "p",
+        "event_id": "captured-close-5"
+      }
+    },
+    {
+      "created_at": 1791067809.2372932,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 3,
+        "task_id": "captured-repair-3",
+        "session_id": "captured-session-6",
+        "instance_token": "captured-instance-6",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 18,
+        "project_id": "p",
+        "event_id": "captured-close-6"
+      }
+    },
+    {
+      "created_at": 1791068571.8874102,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-7",
+        "instance_token": "captured-instance-7",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 21,
+        "project_id": "p",
+        "event_id": "captured-close-7"
+      }
+    },
+    {
+      "created_at": 1791069131.188189,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-8",
+        "instance_token": "captured-instance-8",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 24,
+        "project_id": "p",
+        "event_id": "captured-close-8"
+      }
+    },
+    {
+      "created_at": 1791070098.34043,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-9",
+        "instance_token": "captured-instance-9",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 27,
+        "project_id": "p",
+        "event_id": "captured-close-9"
+      }
+    },
+    {
+      "created_at": 1791071288.9821491,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-10",
+        "instance_token": "captured-instance-10",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 30,
+        "project_id": "p",
+        "event_id": "captured-close-10"
+      }
+    },
+    {
+      "created_at": 1791072062.9734638,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 5,
+        "task_id": "captured-repair-5",
+        "session_id": "captured-session-11",
+        "instance_token": "captured-instance-11",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 34,
+        "project_id": "p",
+        "event_id": "captured-close-11"
+      }
+    },
+    {
+      "created_at": 1791075510.9864354,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 6,
+        "task_id": "captured-repair-6",
+        "session_id": "captured-session-12",
+        "instance_token": "captured-instance-12",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 37,
+        "project_id": "p",
+        "event_id": "captured-close-12"
+      }
+    },
+    {
+      "created_at": 1791075902.0405715,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 6,
+        "task_id": "captured-repair-6",
+        "session_id": "captured-session-13",
+        "instance_token": "captured-instance-13",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 40,
+        "project_id": "p",
+        "event_id": "captured-close-13"
+      }
+    }
+  ],
+  "completions": [
+    {
+      "task_id": "captured-repair-0",
+      "outcome": "pass",
+      "commits": "[\"e4ca1540056bdd553f6224b3b8cc5ea338b40e5c\"]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791055436.9722965
+    },
+    {
+      "task_id": "captured-repair-1",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791056939.1908178
+    },
+    {
+      "task_id": "captured-repair-1",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791058359.7533002
+    },
+    {
+      "task_id": "captured-repair-2",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791060569.1434398
+    },
+    {
+      "task_id": "captured-repair-3",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791064649.027445
+    },
+    {
+      "task_id": "captured-repair-3",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791067811.5239499
+    },
+    {
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791068574.6329322
+    },
+    {
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "commits": "[\"b30f874345c98135113f985c446f20b0292c87ec\"]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791069134.099351
+    },
+    {
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "commits": "[\"51d998ef974b594d69f6cd761d032ed36c58f037\"]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791070105.5113392
+    },
+    {
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "commits": "[\"8518124e2fb75d021f316a1bf41e510ae02ebe77\"]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791071291.6165335
+    },
+    {
+      "task_id": "captured-repair-5",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791072065.2609107
+    },
+    {
+      "task_id": "captured-repair-6",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791075513.2094812
+    },
+    {
+      "task_id": "captured-repair-6",
+      "outcome": "pass",
+      "commits": "[]",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "completed_at": 1791075904.1621418
+    }
+  ],
+  "provenance": "Read-only 2026-10-04 11:41Z snapshot. Nonessential identities translated one-to-one using parent_recovery_6397.json; original OIDs, episodes, fences and cumulative stage relationships retained. Full immutable receipt proof fields taken from the supplementary read-only receipts-0441b snapshot; unrelated operational provenance omitted. Accepted-close IDs omitted from the stage projection are synthetic."
+}

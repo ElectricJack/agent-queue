@@ -51,6 +51,7 @@ from src.playbooks.run_state import (
     DuplicateRun,
     DuplicateWait,
     IllegalLifecycleTransition,
+    InterruptedRun,
     PendingEventIntegrityError,
     PendingEventQuotaExceeded,
     RunIdentityMismatch,
@@ -716,6 +717,50 @@ class PlaybookRunQueryMixin:
             if target is RunLifecycle.CANCELLED:
                 await self.clear_for_run(run_id, conn=conn)
         return advanced
+
+    async def list_interrupted_runs(
+        self,
+        *,
+        updated_before: float,
+        after: tuple[float, str] | None = None,
+        exclude_ids: Collection[str] = (),
+        limit: int = 100,
+    ) -> list[InterruptedRun]:
+        """One bounded keyset page of runs a prior process left executing.
+
+        Paused runs have durable wait/decision owners; age is never a reason
+        to execute those. The lifecycle index narrows this read to executing
+        runs, and projections avoid loading their potentially large snapshots.
+        """
+        if limit <= 0:
+            return []
+        table = playbook_v2_runs.c
+        stmt = select(
+            table.run_id, table.playbook_id, table.lifecycle,
+            table.current_step_id, table.updated_at,
+        ).where(
+            table.lifecycle.in_((RunLifecycle.RUNNING.value, RunLifecycle.CANCELLING.value)),
+            table.mode == "live",
+            table.updated_at < updated_before,
+        )
+        if after is not None:
+            stamp, run_id = after
+            stmt = stmt.where(or_(
+                table.updated_at > stamp,
+                and_(table.updated_at == stamp, table.run_id > run_id),
+            ))
+        if exclude_ids:
+            stmt = stmt.where(table.run_id.not_in(tuple(exclude_ids)))
+        stmt = stmt.order_by(table.updated_at, table.run_id).limit(min(limit, 100))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [InterruptedRun(
+            run_id=row["run_id"],
+            playbook_id=row["playbook_id"],
+            lifecycle=RunLifecycle(row["lifecycle"]),
+            current_step_id=row["current_step_id"],
+            updated_at=float(row["updated_at"]),
+        ) for row in rows]
 
     async def list_runs(
         self,

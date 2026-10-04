@@ -32,11 +32,29 @@ def notice_text(kind: str, **facts) -> str:
     notices = {
         "oversize": f"Message too long. Please send at most {MAX_INPUT_CHARS:,} characters.",
         "rate_limited": f"Too many messages. Please try again after {WINDOW_SECONDS // 60} minutes.",
-        "conversation_closed": "This conversation is closed. Please mention Agent Q in a new message.",
+        "conversation_closed": "This conversation is closed. Send a new message to start another one.",
         "delay": "The supervisor is delayed. Your message is still queued; it has not been answered.",
         "open_failed": "Unable to open a conversation thread. Your message remains visible in the dashboard.",
     }
     return notices[kind]
+
+
+#: The offline status line is one line and one count, edited in place (§2.4).
+#: It never grows with the queue: the count is what changed, not the history.
+STATUS_LINE_MAX_CHARS = 120
+STATUS_OFFLINE = "offline"
+STATUS_BACK = "back"
+
+
+def status_line_text(state: str, *, queued: int) -> str:
+    """The one status line a conversation shows while a supervisor is away."""
+    if state == STATUS_BACK:
+        return "▶ Supervisor is back; answering now."
+    count = max(1, int(queued or 0))
+    plural = "message" if count == 1 else "messages"
+    return (f"⏸ Supervisor is offline. {count} {plural} queued; I'll answer when it starts.")[
+        :STATUS_LINE_MAX_CHARS
+    ]
 
 
 def conversation_pointer(base_url: str, conversation_id: str) -> str:

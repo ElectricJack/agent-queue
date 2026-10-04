@@ -41,6 +41,28 @@ from collections import deque
 
 logger = logging.getLogger(__name__)
 
+
+class OutboundTokenBucket:
+    """One daemon-wide budget for Discord mutations: 20 operations per minute."""
+
+    def __init__(self, *, clock=time.monotonic):
+        self.clock = clock
+        self.tokens = 20.0
+        self.updated_at = clock()
+
+    def available(self) -> bool:
+        now = self.clock()
+        self.tokens = min(20.0, self.tokens + max(0, now - self.updated_at) / 3)
+        self.updated_at = now
+        return self.tokens >= 1
+
+    def take(self) -> bool:
+        if not self.available():
+            return False
+        self.tokens -= 1
+        return True
+
+
 # Discord's invalid request window and threshold
 _WINDOW_SECONDS = 600  # 10 minutes
 _DEFAULT_WARN = 1000

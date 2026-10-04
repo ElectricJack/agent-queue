@@ -91,6 +91,9 @@ class MessageDeliveryEngine:
             pending = await self._db.get_pending_messages(
                 to_kind, to_id, limit=self._config.max_inject_per_prompt
             )
+            # Offline turns stay durable until supervisor start routes them.
+            # They must neither cold-start a supervisor nor park.
+            pending = [msg for msg in pending if msg.to_id != "conversation-queued"]
             if not pending:
                 continue
 
@@ -130,6 +133,8 @@ class MessageDeliveryEngine:
                 continue
 
             if activity == "sleeping":
+                if all(msg.body_kind == "conversation_input" for msg in pending):
+                    continue
                 if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                     continue
                 started = await self._sessions.ensure_started(
@@ -291,7 +296,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session":
+            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue

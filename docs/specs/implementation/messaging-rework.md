@@ -288,6 +288,12 @@ channel set**, never the same channels, to avoid duplicate posting.
 > replaced each control is the
 > [replacement capability checklist](../../guides/discord-replacement-checklist.md), and
 > the operator procedure is the [migration runbook](../../guides/discord-migration.md).
+>
+> No `aq-discord` package was ever created, so the rows above that route a module
+> "→ `aq_discord/…`" have no destination left. `src/discord/views.py`,
+> `src/discord/embeds.py` and `src/discord/notifications.py` were deleted outright;
+> the formatters with live callers now live in `src/notifications/render.py` and
+> `src/commands/helpers.py`.
 
 **M0 — Strip (with overhaul Phase 0)**
 - [ ] Delete `src/telegram/`, `[telegram]` extra, `TelegramConfig`, telegram factory branch, telegram spec; migration note for `messaging_platform: telegram` users (hard error with pointer).

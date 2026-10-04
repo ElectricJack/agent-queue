@@ -435,6 +435,25 @@ class MessageCommandsMixin:
         if original is None:
             return {"error": f"Message '{message_id}' not found"}
 
+        if original.body_kind == "conversation_input":
+            item = await self.db.find_conversation_input_by_supervisor_message(message_id)
+            if item is None:
+                return {"error": "conversation input no longer exists"}
+            forbidden = {"from_kind", "from_id", "to_kind", "to_id"}.intersection(args)
+            if forbidden:
+                return {"error": "conversation reply identity is server-derived"}
+            result = await self._cmd_supervisor_inbox_reply(
+                {
+                    "conversation_id": item["conversation_id"],
+                    "input_id": item["id"],
+                    "text": args.get("body"),
+                    "idempotency_key": args.get("idempotency_key") or message_id,
+                }
+            )
+            if not result.get("success"):
+                return result
+            return {**result, "message_id": message_id, "reply_id": result["reply_message_id"]}
+
         if is_collaboration_thread(original.thread_id):
             result = await self._send_collaboration_message(
                 {**args, "thread_id": original.thread_id, "reply_to_id": original.id}

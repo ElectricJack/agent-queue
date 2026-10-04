@@ -84,6 +84,19 @@ async def post(handler, values=None, principal=GATEWAY):
         return await handler.execute("supervisor_inbox_post", values or args())
 
 
+def queued(outbox, kind=None):
+    """Outbox rows, optionally of one kind.
+
+    A queued turn also reserves the §2.4 status line, so "what intake queued" is
+    the interesting question in most of these assertions rather than a row count.
+    """
+    return [row for row in outbox.rows if kind is None or row["kind"] == kind]
+
+
+def status_lines(outbox):
+    return [row for row in outbox.rows if row["kind"] == "status_line"]
+
+
 async def counts(db):
     async with db._engine.connect() as conn:
         return tuple(
@@ -127,7 +140,7 @@ async def test_gateway_atomic_rows_stable_brief_outbox_and_event(env):
     ) == (
         None,
         "session",
-        "supervisor-global",
+        "conversation-queued",
         "conversation_input",
         f"conversation:{result['conversation_id']}",
         None,
@@ -138,6 +151,23 @@ async def test_gateway_atomic_rows_stable_brief_outbox_and_event(env):
         {
             "id": "out-1",
             "owner_id": result["conversation_id"],
+            "kind": "status_line",
+            "dedup_key": f"conv-status:{result['conversation_id']}:offline:1",
+            "payload": {
+                "state": "offline",
+                "queued": 1,
+                "conversation_id": result["conversation_id"],
+                "channel_id": CHANNEL,
+                "thread_id": None,
+                "author_id": AUTHOR,
+            },
+            "priority": 20,
+            # Due just after the thread-open ack, so it posts in that thread.
+            "due_at": NOW + 1,
+        },
+        {
+            "id": "out-2",
+            "owner_id": result["conversation_id"],
             "kind": "thread_open",
             "dedup_key": "conv-open:discord:900000000000000000",
             "payload": {
@@ -147,7 +177,7 @@ async def test_gateway_atomic_rows_stable_brief_outbox_and_event(env):
             },
             "priority": 20,
             "due_at": None,
-        }
+        },
     ]
     handler.orchestrator.bus.emit.assert_any_await(
         "conversation.input_received.v1",
@@ -270,7 +300,9 @@ async def test_preconditions_are_revalidated(env, mode, code):
         ("guild_id", "666666666666666666", "foreign_destination"),
         ("channel_id", "666666666666666666", "foreign_destination"),
         ("text", f"<@{BOT}>\x00 ", "empty_text"),
-        ("mentions_bot", False, "invalid_envelope"),
+        # The mention requirement moved from the envelope shape to the §7.1
+        # routing flag, so the refusal now names why.
+        ("mentions_bot", False, "no_bot_mention"),
     ],
 )
 async def test_author_destination_and_mention_checks(env, field, value, code):
@@ -282,6 +314,26 @@ async def test_author_destination_and_mention_checks(env, field, value, code):
     assert await counts(db) == (0, 0, 0)
 
 
+async def test_the_mention_requirement_is_the_routing_flag_not_the_envelope(env):
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    values = args()
+    values["envelope"]["mentions_bot"] = False
+    values["envelope"]["text"] = "what is blocking the release?"
+    result = await post(handler, values)
+    assert result["success"] is True
+    conversation = await db.get_conversation(result["conversation_id"])
+    # §2.2: the channel's one conversation, found again by the next message.
+    assert conversation["kind"] == "channel" and conversation["external_thread_id"] is None
+    assert (
+        await db.find_channel_conversation(transport="discord", channel_id=CHANNEL) == conversation
+    )
+    values["envelope"]["external_message_id"] = str(900000000000000001)
+    values["envelope"]["external_root_message_id"] = values["envelope"]["external_message_id"]
+    again = await post(handler, values)
+    assert again["conversation_id"] == result["conversation_id"]
+
+
 async def test_oversize_is_unicode_bounded_and_notice_deduped(env):
     handler, db = env
     values = args()
@@ -289,7 +341,7 @@ async def test_oversize_is_unicode_bounded_and_notice_deduped(env):
     for _ in range(2):
         assert (await post(handler, values))["error_code"] == "oversize"
     assert await counts(db) == (0, 0, 0)
-    rows = handler.orchestrator.conversation_outbox.rows
+    rows = queued(handler.orchestrator.conversation_outbox)
     assert len(rows) == 1 and rows[0]["payload"]["char_count"] == 4001
     assert rows[0]["dedup_key"] == "conv-notice:oversize:discord:900000000000000000"
 
@@ -302,13 +354,19 @@ async def test_replay_spends_no_quota_and_limit_survives_new_handler(env):
     replay = await post(handler)
     assert replay == {**first, "created": False}
     assert await db.count_conversation_inputs(since=NOW - 600, author_id=AUTHOR) == 10
-    assert len(handler.orchestrator.conversation_outbox.rows) == 10
+    outbox = handler.orchestrator.conversation_outbox
+    # Ten accepted turns: one thread-open each, plus the offline status line
+    # whose count grows 1..9 as the queue fills.
+    assert len(queued(outbox, "thread_open")) == 10
+    # One status line per conversation, and each of these is its own
+    # conversation, so each reports a queue of one.
+    assert [row["payload"]["queued"] for row in status_lines(outbox)] == [1] * 10
     fresh = CommandHandler(handler.orchestrator, handler.config)
     fresh._clock = handler._clock
     for index in (10, 11):
         result = await post(fresh, args(index))
         assert result["error_code"] == "rate_limited" and result["scope"] == "author"
-    notices = [r for r in handler.orchestrator.conversation_outbox.rows if r["kind"] == "notice"]
+    notices = queued(outbox, "notice")
     assert len(notices) == 1
     assert notices[0]["dedup_key"] == f"conv-notice:ratelimit:discord:author:{AUTHOR}:9600"
     fresh._clock = lambda: NOW + 601
@@ -357,14 +415,17 @@ async def test_follow_up_checks_binding_and_audience_then_closed_notice(env):
     value = await follow_up(handler, db, first)
     accepted = await post(handler, value)
     assert accepted["success"] is True and accepted["conversation_id"] == first["conversation_id"]
-    assert len(handler.orchestrator.conversation_outbox.rows) == 1
+    outbox = handler.orchestrator.conversation_outbox
+    assert len(queued(outbox, "thread_open")) == 1
+    # The follow-up grew the queue the status line reports.
+    assert status_lines(outbox)[-1]["payload"]["queued"] == 2
     await db.set_conversation_state(first["conversation_id"], state="closed", now=NOW)
     value["envelope"]["external_message_id"] = str(900000000000000002)
     for _ in range(2):
         assert (await post(handler, value))["error_code"] == "conversation_closed"
-    assert len(handler.orchestrator.conversation_outbox.rows) == 2
-    assert handler.orchestrator.conversation_outbox.rows[-1]["dedup_key"] == (
-        f"conv-notice:closed:{first['conversation_id']}"
+    assert (
+        queued(outbox, "notice")[-1]["dedup_key"]
+        == f"conv-notice:closed:{first['conversation_id']}"
     )
 
 
@@ -393,7 +454,10 @@ async def test_replay_repairs_thread_open_enqueue_failure(env):
     outbox.enqueue = enqueue
     replay = await post(handler)
     assert replay["success"] is True and replay["created"] is False
-    assert await counts(db) == (1, 1, 1) and len(outbox.rows) == 1
+    assert await counts(db) == (1, 1, 1)
+    # The replay repairs both the status line and the thread-open ack.
+    assert len(status_lines(outbox)) == 1
+    assert len(queued(outbox, "thread_open")) == 1
 
 
 async def test_ignored_content_is_absent_from_command_logs(env, caplog):
@@ -413,7 +477,7 @@ async def test_tombstone_replay_never_recreates_work(env):
     replay = await post(handler)
     assert replay == {**first, "created": False, "state": "expired"}
     assert await counts(db) == (1, 1, 1)
-    assert len(handler.orchestrator.conversation_outbox.rows) == 1
+    assert len(queued(handler.orchestrator.conversation_outbox, "thread_open")) == 1
 
 
 def reply_args(first, **overrides):
@@ -498,7 +562,7 @@ async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
         "Answer from the supervisor",
     )
     assert (await db.get_conversation_input(first["input_id"]))["state"] == "answered"
-    rows = handler.orchestrator.conversation_outbox.rows
+    rows = queued(handler.orchestrator.conversation_outbox, "reply")
     assert rows[-1]["payload"] == {
         "conversation_id": first["conversation_id"],
         "input_id": first["input_id"],
@@ -509,7 +573,8 @@ async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
     # The first durable text wins even when a retry carries a changed body.
     replay = await reply(handler, reply_args(first, text="changed"), principal)
     assert replay == {**result, "created": False}
-    assert len(rows) == 2
+    # The replay is idempotent: no fourth delivery row.
+    assert len(queued(handler.orchestrator.conversation_outbox)) == 3
     handler.orchestrator.bus.emit.assert_any_await(
         "conversation.reply_queued.v1",
         {
@@ -548,7 +613,8 @@ async def test_reply_requires_live_global_supervisor_launch(env, mode):
     with principal_context(principal):
         result = await handler._cmd_supervisor_inbox_reply(reply_args(first))
     assert result["error_code"] == "out_of_scope"
-    assert len(handler.orchestrator.conversation_outbox.rows) == 1
+    outbox = handler.orchestrator.conversation_outbox
+    assert len(status_lines(outbox)) == 1 and not queued(outbox, "reply")
     assert (await db.get_conversation_input(first["input_id"]))["state"] == "accepted"
 
 
