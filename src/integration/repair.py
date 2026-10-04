@@ -3184,6 +3184,20 @@ class RepairService:
             return verdict("ladder", "progress")
         if await self.db._read_manual_pause(conn, task_id) is not None:
             return verdict("held", "operator_hold")
+        handoff = (stage["dossier"] or {}).get("reconciler_delegate_completion", {})
+        if (
+            handoff.get("kind") == "accepted_handoff"
+            and handoff.get("task_id") == task_id
+            and handoff.get("claim_epoch") == task["claim_epoch"]
+            and task["status"] in {"COMPLETED", "BLOCKED", "FAILED"}
+            and owner is not None and owner["owner_id"] == task_id
+            and owner["handoff_state"] == "released"
+            and owner["fence_token"] == handoff.get("fence_token")
+            and not await conn.scalar(select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == task_id,
+            ).limit(1))
+        ):
+            return verdict("ladder", "writer_closed")
         if await _live_task_session(conn, task_id) is not None:
             return verdict("live", "writer_live")
         status = task["status"]

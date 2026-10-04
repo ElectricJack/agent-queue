@@ -203,7 +203,32 @@ class RootObserver(IntegrationObserver):
                 t.integration_outbox.c.project_id == subject.project_id,
                 t.integration_outbox.c.event_type == "integration.repair_delegate_closed",
             )
-        if owner is not None and owner["owner_id"] == task_id:
+        handoff = (subject.writer.stop_proof or {}).get("stop_proof", {})
+        latest = max(sessions, key=lambda row: row["started_at"] or 0, default=None)
+        closed_handoff = (
+            handoff.get("kind") == "accepted_handoff"
+            and handoff.get("task_id") == task_id
+            and task is not None and task["status"] in {"COMPLETED", "BLOCKED", "FAILED"}
+            and handoff.get("claim_epoch") == task["claim_epoch"]
+            and not locked
+            and (owner is None or owner["owner_id"] != task_id
+                 or (owner["handoff_state"] == "released"
+                     and owner["fence_token"] == handoff.get("fence_token")))
+            and (latest is None or (
+                handoff.get("session_id") == latest["id"]
+                and handoff.get("instance_token") == latest["instance_token"]
+                and handoff.get("confirmed_at", 0) >= (latest["started_at"] or 0)
+            ))
+        )
+        if closed_handoff and handoff.get("outcome") == "fail":
+            # The worker explicitly surrendered this attempt. The pinned
+            # successor action still enforces its original absolute deadline.
+            stopped = self._project_writer(facts, facts.writer.model_copy(update={
+                "status": WriterStatus.STOPPED, "stop_proof": subject.writer.stop_proof,
+            }))
+            return stopped.model_copy(update={"ladder_exhausted": True})
+        if (owner is not None and owner["owner_id"] == task_id
+                and owner["handoff_state"] != "released"):
             return facts  # the writer still holds its fenced ref
         decided = {
             row["subject_version"]: row for row in journal if row["entry_kind"] == "decision"
@@ -218,6 +243,10 @@ class RootObserver(IntegrationObserver):
                 and observed.get("writer_status") == WriterStatus.STOPPED.value
             ):
                 return self._project_writer(facts, WriterLease())
+        if closed_handoff:
+            return self._project_writer(facts, facts.writer.model_copy(update={
+                "status": WriterStatus.STOPPED, "stop_proof": subject.writer.stop_proof,
+            }))
         if (
             not sessions
             and not locked
@@ -360,6 +389,16 @@ class _RootObservationReader:
                 head_sha=revision["head_sha"] if revision else None,
                 base_sha=revision["construction_base_sha"] if revision else batch["base_sha"],
             )
+            operation = next((r for r in snapshot.all("integration_repair_operations")
+                              if r["batch_id"] == subject.batch_id), None)
+            stage = next((r for r in snapshot.all("integration_repair_stages")
+                          if operation and r["operation_id"] == operation["id"]
+                          and r["ordinal"] == operation["active_stage"]), None)
+            if (stage and stage["repair_task_id"]
+                    and stage["repair_task_id"] != subject.writer.task_id):
+                # The legacy stage can dispatch a successor inside a visit,
+                # before its subject writer mirror has been committed.
+                changes["writer"] = WriterLease()
             if subject.engine is SubjectEngine.LEGACY:
                 changes["phase"] = SubjectPhase(_legacy_phase(batch["lifecycle"]))
         return replace(snapshot, subject=subject.model_copy(update=changes))

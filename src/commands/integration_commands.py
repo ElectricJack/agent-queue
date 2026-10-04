@@ -12,6 +12,7 @@ import json
 import time
 from typing import Any
 
+from src.integration.reconciler_repair_close import reconciler_batch_subject
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
@@ -3220,7 +3221,8 @@ class IntegrationCommandsMixin:
                 with principal_context(exact_principal):
                     accepted = await service.accept_repair(reservation["id"])
                 continuation = None
-                if accepted.outcome in {"accepted", "already_accepted"}:
+                if (accepted.outcome in {"accepted", "already_accepted"}
+                    and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
                     continuation = await service.build(batch["id"])
             except CandidateAuthorizationError as exc:
                 return _failure("unauthorized", str(exc))
@@ -3323,7 +3325,8 @@ class IntegrationCommandsMixin:
                 await service.push_repair(reservation_id, fence)
                 accepted = await service.accept_repair(reservation_id)
             continuation = None
-            if accepted.outcome in {"accepted", "already_accepted"}:
+            if (accepted.outcome in {"accepted", "already_accepted"}
+                and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
                 continuation = await service.build(batch["id"])
         except CandidateAuthorizationError as exc:
             return _failure("unauthorized", str(exc))

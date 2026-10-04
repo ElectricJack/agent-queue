@@ -1338,6 +1338,21 @@ class ExecutionMixin:
             repair_scope is not None
             and repair_scope.get("writer_kind") == "repair_delegate"
         )
+        if repair_delegate and repair_scope["target_kind"] == "batch":
+            from src.integration.reconciler_repair_close import close_reconciler_delegate
+
+            reconciled = await close_reconciler_delegate(
+                self, task, repair_scope, session_id=session_id,
+                claim_epoch=expect_claim_epoch, outcome=outcome, commit=commit,
+                accepted_close=accepted_close, skip_open_subtasks=skip_open_subtasks,
+            )
+            if reconciled is not None:
+                if reconciled.get("pipeline_ok") and not pool:
+                    await self.release_session_task_resources(
+                        task.id, agent_id=task.assigned_agent_id,
+                        workspace_path=workspace_path, expect_claim_epoch=expect_claim_epoch,
+                    )
+                return reconciled
         if repair_delegate and not repair_scope["active"]:
             if outcome == "pass" and repair_scope["target_kind"] == "batch":
                 from src.integration.accepted_repair import complete_accepted_delegate
