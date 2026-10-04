@@ -1387,7 +1387,7 @@
       ]
     }
   },
-  "digest": "sha256:c90f9b7c25925a53055743efecb34438d110cbbf5607d7510ef7c7fbffb95e3b",
+  "digest": "sha256:2c2421682b214924bd64324edf42ccc1b375dab559fdd3c1482902da43b3c4ef",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5174,6 +5174,7 @@
         "src.doctor.dashboard_server_checks",
         "src.doctor.dashboard_state_checks",
         "src.doctor.db_checks",
+        "src.doctor.discord_config_checks",
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
@@ -5253,14 +5254,16 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.doctor",
         "src.doctor.discord_config_checks",
-        "src.doctor.models"
+        "src.doctor.models",
+        "src.doctor.runner"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "``discord.legacy_config``: WARN while the retired channel block/flag survive; the"
+      "summary": "``discord.config``: the single-channel Discord config of spec 2026-10-03 §1.2/§7.1."
     },
     "tests/test_doctor_integration_checks.py": {
       "areas": [

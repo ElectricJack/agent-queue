@@ -100,12 +100,26 @@ def _fix(check_id: str, ctx: DoctorContext):
 def test_the_checks_are_registered_by_the_default_registry():
     ids = set(default_registry().ids())
 
-    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK, checks.PUBLIC_URL} <= ids
+    assert {
+        checks.RUNNING,
+        checks.BUNDLE,
+        checks.PORT,
+        checks.EXPOSURE,
+        checks.REMOTE_LINK,
+        checks.PUBLIC_URL,
+    } <= ids
 
 
 @pytest.mark.parametrize(
     "check_id",
-    [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK, checks.PUBLIC_URL],
+    [
+        checks.RUNNING,
+        checks.BUNDLE,
+        checks.PORT,
+        checks.EXPOSURE,
+        checks.REMOTE_LINK,
+        checks.PUBLIC_URL,
+    ],
 )
 def test_a_disabled_dashboard_server_is_info_everywhere(check_id, monkeypatch):
     monkeypatch.setattr(checks, "_probe", lambda url: pytest.fail("no probe when disabled"))
@@ -420,82 +434,192 @@ def test_no_origin_warns_when_discord_posts_and_never_offers_the_health_port(mon
 
 
 # ---------------------------------------------------------------------------
-# dashboard.public_url: set, HTTPS or tailnet, and answering with the /focus shell
+# dashboard.public_url: Tailscale Serve HTTPS (spec §6.3, answer to §8 Q1)
 # ---------------------------------------------------------------------------
 
+SERVE_ORIGIN = "https://box.tail1234.ts.net"
 
-def test_public_url_warns_when_empty():
-    result = _run(checks.PUBLIC_URL, _ctx())
+
+def _url_ctx(*, origins=(), **server: Any) -> DoctorContext:
+    server.setdefault("port", 5173)
+    return _link_ctx(origins=origins, **server)
+
+
+def _shell_probe(monkeypatch, answer=(200, "")):
+    seen: list[str] = []
+
+    def probe(origin):
+        seen.append(origin)
+        return answer
+
+    monkeypatch.setattr(checks, "_focus_shell_probe", probe)
+    return seen
+
+
+def _no_probe(monkeypatch, why: str) -> None:
+    monkeypatch.setattr(checks, "_focus_shell_probe", lambda origin: pytest.fail(why))
+
+
+def test_public_url_unset_warns_with_the_tailscale_serve_recipe(monkeypatch):
+    _no_probe(monkeypatch, "nothing to probe")
+    result = _run(checks.PUBLIC_URL, _url_ctx())
+
     assert result.severity is Severity.WARN
-    assert "not set" in result.detail
-    assert result.data["why"] == "empty"
+    assert "is not set" in result.detail
+    assert "tailscale serve --bg --https=443 http://127.0.0.1:5173" in result.detail
+    assert "api_auth.trusted_dashboard_origins" in result.detail
+    assert result.data["public_url"] is None
 
 
-def test_public_url_warns_when_not_a_usable_origin():
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="not-a-url"))
+@pytest.mark.parametrize(
+    "bad", ["not-a-url", "http://127.0.0.1:9999", "https://localhost", "http://0.0.0.0"]
+)
+def test_public_url_that_is_no_usable_origin_warns_without_probing(monkeypatch, bad):
+    _no_probe(monkeypatch, "an unusable origin is never probed")
+    result = _run(checks.PUBLIC_URL, _url_ctx(public_url=bad))
+
     assert result.severity is Severity.WARN
-    assert "not a usable origin" in result.detail
-    assert result.data["why"]  # a non-empty reason, never the value itself
+    assert result.data["why"]
+    assert bad not in result.detail  # the value may carry credentials; never quoted
+    assert "Run `tailscale serve" in result.detail
 
 
-def test_public_url_warns_when_loopback_or_wildcard(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe for a bad origin"))
-    for bad in ["http://127.0.0.1:5173", "https://localhost", "http://0.0.0.0"]:
-        result = _run(checks.PUBLIC_URL, _ctx(public_url=bad))
-        assert result.severity is Severity.WARN, bad
-        assert result.data["why"].startswith("names a loopback"), bad
+def test_public_url_serve_origin_the_edge_refuses_warns_before_probing(monkeypatch):
+    _no_probe(monkeypatch, "an origin the edge refuses answers 421 whatever the probe says")
+    result = _run(checks.PUBLIC_URL, _url_ctx(public_url=SERVE_ORIGIN))
 
-
-def test_public_url_warns_on_plain_http_to_a_non_tailnet_host(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe for HTTP non-tailnet"))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://dashboard.example.com:5173"))
     assert result.severity is Severity.WARN
-    assert "plain HTTP" in result.detail
-    assert result.data["why"] == "http_non_tailnet"
+    assert "api_auth.trusted_dashboard_origins" in result.detail
+    assert result.data["edge"]["host_allowed"] is False
 
 
-def test_public_url_ok_for_https_origin_serving_the_focus_shell(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "text/html", ""))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+def test_public_url_trusted_serve_origin_with_the_shell_is_ok(monkeypatch):
+    seen = _shell_probe(monkeypatch)
+    result = _run(
+        checks.PUBLIC_URL, _url_ctx(public_url=SERVE_ORIGIN + "/", origins=[SERVE_ORIGIN])
+    )
+
+    assert result.severity is Severity.OK, result.detail
+    assert seen == [SERVE_ORIGIN]
+    assert result.detail == f"{SERVE_ORIGIN} serves the dashboard shell at /focus over HTTPS"
+    assert result.data["https"] is True and result.data["tailnet"] is True
+    assert result.data["focus_status"] == 200
+
+
+def test_public_url_https_outside_the_tailnet_is_ok_but_names_the_proxy(monkeypatch):
+    _shell_probe(monkeypatch)
+    origin = "https://dash.example.com"
+    result = _run(checks.PUBLIC_URL, _url_ctx(public_url=origin, origins=[origin]))
+
     assert result.severity is Severity.OK
-    assert "focused shell at /focus" in result.detail
+    assert "the proxy must authenticate" in result.detail
 
 
-def test_public_url_ok_for_http_tailnet_ip(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "text/html; charset=utf-8", ""))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://100.73.221.21:5173"))
-    assert result.severity is Severity.OK
+def test_public_url_plain_http_on_the_tailnet_works_but_is_not_the_chosen_approach(monkeypatch):
+    # This box's shape: a wildcard bind and the tailnet IP and port, trusted.
+    origin = "http://100.73.221.21:5173"
+    _shell_probe(monkeypatch)
+    result = _run(
+        checks.PUBLIC_URL, _url_ctx(host="0.0.0.0", public_url=origin, origins=[origin])
+    )
 
-
-def test_public_url_warns_when_host_port_is_not_listening(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (0, "", "host:port 100.73.221.21:5173 did not answer (refused)"))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="http://100.73.221.21:5173"))
     assert result.severity is Severity.WARN
-    assert "did not answer" in result.detail
-    assert result.data["status"] == 0
+    assert "plain HTTP on a tailnet address" in result.detail
+    assert "tailscale serve --bg --https=443 http://127.0.0.1:5173" in result.detail
+    assert result.data["tailnet"] is True and result.data["https"] is False
 
 
-def test_public_url_warns_when_focus_answers_with_a_non_200(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (404, "", "answered with a non-200 status (404)"))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+def test_public_url_plain_http_tailnet_ip_the_edge_refuses_warns(monkeypatch):
+    _no_probe(monkeypatch, "the edge refuses an untrusted Host on a wildcard bind")
+    result = _run(
+        checks.PUBLIC_URL, _url_ctx(host="0.0.0.0", public_url="http://100.73.221.21:5173")
+    )
+
     assert result.severity is Severity.WARN
-    assert "non-200" in result.detail
+    assert "trusted_dashboard_origins" in result.detail
 
 
-def test_public_url_warns_when_focus_is_not_html(monkeypatch):
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: (200, "application/json", "answered but not with an HTML shell"))
-    result = _run(checks.PUBLIC_URL, _ctx(public_url="https://dash.tail1234.ts.net"))
+def test_public_url_plain_http_outside_the_tailnet_warns(monkeypatch):
+    _shell_probe(monkeypatch)
+    origin = "http://dashboard.example.com:8080"
+    result = _run(checks.PUBLIC_URL, _url_ctx(public_url=origin))
+
     assert result.severity is Severity.WARN
-    assert "HTML shell" in result.detail
+    assert "a host outside the tailnet" in result.detail
 
 
-def test_public_url_is_registered_with_its_owner_and_a_bounded_timeout(monkeypatch):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "box.tail1234.ts.net:443 is not listening (connection refused)",
+        "GET /focus answered 404",
+        "GET /focus did not answer with the dashboard's HTML shell",
+    ],
+)
+def test_public_url_whose_shell_does_not_answer_warns_with_why(monkeypatch, failure):
+    _shell_probe(monkeypatch, (0, failure))
+    result = _run(
+        checks.PUBLIC_URL, _url_ctx(public_url=SERVE_ORIGIN, origins=[SERVE_ORIGIN])
+    )
+
+    assert result.severity is Severity.WARN
+    assert result.detail == f"dashboard.server.public_url {SERVE_ORIGIN}: {failure}"
+
+
+def test_public_url_is_info_when_the_server_is_disabled(monkeypatch):
+    _no_probe(monkeypatch, "no probe when disabled")
     check = next(c for c in checks.dashboard_server_checks() if c.id == checks.PUBLIC_URL)
+
     assert check.owner == checks.OWNER
     assert check.timeout_s == checks._PROBE_SECONDS + 5
-    monkeypatch.setattr(checks, "_focus_shell_probe", lambda url: pytest.fail("no probe when disabled"))
-    result = _run(checks.PUBLIC_URL, _ctx(enabled=False))
-    assert result.severity is Severity.INFO
+    assert _run(checks.PUBLIC_URL, _url_ctx(enabled=False)).severity is Severity.INFO
+
+
+@pytest.fixture
+def shell_server():
+    """A real HTTP server on 127.0.0.1: /focus answers as ``routes`` says."""
+    import http.server
+    import threading
+
+    routes: dict[str, tuple[int, str]] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, content_type = routes.get(self.path, (404, "text/plain"))
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(b"<!doctype html>" if "html" in content_type else b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", routes
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_focus_shell_probe_against_a_real_server(shell_server):
+    origin, routes = shell_server
+
+    assert checks._focus_shell_probe(origin, timeout=5)[1] == "GET /focus answered 404"
+    routes["/focus"] = (200, "application/json")
+    assert "HTML shell" in checks._focus_shell_probe(origin, timeout=5)[1]
+    routes["/focus"] = (200, "text/html; charset=utf-8")
+    assert checks._focus_shell_probe(origin, timeout=5) == (200, "")
+
+
+def test_focus_shell_probe_tells_a_closed_port_apart():
+    port = unused_port()
+    status, why = checks._focus_shell_probe(f"http://127.0.0.1:{port}", timeout=5)
+
+    assert status == 0
+    assert why == f"127.0.0.1:{port} is not listening (connection refused)"
 
 
 # ---------------------------------------------------------------------------
