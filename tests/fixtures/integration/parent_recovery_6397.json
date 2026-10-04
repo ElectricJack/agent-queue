@@ -1,0 +1,1222 @@
+{
+  "provenance": "Captured operation 6397b45b on 2026-10-04. Project/repository IDs use disposable p/repo. Task, session, instance, workspace, completion, intent, receipt, event and domain identities use consistent one-to-one synthetic values. Original Git OIDs, graph, timestamps, fences and push evidence relationships are retained; the replay constructs synthetic Git objects. Receipt snapshots are reconstructed from the captured committed intent fields using the production shape.",
+  "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+  "parent_id": "captured-parent",
+  "base_sha": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+  "head_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+  "stages": [
+    {
+      "ordinal": 0,
+      "state": "expired",
+      "repair_task_id": "captured-repair-0",
+      "starting_sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      },
+      "starting_sha_dossier": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      ],
+      "branch_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 1,
+      "state": "expired",
+      "repair_task_id": "captured-repair-1",
+      "starting_sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      },
+      "starting_sha_dossier": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "branch_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 2,
+      "state": "expired",
+      "repair_task_id": "captured-repair-2",
+      "starting_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "28906934b474265e2eb4d301a198ffe108d638e0"
+      },
+      "starting_sha_dossier": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0"
+      ],
+      "branch_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 3,
+      "state": "expired",
+      "repair_task_id": "captured-repair-3",
+      "starting_sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      },
+      "starting_sha_dossier": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "branch_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 4,
+      "state": "expired",
+      "repair_task_id": "captured-repair-4",
+      "starting_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+      },
+      "starting_sha_dossier": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+      ],
+      "branch_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 5,
+      "state": "expired",
+      "repair_task_id": "captured-repair-5",
+      "starting_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      },
+      "starting_sha_dossier": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "199d11bfa8a3a556930407776e9ad9e4ddf53b13",
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      ],
+      "branch_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    },
+    {
+      "ordinal": 6,
+      "state": "passed",
+      "repair_task_id": "captured-repair-6",
+      "starting_sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "current_subject": {
+        "kind": "parent",
+        "generation": 1,
+        "head_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+      },
+      "starting_sha_dossier": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "repair_commits": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "199d11bfa8a3a556930407776e9ad9e4ddf53b13",
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "5c172492c89bae5180d6f06fef2529008b38bd86",
+        "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+        "6ff98cd1b02465568c2d92671c569f7840b8a109",
+        "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+        "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+      ],
+      "branch_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+      "writer_kind": "repair_delegate",
+      "success_subject": null
+    }
+  ],
+  "close_events": [
+    {
+      "created_at": 1791055432.8785238,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 0,
+        "task_id": "captured-repair-0",
+        "session_id": "captured-session-1",
+        "instance_token": "captured-instance-1",
+        "workspace_id": "captured-workspace-1",
+        "fence_token": 3,
+        "project_id": "p",
+        "event_id": "captured-close-1"
+      }
+    },
+    {
+      "created_at": 1791056936.8222597,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 1,
+        "task_id": "captured-repair-1",
+        "session_id": "captured-session-2",
+        "instance_token": "captured-instance-2",
+        "workspace_id": "captured-workspace-2",
+        "fence_token": 6,
+        "project_id": "p",
+        "event_id": "captured-close-2"
+      }
+    },
+    {
+      "created_at": 1791058356.9677324,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 1,
+        "task_id": "captured-repair-1",
+        "session_id": "captured-session-3",
+        "instance_token": "captured-instance-3",
+        "workspace_id": "captured-workspace-2",
+        "fence_token": 9,
+        "project_id": "p",
+        "event_id": "captured-close-3"
+      }
+    },
+    {
+      "created_at": 1791060566.562552,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 2,
+        "task_id": "captured-repair-2",
+        "session_id": "captured-session-4",
+        "instance_token": "captured-instance-4",
+        "workspace_id": "captured-workspace-3",
+        "fence_token": 12,
+        "project_id": "p",
+        "event_id": "captured-close-4"
+      }
+    },
+    {
+      "created_at": 1791064645.3881154,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 3,
+        "task_id": "captured-repair-3",
+        "session_id": "captured-session-5",
+        "instance_token": "captured-instance-5",
+        "workspace_id": "captured-workspace-4",
+        "fence_token": 15,
+        "project_id": "p",
+        "event_id": "captured-close-5"
+      }
+    },
+    {
+      "created_at": 1791067809.2372932,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 3,
+        "task_id": "captured-repair-3",
+        "session_id": "captured-session-6",
+        "instance_token": "captured-instance-6",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 18,
+        "project_id": "p",
+        "event_id": "captured-close-6"
+      }
+    },
+    {
+      "created_at": 1791068571.8874102,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-7",
+        "instance_token": "captured-instance-7",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 21,
+        "project_id": "p",
+        "event_id": "captured-close-7"
+      }
+    },
+    {
+      "created_at": 1791069131.188189,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-8",
+        "instance_token": "captured-instance-8",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 24,
+        "project_id": "p",
+        "event_id": "captured-close-8"
+      }
+    },
+    {
+      "created_at": 1791070098.34043,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-9",
+        "instance_token": "captured-instance-9",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 27,
+        "project_id": "p",
+        "event_id": "captured-close-9"
+      }
+    },
+    {
+      "created_at": 1791071288.9821491,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 4,
+        "task_id": "captured-repair-4",
+        "session_id": "captured-session-10",
+        "instance_token": "captured-instance-10",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 30,
+        "project_id": "p",
+        "event_id": "captured-close-10"
+      }
+    },
+    {
+      "created_at": 1791072062.9734638,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 5,
+        "task_id": "captured-repair-5",
+        "session_id": "captured-session-11",
+        "instance_token": "captured-instance-11",
+        "workspace_id": "captured-workspace-5",
+        "fence_token": 34,
+        "project_id": "p",
+        "event_id": "captured-close-11"
+      }
+    },
+    {
+      "created_at": 1791075510.9864354,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 6,
+        "task_id": "captured-repair-6",
+        "session_id": "captured-session-12",
+        "instance_token": "captured-instance-12",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 37,
+        "project_id": "p",
+        "event_id": "captured-close-12"
+      }
+    },
+    {
+      "created_at": 1791075902.0405715,
+      "payload": {
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage": 6,
+        "task_id": "captured-repair-6",
+        "session_id": "captured-session-13",
+        "instance_token": "captured-instance-13",
+        "workspace_id": "captured-workspace-6",
+        "fence_token": 40,
+        "project_id": "p",
+        "event_id": "captured-close-13"
+      }
+    }
+  ],
+  "completions": [
+    {
+      "id": "captured-completion-1",
+      "task_id": "captured-repair-0",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[\"e4ca1540056bdd553f6224b3b8cc5ea338b40e5c\"]",
+      "completed_at": 1791055436.9722965,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-2",
+      "task_id": "captured-repair-1",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791056939.1908178,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-3",
+      "task_id": "captured-repair-1",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791058359.7533002,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-4",
+      "task_id": "captured-repair-2",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791060569.1434398,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-5",
+      "task_id": "captured-repair-3",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791064649.027445,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-6",
+      "task_id": "captured-repair-3",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791067811.5239499,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-7",
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791068574.6329322,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-8",
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[\"b30f874345c98135113f985c446f20b0292c87ec\"]",
+      "completed_at": 1791069134.099351,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-9",
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[\"51d998ef974b594d69f6cd761d032ed36c58f037\"]",
+      "completed_at": 1791070105.5113392,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-10",
+      "task_id": "captured-repair-4",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[\"8518124e2fb75d021f316a1bf41e510ae02ebe77\"]",
+      "completed_at": 1791071291.6165335,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-11",
+      "task_id": "captured-repair-5",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791072065.2609107,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-12",
+      "task_id": "captured-repair-6",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791075513.2094812,
+      "notes": ""
+    },
+    {
+      "id": "captured-completion-13",
+      "task_id": "captured-repair-6",
+      "outcome": "pass",
+      "branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "commits": "[]",
+      "completed_at": 1791075904.1621418,
+      "notes": ""
+    }
+  ],
+  "intents": [
+    {
+      "id": "captured-intent-1",
+      "domain_key": "captured-domain-1",
+      "receipt_id": "captured-receipt-1",
+      "source_task_id": "captured-parent.1",
+      "source_head": "74af88822785b7da1a8cf3b245dd406389fc54e7",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 2,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "resolved_tree_sha": "0332824f8246b56f0d49eca51618d56b9a3a430d",
+        "repair_commit_shas": [
+          "74af88822785b7da1a8cf3b245dd406389fc54e7",
+          "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+        ]
+      },
+      "committed_at": 1791055385.0009003,
+      "created_at": 1791054700,
+      "updated_at": 1791055385.0009003,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+      "resolution_tree_sha": "0332824f8246b56f0d49eca51618d56b9a3a430d",
+      "resolution_commit_shas": [
+        "74af88822785b7da1a8cf3b245dd406389fc54e7",
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 0,
+      "resolution_task_id": "captured-repair-0",
+      "resolution_session_id": "captured-session-1",
+      "resolution_session_instance_token": "captured-instance-1",
+      "resolution_workspace_id": "captured-workspace-1",
+      "resolution_fence_owner_id": "captured-repair-0",
+      "resolution_fence_token": 3,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 0,
+        "repair_task_id": "captured-repair-0",
+        "repair_session_id": "captured-session-1",
+        "repair_session_instance_token": "captured-instance-1",
+        "repair_workspace_id": "captured-workspace-1",
+        "fence_owner_id": "captured-repair-0",
+        "fence_token": 3
+      },
+      "resolution_push_started_at": 1791055360.9023085,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-2",
+      "domain_key": "captured-domain-2",
+      "receipt_id": "captured-receipt-2",
+      "source_task_id": "captured-parent.3",
+      "source_head": "d178494ec6ab88563e9b9192018ebf0a395914be",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 8,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "resolved_tree_sha": "14c8e8896b604caee8764310a4046f876109f28c",
+        "repair_commit_shas": [
+          "d178494ec6ab88563e9b9192018ebf0a395914be",
+          "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+        ]
+      },
+      "committed_at": 1791058275.4231162,
+      "created_at": 1791057926,
+      "updated_at": 1791058275.4231162,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "resolution_tree_sha": "14c8e8896b604caee8764310a4046f876109f28c",
+      "resolution_commit_shas": [
+        "d178494ec6ab88563e9b9192018ebf0a395914be",
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 1,
+      "resolution_task_id": "captured-repair-1",
+      "resolution_session_id": "captured-session-3",
+      "resolution_session_instance_token": "captured-instance-3",
+      "resolution_workspace_id": "captured-workspace-2",
+      "resolution_fence_owner_id": "captured-repair-1",
+      "resolution_fence_token": 9,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 1,
+        "repair_task_id": "captured-repair-1",
+        "repair_session_id": "captured-session-3",
+        "repair_session_instance_token": "captured-instance-3",
+        "repair_workspace_id": "captured-workspace-2",
+        "fence_owner_id": "captured-repair-1",
+        "fence_token": 9
+      },
+      "resolution_push_started_at": 1791058254.3020167,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-3",
+      "domain_key": "captured-domain-3",
+      "receipt_id": "captured-receipt-3",
+      "source_task_id": "captured-parent.5",
+      "source_head": "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 17,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "resolved_tree_sha": "51046e3eb5d20053586ccb214c4281cccbb203d9",
+        "repair_commit_shas": [
+          "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+          "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+          "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+        ]
+      },
+      "committed_at": 1791067679.7523336,
+      "created_at": 1791067190,
+      "updated_at": 1791067679.7523336,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+      "resolution_tree_sha": "51046e3eb5d20053586ccb214c4281cccbb203d9",
+      "resolution_commit_shas": [
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 3,
+      "resolution_task_id": "captured-repair-3",
+      "resolution_session_id": "captured-session-6",
+      "resolution_session_instance_token": "captured-instance-6",
+      "resolution_workspace_id": "captured-workspace-5",
+      "resolution_fence_owner_id": "captured-repair-3",
+      "resolution_fence_token": 18,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 3,
+        "repair_task_id": "captured-repair-3",
+        "repair_session_id": "captured-session-6",
+        "repair_session_instance_token": "captured-instance-6",
+        "repair_workspace_id": "captured-workspace-5",
+        "fence_owner_id": "captured-repair-3",
+        "fence_token": 18
+      },
+      "resolution_push_started_at": 1791067665.0564702,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-4",
+      "domain_key": "captured-domain-4",
+      "receipt_id": "captured-receipt-4",
+      "source_task_id": "captured-parent.8",
+      "source_head": "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 23,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+        "resolved_tree_sha": "39eb274a549818fb12a97c6e9e45f3080effe616",
+        "repair_commit_shas": [
+          "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+          "b30f874345c98135113f985c446f20b0292c87ec"
+        ]
+      },
+      "committed_at": 1791069079.3784912,
+      "created_at": 1791068591,
+      "updated_at": 1791069079.3784912,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+      "resolution_tree_sha": "39eb274a549818fb12a97c6e9e45f3080effe616",
+      "resolution_commit_shas": [
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+        "b30f874345c98135113f985c446f20b0292c87ec"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 4,
+      "resolution_task_id": "captured-repair-4",
+      "resolution_session_id": "captured-session-8",
+      "resolution_session_instance_token": "captured-instance-8",
+      "resolution_workspace_id": "captured-workspace-6",
+      "resolution_fence_owner_id": "captured-repair-4",
+      "resolution_fence_token": 24,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "b30f874345c98135113f985c446f20b0292c87ec",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 4,
+        "repair_task_id": "captured-repair-4",
+        "repair_session_id": "captured-session-8",
+        "repair_session_instance_token": "captured-instance-8",
+        "repair_workspace_id": "captured-workspace-6",
+        "fence_owner_id": "captured-repair-4",
+        "fence_token": 24
+      },
+      "resolution_push_started_at": 1791069058.1283853,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-5",
+      "domain_key": "captured-domain-5",
+      "receipt_id": "captured-receipt-5",
+      "source_task_id": "captured-parent.9",
+      "source_head": "d0908fe28460674ee4c671d86e877b5c27e2396d",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "b30f874345c98135113f985c446f20b0292c87ec",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 26,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "resolved_tree_sha": "4c98c67c320956a1e5b3a3de41f40343b25c8b26",
+        "repair_commit_shas": [
+          "d0908fe28460674ee4c671d86e877b5c27e2396d",
+          "51d998ef974b594d69f6cd761d032ed36c58f037"
+        ]
+      },
+      "committed_at": 1791069998.898425,
+      "created_at": 1791069147,
+      "updated_at": 1791069998.898425,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+      "resolution_tree_sha": "4c98c67c320956a1e5b3a3de41f40343b25c8b26",
+      "resolution_commit_shas": [
+        "d0908fe28460674ee4c671d86e877b5c27e2396d",
+        "51d998ef974b594d69f6cd761d032ed36c58f037"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 4,
+      "resolution_task_id": "captured-repair-4",
+      "resolution_session_id": "captured-session-9",
+      "resolution_session_instance_token": "captured-instance-9",
+      "resolution_workspace_id": "captured-workspace-6",
+      "resolution_fence_owner_id": "captured-repair-4",
+      "resolution_fence_token": 27,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 4,
+        "repair_task_id": "captured-repair-4",
+        "repair_session_id": "captured-session-9",
+        "repair_session_instance_token": "captured-instance-9",
+        "repair_workspace_id": "captured-workspace-6",
+        "fence_owner_id": "captured-repair-4",
+        "fence_token": 27
+      },
+      "resolution_push_started_at": 1791069980.303741,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-6",
+      "domain_key": "captured-domain-6",
+      "receipt_id": "captured-receipt-6",
+      "source_task_id": "captured-parent.7",
+      "source_head": "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "51d998ef974b594d69f6cd761d032ed36c58f037",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 29,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "resolved_tree_sha": "eb93cdc9e580adccab30709fea7c7f1aded9f790",
+        "repair_commit_shas": [
+          "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+          "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+        ]
+      },
+      "committed_at": 1791071222.4143426,
+      "created_at": 1791070796,
+      "updated_at": 1791071222.4143426,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "resolution_tree_sha": "eb93cdc9e580adccab30709fea7c7f1aded9f790",
+      "resolution_commit_shas": [
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 4,
+      "resolution_task_id": "captured-repair-4",
+      "resolution_session_id": "captured-session-10",
+      "resolution_session_instance_token": "captured-instance-10",
+      "resolution_workspace_id": "captured-workspace-5",
+      "resolution_fence_owner_id": "captured-repair-4",
+      "resolution_fence_token": 30,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 4,
+        "repair_task_id": "captured-repair-4",
+        "repair_session_id": "captured-session-10",
+        "repair_session_instance_token": "captured-instance-10",
+        "repair_workspace_id": "captured-workspace-5",
+        "fence_owner_id": "captured-repair-4",
+        "fence_token": 30
+      },
+      "resolution_push_started_at": 1791071201.5400772,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-7",
+      "domain_key": "captured-domain-7",
+      "receipt_id": "captured-receipt-7",
+      "source_task_id": "captured-parent.6",
+      "source_head": "d8276938f89f3dc7cd354fda77d09365d5997c37",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 32,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "resolved_tree_sha": "221151ade2b56fe644b3f91ef55651daa70c75b6",
+        "repair_commit_shas": [
+          "d8276938f89f3dc7cd354fda77d09365d5997c37",
+          "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+        ]
+      },
+      "committed_at": 1791072012.936776,
+      "created_at": 1791071317,
+      "updated_at": 1791072012.936776,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+      "resolution_tree_sha": "221151ade2b56fe644b3f91ef55651daa70c75b6",
+      "resolution_commit_shas": [
+        "d8276938f89f3dc7cd354fda77d09365d5997c37",
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 5,
+      "resolution_task_id": "captured-repair-5",
+      "resolution_session_id": "captured-session-11",
+      "resolution_session_instance_token": "captured-instance-11",
+      "resolution_workspace_id": "captured-workspace-5",
+      "resolution_fence_owner_id": "captured-repair-5",
+      "resolution_fence_token": 34,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 5,
+        "repair_task_id": "captured-repair-5",
+        "repair_session_id": "captured-session-11",
+        "repair_session_instance_token": "captured-instance-11",
+        "repair_workspace_id": "captured-workspace-5",
+        "fence_owner_id": "captured-repair-5",
+        "fence_token": 34
+      },
+      "resolution_push_started_at": 1791071996.0045674,
+      "resolution_recovery_evidence": null
+    },
+    {
+      "id": "captured-intent-8",
+      "domain_key": "captured-domain-8",
+      "receipt_id": "captured-receipt-8",
+      "source_task_id": "captured-parent.10",
+      "source_head": "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+      "source_base": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "repository_id": "repo",
+      "target_branch": "aq/epic/epic-discord-as-a-chat-extension-of-the-supervisor-spec-rev",
+      "expected_target": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "fence_owner_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "fence_token": 39,
+      "state": "committed",
+      "remote_evidence": {
+        "kind": "exact_resolution_tip",
+        "remote_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+        "resolved_tree_sha": "0258e034db203d1673a4bcfdb663c6f98834927d",
+        "repair_commit_shas": [
+          "6ff98cd1b02465568c2d92671c569f7840b8a109",
+          "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+          "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+        ]
+      },
+      "committed_at": 1791075873.1909723,
+      "created_at": 1791075526,
+      "updated_at": 1791075873.1909723,
+      "operation_key": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "project_id": "p",
+      "target_task_id": "captured-parent",
+      "resolution_head_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+      "resolution_tree_sha": "0258e034db203d1673a4bcfdb663c6f98834927d",
+      "resolution_commit_shas": [
+        "6ff98cd1b02465568c2d92671c569f7840b8a109",
+        "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+        "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+      ],
+      "resolution_operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+      "resolution_stage_ordinal": 6,
+      "resolution_task_id": "captured-repair-6",
+      "resolution_session_id": "captured-session-13",
+      "resolution_session_instance_token": "captured-instance-13",
+      "resolution_workspace_id": "captured-workspace-6",
+      "resolution_fence_owner_id": "captured-repair-6",
+      "resolution_fence_token": 40,
+      "resolution_push_evidence": {
+        "kind": "exact_resolution_push_observed",
+        "remote_sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+        "operation_id": "6397b45b-c5f2-4ddc-8450-638f77af1631",
+        "stage_ordinal": 6,
+        "repair_task_id": "captured-repair-6",
+        "repair_session_id": "captured-session-13",
+        "repair_session_instance_token": "captured-instance-13",
+        "repair_workspace_id": "captured-workspace-6",
+        "fence_owner_id": "captured-repair-6",
+        "fence_token": 40
+      },
+      "resolution_push_started_at": 1791075860.8979,
+      "resolution_recovery_evidence": null
+    }
+  ],
+  "git_nodes": [
+    {
+      "sha": "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+      "parents": [],
+      "tree": "0423c06f956db987157f3781138c9dee042271b3",
+      "timestamp": 1791050702
+    },
+    {
+      "sha": "94321e4f970def12fe7d7bbd271595b045544afd",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+      ],
+      "tree": "4e990b6d85d84620764bb7169fbd9ba8d67c3953",
+      "timestamp": 1791053744
+    },
+    {
+      "sha": "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece",
+        "94321e4f970def12fe7d7bbd271595b045544afd"
+      ],
+      "tree": "4e990b6d85d84620764bb7169fbd9ba8d67c3953",
+      "timestamp": 1791053899
+    },
+    {
+      "sha": "74af88822785b7da1a8cf3b245dd406389fc54e7",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+      ],
+      "tree": "86670bcabb4131e318f69b24142ab99e28b3dfd2",
+      "timestamp": 1791054531
+    },
+    {
+      "sha": "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+      "parents": [
+        "14c9b0490785bb266b05249b4dec55ccb67ba15f",
+        "74af88822785b7da1a8cf3b245dd406389fc54e7"
+      ],
+      "tree": "0332824f8246b56f0d49eca51618d56b9a3a430d",
+      "timestamp": 1791055154
+    },
+    {
+      "sha": "5c1b3b5ca2b3090ad57094a44c94cbea833d061c",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+      ],
+      "tree": "96f038b8afc3d07ded8a591ccf106f988064908b",
+      "timestamp": 1791055837
+    },
+    {
+      "sha": "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+      "parents": [
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c",
+        "5c1b3b5ca2b3090ad57094a44c94cbea833d061c"
+      ],
+      "tree": "057d65f7c52c025c00bbbc5b2d77c926a9557324",
+      "timestamp": 1791056143
+    },
+    {
+      "sha": "d178494ec6ab88563e9b9192018ebf0a395914be",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+      ],
+      "tree": "ef2940ad22037d3ef7a8687a5eca18ea8b5efc3f",
+      "timestamp": 1791057788
+    },
+    {
+      "sha": "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "parents": [
+        "b9e687acbfc89a0a93117f028c32c64ed59a3665",
+        "d178494ec6ab88563e9b9192018ebf0a395914be"
+      ],
+      "tree": "14c8e8896b604caee8764310a4046f876109f28c",
+      "timestamp": 1791058207
+    },
+    {
+      "sha": "28906934b474265e2eb4d301a198ffe108d638e0",
+      "parents": [
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "tree": "02974a4dd31a579efa371b900225e8c06d3335e2",
+      "timestamp": 1791060477
+    },
+    {
+      "sha": "8e953d1b0c95cc706bc1c52acd374ca90677cc97",
+      "parents": [
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "tree": "76967036b626bfb35c399c75306cd5d427994583",
+      "timestamp": 1791066656
+    },
+    {
+      "sha": "eb61d6d7041fa5984ff572a8840424aefa1226c1",
+      "parents": [
+        "8e953d1b0c95cc706bc1c52acd374ca90677cc97"
+      ],
+      "tree": "29629229a9f7f1fd090738adb8c016a6d6cd8561",
+      "timestamp": 1791067096
+    },
+    {
+      "sha": "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+      "parents": [
+        "28906934b474265e2eb4d301a198ffe108d638e0",
+        "eb61d6d7041fa5984ff572a8840424aefa1226c1"
+      ],
+      "tree": "51046e3eb5d20053586ccb214c4281cccbb203d9",
+      "timestamp": 1791067599
+    },
+    {
+      "sha": "df6073774b48419f7d8257ce7477c32f2ddd4262",
+      "parents": [
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "tree": "e1b1f1d5f598a043c3c51c53da9e524df04b1e4f",
+      "timestamp": 1791068490
+    },
+    {
+      "sha": "ed3abf1ed48138dc9afb604c7c13ebedad77060a",
+      "parents": [
+        "e4ca1540056bdd553f6224b3b8cc5ea338b40e5c"
+      ],
+      "tree": "1fae35078033adcdbd922370b8010fba488a1136",
+      "timestamp": 1791067895
+    },
+    {
+      "sha": "b30f874345c98135113f985c446f20b0292c87ec",
+      "parents": [
+        "df6073774b48419f7d8257ce7477c32f2ddd4262",
+        "ed3abf1ed48138dc9afb604c7c13ebedad77060a"
+      ],
+      "tree": "39eb274a549818fb12a97c6e9e45f3080effe616",
+      "timestamp": 1791068999
+    },
+    {
+      "sha": "d0908fe28460674ee4c671d86e877b5c27e2396d",
+      "parents": [
+        "6b2e6236c87b4e542df8e33d02433357eb4ea84e"
+      ],
+      "tree": "91a253876e0c2ca30d3baf35c826a43dbb552e88",
+      "timestamp": 1791067928
+    },
+    {
+      "sha": "51d998ef974b594d69f6cd761d032ed36c58f037",
+      "parents": [
+        "b30f874345c98135113f985c446f20b0292c87ec",
+        "d0908fe28460674ee4c671d86e877b5c27e2396d"
+      ],
+      "tree": "4c98c67c320956a1e5b3a3de41f40343b25c8b26",
+      "timestamp": 1791069772
+    },
+    {
+      "sha": "77c2e47fdcf0f25dc7f8e819f444c8777769ada6",
+      "parents": [
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "tree": "2685865ad97a866f649df87be2e5257ece094616",
+      "timestamp": 1791070617
+    },
+    {
+      "sha": "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+      "parents": [
+        "51d998ef974b594d69f6cd761d032ed36c58f037",
+        "77c2e47fdcf0f25dc7f8e819f444c8777769ada6"
+      ],
+      "tree": "eb93cdc9e580adccab30709fea7c7f1aded9f790",
+      "timestamp": 1791071085
+    },
+    {
+      "sha": "d8276938f89f3dc7cd354fda77d09365d5997c37",
+      "parents": [
+        "9c7910c7c3e504c77b8ed6603a9121a6914260cc"
+      ],
+      "tree": "638f53ced62d99b51855f25f46072cfb826f7079",
+      "timestamp": 1791070953
+    },
+    {
+      "sha": "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+      "parents": [
+        "8518124e2fb75d021f316a1bf41e510ae02ebe77",
+        "d8276938f89f3dc7cd354fda77d09365d5997c37"
+      ],
+      "tree": "221151ade2b56fe644b3f91ef55651daa70c75b6",
+      "timestamp": 1791071970
+    },
+    {
+      "sha": "5c172492c89bae5180d6f06fef2529008b38bd86",
+      "parents": [
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6"
+      ],
+      "tree": "446d3d1628f24be78a41a9503297b83c6c1b9a3e",
+      "timestamp": 1791073072
+    },
+    {
+      "sha": "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+      "parents": [
+        "e672ad6b0059e8bbc0e8fd51c54175b185fbd8d6",
+        "5c172492c89bae5180d6f06fef2529008b38bd86"
+      ],
+      "tree": "446d3d1628f24be78a41a9503297b83c6c1b9a3e",
+      "timestamp": 1791073195
+    },
+    {
+      "sha": "6ff98cd1b02465568c2d92671c569f7840b8a109",
+      "parents": [
+        "55f16d7d90dd4a4d0cf826e6157105468a7e9ece"
+      ],
+      "tree": "9bd7463218a83ce705a0a2974e7f15b8bc93365e",
+      "timestamp": 1791070534
+    },
+    {
+      "sha": "9924ee4c1e0ee013b50605fca0fee139b83b10c7",
+      "parents": [
+        "6ff98cd1b02465568c2d92671c569f7840b8a109"
+      ],
+      "tree": "53744262016a8c27df2e1503f4db427d49a66b3e",
+      "timestamp": 1791074802
+    },
+    {
+      "sha": "cd394b1a6c90d4cffcae1ce99aa6c8948286d021",
+      "parents": [
+        "bce6ee4b6b7127f0ee0f1be61ae0cbee7745a47e",
+        "9924ee4c1e0ee013b50605fca0fee139b83b10c7"
+      ],
+      "tree": "0258e034db203d1673a4bcfdb663c6f98834927d",
+      "timestamp": 1791075785
+    }
+  ],
+  "accepted_close": {
+    "completion_id": "captured-completion-13",
+    "session_id": "captured-session-13",
+    "claim_epoch": 2
+  },
+  "gaps": [
+    [
+      "6b2e6236c87b4e542df8e33d02433357eb4ea84e",
+      "28906934b474265e2eb4d301a198ffe108d638e0"
+    ],
+    [
+      "9c7910c7c3e504c77b8ed6603a9121a6914260cc",
+      "df6073774b48419f7d8257ce7477c32f2ddd4262"
+    ]
+  ]
+}

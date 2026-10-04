@@ -194,7 +194,7 @@ class ParentHeadRecovery:
                 await self._git_proof(
                     gap,
                     repository,
-                    gap["stage"]["current_subject"]["head_sha"],
+                    gap["gap_head_sha"],
                     published_head_sha=request.head_sha,
                 )
                 for gap in proof["gap_proofs"]
@@ -277,7 +277,7 @@ class ParentHeadRecovery:
                         await self._git_proof(
                             gap,
                             repository,
-                            gap["stage"]["current_subject"]["head_sha"],
+                            gap["gap_head_sha"],
                             published_head_sha=request.head_sha,
                         )
                         != expected_gap
@@ -597,22 +597,24 @@ class ParentHeadRecovery:
             and completion["completed_at"] < resolution["intent"]["committed_at"]
         ):
             raise ValueError("repair completion predates its resolution push")
-        if len(close_events) == 1 and all(
-            close_events[0].get(key)
-            for key in ("session_id", "instance_token", "workspace_id", "fence_token")
-        ):
-            authoring = {
-                key: close_events[0][key]
-                for key in (
-                    "task_id",
-                    "session_id",
-                    "instance_token",
-                    "workspace_id",
-                    "fence_token",
+        author_keys = ("task_id", "session_id", "instance_token", "workspace_id", "fence_token")
+        audited_authors = [
+            {key: event[key] for key in author_keys}
+            for event in close_events
+            if all(event.get(key) for key in author_keys)
+        ]
+        if resolution is not None and close_events:
+            if len(audited_authors) != len(close_events):
+                raise ValueError(f"stage {stage['ordinal']} has an incomplete delegate-close audit")
+            matching = [author for author in audited_authors if author == resolution["authoring"]]
+            if len(matching) != 1:
+                raise ValueError(
+                    f"stage {stage['ordinal']} has no unique delegate-close audit "
+                    "matching its resolution authoring"
                 )
-            }
-            if resolution is not None and authoring != resolution["authoring"]:
-                raise ValueError("delegate-close audit contradicts resolution authoring")
+            authoring = matching[0]
+        elif len(close_events) == 1 and len(audited_authors) == 1:
+            authoring = audited_authors[0]
         elif (
             not close_events
             and resolution is not None
@@ -624,7 +626,8 @@ class ParentHeadRecovery:
             authoring["resolution_intent_id"] = resolution["intent"]["id"]
         else:
             raise ValueError(
-                "repair lacks its exact fenced delegate-close audit or resolution receipt"
+                f"stage {stage['ordinal']} repair lacks its exact fenced "
+                "delegate-close audit or resolution receipt"
             )
         # Older closes proved the attached repair head, then lost it while
         # building the completion from a base checkout without the parent ref.
@@ -632,7 +635,26 @@ class ParentHeadRecovery:
         # the audited close. The stage lineage and remote Git proof below still
         # establish the head; summary text and an unrelated passing close do not.
         accepted_close = None
-        if commits == []:
+        archived_history = None
+        if commits == [] and table is archived_tasks and gap_base is not None:
+            archived_history = await self._close_history_on(
+                conn,
+                stage,
+                operation,
+                checkpoint,
+                parent["project_id"],
+            )
+            if (
+                len(archived_history["completions"]) != 1
+                or archived_history["completions"][0]["id"] != completion["id"]
+                or resolution is not None
+                or stage["starting_sha"] != gap_base
+                or {key: archived_history["audits"][0]["payload"][key] for key in author_keys}
+                != authoring
+            ):
+                raise ValueError("archived empty gap lacks its one exact close and completion")
+            authoring["archived_completion_id"] = completion["id"]
+        elif commits == []:
             accepted_value = await conn.scalar(
                 select(task_metadata.c.value)
                 .where(
@@ -891,6 +913,7 @@ class ParentHeadRecovery:
             ):
                 raise ValueError("current verifier is not an idle matching aggregate verifier")
         proof = {
+            "project_id": parent["project_id"],
             "operation": operation,
             "checkpoint": checkpoint,
             "stage": stage,
@@ -902,6 +925,7 @@ class ParentHeadRecovery:
             "existing": existing,
             "authoring": authoring,
             "accepted_close": accepted_close,
+            "archived_close_history": archived_history,
             "repair_head_sha": repair_head,
             "following_receipts": following,
             "advanced": advanced,
@@ -927,25 +951,66 @@ class ParentHeadRecovery:
                             .where(
                                 integration_repair_stages.c.operation_id == operation["id"],
                                 integration_repair_stages.c.ordinal <= operation["active_stage"],
-                                integration_repair_stages.c.current_subject["head_sha"].as_string()
-                                == after,
                             )
+                            .order_by(integration_repair_stages.c.ordinal)
                             .with_for_update()
                         )
                     )
                     .mappings()
                     .all()
                 )
+                proof_stages = candidates
+                origins, inherited = [], set()
+                for candidate in candidates:
+                    recorded = (candidate["dossier"] or {}).get("repair_commits") or []
+                    if not isinstance(recorded, list) or any(
+                        not isinstance(sha, str) or not is_valid_git_oid(sha) for sha in recorded
+                    ):
+                        raise ValueError("stage has malformed recorded repair commits")
+                    if len(set(recorded)) != len(recorded):
+                        raise ValueError("stage has duplicate recorded repair commits")
+                    introduced = [sha for sha in recorded if sha not in inherited]
+                    inherited.update(recorded)
+                    if after in introduced:
+                        origins.append((candidate, introduced))
+                candidates = origins
                 if len(candidates) != 1:
                     raise ValueError(
                         f"receipt gap {before} -> {after} has no unique completed stage"
                     )
+                origin_subject = candidates[0][0]["current_subject"]
+                if not isinstance(origin_subject, dict):
+                    raise ValueError("receipt gap origin has no exact completed subject")
                 gap = await self._proof_on(
                     conn,
-                    SimpleNamespace(operation_id=request.operation_id, head_sha=after),
-                    stage_ordinal=candidates[0]["ordinal"],
+                    SimpleNamespace(
+                        operation_id=request.operation_id,
+                        head_sha=origin_subject.get("head_sha", ""),
+                    ),
+                    stage_ordinal=candidates[0][0]["ordinal"],
                     gap_base=before,
                 )
+                gap["gap_head_sha"] = after
+                gap["gap_recorded_commits"] = candidates[0][1]
+                if gap["archived_close_history"]:
+                    # Origin discovery discarded inherited stages; inspect the
+                    # immediately preceding durable stage's complete dossier.
+                    prior = next(
+                        (
+                            row
+                            for row in proof_stages
+                            if row["ordinal"] == gap["stage"]["ordinal"] - 1
+                        ),
+                        None,
+                    )
+                    if prior is None or ((prior["dossier"] or {}).get("repair_commits") or [])[
+                        -1:
+                    ] != [before]:
+                        raise ValueError(
+                            "archived gap does not follow the previous recorded stage head"
+                        )
+                if after != gap["repair_head_sha"]:
+                    gap["interior"] = await self._interior_gap_on(conn, gap, after)
                 proof["gap_proofs"].append(gap)
         return proof
 
@@ -1069,6 +1134,160 @@ class ParentHeadRecovery:
                 .values(dossier=dossier)
             )
 
+    async def _close_history_on(self, conn, stage, operation, checkpoint, project_id):
+        """Pair every fenced close with its one subsequent passing completion."""
+        completions = (
+            (
+                await conn.execute(
+                    select(task_completion_records)
+                    .where(
+                        task_completion_records.c.task_id == stage["repair_task_id"],
+                    )
+                    .order_by(
+                        task_completion_records.c.completed_at,
+                        task_completion_records.c.id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        events = (
+            (
+                await conn.execute(
+                    select(
+                        integration_outbox.c.payload,
+                        integration_outbox.c.created_at,
+                    )
+                    .where(
+                        integration_outbox.c.project_id == project_id,
+                        integration_outbox.c.event_type == "integration.repair_delegate_closed",
+                        integration_outbox.c.payload["operation_id"].as_string() == operation["id"],
+                        integration_outbox.c.payload["stage"].as_integer() <= stage["ordinal"],
+                    )
+                    .order_by(
+                        integration_outbox.c.created_at,
+                        integration_outbox.c.id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        previous = [
+            row["payload"].get("fence_token")
+            for row in events
+            if row["payload"]["stage"] < stage["ordinal"]
+        ]
+        if any(type(token) is not int or token <= 0 for token in previous):
+            raise ValueError("historical close has an invalid previous-stage fence")
+        audits = [dict(row) for row in events if row["payload"]["stage"] == stage["ordinal"]]
+        fence = max(previous, default=0)
+        if not audits or len(audits) != len(completions):
+            raise ValueError("historical closes and passing completions do not pair exactly")
+        keys = ("task_id", "session_id", "instance_token", "workspace_id")
+        for index, (audit, completion) in enumerate(zip(audits, completions, strict=True)):
+            payload = audit["payload"]
+            next_close = audits[index + 1]["created_at"] if index + 1 < len(audits) else None
+            if (
+                payload.get("project_id") != project_id
+                or payload.get("task_id") != stage["repair_task_id"]
+                or any(not isinstance(payload.get(key), str) or not payload[key] for key in keys)
+                or type(payload.get("fence_token")) is not int
+                or payload["fence_token"] <= fence
+                or completion["outcome"] != "pass"
+                or completion["branch"] != checkpoint["branch"]
+                or completion["completed_at"] < audit["created_at"]
+                or (next_close is not None and completion["completed_at"] >= next_close)
+            ):
+                raise ValueError("historical close lacks its exact subsequent passing completion")
+            fence = payload["fence_token"]
+        return {
+            "audits": audits,
+            "completions": [dict(row) for row in completions],
+            "previous_fence": max(previous, default=0),
+        }
+
+    async def _interior_gap_on(self, conn, proof, gap_head):
+        """Bind a historical interior edge to its stage's first fenced resolution."""
+        stage, operation, checkpoint = proof["stage"], proof["operation"], proof["checkpoint"]
+        intents = (
+            (
+                await conn.execute(
+                    select(integration_promotion_intents)
+                    .where(
+                        integration_promotion_intents.c.resolution_operation_id == operation["id"],
+                        integration_promotion_intents.c.resolution_stage_ordinal
+                        == stage["ordinal"],
+                        integration_promotion_intents.c.state == "committed",
+                    )
+                    .order_by(
+                        integration_promotion_intents.c.committed_at,
+                        integration_promotion_intents.c.id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if not intents or intents[0]["expected_target"] != gap_head:
+            raise ValueError("interior gap is not the first committed resolution's exact base")
+        history = await self._close_history_on(
+            conn,
+            stage,
+            operation,
+            checkpoint,
+            proof["project_id"],
+        )
+        keys = ("task_id", "session_id", "instance_token", "workspace_id", "fence_token")
+        resolutions, paired = [], set()
+        for intent in intents:
+            resolution = await self._resolution_receipt_on(
+                conn,
+                operation,
+                checkpoint,
+                stage
+                | {
+                    "current_subject": stage["current_subject"]
+                    | {
+                        "head_sha": intent["resolution_head_sha"],
+                    }
+                },
+                project_id=proof["project_id"],
+            )
+            matching = [
+                index
+                for index, row in enumerate(history["audits"])
+                if {key: row["payload"][key] for key in keys}
+                == (resolution["authoring"] if resolution else None)
+            ]
+            if len(matching) != 1 or matching[0] in paired:
+                raise ValueError("interior gap resolution lacks its exact historical close")
+            completion = history["completions"][matching[0]]
+            try:
+                commits = json.loads(completion["commits"])
+            except (TypeError, ValueError):
+                commits = None
+            if (
+                commits not in ([], [intent["resolution_head_sha"]])
+                or completion["completed_at"] < intent["committed_at"]
+            ):
+                raise ValueError("historical completion contradicts its committed resolution")
+            paired.add(matching[0])
+            resolutions.append(resolution)
+        for index, completion in enumerate(history["completions"]):
+            if index not in paired:
+                try:
+                    commits = json.loads(completion["commits"])
+                except (TypeError, ValueError):
+                    commits = None
+                if commits not in ([], [gap_head]) or index >= min(paired):
+                    raise ValueError("unpaired historical completion contradicts the interior gap")
+        return {"resolutions": resolutions, "close_history": history}
+
     async def _resolution_receipt_on(self, conn, operation, checkpoint, stage, *, project_id):
         """A committed resolution preserves the original writer's exact push fence."""
         head = (stage["current_subject"] or {}).get("head_sha")
@@ -1118,7 +1337,18 @@ class ParentHeadRecovery:
         evidence = receipt["resolution_evidence"] or {}
         author = evidence.get("authoring") or {}
         fence = author.get("fence") or {}
-        push = {"kind": "exact_resolution_push_observed", "remote_sha": head}
+        push = {
+            "kind": "exact_resolution_push_observed",
+            "remote_sha": head,
+            "operation_id": operation["id"],
+            "stage_ordinal": stage["ordinal"],
+            "repair_task_id": stage["repair_task_id"],
+            "repair_session_id": intent["resolution_session_id"],
+            "repair_session_instance_token": intent["resolution_session_instance_token"],
+            "repair_workspace_id": intent["resolution_workspace_id"],
+            "fence_owner_id": stage["repair_task_id"],
+            "fence_token": intent["resolution_fence_token"],
+        }
         if (
             evidence.get("kind") != "conflict_resolution"
             or intent["project_id"] != project_id
@@ -1208,7 +1438,7 @@ class ParentHeadRecovery:
         """A detached reservation still preserves any unpublished work in its former slot."""
         workspace = proof["workspace"]
         if workspace is None:
-            # Cancelled collection shares this check without an empty-verifier proof.
+            # Collection reopening also uses this proof without a verification stage.
             if proof.get("empty_verification", False):
                 raise ValueError("empty verification requires a confirmed parent workspace")
             return
@@ -1305,10 +1535,81 @@ class ParentHeadRecovery:
             store, stage["starting_sha"], repair_head
         )
         recorded = (stage["dossier"] or {}).get("repair_commits") or []
-        if not proof["collection_recovery"] and (
-            not audited or recorded[-len(audited) :] != audited
+        gap_resolution = proof["resolution"] if "gap_head_sha" in proof else None
+        if (
+            not proof["collection_recovery"]
+            and not gap_resolution
+            and (not audited or recorded[-len(audited) :] != audited)
         ):
             raise ValueError("head does not match the stage's complete audited repair commit range")
+        if "gap_head_sha" in proof:
+            # A continued collection stage can record a fix before later child
+            # resolutions advance its subject. Prove only the missing edge,
+            # while its latest completion and close still prove the full subject.
+            if not await self.promotion._is_ancestor(store, base_sha, head_sha):
+                raise ValueError("receipt gap does not descend from the collected aggregate")
+            if not await self.promotion._is_ancestor(store, head_sha, repair_head):
+                raise ValueError("receipt gap is absent from its completed repair subject")
+            if not await self.promotion._is_ancestor(store, repair_head, published_head_sha):
+                raise ValueError("completed gap repair is absent from the published parent head")
+            if gap_resolution:
+                # A continuation may have moved starting_sha to the subject.
+                # Its immutable committed resolution still proves that subject.
+                intent, receipt = gap_resolution["intent"], gap_resolution["receipt"]
+                if (
+                    await self.promotion._tree_oid(store, repair_head)
+                    != intent["resolution_tree_sha"]
+                    or not await self.promotion._is_ancestor(
+                        store, receipt["before_sha"], repair_head
+                    )
+                    or await self.promotion._resolution_commit_range(
+                        store, receipt["before_sha"], repair_head
+                    )
+                    != intent["resolution_commit_shas"]
+                ):
+                    raise ValueError("completed gap repair differs from its resolution receipt")
+            commits = await self.promotion._resolution_commit_range(store, base_sha, head_sha)
+            recorded = proof["gap_recorded_commits"]
+            if proof["archived_close_history"] and (head_sha != repair_head or commits != recorded):
+                raise ValueError("archived empty gap differs from its complete introduced range")
+            if not commits or not any(
+                recorded[index : index + len(commits)] == commits for index in range(len(recorded))
+            ):
+                raise ValueError("receipt gap lacks its complete recorded repair commit range")
+            if "interior" in proof:
+                for resolution in proof["interior"]["resolutions"]:
+                    intent, receipt = resolution["intent"], resolution["receipt"]
+                    if (
+                        not await self.promotion._is_ancestor(
+                            store,
+                            intent["resolution_head_sha"],
+                            repair_head,
+                        )
+                        or await self.promotion._tree_oid(store, intent["resolution_head_sha"])
+                        != intent["resolution_tree_sha"]
+                        or await self.promotion._resolution_commit_range(
+                            store,
+                            receipt["before_sha"],
+                            receipt["after_sha"],
+                        )
+                        != intent["resolution_commit_shas"]
+                    ):
+                        raise ValueError("historical resolution differs from its published range")
+            if "interior" in proof or proof["archived_close_history"]:
+                lineage = await self.promotion.git.arun_git_result(
+                    ["rev-list", "--reverse", "--first-parent", f"{base_sha}..{head_sha}"],
+                    cwd=str(store),
+                    env={"LC_ALL": "C"},
+                    lock_held=True,
+                )
+                if lineage.returncode != 0 or lineage.stdout.splitlines() != commits:
+                    raise ValueError("historical gap is not a contiguous parent first-parent range")
+            for receipt in proof["receipts"]:
+                if receipt["after_sha"] and not await self.promotion._is_ancestor(
+                    store, receipt["after_sha"], published_head_sha
+                ):
+                    raise ValueError("head loses an original child receipt")
+            return {"base_sha": base_sha, "head_sha": head_sha, "commits": commits}
         if not await self.promotion._is_ancestor(store, base_sha, repair_head):
             raise ValueError("head does not descend from the collected aggregate")
         commits = await self.promotion._resolution_commit_range(store, base_sha, repair_head)
