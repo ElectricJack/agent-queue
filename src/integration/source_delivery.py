@@ -52,9 +52,9 @@ its completed repair remains deliverable even after the original lands.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import insert, select
@@ -297,8 +297,14 @@ async def retire_delivered_queued_repairs(db, proofs, *, project_id: str, retire
     from src.database.queries.blocked_state import OBSOLETE_META_KEY
     from src.database.queries.integration_state_queries import session_attached_clause
     from src.database.tables import (
-        gates, integration_branch_owners, projects, sessions, task_completion_records,
-        task_gates, task_labels, workspaces,
+        gates,
+        integration_branch_owners,
+        projects,
+        sessions,
+        task_completion_records,
+        task_gates,
+        task_labels,
+        workspaces,
     )
     from src.integration.delivery_observer import delivery_targets
     from src.integration.review_evidence import ReviewEvidenceProducer

@@ -11785,6 +11785,54 @@
         "type": "object"
       }
     },
+    "integration_release_held_gate": {
+      "name": "integration_release_held_gate",
+      "description": "A local human releases an exact parent hold with an audited reason.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "gate_id": {
+            "minLength": 1,
+            "title": "Gate Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Version"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "subject_id",
+          "gate_id"
+        ],
+        "title": "IntegrationReleaseHeldGateArgs",
+        "type": "object"
+      }
+    },
     "integration_release_owner": {
       "name": "integration_release_owner",
       "description": "Authenticated hierarchical integration operational control.",

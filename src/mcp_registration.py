@@ -184,8 +184,8 @@ def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict
     """
     # Lazy import to avoid circular dependency at module level.
     # CommandHandler imports tool_registry → tool_registry is imported here.
-    from src.commands.handler import CommandHandler  # noqa: E402
     from src.commands.contracts import CONTRACTS
+    from src.commands.handler import CommandHandler  # noqa: E402
     from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
 
     typed = {d["name"] for d in _ALL_TOOL_DEFINITIONS} | set(CONTRACTS.names())

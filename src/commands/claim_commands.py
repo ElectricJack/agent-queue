@@ -513,7 +513,8 @@ class ClaimCommandsMixin:
         failed claim, so nothing here raises into the claim path.
         """
         from src.integration.source_delivery import (
-            delivered_queued_repairs, retire_delivered_queued_repairs,
+            delivered_queued_repairs,
+            retire_delivered_queued_repairs,
         )
 
         try:
