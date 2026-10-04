@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
+from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     archived_tasks,
@@ -15,6 +17,7 @@ from src.database.tables import (
     integration_outbox,
     integration_promotion_intents,
     integration_repair_stages,
+    integration_repair_operations,
     sessions,
     task_completion_records,
     task_delivery_receipts,
@@ -27,6 +30,7 @@ from src.database.tables import (
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.parent_completion import ParentCompletion
 from src.integration.parent_engine import parent_engine_guard
+from src.integration.recovery_controls import IntegrationRecoveryControls
 
 EXTENSIONS = "parent_head_extensions"
 COLLECTION_RECOVERY = "collection_head_recovery"
@@ -145,6 +149,8 @@ class ParentHeadRecovery:
                 )
                 for gap in proof["gap_proofs"]
             ]
+        async with self.db._engine.connect() as conn:
+            await self._workspace_proof_on(conn, proof, repository, request.head_sha)
         result = {
             "operation_id": request.operation_id,
             "head_sha": request.head_sha,
@@ -155,6 +161,8 @@ class ParentHeadRecovery:
             "receipt_head_sha": proof["base_sha"],
             "repair_task_id": proof["delegate"]["id"],
             "completion_id": proof["completion"]["id"],
+            "repair_head_sha": proof["repair_head_sha"],
+            "collection_receipt_ids": [row["id"] for row in proof["following_receipts"]],
             "attempts": proof["stage"]["attempts"],
             "deadline_at": proof["stage"]["deadline_at"],
             "stage_state": proof["stage"]["state"],
@@ -221,7 +229,10 @@ class ParentHeadRecovery:
                         != expected_gap
                     ):
                         raise ValueError("historical repair proof changed")
-            if current["existing"] or current["recovered_collection"]:
+            await self._workspace_proof_on(conn, current, repository, request.head_sha)
+            if current["recovered_collection"] or (
+                current["existing"] and (not current["advanced"] or current["settled"])
+            ):
                 return result | {"outcome": "already_recovered"}
             if current["collection_recovery"]:
                 return await self._recover_collection_on(
@@ -236,7 +247,7 @@ class ParentHeadRecovery:
             dossier = dict(stage["dossier"] or {})
             edge = extension(
                 current["operation"],
-                current["checkpoint"],
+                current["checkpoint"] | {"generation": stage["current_subject"]["generation"]},
                 stage,
                 git_proof,
                 current["authoring"]
@@ -247,24 +258,60 @@ class ParentHeadRecovery:
                     "reason": request.reason,
                 },
             )
-            dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
+            if not current["existing"]:
+                dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
+            if current["advanced"]:
+                dossier["collected_head_recovery"] = {
+                    "head_sha": request.head_sha,
+                    "generation": current["checkpoint"]["generation"],
+                    "receipt_ids": result["collection_receipt_ids"],
+                    "repair_head_sha": current["repair_head_sha"],
+                    "fence_token": current["owner"]["fence_token"],
+                    "principal": principal,
+                    "reason": request.reason,
+                }
             await conn.execute(
                 update(integration_repair_stages)
                 .where(
                     integration_repair_stages.c.operation_id == request.operation_id,
                     integration_repair_stages.c.ordinal == stage["ordinal"],
                 )
-                .values(dossier=dossier)
+                .values(
+                    **(
+                        {"state": "passed", "completed_at": self.parent.clock()}
+                        if current["advanced"]
+                        else {}
+                    ),
+                    dossier=dossier,
+                )
             )
             await advance_checkpoint_on(
                 conn, current["checkpoint"], request.head_sha, self.parent.clock()
             )
-            if current["operation"]["verifier_task_id"] is None:
+            if current["advanced"]:
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.id == request.operation_id,
+                    )
+                    .values(state="active", updated_at=self.parent.clock())
+                )
+                await conn.execute(
+                    update(task_integration_checkpoints)
+                    .where(
+                        task_integration_checkpoints.c.task_id == current["checkpoint"]["task_id"],
+                    )
+                    .values(state="awaiting_children")
+                )
+            if current["operation"]["verifier_task_id"] is None or current["advanced"]:
                 # A legacy close can strand the aggregate before its first
                 # readiness event. Use the ordinary projection to file the
                 # verifier and queue its fenced handoff in this transaction.
                 ready = await self.parent.mark_ready_on(
-                    conn, current["operation"]["parent_task_id"]
+                    conn,
+                    current["operation"]["parent_task_id"],
+                    require_verifier=current["advanced"],
+                    event_suffix=f":recovery:{request.head_sha}" if current["advanced"] else "",
                 )
                 if ready.get("state") != "integration_ready":
                     raise ValueError(
@@ -279,7 +326,7 @@ class ParentHeadRecovery:
             dossier = dict(stage["dossier"] or {})
             edge = extension(
                 proof["operation"],
-                proof["checkpoint"],
+                proof["checkpoint"] | {"generation": stage["current_subject"]["generation"]},
                 stage,
                 git_proof,
                 gap["authoring"]
@@ -322,7 +369,17 @@ class ParentHeadRecovery:
             .values(state="passed", completed_at=stage["completed_at"] or now, dossier=dossier)
         )
         await advance_checkpoint_on(conn, proof["checkpoint"], request.head_sha, now)
-        ready = await self.parent.mark_ready_on(conn, proof["operation"]["parent_task_id"])
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == proof["checkpoint"]["task_id"])
+            .values(state="awaiting_children")
+        )
+        ready = await self.parent.mark_ready_on(
+            conn,
+            proof["operation"]["parent_task_id"],
+            require_verifier=True,
+            event_suffix=f":recovery:{request.head_sha}",
+        )
         if ready.get("state") != "integration_ready" or ready.get("head_sha") != request.head_sha:
             raise ValueError(
                 "recovered collection cannot project verifier readiness: " + str(ready)
@@ -330,8 +387,6 @@ class ParentHeadRecovery:
         return result | {"outcome": "recovered"}
 
     async def _proof_on(self, conn, request, *, stage_ordinal=None, gap_base=None):
-        from src.database.tables import integration_repair_operations
-
         hint = (
             (
                 await conn.execute(
@@ -372,28 +427,22 @@ class ParentHeadRecovery:
             .mappings()
             .one_or_none()
         )
-        subject = {
-            "kind": "parent",
-            "generation": (
-                checkpoint["generation"]
-                if stage_ordinal is None
-                else (stage["current_subject"] or {}).get("generation")
-                if stage
-                else None
-            ),
-            "head_sha": request.head_sha,
-        }
+        subject = stage["current_subject"] if stage else None
         if (
             stage is None
             or stage["writer_kind"] != "repair_delegate"
-            or stage["current_subject"] != subject
-            or type(subject["generation"]) is not int
+            or not isinstance(subject, dict)
+            or subject.get("kind") != "parent"
+            or type(subject.get("generation")) is not int
             or not 0 <= subject["generation"] <= checkpoint["generation"]
+            or not is_valid_git_oid(subject.get("head_sha", ""))
+            or (stage_ordinal is not None and subject["head_sha"] != request.head_sha)
         ):
             raise ValueError(
                 "current stage is not bound to this exact repaired head and generation"
             )
         stage = dict(stage)
+        repair_head = subject["head_sha"]
         delegate = None
         for table in (tasks, archived_tasks):
             delegate = (
@@ -447,8 +496,8 @@ class ParentHeadRecovery:
             completion is None
             or completion["outcome"] != "pass"
             or completion["branch"] != checkpoint["branch"]
-            or commits not in ([request.head_sha], [])
-            or (stage["dossier"] or {}).get("branch_sha") != request.head_sha
+            or commits not in ([repair_head], [])
+            or (stage["dossier"] or {}).get("branch_sha") != repair_head
         ):
             raise ValueError("latest repair completion does not prove this exact head")
         close_events = (
@@ -490,7 +539,12 @@ class ParentHeadRecovery:
             }
             if resolution is not None and authoring != resolution["authoring"]:
                 raise ValueError("delegate-close audit contradicts resolution authoring")
-        elif not close_events and resolution is not None:
+        elif (
+            not close_events
+            and resolution is not None
+            and gap_base is None
+            and repair_head == request.head_sha
+        ):
             authoring = dict(resolution["authoring"])
             authoring["resolution_receipt_id"] = resolution["receipt"]["id"]
             authoring["resolution_intent_id"] = resolution["intent"]["id"]
@@ -551,6 +605,23 @@ class ParentHeadRecovery:
             or owner["fence_token"] <= authoring["fence_token"]
         ):
             raise ValueError("branch has an active writer or unrelated reservation")
+        workspace = None
+        if owner["confirmed_workspace_id"]:
+            workspace = (
+                (
+                    await conn.execute(
+                        select(workspaces)
+                        .where(
+                            workspaces.c.id == owner["confirmed_workspace_id"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if workspace is None or workspace["project_id"] != parent["project_id"]:
+                raise ValueError("confirmed parent workspace is unavailable")
         ids = [parent["id"], delegate["id"], operation["verifier_task_id"]]
         for task_id in filter(None, ids):
             if await self.db._read_manual_pause(conn, task_id) is not None:
@@ -588,24 +659,25 @@ class ParentHeadRecovery:
             .limit(1)
         ):
             raise ValueError("unresolved promotion or external write")
-        from src.integration.recovery_controls import IntegrationRecoveryControls
-
-        if await IntegrationRecoveryControls._ambiguous_writes_on(conn, operation):
-            raise ValueError("unresolved promotion or external write")
-        readiness = await self.parent.readiness_on(
-            conn, parent=parent, project=project, checkpoint=checkpoint, operation=operation
-        )
-        if any(
-            item["reason"] not in {"receipt_chain", "repair_head_chain"}
-            for item in readiness["blockers"]
+        if await IntegrationRecoveryControls._ambiguous_writes_on(
+            conn,
+            operation,
+            allowed_writer_id=owner["id"],
         ):
-            raise ValueError("child collection is not ready: " + str(readiness["blockers"]))
+            raise ValueError("unresolved promotion or external write")
         existing = [
             e
             for e in (stage["dossier"] or {}).get(EXTENSIONS, [])
-            if e["after_sha"] == request.head_sha
+            if e.get("stage") == stage["ordinal"] and e.get("after_sha") == repair_head
         ]
-        collection_recovery = resolution is not None and gap_base is None
+        if len(existing) > 1:
+            raise ValueError("repair extension is ambiguous")
+        original = await self.parent.readiness_on(
+            conn, parent=parent, project=project, checkpoint=checkpoint, operation=operation
+        )
+        collection_recovery = (
+            resolution is not None and gap_base is None and repair_head == request.head_sha
+        )
         if collection_recovery:
             from src.database.tables import integration_check_evidence
 
@@ -637,17 +709,91 @@ class ParentHeadRecovery:
             if collection_recovery
             else False
         )
+        following, advanced, settled = [], False, False
+        readiness = original
         base_sha = (
             gap_base
             if gap_base is not None
             else existing[0]["before_sha"]
             if existing
-            else readiness["head_sha"]
+            else original["head_sha"]
+            if original["outcome"] == "ready"
+            else stage["starting_sha"]
         )
-        if not collection_recovery and (
-            base_sha == request.head_sha or (existing and readiness["head_sha"] != request.head_sha)
-        ):
-            raise ValueError("head is not an unconsumed repair extension of the aggregate")
+        if collection_recovery or gap_base is not None:
+            if any(
+                item["reason"] not in {"receipt_chain", "repair_head_chain"}
+                for item in original["blockers"]
+            ):
+                raise ValueError("child collection is not ready: " + str(original["blockers"]))
+            if gap_base is not None and base_sha == repair_head:
+                raise ValueError("historical gap has no repair extension")
+        else:
+            recorded = (stage["dossier"] or {}).get("repair_commits") or []
+            if not existing and (not recorded or base_sha == repair_head):
+                raise ValueError("head is not an unconsumed repair extension of the aggregate")
+            proposed = extension(
+                operation,
+                checkpoint | {"generation": subject["generation"]},
+                stage,
+                {"base_sha": base_sha, "head_sha": repair_head, "commits": recorded},
+                authoring,
+            )
+            readiness = await self.parent.readiness_on(
+                conn,
+                parent=parent,
+                project=project,
+                checkpoint=checkpoint,
+                operation=operation,
+                additional_extension=None if existing else proposed,
+            )
+            if readiness["outcome"] != "ready":
+                raise ValueError("child collection is not ready: " + str(readiness["blockers"]))
+            if readiness["head_sha"] != request.head_sha:
+                raise ValueError("supplied head is not the receipt-proven current aggregate")
+            following, cursor = [], repair_head
+            for receipt in sorted(
+                readiness["receipts"], key=lambda row: (row["created_at"], row["id"])
+            ):
+                if receipt["disposition"] == "code" and receipt["before_sha"] == cursor:
+                    following.append(receipt)
+                    cursor = receipt["after_sha"]
+            if cursor != request.head_sha:
+                raise ValueError(
+                    "head advancement is not completely covered by collection receipts"
+                )
+            advanced = repair_head != request.head_sha
+            recovered = (stage["dossier"] or {}).get("collected_head_recovery") or {}
+            settled = (
+                recovered.get("head_sha") == request.head_sha
+                and recovered.get("generation") == checkpoint["generation"]
+                and recovered.get("repair_head_sha") == repair_head
+                and recovered.get("receipt_ids") == [row["id"] for row in following]
+                and stage["state"] == "passed"
+            )
+        if (advanced or collection_recovery) and operation["verifier_task_id"]:
+            verifier = (
+                (
+                    await conn.execute(
+                        select(tasks)
+                        .where(
+                            tasks.c.id == operation["verifier_task_id"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                verifier is None
+                or verifier["project_id"] != parent["project_id"]
+                or verifier["repo_id"] != checkpoint["repository_id"]
+                or verifier["branch_name"] != checkpoint["branch"]
+                or verifier["status"] not in {"PAUSED", "READY"}
+                or verifier["assigned_agent_id"] is not None
+            ):
+                raise ValueError("current verifier is not an idle matching aggregate verifier")
         proof = {
             "operation": operation,
             "checkpoint": checkpoint,
@@ -660,6 +806,11 @@ class ParentHeadRecovery:
             "existing": existing,
             "authoring": authoring,
             "accepted_close": accepted_close,
+            "repair_head_sha": repair_head,
+            "following_receipts": following,
+            "advanced": advanced,
+            "settled": settled,
+            "workspace": dict(workspace) if workspace else None,
             "resolution": resolution,
             "collection_recovery": collection_recovery,
             "recovered_collection": recovered_collection,
@@ -698,8 +849,6 @@ class ParentHeadRecovery:
                     gap_base=before,
                 )
                 proof["gap_proofs"].append(gap)
-        elif gap_base is None and readiness["outcome"] != "ready":
-            raise ValueError("child collection is not ready: " + str(readiness["blockers"]))
         return proof
 
     async def _resolution_receipt_on(self, conn, operation, checkpoint, stage, *, project_id):
@@ -837,6 +986,62 @@ class ParentHeadRecovery:
             )
         )
 
+    async def _workspace_proof_on(self, conn, proof, repository, head_sha):
+        """A detached reservation still preserves any unpublished work in its former slot."""
+        workspace = proof["workspace"]
+        if workspace is None:
+            return
+        git = self.promotion.git
+        path, branch = workspace["workspace_path"], proof["checkpoint"]["branch"]
+        branch = branch.removeprefix("refs/heads/")
+        remote = await git.arun_git_result(["remote", "get-url", "origin"], cwd=path)
+        if remote.returncode != 0 or remote.stdout.strip() != repository.origin_url:
+            raise ValueError("confirmed parent workspace repository cannot be proved")
+        local_ref = "refs/heads/" + branch
+        exists = await git.aref_exists(path, local_ref)
+        local_sha = await git.arev_parse(path, local_ref) if exists else None
+        if exists is None or exists and not local_sha:
+            raise ValueError("confirmed parent ref cannot be observed")
+        if local_sha:
+            ancestry = await git.arun_git_result(
+                ["merge-base", "--is-ancestor", local_sha, head_sha],
+                cwd=str(repository.retained_git_dir),
+            )
+            if ancestry.returncode != 0:
+                raise ValueError("confirmed parent ref has unpublished or unprovable work")
+        writers = {
+            os.path.realpath(p)
+            for p in (
+                await conn.execute(
+                    select(workspaces.c.workspace_path).where(
+                        or_(
+                            workspaces.c.locked_by_task_id.is_not(None),
+                            workspaces.c.locked_by_agent_id.is_not(None),
+                        ),
+                    )
+                )
+            ).scalars()
+        }
+        writers.update(
+            os.path.realpath(p)
+            for p in (
+                await conn.execute(
+                    select(sessions.c.work_dir).where(
+                        session_attached_clause(),
+                    )
+                )
+            ).scalars()
+            if p
+        )
+        for checkout in await git.aworktree_list(path):
+            if checkout.get("branch") != branch:
+                continue
+            if checkout.get("head") != local_sha or os.path.realpath(checkout["path"]) in writers:
+                raise ValueError("confirmed parent checkout moved or has a retained writer")
+            dirty = await git.aget_dirty_paths(checkout["path"])
+            if dirty is None or any(p != ".agent-queue-lock" for p in dirty):
+                raise ValueError("confirmed parent checkout has unpublished changes")
+
     async def _git_proof(self, proof, repository, head_sha, *, published_head_sha=None):
         store = repository.retained_git_dir
         checkpoint, stage = proof["checkpoint"], proof["stage"]
@@ -848,6 +1053,7 @@ class ParentHeadRecovery:
         )
         if remote.state is not RemoteRefState.PRESENT or remote.oid != published_head_sha:
             raise ValueError("published parent head differs from the supplied exact head")
+        repair_head = proof["repair_head_sha"]
         if not await self.promotion._is_ancestor(store, head_sha, published_head_sha):
             raise ValueError("historical repair is absent from the published parent head")
         if proof["collection_recovery"]:
@@ -867,26 +1073,47 @@ class ParentHeadRecovery:
             base_sha = receipt["before_sha"]
         else:
             base_sha = proof["base_sha"]
-        if not await self.promotion._is_ancestor(store, stage["starting_sha"], head_sha):
+        if not await self.promotion._is_ancestor(store, stage["starting_sha"], repair_head):
             raise ValueError("head is unrelated to the authorized repair base")
         audited = await self.promotion._resolution_commit_range(
-            store, stage["starting_sha"], head_sha
+            store, stage["starting_sha"], repair_head
         )
         recorded = (stage["dossier"] or {}).get("repair_commits") or []
         if not proof["collection_recovery"] and (
             not audited or recorded[-len(audited) :] != audited
         ):
             raise ValueError("head does not match the stage's complete audited repair commit range")
-        if not await self.promotion._is_ancestor(store, base_sha, head_sha):
+        if not await self.promotion._is_ancestor(store, base_sha, repair_head):
             raise ValueError("head does not descend from the collected aggregate")
-        commits = await self.promotion._resolution_commit_range(store, base_sha, head_sha)
+        commits = await self.promotion._resolution_commit_range(store, base_sha, repair_head)
         if not commits or (
             not proof["collection_recovery"] and any(sha not in audited for sha in commits)
         ):
             raise ValueError("aggregate extension contains unaudited commits")
+        if not await self.promotion._is_ancestor(store, repair_head, head_sha):
+            raise ValueError("published aggregate does not descend from the proved repair head")
+        covered = []
+        for receipt in proof["following_receipts"]:
+            if not await self.promotion._is_ancestor(
+                store, receipt["before_sha"], receipt["after_sha"]
+            ):
+                raise ValueError("collection receipt has a non-ancestor head")
+            receipt_commits = await self.promotion._resolution_commit_range(
+                store, receipt["before_sha"], receipt["after_sha"]
+            )
+            expected = (
+                [receipt["squash_sha"]]
+                if receipt["squash_sha"]
+                else receipt["resolution_evidence"]["repair_commit_shas"]
+            )
+            if receipt_commits != expected:
+                raise ValueError("collection receipt does not cover its complete Git commit range")
+            covered.extend(receipt_commits)
+        if await self.promotion._resolution_commit_range(store, repair_head, head_sha) != covered:
+            raise ValueError("head advancement contains commits without collection receipts")
         for receipt in proof["receipts"]:
             if receipt["after_sha"] and not await self.promotion._is_ancestor(
                 store, receipt["after_sha"], published_head_sha
             ):
                 raise ValueError("head loses an original child receipt")
-        return {"base_sha": base_sha, "head_sha": head_sha, "commits": commits}
+        return {"base_sha": base_sha, "head_sha": repair_head, "commits": commits}
