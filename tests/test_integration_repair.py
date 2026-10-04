@@ -7659,3 +7659,111 @@ async def test_red_on_a_reopened_collections_cancelled_stage_opens_the_next_stag
     assert (await _repair_stage(db, "operation", 0))["state"] == "cancelled"
     operation = await db.get_integration_operation("operation")
     assert (operation["active_stage"], operation["state"]) == (1, "escalated")
+
+async def _settle_resolution_while_collecting(db) -> None:
+    """Settle stage 0 on its recorded resolution while a later child still runs."""
+    from src.integration.repair import RepairService
+
+    delegate = await _seed_resolved_parent_conflict(db)
+    await db.create_task(
+        Task(
+            id="later-child",
+            project_id="p",
+            parent_task_id="parent",
+            title="Later child",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            repo_id="repo",
+            branch_name="aq/later-child",
+        )
+    )
+    service = RepairService(db, clock=lambda: 210.0)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _record_resolution_stage(db, delegate)
+    settled = await service.dispatch("operation", 0)
+    assert settled["reason"] == "resolution_recorded_for_subject"
+    assert (await _repair_stage(db, "operation", 0))["state"] == "passed"
+
+
+async def _later_child_conflicts(db) -> None:
+    """The later child completes and its promotion conflicts on the resolved head."""
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "later-child").values(
+            status=TaskStatus.COMPLETED.value,
+        ))
+        await conn.execute(insert(integration_promotion_intents).values(
+            id="later-conflict", domain_key="later-conflict-domain",
+            operation_key="operation", project_id="p", receipt_id="later-receipt",
+            source_task_id="later-child", target_task_id="parent", source_head="f" * 40,
+            source_base=STARTING_SHA, repository_id="repo", target_branch="aq/parent",
+            expected_target=RESOLUTION_HEAD, fence_owner_id="operation", fence_token=5,
+            state="conflict", conflict_diagnostics={"paths": ["src/shared.py"]},
+            review_evidence={"reviewed_tree_sha": "7" * 40},
+            authors=[], provenance={}, commit_metadata={},
+            created_at=290.0, updated_at=290.0,
+        ))
+
+
+@pytest.mark.parametrize("trigger", ["operation", "later-conflict"])
+async def test_a_later_conflict_after_a_settled_resolution_opens_a_fresh_stage(db, trigger):
+    """Review finding R2: a settled stage answered ``stale`` to the parent's next conflict.
+
+    Since a recorded resolution settles its stage ``passed`` on a live operation,
+    ``start`` only knew how to continue a live stage, so a later child's
+    conflict was stranded with no stage and no writer.
+    """
+    from src.integration.repair import RepairService
+
+    await _settle_resolution_while_collecting(db)
+    await _later_child_conflicts(db)
+    repair = RepairService(db, clock=lambda: 300.0)
+
+    # The shipped policy passes its operation key; a direct caller names the intent.
+    started = await repair.start("operation", RESOLUTION_HEAD, trigger, now=300.0)
+
+    assert (started["outcome"], started["stage"]) == ("started", 1), started
+    assert started["starting_sha"] == RESOLUTION_HEAD
+    replay = await repair.start("operation", RESOLUTION_HEAD, trigger, now=301.0)
+    assert (replay["outcome"], replay["stage"]) == ("already_started", 1)
+    operation = await db.get_integration_operation("operation")
+    assert (operation["state"], operation["active_stage"]) == ("escalated", 1)
+    # The policy's literal stage-zero dispatch reaches the fresh stage's writer.
+    dispatched = await repair.dispatch("operation", 0)
+    assert dispatched["outcome"] == "dispatched", dispatched
+    assert dispatched["stage"] == 1
+    settled = await _repair_stage(db, "operation", 0)
+    fresh = await _repair_stage(db, "operation", 1)
+    assert settled["state"] == "passed"
+    assert settled["dossier"]["resolution_verification"]["intent_id"] == "resolution-intent"
+    assert fresh["trigger_id"] == "later-conflict"
+    assert fresh["repair_task_id"] == dispatched["repair_task_id"]
+    assert fresh["dossier"]["current_conflict"]["intent_id"] == "later-conflict"
+    assert fresh["dossier"]["previous_stage"] == {
+        "ordinal": 0,
+        "state": "passed",
+        "trigger_id": "failed-check",
+        "starting_sha": STARTING_SHA,
+    }
+
+
+async def test_a_settled_resolution_replays_its_own_start_without_a_fresh_stage(db):
+    """Only a new conflict opens a stage after a settle; a replay stays idempotent."""
+    from src.integration.repair import RepairService
+
+    await _settle_resolution_while_collecting(db)
+    repair = RepairService(db, clock=lambda: 300.0)
+
+    replay = await repair.start("operation", STARTING_SHA, "failed-check", now=300.0)
+    assert (replay["outcome"], replay["stage"]) == ("already_started", 0)
+    # The settled stage's conflict is committed: the alias names no conflict now.
+    alias = await repair.start("operation", RESOLUTION_HEAD, "operation", now=300.0)
+    assert alias == {"outcome": "stale", "operation_id": "operation"}
+    resolved = await repair.start("operation", STARTING_SHA, "resolution-intent", now=300.0)
+    assert resolved == {"outcome": "stale", "operation_id": "operation"}
+    async with db._engine.connect() as conn:
+        ordinals = (await conn.execute(select(integration_repair_stages.c.ordinal).where(
+            integration_repair_stages.c.operation_id == "operation"
+        ))).scalars().all()
+    assert ordinals == [0]
+    operation = await db.get_integration_operation("operation")
+    assert (operation["state"], operation["active_stage"]) == ("active", 0)
