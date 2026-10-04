@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import insert, select, update
@@ -14,6 +17,7 @@ from src.database.tables import (
     events,
     gates,
     integration_branch_owners,
+    integration_check_evidence,
     integration_candidate_ref_mutations,
     integration_parent_episodes,
     integration_promotion_intents,
@@ -21,20 +25,24 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
     repos,
+    sessions,
     task_completion_records,
     task_delivery_receipts,
     task_gates,
     task_integration_checkpoints,
     task_metadata,
     tasks,
+    workspaces,
 )
 from src.integration.cancelled_collection_recovery import (
     CancelledCollectionRecovery,
+    Dispatch,
     _Changed,
     _ProofFailed,
 )
 from src.integration.models import BranchKey, Fence
-from src.integration.verifier_subject import verifier_subject_on
+from src.integration.verifier_subject import latest_red_parent_evidence, verifier_subject_on
+from src.models import TaskStatus
 
 RECOVERY_EVENT = "integration.failed_verification_collection_reopened"
 FAILED_AGGREGATE_META_KEY = "integration_failed_aggregate"
@@ -42,6 +50,47 @@ FAILED_AGGREGATE_META_KEY = "integration_failed_aggregate"
 
 class FailedVerificationRecovery(CancelledCollectionRecovery):
     """Reuse the collection remote proof and transactional dry-run/apply protocol."""
+
+    def __init__(
+        self, db: Any, promotion_service: Any, *, dispatch: Dispatch | None = None,
+        clock: Callable[[], float] = time.time,
+        confirm_handoff: Callable[[dict], Awaitable[bool]] | None = None,
+    ) -> None:
+        super().__init__(db, promotion_service, dispatch=dispatch, clock=clock)
+        self.confirm_handoff = confirm_handoff
+        self._previous_attachment = None
+
+    async def _prepare_apply(self, task_id, facts):
+        self._previous_attachment = None
+        if (facts["ci_failure"] is None
+                or facts["owner"]["handoff_state"] not in {"attached", "handoff_pending"}):
+            return None, facts
+        if self.confirm_handoff is None:
+            return {"outcome": "blocked",
+                    "reason": "server-side verifier stop/detach proof is unavailable"}, None
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, facts["project_id"])
+            refusal, current = await self._facts_on(conn, task_id, lock=True)
+            if refusal is not None or current["fingerprint"] != facts["fingerprint"]:
+                return {"outcome": "changed",
+                        "reason": "collection state changed; repeat the dry run"}, None
+        from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+
+        attachment = dict(facts["owner"])
+        try:
+            await BranchOwnership(self.db, confirm_handoff=self.confirm_handoff).confirm_transfer(
+                Fence(target=facts["target"], owner_id=attachment["owner_id"],
+                      token=attachment["fence_token"])
+            )
+        except (BranchBusy, StaleFence) as exc:
+            return {"outcome": "blocked", "reason": str(exc)}, None
+        # Handoff can change the task/claim/fence. Diagnose again rather than
+        # accepting any of the earlier facts as settlement or remote proof.
+        diagnosis, refreshed = await self._diagnose(task_id)
+        if diagnosis["outcome"] != "would_reopen":
+            return diagnosis, None
+        self._previous_attachment = attachment
+        return None, refreshed
 
     async def _diagnose(self, task_id):
         async with self.db._engine.connect() as conn:
@@ -168,7 +217,7 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
         if not isinstance(commits, list):
             commits_valid = False
             commits = []
-        if (
+        settled_failure = not (
             verifier is None
             or verifier["status"] not in {"FAILED", "BLOCKED"}
             or verifier["project_id"] != parent["project_id"]
@@ -180,10 +229,43 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             or failure["completed_at"] < episode["created_at"]
             or failure["branch"] != branch
             or not commits_valid
-        ):
-            return refuse("the verifier has no settled failed completion for this exact head")
+        )
         failure_subject = None
-        if checkpoint["checkpoint_sha"] not in commits:
+        ci_failure = None
+        if not settled_failure:
+            if (verifier is None or verifier["status"] not in {"IN_PROGRESS", "PAUSED"}
+                    or verifier["project_id"] != parent["project_id"]
+                    or verifier["branch_name"] != branch or verifier["repo_id"] != repo["id"]):
+                return refuse("the verifier has no settled failed completion for this exact head")
+            try:
+                failure_subject = await verifier_subject_on(
+                    conn, verifier_id=verifier_id, project_id=parent["project_id"],
+                    operation=operation, checkpoint=checkpoint, lock=lock,
+                )
+            except ValueError as exc:
+                return refuse(str(exc), "ambiguous")
+            if (failure_subject is None
+                    or failure_subject["subject"]["generation"] != checkpoint["generation"]):
+                return refuse("the held verifier has no immutable subject for this generation")
+            evidence = (
+                await conn.execute(guarded(select(integration_check_evidence).where(
+                    integration_check_evidence.c.operation_id == operation["id"],
+                    integration_check_evidence.c.parent_task_id == task_id,
+                    integration_check_evidence.c.parent_generation == checkpoint["generation"],
+                    integration_check_evidence.c.parent_head_sha == checkpoint["checkpoint_sha"],
+                ).order_by(integration_check_evidence.c.observed_at.desc(),
+                           integration_check_evidence.c.id)))
+            ).mappings().all()
+            # A later green/inconclusive observation cannot be ignored in favor
+            # of an old failure. All selected evidence remains immutable.
+            latest = latest_red_parent_evidence(
+                evidence, operation=operation, checkpoint=checkpoint
+            )
+            if latest is None or latest["observed_at"] < failure_subject["created_at"]:
+                return refuse("the held verifier has no trusted red CI for this exact subject")
+            ci_failure = dict(latest)
+            failure = None
+        elif checkpoint["checkpoint_sha"] not in commits:
             if commits:
                 return refuse("the failed completion names a different head")
             try:
@@ -202,8 +284,9 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             {
                 "task_id": verifier_id,
                 "status": verifier["status"],
-                "failure_completion_id": failure["id"],
+                "failure_completion_id": failure["id"] if failure else None,
                 "failure_subject": failure_subject,
+                "ci_failure_evidence_id": ci_failure["id"] if ci_failure else None,
             }
         ]
         subject_holds = {}
@@ -243,7 +326,9 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                 and not failed_close
             ):
                 return refuse(f"{subject} has an operator or terminal hold")
-            if await self._live_holder_on(conn, subject):
+            if await self._live_holder_on(conn, subject) and not (
+                subject == verifier_id and ci_failure is not None
+            ):
                 return refuse(f"a session or workspace still holds {subject}")
         stages = [
             dict(s)
@@ -280,7 +365,13 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             integration_branch_owners.c.repository_id == repo["id"],
             integration_branch_owners.c.ref == branch,
         )
-        if (
+        attached_verifier = bool(
+            ci_failure is not None and owner is not None
+            and owner["owner_role"] == "verifier" and owner["owner_id"] == verifier_id
+            and owner["handoff_state"] in {"attached", "handoff_pending"}
+            and owner["session_id"] is not None and owner["workspace_id"] is not None
+        )
+        if not attached_verifier and (
             owner is None
             or owner["session_id"] is not None
             or owner["workspace_id"] is not None
@@ -290,6 +381,24 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             | {("repair", delegate_id) for delegate_id in settled_repair_ids}
         ):
             return refuse("the collection or failed verifier does not hold a detached fence")
+        if ci_failure is not None:
+            if (owner["owner_id"] != verifier_id or owner["owner_role"] != "verifier"
+                    or owner["fence_token"] != failure_subject["subject"]["expected_token"] + 1):
+                return refuse("the held verifier fence differs from its immutable handoff")
+            if not attached_verifier and await self._live_holder_on(conn, verifier_id):
+                return refuse(f"a session or workspace still holds {verifier_id}")
+            if attached_verifier:
+                extra_session = await conn.scalar(guarded(select(sessions.c.id).where(
+                    sessions.c.task_id == verifier_id,
+                    (sessions.c.state != "stopped") | sessions.c.claim_phase.is_not(None),
+                    sessions.c.id != owner["session_id"],
+                ).limit(1)))
+                extra_workspace = await conn.scalar(guarded(select(workspaces.c.id).where(
+                    workspaces.c.locked_by_task_id == verifier_id,
+                    workspaces.c.id != owner["workspace_id"],
+                ).limit(1)))
+                if extra_session or extra_workspace:
+                    return refuse("the held verifier has another session or workspace holder")
         report["owner"] = dict(owner)
         from src.integration.recovery_controls import IntegrationRecoveryControls
 
@@ -379,7 +488,8 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
             "checkpoint": dict(checkpoint),
             "owner": dict(owner),
             "stages": stages,
-            "failure": dict(failure),
+            "failure": dict(failure) if failure else None,
+            "ci_failure": ci_failure,
             "failure_subject": failure_subject,
             "verifier": dict(verifier),
             "holds": subject_holds,
@@ -404,6 +514,38 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
         except _ProofFailed as exc:
             raise _Changed() from exc
         owner, operation = facts["owner"], facts["operation"]
+        transition = None
+        if facts["ci_failure"] is not None:
+            # Never settle from a database unlock alone. The handoff must have
+            # proved the old process/claim/checkout detached before this CAS.
+            if (owner["session_id"] is not None or owner["workspace_id"] is not None
+                    or owner["handoff_state"] not in {"reserved", "released"}
+                    or await self._live_holder_on(conn, facts["verifier"]["id"])):
+                raise _Changed()
+            evidence = facts["ci_failure"]
+            completion = {
+                "id": "red-verifier-" + uuid.uuid5(
+                    uuid.NAMESPACE_URL, facts["verifier"]["id"] + ":" + evidence["id"]
+                ).hex,
+                "task_id": facts["verifier"]["id"], "outcome": "fail",
+                "branch": facts["parent"]["branch_name"], "commits": json.dumps([head_sha]),
+                "summary": f"Trusted aggregate CI failed: {evidence['id']} (run {evidence['run_id']})",
+                "verification": json.dumps(evidence), "completed_at": now,
+            }
+            await conn.execute(insert(task_completion_records).values(**completion))
+            transition = await self.db._apply_transition(
+                conn, facts["verifier"]["id"], TaskStatus.FAILED, force=True,
+                context="integration_verifier_ci_failed",
+                extra_where=tasks.c.claim_epoch == facts["verifier"]["claim_epoch"],
+                # The confirmed pool handoff pauses its claim. Metadata holds
+                # were separately checked under the same locked task row.
+                _manual_pause_control=True,
+                returning=True,
+                assigned_agent_id=None, resume_after=None,
+            )
+            if transition.row is None:
+                raise _Changed()
+            facts["failure"] = completion
         ownership = BranchOwnership(self.db, clock=self.clock)
         try:
             if owner["handoff_state"] == "released":
@@ -485,6 +627,10 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                         "previous_verifier_task_id": operation["verifier_task_id"],
                         "failure_completion_id": facts["failure"]["id"],
                         "failure_subject": facts["failure_subject"],
+                        "ci_failure_evidence_id": (
+                            facts["ci_failure"]["id"] if facts["ci_failure"] else None
+                        ),
+                        "previous_attachment": getattr(self, "_previous_attachment", None),
                         "previous_generation": checkpoint["generation"],
                         "generation": checkpoint["generation"] + 1,
                         "previous_owner": owner,
@@ -497,4 +643,4 @@ class FailedVerificationRecovery(CancelledCollectionRecovery):
                 ),
             )
         )
-        return None, {"fence_token": fence.token, "stage": None}
+        return transition, {"fence_token": fence.token, "stage": None}

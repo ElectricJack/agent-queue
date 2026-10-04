@@ -1549,8 +1549,13 @@ class IntegrationCommandsMixin:
             if checkpoint is not None and checkpoint["state"] in {"verifying", "integration_ready"}
             else CancelledCollectionRecovery
         )
+        recovery_options = {"dispatch": dispatch}
+        if recovery_type is FailedVerificationRecovery:
+            recovery_options["confirm_handoff"] = getattr(
+                getattr(self, "orchestrator", None), "aconfirm_integration_owner_handoff", None
+            )
         result = await recovery_type(
-            self.db, self._integration_promotion_service(), dispatch=dispatch
+            self.db, self._integration_promotion_service(), **recovery_options
         ).run(
             request.task_id,
             dry_run=request.dry_run,

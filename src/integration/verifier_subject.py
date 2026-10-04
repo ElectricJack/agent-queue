@@ -8,6 +8,39 @@ from src.database.tables import integration_outbox, integration_parent_episodes
 from src.git.manager import is_valid_git_oid
 
 
+def exact_red_parent_evidence(evidence: dict, *, operation: dict, checkpoint: dict) -> bool:
+    """Only server-recorded conclusive failures of the frozen required checks count."""
+    required = operation["policy_snapshot"]["parent"]["required_checks"]
+    checks = evidence.get("checks") or {}
+    return (
+        evidence.get("operation_id") == operation["id"]
+        and evidence.get("parent_task_id") == operation["parent_task_id"]
+        and evidence.get("parent_generation") == checkpoint["generation"]
+        and evidence.get("parent_head_sha") == checkpoint["checkpoint_sha"]
+        and evidence.get("producer_id") == required["producer_id"]
+        and evidence.get("required_check_version") == required["version"]
+        and evidence.get("required_check_version") == operation["required_check_version"]
+        and evidence.get("conclusion") == "failure"
+        and evidence.get("classification") == "conclusive"
+        and isinstance(checks, dict)
+        and any(checks.get(name) in ("failure", "missing", "cancelled", "skipped", "neutral")
+                for name in required["names"])
+    )
+
+
+def latest_red_parent_evidence(evidence, *, operation, checkpoint):
+    """A later observation supersedes red, but its sibling workflows do not."""
+    if not evidence:
+        return None
+    latest = max(row["observed_at"] for row in evidence)
+    return next(
+        (row for row in sorted(evidence, key=lambda row: row["id"])
+         if row["observed_at"] == latest
+         and exact_red_parent_evidence(row, operation=operation, checkpoint=checkpoint)),
+        None,
+    )
+
+
 async def verifier_subject_on(
     conn, *, verifier_id: str, project_id: str, operation: dict, checkpoint: dict,
     lock: bool = False,

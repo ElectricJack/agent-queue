@@ -44,6 +44,7 @@ from src.profiles.capabilities import DENY_ALL
 from src.integration.writers import WriterPrimitives
 from tests.test_integration_cancelled_collection import (  # noqa: F401
     _failed_aggregate,
+    _held_red_aggregate,
     _rows,
     _commit_on,
     _git,
@@ -675,6 +676,39 @@ async def test_green_call_cannot_attach_to_successor_stage_after_waiting_for_aut
     stages = await _rows(database, t.integration_repair_stages)
     successor = next(s for s in stages if s["ordinal"] == 1)
     assert successor["state"] == "active" and successor["attempts"] == 0
+
+
+async def test_held_red_verifier_does_not_strand_completed_fix_child(case, orchestrator_factory):
+    orchestrator = await orchestrator_factory()
+    red_head, verifier, _, provider = await _held_red_aggregate(case, orchestrator)
+    original = await _rows(case.db, t.task_delivery_receipts)
+    env = await setup(case.db, case.hierarchy, task_id="epic", promotion=case.promotion)
+    env.commands.orchestrator.aconfirm_integration_owner_handoff = (
+        orchestrator.aconfirm_integration_owner_handoff
+    )
+    episode = env.subject.parent_episode_id
+    await visit(env)  # Trusted red exact subject settles the held verifier through the command.
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    assert checkpoint["state"] == "awaiting_children", env.commands.calls
+    assert checkpoint["episode_id"] == episode
+    assert (await case.db.get_task(verifier)).status == TaskStatus.FAILED
+    provider.stop.assert_awaited_once()
+    assert "integration_reopen_collection" in env.commands.calls
+    assert await _rows(case.db, t.task_delivery_receipts) == original
+    env = await restart(env, case.hierarchy, promotion=case.promotion)
+    await visit(env)  # Refresh the generation and retire the previous writer projection.
+    await visit(env)  # Collect and receipt the completed fix in the same episode.
+    receipts = await _rows(case.db, t.task_delivery_receipts)
+    assert len(receipts) == 3
+    fix = next(r for r in receipts if r["source_task_id"] == "epic.3")
+    assert fix["parent_episode_id"] == episode and fix["after_sha"] != red_head
+    await visit(env)  # Adopt the receipt-derived head.
+    await visit(env)  # File a fresh verifier for the changed aggregate.
+    current = await case.db.get_integration_subject(env.subject.id)
+    assert current["writer_task_id"] and current["writer_task_id"] != verifier
+    assert current["head_sha"] == fix["after_sha"]
+    assert not await _rows(case.db, t.integration_repair_stages)
+    provider.stop.assert_awaited_once()
 
 
 async def test_failed_verifier_collects_new_fix_in_same_episode_without_redrives(case):
