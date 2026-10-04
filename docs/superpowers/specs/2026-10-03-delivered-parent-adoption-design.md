@@ -29,8 +29,13 @@ child, and its local child ref must carry no commits absent from both the fresh
 remote child branch and default branch. Any checkout of that ref with a retained
 workspace lock, live session or uncommitted changes refuses settlement. Work on
 an unrelated branch in the recycled slot is independent. Missing workspaces,
-failed Git observations and unpublished local divergence remain blockers; parent
-reservations with confirmed workspaces still require recovery. Workspace rows
+failed Git observations and unpublished local divergence remain blockers.
+A writerless reserved collector from an older ended operation (`completed` or
+`cancelled`) for this same parent may also be retired on the exact canonical
+parent branch. Its original episode must belong to the same parent and repository;
+pending writes for that operation remain blockers. Its historical confirmed
+workspace uses the same local-ref, checkout and writer proof as child reservations.
+Other parent reservations with confirmed workspaces still require recovery. Workspace rows
 are fenced and the Git and writer checks repeat before settlement writes.
 Reservations on unrelated branches, the default branch, or owned by another
 task remain binding. Pending external writes on child branches also refuse.
