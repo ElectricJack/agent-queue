@@ -515,7 +515,12 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
     from src.cli.auto_commands import HANDCRAFTED_COVERAGE
 
     expected = {
+        "integration_gate_answer",
+        "integration_authorize_root",
+        "integration_policy_activate",
+        "integration_hold",
         "integration_status",
+        "integration_explain",
         "integration_flush",
         "integration_enable",
         "integration_waive_history",
@@ -537,9 +542,13 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
 
     result = CliRunner().invoke(cli, ["integration", "--help"])
     assert result.exit_code == 0, result.output
+    for command in ("gate", "authorize", "policy", "hold", "status", "explain", "flush", "legacy"):
+        assert command in result.output
+    # Pre-consolidation controls are listed only under ``legacy``.
+    assert "waive-history" not in result.output
+    legacy = CliRunner().invoke(cli, ["integration", "legacy", "--help"])
+    assert legacy.exit_code == 0, legacy.output
     for command in (
-        "status",
-        "flush",
         "enable",
         "waive-history",
         "resume",
@@ -554,10 +563,9 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "rebind-repair",
         "rebind-detached-repair",
         "release-owner",
-        "resolve-candidate-member",
         "recover-candidate-member",
     ):
-        assert command in result.output
+        assert command in legacy.output
     assert "probe" not in result.output
 
 

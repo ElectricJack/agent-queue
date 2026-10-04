@@ -28,6 +28,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.subjects import (
+    OPERATOR_HOLD_META_KEY,
     HeadIdentity,
     JournalMode,
     Primitive,
@@ -191,14 +192,17 @@ async def human_hold_on(conn, subject: Subject, *, task_id: str | None = None) -
         )
         held = (
             await conn.execute(
-                select(task_metadata.c.task_id)
+                select(task_metadata.c.key)
                 .where(
                     task_metadata.c.task_id.in_(ids),
-                    task_metadata.c.key == "manual_pause",
+                    task_metadata.c.key.in_(("manual_pause", OPERATOR_HOLD_META_KEY)),
                 )
+                .order_by(task_metadata.c.key)
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if held == OPERATOR_HOLD_META_KEY:
+            return "operator_hold"
         if held:
             return "manual_pause"
     return None

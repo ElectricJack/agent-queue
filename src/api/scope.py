@@ -187,7 +187,6 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
         "integration_develop",
         "integration_adopt",
         "integration_cancel_preserving",
@@ -208,9 +207,32 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_flush",
         "integration_eject",
         "integration_transfer_owner",
+        # The consolidated operator surface (integration-train simplification
+        # §5.1).  ``integration_explain`` reads subject journals, so it is
+        # authority-gated like the controls rather than a worker read.
+        "integration_gate_answer",
+        "integration_policy_activate",
+        "integration_hold",
+        "integration_explain",
+        # Legacy controls (src/commands/integration_legacy.py) whose handlers
+        # admit only the local operator or a live supervisor.
+        "integration_record_noop",
+        "integration_reserve_owner",
+        "integration_rebind_repair",
+        "integration_recover_preserved_repair",
+        "integration_rebind_detached_repair",
+        "integration_recover_parent_head",
+        "integration_migrate_provenance",
+        "integration_trust_manifest",
+        "integration_app_verify",
+        "integration_shadow_report",
         "task_deliver",
     }
 )
+#: Integration recoveries whose service requires LOCAL authority
+#: (``promotion.py`` ``recover_unwritten_resolution``).  Admitting a supervisor
+#: here only to refuse it in the service was simplification Appendix B.8.2.
+LOCAL_INTEGRATION_CONTROLS = frozenset({"integration_recover_unwritten_resolution"})
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
 LOCAL_REVIEW_CONTROLS = frozenset({
     "review_delegate", "review_import_edits", "approve_pull_request",
@@ -289,6 +311,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: conversation reads require local operator or global supervisor"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
+    if command in LOCAL_INTEGRATION_CONTROLS:
+        return "out of scope: integration recovery requires local operator"
     if command in LOCAL_TEST_SELECTION_CONTROLS:
         return "out of scope: test-selection promotion requires local operator"
     if command in LOCAL_REVIEW_CONTROLS:

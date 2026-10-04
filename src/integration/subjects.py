@@ -738,6 +738,13 @@ class GateFacts(_Frozen):
     no_default: bool = False
 
 
+#: ``task_metadata`` key of an explicit operator hold on a task's integration
+#: (``aq integration hold``).  Unlike ``manual_pause`` it needs no runnable
+#: task: a completed source, a parent or a root can be held.  The value is the
+#: JSON ``{"reason", "held_by", "held_at"}``; releasing the hold deletes it.
+OPERATOR_HOLD_META_KEY = "integration_operator_hold"
+
+
 class HoldFacts(_Frozen):
     """A binding human decision the policy may only wait on (§3.7)."""
 

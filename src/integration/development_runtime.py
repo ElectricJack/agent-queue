@@ -45,6 +45,7 @@ from src.integration.engine import RootEngineOwnership
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.ownership import BranchOwnershipError
 from src.integration.subjects import (
+    OPERATOR_HOLD_META_KEY,
     CleanupArgs,
     GateArgs,
     HeadIdentity,
@@ -246,6 +247,7 @@ class DevelopmentFrontierReader:
             task_id
             for task_id in checkpoints
             if metadata.get((task_id, "manual_pause"))
+            or metadata.get((task_id, OPERATOR_HOLD_META_KEY))
             or metadata.get((task_id, "object_experiment"))
         }
         held |= {label["task_id"] for label in labels if str(label["label"]).startswith("hold:")}

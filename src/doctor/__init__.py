@@ -17,6 +17,7 @@ from src.doctor.formula_checks import formula_checks
 from src.doctor.git_checks import git_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
+from src.doctor.integration_subject_checks import integration_subject_checks
 from src.doctor.intelligence_class_checks import intelligence_class_checks
 from src.doctor.models import (
     RESERVED_CHECK_IDS,
@@ -105,6 +106,8 @@ def default_registry() -> DoctorRegistry:
     for check in stall_checks():
         registry.register(check)
     for check in integration_checks():
+        registry.register(check)
+    for check in integration_subject_checks():
         registry.register(check)
     for check in git_checks():
         registry.register(check)

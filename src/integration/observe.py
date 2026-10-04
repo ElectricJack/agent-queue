@@ -8,6 +8,7 @@ This module adds no command surface and does not activate the reconciler.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -20,6 +21,7 @@ from src.database import tables as t
 from src.git.manager import GitManager, RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.subjects import (
+    OPERATOR_HOLD_META_KEY,
     CIEvidence,
     CIState,
     ConflictFacts,
@@ -311,14 +313,34 @@ def _operation(snapshot: ObservationRows) -> Row | None:
     )
 
 
+def _operator_hold_reason(value: Any) -> str:
+    """The recorded reason of an ``aq integration hold``, never empty."""
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+    except ValueError:
+        decoded = None
+    reason = decoded.get("reason") if isinstance(decoded, dict) else None
+    return f"hold:{reason}" if isinstance(reason, str) and reason.strip() else "hold"
+
+
 def _task_holds(snapshot: ObservationRows, task_ids: set[str]) -> list[HoldFacts]:
     holds = []
     if snapshot.project.get("status") != "ACTIVE":
         holds.append(HoldFacts(kind="project_inactive", reason=str(snapshot.project.get("status"))))
     for row in snapshot.all("task_metadata"):
-        if row["task_id"] in task_ids and row["key"] == "manual_pause":
+        if row["task_id"] not in task_ids:
+            continue
+        if row["key"] == "manual_pause":
             holds.append(
                 HoldFacts(kind="manual_pause", task_id=row["task_id"], reason="manual_pause")
+            )
+        elif row["key"] == OPERATOR_HOLD_META_KEY:
+            holds.append(
+                HoldFacts(
+                    kind="operator_hold",
+                    task_id=row["task_id"],
+                    reason=_operator_hold_reason(row.get("value")),
+                )
             )
     for row in snapshot.all("integration_batches"):
         if row.get("human_abort_reason"):
