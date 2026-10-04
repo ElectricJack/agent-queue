@@ -1,14 +1,14 @@
 """Retain content-free compatibility attempt counters for K14.
 
-Revision ID: a00000000066
-Revises: a00000000065
+Revision ID: a00000000067
+Revises: a00000000066
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000066"
-down_revision = "a00000000065"
+revision = "a00000000067"
+down_revision = "a00000000066"
 branch_labels = None
 depends_on = None
 

@@ -239,7 +239,7 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "knowledge_feature_budgets",
         "knowledge_budget_reservations",
         # K14 compatibility attempt counters shipped in PostgreSQL revision
-        # 66, after SQLite removal; legacy files have no managed-source usage.
+        # 67, after SQLite removal; legacy files have no managed-source usage.
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",

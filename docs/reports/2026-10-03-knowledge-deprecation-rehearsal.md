@@ -76,7 +76,9 @@ aq test tests/test_migration_single_head.py tests/test_migration_boolean_default
 python3.12 -m alembic heads
 ```
 
-The head check returned the single head `a00000000066`. The installed standalone
+The head check returned the single head `a00000000066` at the time of the
+rehearsal; the K14 migration is `a00000000067` after the re-chain onto main's
+`a00000000062_legacy_completion_identity`. The installed standalone
 `alembic` executable had a broken shebang; the Python module command succeeded.
 
 The expanded area check passed **760 tests** (96.29 seconds), including the

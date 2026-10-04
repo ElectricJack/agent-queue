@@ -183,7 +183,7 @@ async def test_older_transaction_cannot_move_last_observation_backwards(importer
 
 @pytest.mark.migration
 async def test_telemetry_migration_is_idempotent_and_preserves_nonempty_evidence(importer):
-    module = importlib.import_module("migrations.versions.a00000000066_knowledge_deprecation_usage")
+    module = importlib.import_module("migrations.versions.a00000000067_knowledge_deprecation_usage")
 
     def migrate(conn, action):
         with Operations.context(MigrationContext.configure(conn)):

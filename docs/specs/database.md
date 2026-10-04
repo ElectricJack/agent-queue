@@ -3696,7 +3696,7 @@ the invariant `scanned >= inserted >= 0`.
 
 ### Table: `record_compatibility_usage`
 
-Migration `a00000000066` retains aggregate attempts through managed core
+Migration `a00000000067` retains aggregate attempts through managed core
 compatibility paths, keyed by `(scope_key, operation, outcome)`
 (`pk_record_compatibility_usage`). Atomic upserts increment `calls` before dispatch,
 so a failed dispatch still counts as an attempt. The table stores no source keys,

@@ -641,6 +641,7 @@
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
         "tests/test_knowledge_context.py",
+        "tests/test_knowledge_deprecation.py",
         "tests/test_knowledge_evaluation.py",
         "tests/test_knowledge_extraction.py",
         "tests/test_knowledge_extraction_store.py",
@@ -1399,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:d28accdc21173872e77a79e5e9de23f92fdcf8defc4d52c281fd95b20aaa8434",
+  "digest": "sha256:62d501bfa7085859578a1d9708089cfad3c8e9b23554d4b2837c31ae6e84aa5e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9027,6 +9028,28 @@
         "parametrize"
       ],
       "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
+    },
+    "tests/test_knowledge_deprecation.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.engine",
+        "src.database.tables",
+        "src.knowledge.deprecation",
+        "src.knowledge.imports.apply",
+        "src.knowledge.imports.compatibility",
+        "src.knowledge.imports.manifest",
+        "src.knowledge.models",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "K14 synthetic reconciliation, honest telemetry and disposable restore proof."
     },
     "tests/test_knowledge_evaluation.py": {
       "areas": [
