@@ -151,6 +151,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "job_cancel",
             "job_result",
             "job_logs",
+            "job_retain",
             "report_request",
             "report_reconcile",
             "morning_report_preview",

@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 510,
+    "leaf_commands": 512,
     "registration": {
       "generated": 333,
-      "handwritten": 177
+      "handwritten": 179
     },
     "ownership": {
-      "core": 471,
+      "core": 473,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 509
+      "supported": 511
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 333,
-      "registration": 163
+      "registration": 165
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 450
+      "untested": 452
     }
   },
   "commands": [
@@ -815,6 +815,39 @@
         ],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq artifact verify",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "artifact_verify",
+      "callback": "src.cli.artifacts.artifact_verify",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "uri"
+        ],
+        "optional": [
+          "--sha256",
           "--json",
           "--brief",
           "--save-output",
@@ -5262,6 +5295,39 @@
         ],
         "optional": [
           "--max-bytes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq job retain",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.jobs.job_retain",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "job_id"
+        ],
+        "optional": [
+          "--view",
+          "--include-channels",
           "--json",
           "--brief",
           "--save-output",

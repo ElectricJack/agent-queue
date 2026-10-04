@@ -132,6 +132,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "job_cancel": "job",
     "job_result": "job",
     "job_logs": "job",
+    "job_retain": "job",
+    "artifact_verify": "artifact",
     "wait_register": "wait",
     "wait_get": "wait",
     "wait_list": "wait",
@@ -7855,6 +7857,23 @@ _JOB_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["job_id"],
     },
+    "job_retain": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "views": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+            "include_channels": {"type": "boolean"},
+        },
+        "required": ["job_id"],
+    },
+    "artifact_verify": {
+        "type": "object",
+        "properties": {
+            "uri": {"type": "string", "minLength": 1, "maxLength": 2048},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        },
+        "required": ["uri"],
+    },
 }
 
 
@@ -7869,6 +7888,8 @@ _ALL_TOOL_DEFINITIONS.extend([
         ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),
         ("job_result", "Read a job's immutable result and bounded excerpt."),
         ("job_logs", "Read retained output ranges with explicit gaps."),
+        ("job_retain", "Retain a completed capture as durable artifact identities, with its candidate artifact and render profile."),
+        ("artifact_verify", "Resolve a durable artifact URI and re-hash the bytes it names."),
     )
 ])
 

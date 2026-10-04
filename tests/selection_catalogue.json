@@ -1389,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:d6feae4984b47dc17a72487ec3d4fdde8c177651779c3130872cfc31a67cd8d3",
+  "digest": "sha256:c0524f992fe3c275ed1eff9849e81b79497e3172c6f3cdcf7857ed72a61dbd9a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8718,7 +8718,9 @@
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",
+        "src.jobs.result",
         "src.jobs.service",
+        "src.object_loop.render_profile",
         "src.resources.box_lock",
         "src.resources.semaphore"
       ],
@@ -10380,14 +10382,20 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.job",
         "src.commands.contracts.object_loop",
+        "src.commands.job_commands",
         "src.commands.object_loop_commands",
         "src.database.tables",
         "src.integration.child_delivery",
         "src.integration.development",
         "src.integration.promotion",
+        "src.jobs.artifacts",
+        "src.jobs.matter",
         "src.models",
-        "src.object_loop.contracts"
+        "src.object_loop.artifacts",
+        "src.object_loop.contracts",
+        "src.object_loop.render_profile"
       ],
       "markers": [
         "parametrize"

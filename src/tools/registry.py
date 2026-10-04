@@ -182,6 +182,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
         ),
     ),
     "job": CategoryMeta(name="job", description="Finite managed jobs, durable results and logs"),
+    "artifact": CategoryMeta(
+        name="artifact",
+        description=(
+            "Durable artifact identities — resolve an artifact:// URI and re-hash "
+            "the bytes it names"
+        ),
+    ),
     "wait": CategoryMeta(name="wait", description="Durable typed agent waits and result history"),
     "collaboration": CategoryMeta(
         name="collaboration",

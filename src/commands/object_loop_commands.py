@@ -6,6 +6,7 @@ identity checks, reservations, task intents and the finalization hold.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -123,6 +124,25 @@ async def _review_verdict(conn, state: dict) -> bool:
 
 
 class ObjectLoopCommandsMixin:
+    async def _cmd_artifact_verify(self, args: dict) -> dict:
+        """Resolve a durable artifact URI and re-hash the bytes it names.
+
+        A ``ScoreReceipt`` names URIs and digests; something has to prove the
+        bytes behind them still exist and still hash true, or a receipt outlives
+        its evidence silently.  Read-only, and scoped to this store: an ``s3://``
+        or ``https://`` URI belongs to the external artifact adapter, not here.
+        """
+        from src.commands.contracts.object_loop import ArtifactVerifyArgs
+        from src.object_loop.artifacts import ArtifactError, verify
+
+        try:
+            request = ArtifactVerifyArgs.model_validate(args)
+            return {"success": True, **await asyncio.to_thread(
+                verify, self.config.data_dir, request.uri, request.sha256
+            )}
+        except (ArtifactError, OSError, ValidationError, ValueError) as exc:
+            return _error(str(exc))
+
     async def _cmd_object_loop_inputs(self, args: dict) -> dict:
         from src.commands.principal import current_principal
         from src.object_loop.inputs import read_inputs
@@ -132,7 +152,11 @@ class ObjectLoopCommandsMixin:
             principal = current_principal()
             scope = self._current_scope or {}
             if (scope.get("kind") == "session" and not scope.get("elevated")):
-                return _error("object_loop_inputs is not available to worker sessions")
+                return _error(
+                    "object_loop_inputs is not available to worker sessions; the project "
+                    "supervisor runs it (aq object_loop inputs) and cooks the object formula, "
+                    "because formula cooking and loop mutation stay out of worker scope"
+                )
             project = (principal.project_id if principal else None) or scope.get("project_id")
             if project and project != request.project_id:
                 return _error("object loop inputs are outside the caller project")

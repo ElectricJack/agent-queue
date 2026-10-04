@@ -176,6 +176,7 @@ HANDCRAFTED_COVERAGE = {
     "job_cancel",
     "job_result",
     "job_logs",
+    "job_retain",
     "report_request",
     "report_brief",
     "report_submit",

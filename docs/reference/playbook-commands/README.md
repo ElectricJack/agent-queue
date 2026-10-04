@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-173 commands are registered.
+175 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -148,6 +148,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
+| [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
@@ -164,6 +165,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_list`](job_list.md) | Job List | List this owner's managed jobs. |
 | [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
+| [`job_retain`](job_retain.md) | Job Retain | Retain a completed capture as durable artifact identities, with its candidate artifact and render profile. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |

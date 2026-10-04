@@ -52,6 +52,9 @@ from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlock
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .artifact_ref_dto import ArtifactRefDTO
+from .artifact_verify_request import ArtifactVerifyRequest
+from .artifact_verify_response import ArtifactVerifyResponse
+from .artifact_verify_response_422 import ArtifactVerifyResponse422
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
@@ -617,6 +620,12 @@ from .job_response_job import JobResponseJob
 from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
+from .job_retain_args import JobRetainArgs
+from .job_retain_response import JobRetainResponse
+from .job_retain_response_artifacts_item import JobRetainResponseArtifactsItem
+from .job_retain_response_candidate_artifact import JobRetainResponseCandidateArtifact
+from .job_retain_response_captures_item import JobRetainResponseCapturesItem
+from .job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 from .job_submit_args import JobSubmitArgs
 from .knowledge_authority_grant_request import KnowledgeAuthorityGrantRequest
 from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityGrantRequestReviewType0
@@ -1793,6 +1802,9 @@ __all__ = (
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
     "ArtifactRefDTO",
+    "ArtifactVerifyRequest",
+    "ArtifactVerifyResponse",
+    "ArtifactVerifyResponse422",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
     "BenchmarkStageRecordRequest",
@@ -2352,6 +2364,12 @@ __all__ = (
     "JobResultArgs",
     "JobResultResponse",
     "JobResultResponseResultType0",
+    "JobRetainArgs",
+    "JobRetainResponse",
+    "JobRetainResponseArtifactsItem",
+    "JobRetainResponseCandidateArtifact",
+    "JobRetainResponseCapturesItem",
+    "JobRetainResponseRenderProfileType0",
     "JobSubmitArgs",
     "KnowledgeAuthorityGrantRequest",
     "KnowledgeAuthorityGrantRequestReviewType0",

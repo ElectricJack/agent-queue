@@ -450,6 +450,7 @@ from . import questions as _questions_cli  # noqa: E402, F401
 from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import reports as _reports_cli  # noqa: E402, F401
 from . import jobs as _jobs_cli  # noqa: E402, F401
+from . import artifacts as _artifacts_cli  # noqa: E402, F401
 from . import waits as _waits_cli  # noqa: E402, F401
 from . import collaboration as _collaboration_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401

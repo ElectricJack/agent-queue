@@ -81,6 +81,59 @@ cross-references and completeness. The external artifact adapter remains
 responsible for serving bytes by those URIs and verifying their digest during
 materialization. Arbitrary local paths are not accepted as durable URIs.
 
+### Producing the two identities a receipt needs
+
+Two producers close the gap between a finished render and a startable loop.
+Both are commands, both are scoped to the caller's own job, and both are
+idempotent.
+
+`job_retain <job_id>` is the retention step. It copies the capture members a
+receipt names — each view's image and the capture receipt — out of the transient
+`runs/<job>/capture` tree into `{data_dir}/artifacts/objects`, a
+content-addressed store whose objects are fsynced, never overwritten and never
+reached through a symlink. Each retained member is re-hashed and refused if
+those bytes no longer match the digest the completion receipt recorded. The
+identity planes and the adapter's own transcript stay behind `aq job logs`
+unless `--include-channels` asks for them, because a receipt names evidence and
+not logs.
+
+It also mints the *candidate artifact*. `candidate_sha256` is the digest of the
+canonical candidate manifest with its own declaration removed, so retaining
+those exact bytes produces an artifact whose digest **is** the declared
+identity — which is what `ScoreReceipt` requires, since it refuses a receipt
+whose candidate digest is missing from its artifacts. The bundle lives in the
+author's workspace, so a released workspace is reported as such instead of
+substituting a near-miss identity.
+
+`artifact_verify <uri>` is the other half: it resolves an `artifact://sha256/`
+URI and re-hashes the bytes behind it. A URI is a claim; something has to check
+it. `s3://` and `https://` receipts belong to the external artifact adapter and
+are refused here rather than guessed at.
+
+### The render profile
+
+`render_profile_sha256` is the digest of a canonical render-profile document:
+the preset that produced the pixels — `editor_sha256`, `adapter_sha256`,
+`gpu_id`, the admitted rig's `hold_frames`, the view set with each view's
+resolution, and the VT readiness counters that prove the frame had converged —
+plus the admitted candidate and rig identities and the capture's readiness
+state. The document is built from named fields only and hashed in AQ's single
+canonical JSON form, so run ids, request ids, timestamps and absolute paths
+cannot leak into it: one preset yields one digest, and any change to any of
+those inputs changes it.
+
+`hold_frames` is the rig's *admitted budget*, not the frames a run happened to
+settle on. A real four-view capture reports 95, 96, 95 and 106 stable frames for
+one render, so hashing the observed count would give every run its own profile
+identity and refuse every variation. The budget is admitted with the rest of
+the render preset and recorded on the job contract.
+
+The profile is computed where the result is assembled and covered by
+`result_hash`, so `job_result` returns it and a start packet quotes a value AQ
+computed. A result with no retained capture records no profile, and one whose
+receipt cannot yield a profile records why: a passed render must not become a
+failed job over a reporting field, and the gap must stay visible.
+
 Candidate, scoring and finalization tasks carry the `object_experiment` metadata marker at
 creation. The development publisher excludes marked tasks, and hierarchical
 collection and promotion refuse them. A separate ordinary code task imports

@@ -17,6 +17,51 @@ evidence. The tests cover improvement, ties, invalid captures, scorer exhaustion
 provider pause/deadline, review rejection/withdrawal/revision, budget/round/plateau
 stops, multiple objects and restart recovery.
 
+## From a finished render to a startable loop
+
+The loop cannot be started from a `matter_render` job until two identities
+exist: durable artifact URIs for the evidence, and a `render_profile_sha256`.
+Both are produced by one command each, from a completed job id.
+
+```bash
+# 1. Retain the capture, and read the render profile off the immutable result.
+aq job retain 44a60940-aa75-4284-be56-9e28d2748056 --json
+#    -> render_profile_sha256   quote as ObjectLoopStartArgs.render_profile_sha256
+#    -> artifacts[]             becomes ScoreReceipt.artifacts
+#    -> captures[]              each image becomes Capture.image
+#    -> candidate_artifact      already carries sha256 == candidate_sha256
+#    -> rig_sha256              quote as ObjectLoopStartArgs.rig_sha256
+
+# 2. Prove a URI still names the bytes it claims, any time later.
+aq artifact verify artifact://sha256/aefb3b06bc177013a45015de69066201eaafbda20c3d0ae7516ceb1a88882e9f
+```
+
+Retention is idempotent — the digest is the identity, so a second run yields the
+same URIs and rewrites nothing. Both commands are scoped to the caller's own
+job, so a worker session that submitted the render can run step 1 for its own
+receipt; anything outside that scope is refused.
+
+What step 1 does not do, deliberately: it never measures an image. `Capture.ready`
+and `decoded`, and every per-view metric, are the external scorer's to produce.
+AQ gives it the pointers and the digests.
+
+Two fields are only right if their producers are, too. `render_profile_sha256`
+covers the editor build, the capture adapter, the GPU lease, the view set and
+each view's resolution, the admitted rig frame budget and the VT readiness
+counters — so a start packet that quotes it is claiming those bytes came from
+that preset. And `candidate_artifact.sha256` equals the candidate's declared
+`candidate_sha256` because the canonical manifest is what AQ retained; if the
+bundle's declared identity stops being the canonical document, retention refuses
+it rather than minting an artifact that merely sits beside the claim.
+
+### Operator-only steps, and who runs them
+
+`aq formula cook`, `object_loop_start` and `object_loop_inputs` are refused to
+worker sessions. The refusal names the step that supersedes it: the **project
+supervisor** runs `aq object_loop inputs` and cooks the `object` formula, because
+formula cooking and loop mutation stay out of worker scope. Everything above —
+retention, verification, and assembling the start packet — is worker-safe.
+
 ## Review without activation
 
 After delivery, the operator must run a daemon containing the new
@@ -96,7 +141,15 @@ contracts and then replays every command in V2 dry-run mode. Set
 `AQ_OBJECT_LOOP_TRACE_DIR` to retain each successful trace. It also tests formula
 transaction rollback, scope/capability refusal, exact review revision, reserve
 reuse prevention, finalizer holds, and approval storage without activation.
-`tests/test_object_loop.py` retains the five prerequisite regression probes.
+`tests/test_object_loop.py` retains the five prerequisite regression probes,
+and covers the durable artifact store (minting, idempotence, symlink and
+tamper refusal, URI resolution), the render profile's stability under per-run
+jitter and its sensitivity to every preset input, and the acceptance path end to
+end: one retention run yielding both a valid `ObjectLoopStartArgs` and a
+`ScoreReceipt` that passes `validate_score_receipt`.
+`tests/test_jobs_matter.py` asserts the profile is recorded on a real completed
+render's immutable result, that the admitted frame budget reaches the contract,
+and that a result with no retained capture records none.
 
 Run these through `aq test` with a disposable `POSTGRES_TEST_DSN`. The affected
 area checks cover V2 execution, formulas, graph creation, vault seeding, reviewed

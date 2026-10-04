@@ -82,6 +82,22 @@ class ObjectCheckpointReadArgs(CommandArgs):
     project_id: str
 
 
+class ArtifactVerifyArgs(CommandArgs):
+    """Resolve a durable artifact URI and prove the bytes behind it."""
+
+    uri: str = Field(min_length=1, max_length=2048)
+    sha256: str | None = Field(default=None, pattern=SHA256)
+
+
+class ArtifactVerifyValue(CommandValue):
+    uri: str | None = None
+    sha256: str | None = None
+    bytes: int | None = None
+    kind: str | None = None
+    verified: bool | None = None
+    path: str | None = None
+
+
 class ObjectLoopInputsArgs(CommandArgs):
     project_id: str
     limit: int = Field(default=32, ge=1, le=32)
@@ -102,14 +118,21 @@ class ObjectLoopValue(CommandValue):
 
 
 def register_object_loop_contracts(registry) -> None:
+    loop = "Coordinate a bounded, durable object evaluation round."
     definitions = (
-        ("object_loop_start", ObjectLoopStartArgs, ObjectLoopValue, SideEffectClass.CREATE),
-        ("object_loop_reconcile", ObjectLoopReconcileArgs, ObjectLoopValue, SideEffectClass.COMPOSITE),
-        ("object_score_record", ObjectScoreRecordArgs, ObjectLoopValue, SideEffectClass.UPDATE),
-        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectLoopValue, SideEffectClass.READ),
-        ("object_loop_inputs", ObjectLoopInputsArgs, ObjectLoopInputsValue, SideEffectClass.READ),
+        ("object_loop_start", ObjectLoopStartArgs, ObjectLoopValue, SideEffectClass.CREATE, loop),
+        ("object_loop_reconcile", ObjectLoopReconcileArgs, ObjectLoopValue,
+         SideEffectClass.COMPOSITE, loop),
+        ("object_score_record", ObjectScoreRecordArgs, ObjectLoopValue,
+         SideEffectClass.UPDATE, loop),
+        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectLoopValue,
+         SideEffectClass.READ, loop),
+        ("object_loop_inputs", ObjectLoopInputsArgs, ObjectLoopInputsValue,
+         SideEffectClass.READ, loop),
+        ("artifact_verify", ArtifactVerifyArgs, ArtifactVerifyValue, SideEffectClass.READ,
+         "Resolve a durable artifact URI and re-hash the bytes it names."),
     )
-    for name, args_model, result_model, effect in definitions:
+    for name, args_model, result_model, effect, summary in definitions:
         if registry.get(name) is not None:
             continue
 
@@ -143,7 +166,7 @@ def register_object_loop_contracts(registry) -> None:
                 ),
                 presentation=CommandPresentation(
                     title=name.replace("_", " ").title(),
-                    summary="Coordinate a bounded, durable object evaluation round.",
+                    summary=summary,
                     outcome_labels={"completed": "Completed", "rejected": "Rejected"},
                 ),
             ),
