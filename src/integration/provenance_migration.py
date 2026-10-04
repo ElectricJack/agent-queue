@@ -81,9 +81,13 @@ class ProvenanceMigration:
         and never overrides a source the generation's own evidence names.
         A missing descriptive completion row requires *reason* and uses the
         shared evaluator's current/legacy generation identity. *no_artifact*
-        instead declares artifact-free work on a reason. Neither creates a
-        worker completion row; applies fence the generation and audit the
-        operator's decision before releasing its task lock.
+        instead declares artifact-free work on a reason. A COMPLETED task whose
+        latest completion did not pass is attested the same way on a reason,
+        fenced to that generation: its recorded commits are what it read, so
+        *no_artifact* replaces them, and an attested source must already be
+        contained in the target. None of these creates a worker completion row;
+        applies fence the generation and audit the operator's decision before
+        releasing its task lock.
         """
         if type(apply) is not bool:
             raise ValueError("apply must be an explicit boolean")
@@ -250,7 +254,11 @@ class ProvenanceMigration:
                 existing = await store.read_completion(identity)
                 try:
                     if no_artifact:
-                        if json.loads(row["commits"] or "[]") or any(
+                        # A generation that did not pass recorded what it read,
+                        # not an artifact of its own; a retained manifest naming
+                        # this generation is still a conflict.
+                        recorded = json.loads(row["commits"] or "[]")
+                        if (recorded and not row.get("failed_completion")) or any(
                             member.get("task_id") == source_task and member.get("source_sha")
                             for delivery in history for member in (
                                 (delivery["manifest"] or []) + [proof for proof in
@@ -260,6 +268,8 @@ class ProvenanceMigration:
                         ):
                             raise ValueError("no-artifact attestation conflicts with recorded source")
                         source = existing["source_oid"] if existing else await store.exact(anchor)
+                    elif row.get("failed_completion"):
+                        source = await self._failed_source(store, attested, anchor)
                     else:
                         source = await self._source(
                             store, row, history, project_id, held.get(source_task), attested)
@@ -309,7 +319,9 @@ class ProvenanceMigration:
                              **({"legacy_generation": alias.identity.generation}
                                 if alias is not None else {}),
                              **({"authority": "operator", "artifact": not no_artifact}
-                                if attested or no_artifact else {})}, binding, None))
+                                if attested or no_artifact else {}),
+                             **({"completion_outcome": row["outcome"]}
+                                if row.get("failed_completion") else {})}, binding, None))
         written = await store.write_completions(writes, artifact=not no_artifact) if writes else {}
         settled = []
         for entry, binding, reason in results:
@@ -380,8 +392,13 @@ class ProvenanceMigration:
             if latest is not None and latest["id"] == request.completion_id and (
                 latest["outcome"] != "pass"
             ):
-                return [], {}, [{"task_id": task_id, "generation": latest and latest["id"],
-                                 "reason": "current completion is missing or did not pass"}]
+                # The generation is real and current; its close just did not
+                # pass. An operator may still attest what that generation
+                # delivered, fenced to it, without inventing a pass.
+                if not (reason or "").strip():
+                    raise ValueError("attesting a completion that did not pass requires a reason")
+                return [{**latest, "attestation_request": request,
+                         "failed_completion": True}], {}, []
             if latest is None or latest["id"] != request.completion_id:
                 if not (reason or "").strip():
                     raise ValueError("attesting a missing completion row requires a reason")
@@ -533,6 +550,23 @@ class ProvenanceMigration:
             # Binding another source would make the held repair's exact
             # replacement impossible; leave that to an operator decision.
             raise ValueError("legacy completion source conflicts with the held repair contract")
+        return source
+
+    @staticmethod
+    async def _failed_source(store, attested, anchor):
+        """The exact source an operator may attest for a completion that did not pass.
+
+        Such a generation recorded what it read rather than an artifact of its
+        own, so the attestation replaces that commit instead of conflicting
+        with it. The source must already be contained in the target: the
+        control can only clear work the target holds, never deliver new work.
+        """
+        if attested is None:
+            raise ValueError("a completion that did not pass needs an attested source")
+        source = await store.exact(attested)
+        if not await store.ancestor(source, anchor):
+            raise ValueError("attested source for a completion that did not pass is not "
+                             "contained in the target branch")
         return source
 
     async def _repairs(self, store, history, rows, bindings, target, apply, page):

@@ -11,7 +11,7 @@ from src.doctor.integration_checks import run_check
 from src.doctor.models import Severity
 from src.integration.delivery_truth import DeliveryState
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-from src.models import SessionRecord, Task, TaskCompletion, TaskStatus
+from src.models import RepoSourceType, SessionRecord, Task, TaskCompletion, TaskStatus, Workspace
 from tests.test_development_integration import (
     _merge_on_main,
     complete_source,
@@ -187,6 +187,225 @@ async def reserve_children(incident):
                     updated_at=time.time(),
                 )
             )
+
+
+async def recycled_slot(incident, tmp_path):
+    await reserve_children(incident)
+    db, _service, source, _remote, _repo = incident[0]
+    child = incident[1][0]
+    branch = "aq/" + child
+    git(source, "branch", branch, incident[2][child])
+    slot = tmp_path / "slot-1"
+    git(source, "worktree", "add", "--detach", str(slot), incident[3])
+    git(slot, "checkout", "-b", "aq/reused-task")
+    (slot / "unpublished-other-task.txt").write_text("unrelated work\n")
+    git(slot, "add", ".")
+    git(slot, "commit", "-m", "other task local work")
+    await db.create_task(Task(
+        id="reused-task", project_id="p", repo_id="r", title="Next slot user",
+        description="", status=TaskStatus.IN_PROGRESS, branch_name="aq/reused-task",
+    ))
+    await db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(source), source_type=RepoSourceType.CLONE,
+    ))
+    await db.create_workspace(Workspace(
+        id="slot", project_id="p", workspace_path=str(slot), source_type=RepoSourceType.CLONE,
+        slot_index=1, base_workspace_id="base",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner-" + child,
+        ).values(confirmed_workspace_id="slot"))
+    return slot, branch
+
+
+@pytest.mark.parametrize("parent", [PARENT, "agile-impact-14", "vivid-quest-44"])
+@pytest.mark.parametrize("reused_by_writer", [False, True])
+async def test_confirmed_recycled_slot_does_not_retain_delivered_child(
+    setup, tmp_path, parent, reused_by_writer,
+):
+    incident = await build_incident(setup, parent)
+    slot, _branch = await recycled_slot(incident, tmp_path)
+    db, _service, _source, remote, _repo = setup
+    if reused_by_writer:
+        async with db.immediate() as conn:
+            await conn.execute(update(t.workspaces).where(t.workspaces.c.id == "slot").values(
+                locked_by_task_id="reused-task",
+            ))
+        await db.create_session(SessionRecord(
+            id="next-writer", project_id="p", task_id="reused-task", profile_id="worker",
+            harness="codex", provider="fake", name="next-writer", lifecycle="pool",
+            work_dir=str(slot), epoch="epoch", instance_token="token", started_at=time.time(),
+            state="running",
+        ))
+    # Dirty, unpublished work on the successor's branch must stay independent.
+    (slot / "dirty-other-task.txt").write_text("next task still writing\n")
+    refs = git(remote, "show-ref")
+    head = git(slot, "rev-parse", "HEAD")
+    status = git(slot, "status", "--porcelain")
+    preview = await adopt(incident, dry_run=True)
+    assert "owner-" + incident[1][0] in {row["id"] for row in preview["ownership"]}
+    assert (await db.get_task(parent)).status == TaskStatus.PAUSED
+    assert git(remote, "show-ref") == refs
+    result = await adopt(incident)
+    assert result["outcome"] == "adopted"
+    assert (await db.get_task(parent)).status == TaskStatus.COMPLETED
+    assert (await db.get_task(VERIFIER)).status == TaskStatus.FAILED
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner-" + incident[1][0],
+        ))).mappings().one()
+    assert owner["handoff_state"] == "released"
+    assert owner["fence_token"] == 8
+    assert owner["confirmed_workspace_id"] == "slot"
+    assert (await db.get_workspace("slot")).locked_by_task_id == (
+        "reused-task" if reused_by_writer else None
+    )
+    after_refs = set(git(remote, "show-ref").splitlines())
+    assert set(refs.splitlines()) < after_refs
+    assert all(" refs/heads/aq-provenance/completions/" in ref
+               for ref in after_refs - set(refs.splitlines()))
+    assert git(slot, "rev-parse", "HEAD") == head
+    assert git(slot, "status", "--porcelain") == status
+
+
+@pytest.mark.parametrize("ref_state", ["missing_local", "remote_removed", "clean_checkout"])
+async def test_confirmed_slot_accepts_observable_published_or_absent_child_ref(
+    incident, tmp_path, ref_state,
+):
+    slot, branch = await recycled_slot(incident, tmp_path)
+    db, _service, source, _remote, _repo = incident[0]
+    if ref_state == "missing_local":
+        git(source, "branch", "-D", branch)
+    elif ref_state == "remote_removed":
+        git(source, "push", "origin", "--delete", branch)
+    else:
+        git(slot, "checkout", branch)
+    assert (await adopt(incident, dry_run=True))["outcome"] == "would_adopt_parent"
+    assert (await adopt(incident))["outcome"] == "adopted"
+    assert (await db.get_task(PARENT)).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("blocker", [
+    "child_lock", "other_writer_lock", "live_session", "dirty_child_checkout",
+    "unpublished_ref", "diverged_ref", "wrong_repository", "missing_checkout",
+    "unknown_ref", "unknown_worktrees", "unknown_dirty", "parent_workspace",
+])
+async def test_confirmed_slot_cannot_hide_a_writer_or_unpublished_child_work(
+    incident, tmp_path, monkeypatch, blocker,
+):
+    from unittest.mock import AsyncMock
+
+    slot, branch = await recycled_slot(incident, tmp_path)
+    db, service, source, remote, _repo = incident[0]
+    child = incident[1][0]
+    if blocker in {"child_lock", "other_writer_lock"}:
+        if blocker == "other_writer_lock":
+            git(slot, "checkout", branch)
+        async with db.immediate() as conn:
+            await conn.execute(update(t.workspaces).where(t.workspaces.c.id == "slot").values(
+                locked_by_task_id=child if blocker == "child_lock" else "reused-task",
+            ))
+    elif blocker == "live_session":
+        git(source, "checkout", branch)
+        await db.create_session(SessionRecord(
+            id="ref-writer", project_id="p", task_id="reused-task", profile_id="worker",
+            harness="codex", provider="fake", name="ref-writer", lifecycle="pool",
+            work_dir=str(source), epoch="epoch", instance_token="token", started_at=time.time(),
+            state="running",
+        ))
+    elif blocker == "dirty_child_checkout":
+        git(source, "checkout", branch)
+        (source / "dirty-child.txt").write_text("child work still owed\n")
+    elif blocker in {"unpublished_ref", "diverged_ref"}:
+        git(source, "checkout", branch)
+        if blocker == "diverged_ref":
+            git(source, "reset", "--hard", "main~1")
+        git(source, "commit", "--allow-empty", "-m", "unpublished child work")
+        git(source, "checkout", "aq/epic/old-aggregate")
+    elif blocker == "wrong_repository":
+        git(source, "remote", "set-url", "origin", str(tmp_path / "wrong.git"))
+    elif blocker == "missing_checkout":
+        async with db.immediate() as conn:
+            await conn.execute(update(t.workspaces).where(t.workspaces.c.id == "slot").values(
+                workspace_path=str(tmp_path / "missing"),
+            ))
+    elif blocker == "unknown_ref":
+        monkeypatch.setattr(service.git, "aref_exists", AsyncMock(return_value=None))
+    elif blocker == "unknown_worktrees":
+        from src.git.manager import GitError
+
+        monkeypatch.setattr(service.git, "aworktree_list", AsyncMock(side_effect=GitError("probe")))
+    elif blocker == "unknown_dirty":
+        git(slot, "checkout", branch)
+        monkeypatch.setattr(service.git, "aget_dirty_paths", AsyncMock(return_value=None))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(update(t.integration_branch_owners).where(
+                t.integration_branch_owners.c.id == "owner",
+            ).values(confirmed_workspace_id="slot"))
+    refs = git(remote, "show-ref")
+    for dry_run in (True, False):
+        with pytest.raises(ValueError):
+            await adopt(incident, dry_run=dry_run)
+    assert git(remote, "show-ref") == refs
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner-" + child,
+        ))).mappings().one()
+    assert owner["fence_token"] == 7
+    assert owner["handoff_state"] == "reserved"
+    assert await db.get_task_completion(PARENT) is None
+    assert (await db.get_task(VERIFIER)).status == TaskStatus.READY
+
+
+@pytest.mark.parametrize("change", [
+    "workspace_lock", "local_ref", "checkout_writer", "dirty_checkout",
+])
+async def test_confirmed_slot_is_rechecked_after_delivery_proof(
+    incident, tmp_path, monkeypatch, change,
+):
+    from src.integration.delivered_parent_adoption import DeliveredParentAdoption
+
+    slot, branch = await recycled_slot(incident, tmp_path)
+    db, _service, source, _remote, _repo = incident[0]
+    prove = DeliveredParentAdoption.prove
+
+    async def changed_slot(self, facts, truth, **kwargs):
+        result = await prove(self, facts, truth, **kwargs)
+        if change == "workspace_lock":
+            async with db.immediate() as conn:
+                await conn.execute(update(t.workspaces).where(t.workspaces.c.id == "slot").values(
+                    locked_by_task_id=incident[1][0],
+                ))
+        elif change == "local_ref":
+            git(source, "checkout", branch)
+            git(source, "commit", "--allow-empty", "-m", "new unpublished child commit")
+            git(source, "checkout", "aq/epic/old-aggregate")
+        elif change == "dirty_checkout":
+            git(slot, "checkout", branch)
+            (slot / "new-child-work.txt").write_text("uncommitted child work after proof\n")
+        else:
+            git(slot, "checkout", branch)
+            await db.create_session(SessionRecord(
+                id="new-writer", project_id="p", task_id="reused-task", profile_id="worker",
+                harness="codex", provider="fake", name="new-writer", lifecycle="pool",
+                work_dir=str(slot), epoch="epoch", instance_token="token", started_at=time.time(),
+                state="running",
+            ))
+        return result
+
+    monkeypatch.setattr(DeliveredParentAdoption, "prove", changed_slot)
+    with pytest.raises(ValueError):
+        await adopt(incident)
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(t.integration_branch_owners).where(
+            t.integration_branch_owners.c.id == "owner-" + incident[1][0],
+        ))).mappings().one()
+    assert owner["handoff_state"] == "reserved"
+    assert owner["fence_token"] == 7
+    assert await db.get_task_completion(PARENT) is None
+    assert (await db.get_task(VERIFIER)).status == TaskStatus.READY
 
 
 @pytest.mark.parametrize("parent", [PARENT, "agile-impact-14", "vivid-quest-44"])

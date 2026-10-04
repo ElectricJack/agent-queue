@@ -94,10 +94,10 @@ _RECOVERY = {
         "--reason REASON, or --no-artifact --reason REASON for artifact-free work"
     ),
     "invalid_parent_completion": (
-        "its parent verification binding is incomplete: inspect `aq integration status`; "
-        "a bare legacy episode can use `aq integration migrate-provenance <project-id> "
-        "--task-id TASK --source SHA --reason REASON --apply`; a damaged verified "
-        "binding requires recovery of its current parent verification"
+        "its parent verification binding is incomplete: inspect `aq integration status` "
+        "and recover the exact current parent verification; `aq integration "
+        "migrate-provenance <project-id> --task-id TASK --source SHA --reason REASON "
+        "--apply` cannot replace a verified binding"
     ),
     "parent_provenance_mismatch": (
         "its retained source disagrees with its verified parent completion: inspect "

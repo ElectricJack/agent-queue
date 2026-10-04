@@ -12,7 +12,9 @@ for it, so it is unknown until an operator retains it
 (``aq integration migrate-provenance``). An absent ref is never an empty artifact.
 Completed legacy tasks without a descriptive close row can be attested under
 their recorded current generation or :func:`legacy_completion_id`, without
-fabricating a passing worker close or a parent verification.
+fabricating a passing worker close or a parent verification. A parent operation
+cancelled before it ever verified or completed is no binding at all, so such an
+episode stays a legacy leaf binding and recovers by ordinary provenance.
 
 A *settlement* is the one database answer the evaluator honours, and it is not
 a delivery: it records that a generation is **not owed** to one target (work
@@ -373,14 +375,18 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 )
             )).all()
         }
-        parent_ids, parent_completions = await _parent_completions_on(
+        parent_ids, abandoned, parent_completions = await _parent_completions_on(
             reader, task_ids, repository_id=repository_id,
         )
-        parent_adoptions = await _parent_adoptions_on(reader, parent_ids, repository_id)
+        # A rework fence invalidates a parent adoption or verified completion, so
+        # every parent whose binding could carry one is read for it.
+        parent_history = parent_ids | abandoned
+        adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
+        parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
         rework = dict((await reader.execute(select(
             task_metadata.c.task_id, task_metadata.c.value,
-        ).where(task_metadata.c.task_id.in_(parent_ids),
-                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_ids else {}
+        ).where(task_metadata.c.task_id.in_(parent_history),
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
@@ -407,7 +413,11 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 # This locates only explicit operator-retained Git evidence;
                 # a branch tip never stands in for the missing generation.
                 request = replace(request, completion_id=legacy_completion_id(request))
-            if row["id"] in parent_ids:
+            # An abandoned episode whose only operation was cancelled before it
+            # verified binds like any other leaf generation, unless an operator
+            # already adopted it: that audited decision, valid or stale, is what
+            # the parent completion protocol answers.
+            if row["id"] in parent_ids or row["id"] in adopted_parents:
                 adoption = parent_adoptions.get(row["id"])
                 completion = completion_by_id.get(row["id"])
                 try:
@@ -519,6 +529,27 @@ async def _parent_adoptions_on(conn, task_ids, repository_id):
     return adoptions
 
 
+async def _adopted_parents_on(conn, task_ids, repository_id):
+    """Parent tasks an operator adoption audit names, whatever its binding says now.
+
+    Deliberately not fenced to the current checkpoint or episode: an audit that
+    no longer matches them is a stale operator decision on a parent the train
+    managed, not an episode that was never verified, and still fails closed.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import events, projects
+
+    if not task_ids:
+        return set()
+    return set((await conn.execute(
+        select(events.c.task_id).join(projects, projects.c.id == events.c.project_id).where(
+            events.c.event_type == PARENT_ADOPTION_EVENT, events.c.task_id.in_(task_ids),
+            projects.c.integration_repository_id == repository_id,
+        ).distinct()
+    )).scalars())
+
+
 async def _parent_completions_on(conn, task_ids, *, repository_id):
     """Current exact parent identities, including invalid bindings to fail closed.
 
@@ -526,6 +557,10 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
     neither reconstructs CI evidence nor treats an unfinished verification as
     a close. Episode generations may advance during collection; verification
     must match the current checkpoint generation, not the episode's initial one.
+    Returns the parent tasks, the abandoned ones a leaf binding may still serve,
+    and the exact completions: an *abandoned* task has an episode whose only
+    operation was cancelled before it ever verified or completed, so there is
+    no parent completion to find and none a leaf attestation may replace.
     """
     from sqlalchemy import and_, or_, select
 
@@ -539,6 +574,8 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
         task_integration_checkpoints as checkpoint,
     )
 
+    parent_operation = operation.c.parent_task_id.in_(task_ids) & (
+        operation.c.target_kind == "parent")
     parent_ids = set((await conn.execute(select(checkpoint.c.task_id).where(
         checkpoint.c.task_id.in_(task_ids),
         # A bare pre-train episode is a legacy leaf binding. Any trace of
@@ -554,10 +591,20 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
     ), select(verification.c.parent_task_id).where(
         verification.c.parent_task_id.in_(task_ids),
     ), select(operation.c.parent_task_id).where(
-        operation.c.parent_task_id.in_(task_ids), operation.c.target_kind == "parent",
+        parent_operation, operation.c.state != "cancelled",
     )))).scalars())
-    if not parent_ids:
-        return parent_ids, {}
+    # An operation cancelled before it verified or completed never bound
+    # anything, so it leaves the episode as bare as a pre-train one. Any
+    # verification or completion row above still requires the parent protocol.
+    abandoned = set((await conn.execute(select(operation.c.parent_task_id).where(
+        parent_operation, operation.c.state == "cancelled",
+        ~select(verification.c.id).where(
+            verification.c.operation_id == operation.c.id).exists(),
+        ~select(completion.c.operation_id).where(
+            completion.c.operation_id == operation.c.id).exists(),
+    ).distinct())).scalars()) - parent_ids
+    if not parent_ids and not abandoned:
+        return parent_ids, abandoned, {}
     rows = (await conn.execute(select(
         checkpoint.c.task_id, checkpoint.c.branch, checkpoint.c.repository_id,
         checkpoint.c.generation, checkpoint.c.version, checkpoint.c.verified_sha,
@@ -598,7 +645,7 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
         verification.c.required_check_version == operation.c.required_check_version,
         operation.c.target_kind == "parent", operation.c.state == "completed",
     ))).mappings().all()
-    return parent_ids, {
+    return parent_ids, abandoned, {
         row["task_id"]: VerifiedParentCompletion(
             row["project_id"], row["repository_id"], row["branch"],
             row["episode_id"], row["operation_id"], row["verification_id"],
