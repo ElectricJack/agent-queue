@@ -1560,6 +1560,46 @@ class TestAgentReconcilerWiring:
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
 
+    @pytest.mark.parametrize("initial_status", [TaskStatus.READY, TaskStatus.DEFINED])
+    async def test_held_task_never_dispatches_until_all_holds_are_removed(
+        self, session_orch, initial_status
+    ):
+        orch = session_orch
+        await _create_session_project(orch)
+        await orch.db.create_task(Task(
+            id="adoption-fixture", project_id="p-1", title="Operator adoption", description="",
+            status=initial_status, profile_id="claude", route_source="legacy",
+            branch_name="fixture-feature",
+        ))
+        for label in ("hold:adoption", "hold:operator", "fixture"):
+            await orch.db.add_task_label("adoption-fixture", label)
+
+        for label in (None, "hold:adoption"):
+            if label:
+                await orch.db.remove_task_label("adoption-fixture", label)
+            await _run_cycle_and_wait(orch)
+            task = await orch.db.get_task("adoption-fixture")
+            assert task.status == TaskStatus.READY
+            assert task.branch_name == "fixture-feature"
+            assert task.assigned_agent_id is None
+            assert await orch.db.get_session_for_task(task.id) is None
+            assert all(agent.role == "supervisor" for agent in await orch.db.list_agents())
+            assert [t.id for t in await orch.db.list_active_tasks()] == [task.id]
+
+        await orch.db.remove_task_label("adoption-fixture", "hold:operator")
+        await _run_cycle_and_wait(orch)
+        task = await orch.db.get_task("adoption-fixture")
+        assert task.status == TaskStatus.IN_PROGRESS
+        session = await orch.db.get_session_for_task(task.id)
+        assert session is not None
+
+        # A hold controls new dispatch; in-flight work still counts toward
+        # concurrency and remains visible in the scheduler's snapshot.
+        await orch.db.add_task_label(task.id, "hold:operator")
+        await orch._schedule()
+        assert task.id in {t.id for t in orch._last_scheduler_state.tasks}
+        assert (await orch.db.get_session_for_task(task.id)).id == session.id
+
     async def test_ready_task_dispatches_with_only_workspace_and_a_route(
         self, session_orch
     ):

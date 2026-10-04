@@ -337,6 +337,8 @@ class DatabaseBackend(Protocol):
         self,
         project_id: str | None = None,
         exclude_statuses: set[TaskStatus] | None = None,
+        *,
+        exclude_held_ready: bool = False,
     ) -> list[Task]: ...
     async def list_active_tasks_all_projects(self) -> list[Task]: ...
     async def count_tasks_by_status(
