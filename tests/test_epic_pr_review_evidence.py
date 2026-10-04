@@ -608,7 +608,7 @@ def test_conflicting_pull_request_without_checks_is_conflict_not_pending():
 
 
 @pytest.mark.parametrize("conflict_scope", ["batch", "member"])
-async def test_conflicting_source_is_admitted_only_under_batch_conflict_scope(
+async def test_conflicting_source_is_admitted_under_either_conflict_scope(
     case, conflict_scope
 ):
     policy = await _continuous_policy(case)
@@ -628,8 +628,9 @@ async def test_conflicting_source_is_admitted_only_under_batch_conflict_scope(
     async with db.immediate() as conn:
         members = await TrainService(db)._eligible_members(
             conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    expected = {"e1"} if conflict_scope == "batch" else set()
-    assert {item["task_id"] for item in members} == expected
+    # Member scope must admit too: no source repair is filed for a conflict,
+    # so only candidate construction's member conflict repair can recover it.
+    assert {item["task_id"] for item in members} == {"e1"}
 
 
 async def test_conflict_observation_files_no_source_repair(case, tmp_path):

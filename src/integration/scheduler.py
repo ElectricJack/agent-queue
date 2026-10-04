@@ -1088,11 +1088,11 @@ class TrainService:
             ) in eligible]
             exact = {(row["task_id"], row["source_base"], row["source_head"], row["generation"]): row
                      for row in records if row["policy_generation"] == project["hierarchical_integration_generation"]}
-            # GitHub runs no PR CI on a conflicting head; under batch conflict
-            # scope the batch repair resolves it and candidate CI gates it.
-            admissible_states = {"green"}
-            if policy.root.repair.conflict_scope == "batch":
-                admissible_states.add("conflict")
+            # GitHub runs no PR CI on a conflicting head, so a conflict is
+            # admitted under either conflict scope: candidate construction
+            # files the member or batch conflict repair and candidate CI gates
+            # it.  Source repair is filed only for red/cancelled heads.
+            admissible_states = {"green", "conflict"}
             green = {member["task_id"] for member in members if (
                 exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]), {}).get("state") in admissible_states)}
             admitted_ids = set(green)
