@@ -32,6 +32,7 @@ from src.database import Database
 from src.database.tables import digest_windows, supervisor_report_requests, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.aggregate import DigestResult
+from src.digest.dispatch import marker_for
 from src.digest.eligibility import Eligibility
 from src.digest.facts import ActiveTask, DigestWindow, WorkFact
 from src.escalations.transport import SinkTransport
@@ -147,7 +148,9 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert second.sent == 1
     posted = next(iter(transport.messages.values())).content
     assert "Completed t1; delivery to main is pending." in posted
-    assert posted.count("aq-dig:") == 1
+    marker = marker_for(window["id"])
+    assert posted.endswith(marker) and posted.count(marker) == 1
+    assert "aq-dig:" not in posted
     assert len(posted) <= 1200
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [

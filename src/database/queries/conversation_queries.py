@@ -146,16 +146,24 @@ class ConversationQueriesMixin:
     async def resolve_conversation_supervisor(
         self, project_id: str = ""
     ) -> tuple[str | None, str | None]:
-        """Choose a live project supervisor, then global, otherwise keep the input queued."""
+        """Choose a live project supervisor, then global, otherwise keep the input queued.
+
+        A shared channel may belong to more than one project, and a message
+        there cannot be attributed to any of them.  Rather than refusing to
+        guess and leaving the input on ``conversation-queued`` forever (the
+        2026-10-04 shared-channel stall), the global supervisor is the one
+        launch that can answer for the installation, so the fallback is what
+        runs.  Only when it is not live either does the input stay queued --
+        which the caller must say out loud, not leave silent.
+        """
         from src.sessions.spec import named_session_name
 
         if not project_id:
             projects = await self.list_projects()
             if len(projects) == 1:
                 project_id = projects[0].id
-            elif len(projects) > 1:
-                # A shared channel cannot guess which project's supervisor owns it.
-                return None, None
+            # A shared channel cannot guess which project's supervisor owns it,
+            # so it goes to the global supervisor rather than waiting forever.
         for scope in [project_id, None] if project_id else [None]:
             live = await self.get_session_by_name(
                 named_session_name("supervisor", scope or "global")
@@ -771,6 +779,29 @@ class ConversationQueriesMixin:
                 )
             )
         return int(total or 0)
+
+    async def stalled_conversation_queue(self) -> dict[str, Any]:
+        """Conversation inputs no supervisor session is live to answer.
+
+        An input accepted while no supervisor was running stays addressed to
+        :data:`QUEUED_SUPERVISOR_RECIPIENT`.  Nothing delivers it and nothing
+        retries it, so the count and the age of the oldest such row are the
+        only honest evidence that a message went unanswered; the stall sweep
+        is what reports them.
+        """
+        async with self._engine.connect() as conn:
+            unowned, oldest = (
+                await conn.execute(
+                    select(func.count(), func.min(messages.c.created_at)).where(
+                        messages.c.to_kind == "session",
+                        messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
+                        messages.c.body_kind == "conversation_input",
+                        messages.c.delivered_at.is_(None),
+                        messages.c.archived_at.is_(None),
+                    )
+                )
+            ).one()
+        return {"unowned": int(unowned or 0), "oldest_at": float(oldest) if oldest else None}
 
     async def find_conversation_status_line(
         self, conversation_id: str, *, exclude_delivery_id: str = ""

@@ -568,6 +568,7 @@ class Orchestrator(
 
         self.session_lens = SessionLens(
             db=self.db,
+            bus=self.bus,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,
             harness_registry=self.harness_registry,
@@ -3711,7 +3712,9 @@ class Orchestrator(
         classes = dict(self.session_spec_builder._intelligence_classes)
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.
-        task_snapshot = await self.db.list_active_tasks()
+        # Holds apply to legacy dispatch as well as pool claims (work-graph
+        # §6). Filter before reconciliation so held work creates no agent supply.
+        task_snapshot = await self.db.list_active_tasks(exclude_held_ready=True)
         from src.profiles.task_execution import is_supervisor_profile
 
         # Historical supervisor-routed rows remain visible to task explain and

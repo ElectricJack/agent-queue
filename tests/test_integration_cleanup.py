@@ -1013,7 +1013,9 @@ async def test_expired_cleanup_claim_cannot_post_after_successor_prewrite(releas
     old_task = asyncio.create_task(
         old.execute("batch", "source_pr", "99#1", now=30.0)
     )
-    await asyncio.wait_for(first_lookup.wait(), timeout=1.0)
+    # Hang guard only: the claim and repository reads before the first lookup
+    # can exceed a second on a loaded CI shard.
+    await asyncio.wait_for(first_lookup.wait(), timeout=30.0)
     accepted = await successor.execute(
         "batch", "source_pr", "99#1", now=400.0
     )

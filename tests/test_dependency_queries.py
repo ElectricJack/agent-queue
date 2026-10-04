@@ -81,6 +81,21 @@ class TestAddDependencyIdempotent:
         )
 
 
+async def test_has_waiting_dependents_counts_unfinished_blocking_edges(db):
+    for tid in ("fix", "waiter", "done-waiter", "child", "note", "free"):
+        await _mktask(db, tid)
+    await db.add_dependency("done-waiter", "free", DepType.BLOCKS.value)
+    await db.add_dependency("child", "free", DepType.PARENT_CHILD.value)
+    await db.add_dependency("note", "free", DepType.DISCOVERED_FROM.value)
+    await db.update_task("done-waiter", status=TaskStatus.COMPLETED)
+    assert await db.has_waiting_dependents("free") is False
+
+    await db.add_dependency("waiter", "fix", DepType.WAITS_FOR.value)
+    assert await db.has_waiting_dependents("fix") is True
+    await db.update_task("waiter", status=TaskStatus.FAILED)
+    assert await db.has_waiting_dependents("fix") is False
+
+
 async def test_list_project_edges_returns_typed_rows_for_one_project(db):
     await db.create_project(Project(id="p2", name="P2"))
     for tid, pid in (("a", PROJECT), ("b", PROJECT), ("c", "p2")):

@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 499,
+    "leaf_commands": 501,
     "registration": {
-      "generated": 340,
-      "handwritten": 159
+      "generated": 341,
+      "handwritten": 160
     },
     "ownership": {
-      "core": 460,
+      "core": 462,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 498
+      "supported": 500
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 340,
-      "registration": 145
+      "dispatch": 341,
+      "registration": 146
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 439
+      "untested": 441
     }
   },
   "commands": [
@@ -542,6 +542,7 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--include-stopped",
           "--json",
           "--brief",
           "--save-output",
@@ -11510,6 +11511,37 @@
       }
     },
     {
+      "path": "aq session prune",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.sessions.prune",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "session_id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq session show",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -14704,6 +14736,40 @@
         "optional": [
           "--text",
           "--key",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system session-prune",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "session_prune",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--session-id"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",

@@ -5702,7 +5702,11 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == repair_task_id)
-            .values(status="IN_PROGRESS", claim_epoch=1)
+            .values(
+                status="IN_PROGRESS",
+                claim_epoch=1,
+                assigned_agent_id="root-repair-agent",
+            )
         )
         await conn.execute(
             insert(workspaces).values(
@@ -5731,6 +5735,8 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
             epoch="epoch",
             instance_token="token",
             started_at=2.0,
+            claim_phase="active",
+            claim_phase_at=2.0,
             agent_id="root-repair-agent",
             last_claim_epoch=1 if is_pool else None,
         )
@@ -5752,6 +5758,10 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
 
     async def run_git(args, *, cwd):
         if args[0] == "status":
+            return ""
+        if args[:3] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return "HEAD"
+        if args[:2] == ["switch", "--detach"]:
             return ""
         if args[0] == "rev-list":
             return "" if green else f"{repair_head}\n"
@@ -5818,15 +5828,24 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
             project_id="p", event_type="integration.repair_delegate_closed",
             payload={"task_id": repair_task_id, "fence_token": 0}, available_at=1,
         )
-    closed = await handler._cmd_task_close(
-        {
-            "task_id": repair_task_id,
-            "session_id": "root-repair-session",
-            "outcome": "pass",
-            "summary": "root repair pushed",
-            **({"claim_epoch": 1} if is_pool else {}),
-        }
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(),
+        session_id="root-repair-session",
+        session_instance_token="token",
+        task_id=repair_task_id,
+        project_id="p",
     )
+    with principal_context(principal):
+        closed = await handler._cmd_task_close(
+            {
+                "task_id": repair_task_id,
+                "session_id": "root-repair-session",
+                "outcome": "pass",
+                "summary": "root repair pushed",
+                **({"claim_epoch": 1} if is_pool else {}),
+            }
+        )
 
     assert closed["success"] is True, closed
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED

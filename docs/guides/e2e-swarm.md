@@ -316,7 +316,11 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
-`aq prime` a task in project `other`. *Regression it catches: a token being
+`aq prime` a task in project `other`. Before those assertions, the holder
+retries only `no_ready_work` within the convergence budget and must claim the
+exact fixture: even a routed `READY` row can be skipped while another transaction
+locks it. A timeout reports the last claim and fixture state; other claim
+failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and

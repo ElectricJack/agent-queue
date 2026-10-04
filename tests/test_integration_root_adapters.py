@@ -345,11 +345,15 @@ async def test_command_transfer_requires_operator_and_active_enablement_and_audi
 
 async def test_seal_preserves_the_complete_namespaced_request_key(root):
     db, _, subject = root
-    commands = SimpleNamespace(execute=AsyncMock(return_value={"outcome": "empty"}))
+    exclusions = [{"task_id": "source", "reason": "source_ci_pending"}]
+    commands = SimpleNamespace(execute=AsyncMock(return_value={
+        "outcome": "empty", "exclusions": exclusions,
+    }))
     adapters = RootPrimitiveAdapters(db, commands, None)
     subject = subject.model_copy(update={"subject_key": "root_batch:repo:integration-sweep:p:4"})
     result = await adapters.seal(subject, SealArgs(admission=AdmissionPredicate()))
     assert result.outcome == "empty"
+    assert result.detail["exclusions"] == exclusions
     assert commands.execute.await_args.args[1]["request_id"] == "integration-sweep:p:4"
 
 
@@ -935,6 +939,123 @@ async def test_runtime_seeds_the_next_request_with_durable_repository_ownership(
     assert new.subject_key == "root_batch:repo:integration-sweep:p:2" and new.policy == PIN
 
 
+async def _outstanding(db, request_id):
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.project_integration_schedules)
+            .where(t.project_integration_schedules.c.project_id == "p")
+            .values(
+                outstanding_request_id=request_id,
+                outstanding_trigger=request_id and "periodic",
+                outstanding_requested_at=request_id and 11,
+                updated_at=11,
+            )
+        )
+
+
+async def _schedule(db, request_id):
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.projects)
+            .where(t.projects.c.id == "p")
+            .values(
+                hierarchical_integration_policy={
+                    "root": {"route": {"artifact": PIN.model_dump(mode="json")}}
+                }
+            )
+        )
+        await conn.execute(
+            insert(t.project_integration_schedules).values(
+                project_id="p",
+                enabled=True,
+                interval_seconds=60,
+                next_due_at=20,
+                outstanding_request_id=request_id,
+                outstanding_trigger="periodic",
+                outstanding_requested_at=10,
+                updated_at=10,
+            )
+        )
+
+
+async def _root_subjects(db, *, besides):
+    async with db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(t.integration_subjects).where(t.integration_subjects.c.id != besides)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return {row["subject_key"].rsplit(":", 1)[-1]: row for row in rows}
+
+
+@pytest.mark.parametrize("path", ["restart", "replaced"])
+async def test_runtime_supersedes_an_admitting_root_whose_request_is_no_longer_outstanding(
+    root, path
+):
+    db, _, subject = root
+    await activate(db, subject)
+    await _schedule(db, "integration-sweep:p:2")
+    runtime = RootSubjectRuntime(db, None, SimpleNamespace(policy_for=AsyncMock()), PrimitivePorts())
+    await runtime.seed(20)
+    stale = (await _root_subjects(db, besides=subject.id))["2"]
+    if path == "restart":
+        # The daemon released the stale request; nothing replaces it yet.
+        await _outstanding(db, None)
+        await runtime.seed(21)
+        assert (await _root_subjects(db, besides=subject.id))["2"] == stale
+    await _outstanding(db, "integration-sweep:p:3")
+    await runtime.seed(22)
+    await runtime.seed(23)
+
+    rows = await _root_subjects(db, besides=subject.id)
+    assert set(rows) == {"2", "3"}
+    old, new = rows["2"], rows["3"]
+    assert old["phase"] == "done" and old["next_due_at"] is None
+    assert old["closed_reason"].startswith("superseded: ")
+    assert "integration-sweep:p:3" in old["closed_reason"]
+    assert old["version"] == stale["version"] + 1
+    assert new["phase"] == "admitting" and new["engine"] == "reconciler"
+    async with db._engine.connect() as conn:
+        journal = (
+            (
+                await conn.execute(
+                    select(t.integration_subject_journal).where(
+                        t.integration_subject_journal.c.subject_id == old["id"]
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [(row["primitive"], row["outcome"], row["phase"]) for row in journal] == [
+        ("record_decision", "recorded", "admitting")
+    ]
+    assert journal[0]["payload"]["superseded_by"] == new["subject_key"]
+
+
+async def test_runtime_never_supersedes_a_bound_admitting_root_and_never_raises(root):
+    db, _, subject = root
+    subject = await activate(db, subject)
+    async with db.immediate() as conn:
+        await db.update_integration_subject_on(
+            conn,
+            subject_id=subject.id,
+            expected_version=subject.version,
+            values={"phase": "admitting"},
+            now=11,
+        )
+    await _schedule(db, "integration-sweep:p:2")
+    runtime = RootSubjectRuntime(db, None, SimpleNamespace(policy_for=AsyncMock()), PrimitivePorts())
+    await runtime.seed(20)
+    row = await db.get_integration_subject(subject.id)
+    assert row["phase"] == "admitting" and row["closed_reason"] is None
+    assert await _root_subjects(db, besides=subject.id) == {}
+
+
 async def test_runtime_recovers_a_lost_resolved_gate_wake(root):
     db, _, subject = root
     subject = await activate(db, subject)
@@ -1371,3 +1492,84 @@ async def test_policy_activation_refuses_in_place_repository_change_with_live_su
     assert result["outcome"] == "busy"
     assert await db.get_repo("repo") == before
     assert Subject.from_row(await db.get_integration_subject(subject.id)) == subject
+async def test_root_ancestry_uses_retained_objects_and_falls_back_before_construction():
+    from src.integration.root_runtime import RootGitObservationReader
+    from unittest.mock import AsyncMock
+
+    git = SimpleNamespace(ais_ancestor=AsyncMock(side_effect=[True, None, False]))
+    reader = RootGitObservationReader(git, lambda repository_id: "/retained/" + repository_id)
+    repository = {"id": "repo", "checkout_base_path": "/base"}
+    assert await reader.is_ancestor(repository, BASE, HEAD) is True
+    assert await reader.is_ancestor(repository, HEAD, BASE) is False
+    assert [call.args[0] for call in git.ais_ancestor.await_args_list] == [
+        "/retained/repo", "/retained/repo", "/base"]
+
+
+async def test_root_remote_reads_use_retained_repository_when_base_is_unavailable(tmp_path):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.root_runtime import RootGitObservationReader
+    from unittest.mock import AsyncMock
+
+    store = tmp_path / "repo.git"
+    store.mkdir()
+    git = SimpleNamespace(als_remote_ref=AsyncMock(return_value=RemoteRefResult(
+        RemoteRefState.PRESENT, oid=HEAD
+    )))
+    reader = RootGitObservationReader(git, lambda _: store)
+    repository = {"id": "repo", "checkout_base_path": "/unavailable", "url": "repo-url"}
+    assert (await reader.remote_head(repository, "refs/heads/main")).sha == HEAD
+    git.als_remote_ref.assert_awaited_once_with(str(store), "main", repository_url="repo-url")
+    store.rmdir()
+    await reader.remote_head(repository, "refs/heads/main")
+    assert git.als_remote_ref.await_args.args[0] == "/unavailable"
+
+
+@pytest.mark.parametrize('sealed', [False, True])
+async def test_only_unsealed_root_defers_member_ancestry_unknown_to_admission(root, monkeypatch, sealed):
+    from src.integration.observe import IntegrationObserver
+    from src.integration.subjects import MemberFacts
+
+    db, _, subject = root
+    if not sealed:
+        subject = subject.model_copy(update={'batch_id': None})
+    observed = facts(subject).model_copy(update={
+        'members': (MemberFacts(task_id='delivered', head_sha=HEAD, ancestry='contained'),
+                    MemberFacts(task_id='new', head_sha=BASE, ancestry='unknown')),
+        'unknown': ('ancestry_unknown:new', 'remote_unknown:refs/heads/main'),
+    })
+    monkeypatch.setattr(IntegrationObserver, 'observe', AsyncMock(return_value=observed))
+    result = await RootObserver(db, None).observe(subject)
+    if sealed:
+        assert result.members == observed.members
+        assert result.unknown == observed.unknown
+    else:
+        assert [m.task_id for m in result.members] == ['new']
+        assert result.unknown == ('remote_unknown:refs/heads/main',)
+
+
+async def test_root_remote_heads_batch_the_retained_repository_then_the_base(tmp_path):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.root_runtime import RootGitObservationReader
+
+    store = tmp_path / "repo.git"
+    store.mkdir()
+
+    async def read(path, branches, *, repository_url):
+        if path == str(store):
+            return {
+                branch: RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
+                if branch == "main"
+                else RemoteRefResult(RemoteRefState.ERROR, error="unreadable")
+                for branch in branches
+            }
+        return {branch: RemoteRefResult(RemoteRefState.ABSENT) for branch in branches}
+
+    git = SimpleNamespace(als_remote_refs=AsyncMock(side_effect=read))
+    reader = RootGitObservationReader(git, lambda _: store)
+    repository = {"id": "repo", "checkout_base_path": "/base", "url": "repo-url"}
+    heads = await reader.remote_heads(repository, ["refs/heads/aq/x", "refs/heads/main"])
+    assert heads["refs/heads/main"].sha == HEAD and heads["refs/heads/aq/x"].state == "absent"
+    assert [call.args for call in git.als_remote_refs.await_args_list] == [
+        (str(store), ["aq/x", "main"]),
+        ("/base", ["aq/x"]),
+    ]

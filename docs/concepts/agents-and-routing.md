@@ -210,7 +210,15 @@ hinted `deep-high` lands on `deep-high` Codex. Narrow, test-verified work goes
 to an OpenCode rung while one has a free slot: local OpenCode (the `narrow`
 lanes) first, then OpenCode on the hosted Zen gateway (the `narrow-hosted`
 lane, `standard-high` only), which is a separate provider with its own
-availability. Repairs never go to either. Among what remains, the
+availability. Repairs never go to either. A self-hosted model (a harness
+whose `provider` is `ollama`, such as local OpenCode) takes only low-stakes
+work: the policy's `local_models` gate drops it for a task of priority 150 or
+more, a bugfix in a project delivering through an integration train
+(`hierarchical_integration_mode` `hierarchy`, `train` or `development`), and a
+task an unfinished task waits on (`no_candidates` reason `local_model_gate`
+when nothing else remains). The hosted Zen gateway is not local. `aq doctor
+--check stall.sweep` reports `high_priority_local_model` for work at or above
+the threshold that still sits on a local profile. Among what remains, the
 least-pressed candidate wins, and a tie goes to Codex, then Claude, then
 OpenCode, then hosted OpenCode.
 

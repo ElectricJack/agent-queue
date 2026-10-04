@@ -274,7 +274,8 @@ class RootPrimitiveAdapters:
                 "generation": batch["current_revision"],
                 "base_sha": batch["base_sha"],
             }
-        return self._answer(args, result["outcome"], subject_values=values)
+        return self._answer(args, result["outcome"], subject_values=values,
+                            exclusions=result.get("exclusions", []))
 
     async def merge(self, subject, args):
         batch, _, members, _ = await self._rows(subject)

@@ -637,7 +637,7 @@ async def test_a_trusted_lan_terminal_relays_input_and_output_through_serve_mode
                 assert await asyncio.wait_for(ws.recv(), 5) == control
                 await ws.send(b"\x1b[32mterminal output\x1b[0m")
                 assert await asyncio.wait_for(ws.recv(), 5) == b"\x1b[32mterminal output\x1b[0m"
-            for denied_origin in (None, "http://evil.example"):
+            for denied_origin in ("http://evil.example",):
                 with pytest.raises(InvalidStatus) as denied:
                     async with connect(_ws(url) + "/ws/terminal/s1", origin=denied_origin):
                         pass

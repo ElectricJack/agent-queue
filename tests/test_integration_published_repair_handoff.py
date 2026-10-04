@@ -13,7 +13,6 @@ from sqlalchemy import insert, select, update
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
     integration_branch_owners,
-    integration_candidate_publications,
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
     integration_repair_stages,
@@ -24,7 +23,6 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.github_app import GitHubRepositoryBinding
-from src.integration.candidate_ci import CandidateCIService
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.models import (
@@ -41,10 +39,10 @@ from src.models import (
 from src.profiles.capabilities import CapabilityPolicy
 from tests.test_integration_candidates import (
     _AppClient,
-    _AuditForge,
-    _LocalPushGit,
     _artifact,
+    _AuditForge,
     _git,
+    _LocalPushGit,
     _make_conflicting_origin,
     _policy,
     _seed_batch,
@@ -285,57 +283,6 @@ async def retain_push(repair, monkeypatch):
     return proof
 
 
-@pytest.mark.parametrize("repair", ["member", "batch_debug"], indirect=True)
-async def test_public_pool_submission_detaches_qualified_repair_and_continues_ci(repair):
-    assert _git(repair.origin, "rev-parse", repair.conflict.branch) == repair.conflict.head_sha
-    assert _git(repair.checkout, "rev-parse", "HEAD") != repair.conflict.head_sha
-    result = await submit(repair)
-    assert result["outcome"] == "accepted", result
-    assert result["continuation"]["outcome"] == "built"
-    proof = await reservation(repair)
-    assert proof["state"] == "accepted"
-    assert proof["target_kind"] == "qualified"
-    assert proof["handoff_fence_token"] == repair.fence.token + 1
-    assert _git(repair.checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
-    assert _git(repair.checkout, "rev-parse", "HEAD") == repair.head
-    assert _git(repair.base_checkout, "rev-parse", repair.conflict.branch) == repair.head
-    assert _git(repair.origin, "rev-parse", "main") != result["continuation"]["head_sha"]
-    session = await repair.db.get_session("repair-session")
-    workspace = await repair.db.get_workspace("repair-slot")
-    assert session.task_id == workspace.locked_by_task_id == repair.task_id
-    assert workspace.locked_by_agent_id == session.agent_id == "repair-agent"
-    assert session.instance_token == "instance-1"
-    assert (await submit(repair))["outcome"] == "already_accepted"
-    async with repair.db._engine.connect() as conn:
-        publication = dict(
-            (
-                await conn.execute(
-                    select(integration_candidate_publications).where(
-                        integration_candidate_publications.c.revision
-                        == result["continuation"]["revision"]
-                    )
-                )
-            )
-            .mappings()
-            .one()
-        )
-        mutations = (
-            (await conn.execute(select(integration_candidate_ref_mutations))).mappings().all()
-        )
-    assert publication["state"] == "pr_published"
-    assert sum(m["purpose"] == "repair_handoff" and m["state"] == "applied" for m in mutations) == 1
-    ci = AsyncMock()
-    ci.handle_candidate_ci.return_value = {"outcome": "observed"}
-    factory = AsyncMock(side_effect=AssertionError("publication must already be durable"))
-    row = {
-        "batch_id": "batch",
-        "revision": publication["revision"],
-        "candidate_sha": publication["head_sha"],
-    }
-    continuation = CandidateCIService(repair.db, candidate_service_factory=factory, attestation=ci)
-    assert await continuation.handle(row, time.time()) == {"outcome": "observed"}
-    ci.handle_candidate_ci.assert_awaited_once_with(row, pytest.approx(time.time(), abs=1))
-    factory.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

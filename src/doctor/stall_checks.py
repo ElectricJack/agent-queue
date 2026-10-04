@@ -16,6 +16,12 @@ from pathlib import Path
 
 from sqlalchemy import and_, or_, select
 
+from src.database.tables import (
+    projects as project_table,
+    task_branch_origins,
+    task_integration_checkpoints,
+    tasks as task_table,
+)
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
 
@@ -351,6 +357,117 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     return findings
 
 
+async def _local_model_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
+    """Unfinished work at or above the local-model priority threshold on a local profile.
+
+    The router keeps such work off a self-hosted model (``local_models``); a
+    hit is an override or a route that predates the gate.  The threshold is
+    the policy default, since the project's policy lives in its playbook.
+    """
+    from src.commands.routing_commands import profile_provider
+    from src.routing.planner import LOCAL_MODEL_PROVIDERS
+    from src.routing.policy import LocalModels
+
+    threshold = LocalModels().below_priority
+    flagged = [
+        task for task in tasks
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}
+        and task.profile_id and (task.priority or 0) >= threshold
+    ]
+    if not flagged:
+        return []
+    registry = getattr(getattr(ctx.handler, "orchestrator", None), "harness_registry", None)
+    profiles = {profile.id: profile for profile in await ctx.db.list_profiles()}
+    findings = []
+    for task in flagged:
+        profile = profiles.get(task.profile_id)
+        if profile is None or (
+            profile_provider(profile, registry, task.project_id) not in LOCAL_MODEL_PROVIDERS
+        ):
+            continue
+        # ``task route`` refuses claimed and running work: stop it first.
+        queued = task.status in {TaskStatus.READY, TaskStatus.DEFINED}
+        findings.append(_finding(
+            "high_priority_local_model", task.project_id,
+            f"{task.id} [{task.status.value}] priority {task.priority} sits on local "
+            f"{task.profile_id} (local models take priority < {threshold}); "
+            + ("" if queued else "stop it, then ") + f"aq task route --task-id {task.id}",
+            task_id=task.id, profile_id=task.profile_id, priority=task.priority,
+        ))
+    return findings
+
+
+async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    checkpoint = task_integration_checkpoints
+    origin = task_branch_origins
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(task_table.c.id, task_table.c.project_id, task_table.c.pr_url)
+            .select_from(
+                task_table.join(project_table, project_table.c.id == task_table.c.project_id)
+                .outerjoin(checkpoint, checkpoint.c.task_id == task_table.c.id)
+                .outerjoin(origin, and_(origin.c.task_id == task_table.c.id,
+                                        origin.c.retired_at.is_(None)))
+            )
+            .where(
+                task_table.c.project_id.in_(active),
+                project_table.c.hierarchical_integration_mode == "train",
+                project_table.c.integration_repository_id == task_table.c.repo_id,
+                task_table.c.parent_task_id.is_(None),
+                task_table.c.status == TaskStatus.COMPLETED.value,
+                task_table.c.pr_url.is_not(None), task_table.c.pr_url != "",
+                or_(checkpoint.c.task_id.is_(None), origin.c.id.is_(None)),
+            )
+            .order_by(task_table.c.id).limit(100)
+        )).mappings().all()
+    return [
+        _finding("unmaterialized_train_pr", row["project_id"],
+                 f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
+                 f"run aq integration materialize-root {row['id']}",
+                 task_id=row["id"], pr_url=row["pr_url"])
+        for row in rows
+    ]
+
+
+async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Conversation inputs no supervisor session is live to answer.
+
+    A Discord input accepted while no supervisor was running stays addressed
+    to ``session:conversation-queued``.  Nothing delivers it, nothing retries
+    it, and both the channel and the daemon look healthy while it sits there,
+    so the sweep is what says so out loud.
+    """
+    queue = await ctx.db.stalled_conversation_queue()
+    if not queue["unowned"]:
+        return []
+    oldest = queue["oldest_at"]
+    return [_finding(
+        "conversation_unowned",
+        None,
+        f"{queue['unowned']} Discord conversation input(s) have no live supervisor "
+        f"(oldest {int((now - oldest) / 60) if oldest else '?'}m); they stay queued "
+        "until one starts -- start the supervisor, or set discord.project_id",
+        unowned=queue["unowned"],
+        oldest_at=oldest,
+    )]
+
+
+def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
+    summary = (
+        f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
+        else f"no stalls across {active} active project(s)"
+    )
+    detail = summary + "".join(
+        f"\n{item['kind']} {item['project_id'] or '-'}: {item['detail']}"
+        for item in findings
+    )
+    return CheckResult(
+        CHECK_ID, (Severity.ERROR if any(item.get("severity") == "error" for item in findings)
+                   else Severity.WARN if findings else Severity.OK),
+        detail,
+        data={"findings": findings, "count": len(findings),
+              "vault_root": str(Path(ctx.config.vault_root).expanduser())},
+    )
 
 
 async def _check_sweep(ctx: DoctorContext) -> CheckResult:
@@ -359,8 +476,19 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     now = time.time()
     projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
     active = {project.id for project in projects}
+    from src.doctor.session_checks import _check_flock
+
+    flock = await _check_flock(ctx)
+    flock_findings = [
+        _finding("flock_untracked", entry.get("project_id"), entry["detail"],
+                 evidence=entry, severity="error")
+        for entry in flock.data.get("findings", [])
+    ]
+    # An unowned conversation input is a stall whether or not a project is
+    # active, so this line is read before the empty-install return.
+    conversation = await _conversation_findings(ctx, now)
     if not active:
-        return CheckResult(CHECK_ID, Severity.OK, "no active projects", data={"findings": []})
+        return _sweep_result(ctx, flock_findings + conversation, 0)
     tasks_by_project = await asyncio.gather(
         *(ctx.db.list_tasks(project_id=pid) for pid in sorted(active))
     )
@@ -374,27 +502,20 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
+        _local_model_findings(ctx, tasks),
+        _unmaterialized_pr_findings(ctx, active),
         _unadmitted_parent_findings(ctx, active),
         _reviewed_file_guard_findings(ctx, active),
         _orphaned_pr_findings(ctx, active, now),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
+        _subject_unknown_findings(ctx, active, now),
     )
-    findings = [item for group in groups for item in group] + _route_findings(tasks)
-    summary = (
-        f"{len(findings)} stall finding(s) across {len(active)} active project(s)" if findings
-        else f"no stalls across {len(active)} active project(s)"
+    findings = (
+        [item for group in groups for item in group]
+        + _route_findings(tasks) + flock_findings + conversation
     )
-    detail = summary + "".join(
-        f"\n{item['kind']} {item['project_id'] or '-'}: {item['detail']}"
-        for item in findings
-    )
-    return CheckResult(
-        CHECK_ID, Severity.WARN if findings else Severity.OK,
-        detail,
-        data={"findings": findings, "count": len(findings),
-              "vault_root": str(Path(ctx.config.vault_root).expanduser())},
-    )
+    return _sweep_result(ctx, findings, len(active))
 
 
 async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
@@ -814,3 +935,47 @@ async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
         except Exception as exc:
             errors.append({"project_id": project_id, "error": str(exc)})
     return findings, errors
+def _unknown_subject_streaks(rows, now: float) -> list[dict]:
+    """Replay newest-first observations; successful decisions break the unknown streak."""
+    streaks, settled = {}, set()
+    for row in rows:
+        subject_id = row["subject_id"]
+        if subject_id in settled:
+            continue
+        failed = row.get("rule") == "unknown-facts" or (
+            row.get("primitive") == "integration_observe_subject"
+            and row.get("outcome") == "unknown"
+        )
+        if not failed:
+            settled.add(subject_id)
+            continue
+        streak = streaks.setdefault(subject_id, dict(row))
+        streak["started_at"] = row["recorded_at"]
+    return [
+        _finding(
+            "integration_unknown_facts", row["project_id"],
+            f"subject {subject_id} batch {row.get('batch_id') or '-'} has unknown facts "
+            f"for {int(now - row['started_at'])}s: "
+            f"{row['payload'].get('facts', {}).get('unknown') or row['payload'].get('result')}",
+            subject_id=subject_id, batch_id=row.get("batch_id"), severity="error",
+            started_at=row["started_at"], journal_seq=row["seq"],
+        )
+        for subject_id, row in streaks.items() if now - row["started_at"] >= 300
+    ]
+
+
+async def _subject_unknown_findings(ctx, active, now):
+    from src.database.tables import integration_subject_journal as j, integration_subjects as s
+
+    if not getattr(ctx.db, "_engine", None):
+        return []
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(j, s.c.project_id, s.c.batch_id).join(s, s.c.id == j.c.subject_id).where(
+                s.c.project_id.in_(active), s.c.engine == "reconciler", s.c.phase != "done",
+                j.c.mode == "active",
+                or_(j.c.entry_kind == "decision",
+                    and_(j.c.primitive == "integration_observe_subject", j.c.outcome == "unknown")),
+            ).order_by(j.c.recorded_at.desc(), j.c.seq.desc()).limit(10000)
+        )).mappings().all()
+    return _unknown_subject_streaks(rows, now)

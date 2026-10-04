@@ -35,6 +35,7 @@ from src.conversations.preconditions import conversation_preconditions
 from src.conversations.render import (
     STATUS_BACK,
     STATUS_OFFLINE,
+    conversation_marker,
     render_brief,
     render_reply,
     sanitise_reply,
@@ -352,7 +353,7 @@ class ConversationCommandsMixin:
             "delivery_dedup_key": dedup_key,
             "discord_text_chars": len(discord_text),
             "truncated": discord_text
-            != f"{sanitise_reply(text, base_url=base_url)} (aq-conv:{dedup_key})",
+            != f"{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}",
         }
 
     async def _conversation_notice(
@@ -515,12 +516,21 @@ class ConversationCommandsMixin:
                 return _error(
                     "conversation_not_found", "conversation is not bound to a known thread"
                 )
-        elif conversation_id:
-            return _error("invalid_envelope", "a follow-up must name its observed thread")
         elif require_mention and not envelope.mentions_bot:
             # The gateway already refused this; the command refuses it again so
             # no caller can skip the flag.
             return _error("no_bot_mention", "top-level message does not mention the bot")
+        elif conversation_id:
+            # §2.2: a top-level message naming the channel's one conversation
+            # continues it rather than opening another. Only a channel
+            # conversation can be named this way: a thread conversation is
+            # reached through the thread the gateway observed.
+            conversation = await self.db.get_conversation(conversation_id)
+            if conversation is None or conversation["kind"] != KIND_CHANNEL:
+                return _error(
+                    "invalid_envelope",
+                    "a follow-up must name the channel conversation or its observed thread",
+                )
         if conversation is not None:
             if direct:
                 disagreement = conversation["guild_id"] != DM_GUILD
@@ -542,6 +552,16 @@ class ConversationCommandsMixin:
                     "author_not_allowlisted", "author is not in the conversation audience"
                 )
             conversation_id = conversation["id"]
+        elif not envelope.external_thread_id and (
+            envelope.external_root_message_id != envelope.external_message_id
+        ):
+            # A message that opens a conversation is its own root. A top-level
+            # follow-up above named the conversation it joins, and the durable
+            # row is what proved that root; here there is no row, so the claim
+            # is unchecked and refused.
+            return _error(
+                "invalid_envelope", "top-level intake requires the message to be its own root"
+            )
 
         text = normalise_text(
             envelope.text, bot_user_id=getattr(getattr(bot, "user", None), "id", None)
@@ -644,13 +664,26 @@ class ConversationCommandsMixin:
             accepted["conversation"],
             forced=recipient is None,
         )
-        return await self._conversation_post_result(
+        posted = await self._conversation_post_result(
             item=accepted["input"],
             conversation=accepted["conversation"],
             created=accepted["created"],
             source=source,
             outbox=outbox,
         )
+        if recipient is None:
+            # An input with no live supervisor to read it must never look like
+            # one that is being handled: say so in the channel, once per
+            # conversation, after the acknowledgement. The queue drains by
+            # itself when a supervisor starts (§2.4).
+            await self._conversation_notice(
+                outbox,
+                envelope,
+                accepted["conversation"],
+                kind="supervisor_missing",
+                dedup_key=f"conv-notice:supervisor-missing:{accepted['conversation']['id']}",
+            )
+        return posted
 
     async def _repair_queued_status_line(
         self, outbox: ConversationOutbox, conversation: dict, *, forced: bool = False

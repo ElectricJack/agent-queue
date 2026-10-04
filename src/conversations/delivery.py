@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from src.conversations.intake import DM_GUILD, is_dm_thread
+from src.conversations.intake import DM_GUILD, KIND_CHANNEL, is_dm_thread
 from src.conversations.limits import MAX_REPLY_CHARS
 from src.conversations.outbox import (
     ACTION_NOTICE,
@@ -106,10 +106,18 @@ class ConversationDeliveryAdapter:
             )
             return
         thread_id = payload.get("thread_id") or (conversation or {}).get("external_thread_id")
-        # §2.1: a DM conversation answers in the DM channel. There is no thread
-        # to bind, none to open and none to wait for.
+        # §2.1/§2.2: a direct message is admitted as its own channel
+        # conversation. There is no thread to bind, none to open and none to
+        # wait for.
         direct = is_dm_thread(thread_id)
-        if direct:
+        # A channel conversation has no thread, and never opens one: its ack,
+        # its answer, its status line and its notices are ordinary posts in the
+        # channel itself, each replying to the operator's message for context.
+        # Only an operator-started thread (kind='thread') or an escalation root
+        # is bound to a thread.
+        in_channel = bool(conversation) and conversation.get("kind") == KIND_CHANNEL
+        reference = conversation["external_root_message_id"] if in_channel else None
+        if direct or in_channel:
             thread_id = None
         elif action == ACTION_THREAD_OPEN and not thread_id:
             try:
@@ -147,7 +155,12 @@ class ConversationDeliveryAdapter:
                 )
                 await self._finish(row, status="unknown", last_error=str(exc))
                 return
-        if action in {ACTION_REPLY, ACTION_STATUS_LINE} and not thread_id and not direct:
+        if (
+            action in {ACTION_REPLY, ACTION_STATUS_LINE}
+            and not thread_id
+            and not direct
+            and not in_channel
+        ):
             await self._finish(
                 row,
                 status="retry",
@@ -156,7 +169,7 @@ class ConversationDeliveryAdapter:
             )
             return
         if action == ACTION_STATUS_LINE:
-            await self._deliver_status_line(row, thread_id)
+            await self._deliver_status_line(row, thread_id, reference=reference)
             return
         if action == ACTION_REPLY:
             # §2.4: the first answer retires the offline line rather than
@@ -171,16 +184,20 @@ class ConversationDeliveryAdapter:
                 attempt_count=row["attempt_count"],
                 reclaimed=bool(row.get("reclaimed")),
                 last_error=row.get("last_error"),
+                reference_message_id=reference,
             )
         )
         if (
             result.status == "sent"
             and conversation
             and conversation["state"] == "opening"
-            and action != ACTION_REPLY
+            and action not in {ACTION_REPLY, ACTION_NOTICE}
         ):
-            # A conversation the operator's own thread or DM already bound has
-            # no thread-open delivery to confirm it; this post does.
+            # A conversation the operator's own thread or a channel already
+            # bound has no thread to open; its acknowledgement post does. A
+            # notice never does: flipping the state here would consume the
+            # ``opening``->``open`` CAS that binds the thread a thread
+            # conversation has not opened yet.
             await self.db.set_conversation_state(
                 conversation["id"], state="open", now=self.clock(), expected=("opening",)
             )
@@ -192,7 +209,7 @@ class ConversationDeliveryAdapter:
             last_error=result.last_error,
         )
 
-    async def _deliver_status_line(self, row, thread_id):
+    async def _deliver_status_line(self, row, thread_id, *, reference=None):
         """Post the §2.4 status line once per conversation, editing it after.
 
         The line carries the queue count, so each count is its own delivery;
@@ -227,6 +244,7 @@ class ConversationDeliveryAdapter:
                 attempt_count=row["attempt_count"],
                 reclaimed=bool(row.get("reclaimed")),
                 last_error=row.get("last_error"),
+                reference_message_id=reference,
             )
         )
         await self._finish(

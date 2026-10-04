@@ -1069,6 +1069,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_launch.py",
         "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
@@ -1399,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:c6980e4c52762f3d478c51a3d6f553f8d0dbe725b9d150653a3aed48e18449be",
+  "digest": "sha256:0a5dfb6b109efc5c0aa1cf86d584e6f6c0be02631a51d87244e2838e6c97c0c7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4295,7 +4296,8 @@
       "imports": [
         "src.database",
         "src.database.queries.conversation_queries",
-        "src.database.tables"
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
@@ -4307,7 +4309,8 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.conversations.render"
+        "src.conversations.render",
+        "src.delivery.message"
       ],
       "markers": [],
       "summary": "Explicit replies are bounded, mention-free and link-filtered."
@@ -4815,6 +4818,7 @@
         "src.orchestrator",
         "src.runtimes.base",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider",
         "src.sessions.spec"
       ],
@@ -4889,9 +4893,11 @@
         "src.integration.development",
         "src.integration.development_adapter",
         "src.integration.development_policy",
+        "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.subjects",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
       ],
@@ -4958,7 +4964,9 @@
         "src.remote_links",
         "src.runtimes"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Scheduling and delivering the hourly digest (implementation spec §8)."
     },
     "tests/test_digest_queries.py": {
@@ -7597,9 +7605,12 @@
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.root_runtime",
         "src.integration.subjects"
       ],
       "markers": [
@@ -7899,7 +7910,6 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration",
-        "src.integration.candidate_ci",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.published_repair_handoff",
@@ -8054,11 +8064,13 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.manager",
         "src.integration.development",
         "src.integration.development_runtime",
         "src.integration.engine",
         "src.integration.gates",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.records",
         "src.integration.repair",
         "src.integration.root_adapters",
@@ -8117,7 +8129,6 @@
         "src.database.tables",
         "src.git.github_app",
         "src.git.manager",
-        "src.integration.accepted_repair",
         "src.integration.candidates",
         "src.integration.ci",
         "src.integration.cleanup",
@@ -8140,7 +8151,9 @@
         "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train."
     },
     "tests/test_integration_schedule.py": {
@@ -8177,12 +8190,17 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.development",
+        "src.integration.engine",
         "src.integration.migration_heads",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.provenance",
         "src.integration.release",
+        "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.settling",
+        "src.integration.source_ci",
+        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities",
         "src.task_graph.integration_dependencies"
@@ -8317,6 +8335,7 @@
         "src.database",
         "src.database.tables",
         "src.integration.models",
+        "src.integration.reconciler",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8580,6 +8599,8 @@
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.jobs.artifacts",
+        "src.jobs.identity",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
@@ -10399,6 +10420,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.delivery.message",
         "src.digest",
         "src.escalations.transport",
         "src.git.manager",
@@ -11098,6 +11120,7 @@
         "src.commands.principal",
         "src.database",
         "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.playbooks.profiles",
         "src.playbooks.validation",
         "src.profiles.capabilities",
@@ -12202,6 +12225,7 @@
         "src.providers.intent",
         "src.scheduler",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider"
       ],
       "markers": [],
@@ -12710,6 +12734,7 @@
         "src.database.tables",
         "src.digest",
         "src.digest.aggregate",
+        "src.digest.dispatch",
         "src.digest.eligibility",
         "src.digest.facts",
         "src.escalations.transport",
@@ -13006,6 +13031,7 @@
         "src.doctor.review_checks",
         "src.event_bus",
         "src.models",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.reviews.vault"
       ],
@@ -13637,6 +13663,7 @@
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.spec",
@@ -13721,6 +13748,31 @@
       ],
       "markers": [],
       "summary": "Session launch consumes intelligence class → provider → model."
+    },
+    "tests/test_session_launch.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agents.sessions",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.event_bus",
+        "src.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.flock_audit",
+        "src.sessions.launch",
+        "src.sessions.proctable",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The flock registration invariant, including failure and concurrent observation."
     },
     "tests/test_session_lens.py": {
       "areas": [
@@ -14242,6 +14294,7 @@
         "src.commands.principal",
         "src.config",
         "src.conversations.outbox",
+        "src.conversations.render",
         "src.database",
         "src.database.tables",
         "src.discord.intake_diagnostics",

@@ -17,10 +17,11 @@ module = import_module("src.doctor.stall_checks")
 NOW = 1_800_000_000.0
 
 
-def task(task_id, *, project="one", status=TaskStatus.READY, age=3600, profile="worker"):
+def task(task_id, *, project="one", status=TaskStatus.READY, age=3600, profile="worker",
+         priority=100):
     return SimpleNamespace(
         id=task_id, project_id=project, status=status, updated_at=NOW-age,
-        profile_id=profile, title=task_id, task_type=None,
+        profile_id=profile, title=task_id, task_type=None, priority=priority,
     )
 
 
@@ -46,13 +47,15 @@ class Handler:
 
 
 class DB:
-    def __init__(self, tasks=(), completions=None, sessions=(), repos=(), providers=(), profiles=()):
+    def __init__(self, tasks=(), completions=None, sessions=(), repos=(), providers=(), profiles=(),
+                 unowned=0):
         self.tasks = list(tasks)
         self.completions = completions or {}
         self.sessions = list(sessions)
         self.repos = list(repos)
         self.providers = list(providers)
         self.profiles = list(profiles)
+        self.unowned = unowned
 
     async def list_projects(self, status=None):
         assert status is ProjectStatus.ACTIVE
@@ -79,6 +82,12 @@ class DB:
 
     async def list_profiles(self):
         return self.profiles
+
+    async def stalled_conversation_queue(self):
+        return {
+            "unowned": self.unowned,
+            "oldest_at": NOW - 1800 if self.unowned else None,
+        }
 
 
 @pytest.fixture
@@ -117,6 +126,30 @@ async def test_explain_calls_are_bounded_and_cached(context):
     assert context.handler.maximum > 1
     assert context.handler.maximum <= 8
     assert context.handler.calls.count("work-0") == 1
+
+
+@pytest.mark.parametrize("unowned", [0, 2])
+async def test_untracked_sessions_are_an_error_even_without_active_projects(
+    context, monkeypatch, unowned,
+):
+    from unittest.mock import AsyncMock
+    from src.doctor.models import CheckResult
+
+    monkeypatch.setattr(context.db, "list_projects", AsyncMock(return_value=[]))
+    context.db.unowned = unowned
+    sessions = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(sessions, "_check_flock", AsyncMock(return_value=CheckResult(
+        "sessions.untracked", Severity.ERROR, "hidden", data={"findings": [{
+            "kind": "provider_untracked", "detail": "live n-supervisor--global is hidden",
+        }]},
+    )))
+    result = await module._check_sweep(context)
+    assert result.severity == Severity.ERROR
+    assert result.data["findings"][0]["kind"] == "flock_untracked"
+    assert "n-supervisor--global" in result.detail
+    assert {finding["kind"] for finding in result.data["findings"]} == (
+        {"flock_untracked", "conversation_unowned"} if unowned else {"flock_untracked"}
+    )
 
 
 async def test_restore_branch_requires_explain_to_name_that_blocker(context, monkeypatch):
@@ -224,6 +257,35 @@ async def test_disabled_provider_with_queued_task(context):
     assert findings[0]["provider"] == "claude"
 
 
+async def test_high_priority_task_on_a_local_model(context):
+    providers = {"opencode": "ollama", "opencode-zen": "opencode", "claude": "anthropic"}
+    context.handler.orchestrator = SimpleNamespace(harness_registry=SimpleNamespace(
+        get=lambda harness_id, project_id=None: SimpleNamespace(
+            id=harness_id, provider=providers[harness_id],
+        ),
+    ))
+    context.db.profiles = [
+        SimpleNamespace(id=f"standard-high-{harness}", harness=harness) for harness in providers
+    ]
+    rows = [
+        task("top-fix", profile="standard-high-opencode", priority=298,
+             status=TaskStatus.IN_PROGRESS),
+        task("queued-fix", project="two", profile="standard-high-opencode", priority=150),
+        task("docs", profile="standard-high-opencode", priority=100),
+        task("hosted", profile="standard-high-opencode-zen", priority=298),
+        task("claude", profile="standard-high-claude", priority=298),
+        task("done", profile="standard-high-opencode", priority=298,
+             status=TaskStatus.COMPLETED),
+    ]
+    findings = await module._local_model_findings(context, rows)
+    assert [(f["kind"], f["task_id"], f["project_id"]) for f in findings] == [
+        ("high_priority_local_model", "top-fix", "one"),
+        ("high_priority_local_model", "queued-fix", "two"),
+    ]
+    assert "stop it, then aq task route --task-id top-fix" in findings[0]["detail"]
+    assert findings[1]["detail"].endswith("< 150); aq task route --task-id queued-fix")
+
+
 def test_high_cost_non_design_route_across_projects():
     rows = [
         task("implement widget", project="two", profile="deep-high-claude"),
@@ -258,6 +320,7 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
         return []
 
     monkeypatch.setattr(module, "_branch_findings", branches)
+    monkeypatch.setattr(module, "_unmaterialized_pr_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_unadmitted_parent_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
@@ -268,6 +331,36 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     assert result.data["vault_root"] == context.config.vault_root
     assert "unclaimed_work one: one-ready" in result.detail
     assert "unclaimed_work two: two-ready" in result.detail
+
+
+async def test_conversation_inputs_with_no_live_supervisor_are_named(context):
+    """An input nobody is live to answer must not look like a healthy install."""
+    assert await module._conversation_findings(context, NOW) == []
+    context.db.unowned = 3
+    findings = await module._conversation_findings(context, NOW)
+    assert [item["kind"] for item in findings] == ["conversation_unowned"]
+    assert findings[0]["unowned"] == 3 and findings[0]["oldest_at"] == NOW - 1800
+    assert "30m" in findings[0]["detail"] and "discord.project_id" in findings[0]["detail"]
+
+
+async def test_the_conversation_line_survives_an_install_with_no_active_project(context, monkeypatch):
+    async def nothing(*args, **kwargs):
+        raise AssertionError("the full sweep must not run with no active project")
+
+    for name in ("_work_findings", "_branch_findings", "_session_findings", "_orphaned_pr_findings"):
+        monkeypatch.setattr(module, name, nothing)
+
+    async def inactive(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(context.db, "list_projects", inactive)
+    assert (await module._check_sweep(context)).severity is Severity.OK
+
+    context.db.unowned = 1
+    result = await module._check_sweep(context)
+    assert result.severity is Severity.WARN
+    assert [item["kind"] for item in result.data["findings"]] == ["conversation_unowned"]
+    assert "conversation_unowned -" in result.detail
 
 
 async def test_reviewed_file_guard_stall_names_batch_and_recovery(context, monkeypatch):
@@ -306,3 +399,30 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert [item["kind"] for item in findings] == ["orphaned_pr", "pr_inventory_failed"]
     assert "pull/92" in findings[0]["detail"] and "26h" in findings[0]["detail"]
     assert findings[1]["detail"] == "offline"
+
+
+def test_unknown_subject_journal_replay_reports_error_after_five_minutes():
+    def entry(seq, timestamp, rule="unknown-facts", **fields):
+        return dict(subject_id="30b7d7f1", project_id="one",
+                    batch_id="integration-batch-66ee241c", seq=seq, recorded_at=timestamp,
+                    rule=rule, payload={"facts": {"unknown": ["ancestry_unknown:source"]}},
+                    **fields)
+
+    journal = [entry(5, NOW-60), entry(3, NOW-200), entry(1, NOW-400)]
+    findings = module._unknown_subject_streaks(journal, NOW)
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "error"
+    assert findings[0]["batch_id"] == "integration-batch-66ee241c"
+    assert "ancestry_unknown:source" in findings[0]["detail"]
+    assert not module._unknown_subject_streaks(journal[:2], NOW)
+    assert not module._unknown_subject_streaks([entry(6, NOW, "ci-current"), *journal], NOW)
+    assert not module._unknown_subject_streaks(
+        [journal[0], entry(4, NOW-100, "construct"), *journal[1:]], NOW
+    )
+
+
+def test_observation_failure_journal_replay_is_visible():
+    rows = [dict(subject_id="s", project_id="one", batch_id=None, seq=1,
+                 recorded_at=NOW-301, rule=None, primitive="integration_observe_subject",
+                 outcome="unknown", payload={"result": {"reason": "source unavailable"}})]
+    assert "source unavailable" in module._unknown_subject_streaks(rows, NOW)[0]["detail"]

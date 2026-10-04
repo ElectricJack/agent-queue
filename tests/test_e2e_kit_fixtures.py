@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -438,6 +439,99 @@ def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):
     assert kwargs == {"token": "tok", "session_id": "sess-1", "check_ok": True}
 
 
+@pytest.fixture
+def s5_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    holder = smoke.Worker(session_id="holder", token="holder-token")
+    intruder = smoke.Worker(session_id="intruder", token="intruder-token")
+    responses = [{"result": "claimed", "task": {"id": "holder-task"}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        if args[:2] == ("task", "heartbeat") or args[0] == "prime":
+            return {"_error": smoke.CliError({"error": {
+                "message": "out of scope", "details": {"result": "out_of_scope"},
+            }}, "")}
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [holder, intruder])
+    monkeypatch.setattr(smoke, "create_task", lambda _title, **kwargs:
+                        "foreign-task" if kwargs.get("project_id") == smoke.OTHER_PROJECT
+                        else "holder-task")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "profile_id": smoke.POOL_PROFILE,
+        "route_source": "router", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s5_waits_for_its_fixture_then_checks_both_scope_refusals(s5_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s5_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s5_fence_and_scope({})
+
+    assert "cross-session heartbeat and cross-project prime both refused" in result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    heartbeat = next((args, kwargs) for args, kwargs in calls
+                     if args[:2] == ("task", "heartbeat"))
+    assert heartbeat == (("task", "heartbeat", "holder-task", "--claim-epoch", "7"), {
+        "token": "intruder-token", "session_id": "intruder", "check_ok": False,
+    })
+    prime = next((args, kwargs) for args, kwargs in calls if args[0] == "prime")
+    assert prime == (("prime", "--task-id", "foreign-task"), {
+        "token": "holder-token", "session_id": "holder", "check_ok": False,
+    })
+    assert any(args[:2] == ("task", "close") for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s5_does_not_retry_other_claim_failures(s5_surfaces, result):
+    smoke, responses, calls, clock = s5_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s5_fence_and_scope({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s5_rejects_a_claim_of_a_different_task(s5_surfaces):
+    smoke, responses, calls, _clock = s5_surfaces
+    responses[0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="holder-task.*leftover-task"):
+        smoke.s5_fence_and_scope({})
+
+    assert len(calls) == 1
+
+
+def test_s5_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s5_surfaces):
+    smoke, responses, calls, clock = s5_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "holder", "claims": 0}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s5_fence_and_scope({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("holder-task", "no_ready_work", "holder", "READY", "router"):
+        assert detail in str(error.value)
+
+
 def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(monkeypatch):
     smoke = _load_smoke()
     monkeypatch.setenv("AQ_E2E_HOME", "/tmp/aq-e2e-owned")
@@ -452,6 +546,34 @@ def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(mo
     assert env["AGENT_QUEUE_DB"] == "postgresql+asyncpg://example/e2e_only"
     assert env["AQ_DATABASE_URL"] == "postgresql+asyncpg://example/e2e_only"
     assert env["AQ_DB_SCOPE"] == "worker"
+
+
+@pytest.mark.parametrize("as_worker", [False, True])
+def test_cli_subprocesses_do_not_inherit_the_callers_task_or_claim(monkeypatch, as_worker):
+    smoke = _load_smoke()
+    caller = {
+        "AQ_API_TOKEN": "outer-token",
+        "AQ_SESSION_ID": "outer-session",
+        "AQ_TASK_ID": "outer-task",
+        "AQ_CLAIM_EPOCH": "73",
+    }
+    for name, value in caller.items():
+        monkeypatch.setenv(name, value)
+
+    env = smoke._cli_env(
+        token="fixture-token" if as_worker else None,
+        session_id="fixture-session" if as_worker else None,
+    )
+
+    assert "AQ_TASK_ID" not in env
+    assert "AQ_CLAIM_EPOCH" not in env
+    if as_worker:
+        assert env["AQ_API_TOKEN"] == "fixture-token"
+        assert env["AQ_SESSION_ID"] == "fixture-session"
+    else:
+        assert "AQ_API_TOKEN" not in env
+        assert "AQ_SESSION_ID" not in env
+    assert {name: os.environ[name] for name in caller} == caller
 
 
 def test_collection_rows_accepts_versioned_envelope_data_and_legacy_wrappers():

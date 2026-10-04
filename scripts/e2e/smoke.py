@@ -30,6 +30,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S12 MCP registry           CRUD plus an unavailable optional endpoint
     S13 plugin extensions      installed entry point present and absent
     S14 graph + vault          layout mutations and isolated vault dry-run
+    S15 integration surface    supported reconciler controls and retired legacy commands
     S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
     S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
     S18 failure triage         durable task.failed playbook dispatch and supervisor notice
@@ -1724,6 +1725,23 @@ def s14_graph_and_vault(state: dict) -> str:
     return "layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes"
 
 
+def s15_integration_surface(state: dict) -> str:
+    """Check that the CLI exposes current integration controls, not retired legacy paths."""
+    help_text = aq_text("integration", "--help")
+    if "Commands:" not in help_text:
+        raise Failure(f"integration help omitted its command list: {help_text[:400]!r}")
+    commands = {
+        line.strip().split(maxsplit=1)[0]
+        for line in help_text.split("Commands:", 1)[1].splitlines()
+        if line.strip()
+    }
+    check("status" in commands, f"current integration status command is missing: {commands}")
+    retired = {"adopt", "adopt-legacy-deliveries", "develop", "migrate-provenance", "sweep"}
+    still_exposed = sorted(retired & commands)
+    check(not still_exposed, f"retired integration commands remain exposed: {still_exposed}")
+    return "current integration status remains available and legacy development controls are retired"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -2892,6 +2910,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("S12", "MCP registry", s12_mcp_registry, ("MCP registry CRUD",)),
     Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
     Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
+    Scenario("S15", "integration surface cleanup", s15_integration_surface, ("integration/CLI",)),
     Scenario(
         "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
     ),

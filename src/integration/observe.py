@@ -8,10 +8,11 @@ This module adds no command surface and does not activate the reconciler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -35,7 +36,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.manager import GitManager, RemoteRefState
+from src.git.manager import GitError, GitManager, RemoteRefState, _validate_ref
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.subjects import (
     CIEvidence,
@@ -58,15 +59,22 @@ from src.integration.subjects import (
     WriterStatus,
 )
 
-_OID = re.compile(r"^[0-9a-f]{40}$")
-
-
-
-
-
-
+_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 Row = Mapping[str, Any]
 logger = logging.getLogger(__name__)
+
+#: A root frontier can name hundreds of source heads; one ls-remote per head
+#: costs a second or more each, which outlived the visit budget. Heads are
+#: read in batched round trips, a few at a time.
+_REMOTE_REF_CHUNK = 200
+_REMOTE_READS = 4
+#: Ports without a batched read, and local ancestry probes, run concurrently.
+_SINGLE_REMOTE_READS = 8
+_ANCESTRY_READS = 8
+#: Ancestry between two commits never changes; definitive answers are reused
+#: across visits, bounded so a long-lived observer stays small.
+_ANCESTRY_CACHE = 4096
+_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,9 @@ class SubjectReadPort(Protocol):
 
 
 class GitReadPort(Protocol):
+    """An optional ``remote_heads(repository, refs) -> {ref: RemoteHead}``
+    answers a visit's heads in one call; without it each head is read alone."""
+
     async def remote_head(self, repository: Row, ref: str) -> RemoteHead: ...
 
     async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None: ...
@@ -121,18 +132,53 @@ class GitObservationReader:
         result = await self.git.als_remote_ref(
             path, ref.removeprefix("refs/heads/"), repository_url=repository["url"]
         )
-        if result.state is RemoteRefState.PRESENT:
-            return RemoteHead(ref=ref, state="present", sha=result.oid)
-        return RemoteHead(
-            ref=ref, state="absent" if result.state is RemoteRefState.ABSENT else "unknown"
+        return _remote_head(ref, result)
+
+    async def remote_heads(self, repository: Row, refs: Sequence[str]) -> dict[str, RemoteHead]:
+        """Read several heads in batched round trips; an unreadable one stays unknown.
+
+        A ref GitManager would refuse, or a failed round trip, leaves only
+        its own heads unknown rather than the whole visit's.
+        """
+        heads = {ref: RemoteHead(ref=ref, state="unknown") for ref in refs}
+        path = self.checkout(repository)
+        branches: dict[str, str] = {}
+        for ref in refs:
+            if not path or not ref.startswith("refs/heads/"):
+                continue
+            try:
+                branches[_validate_ref(ref.removeprefix("refs/heads/"))] = ref
+            except GitError:
+                logger.debug("Subject remote head %s is not a readable branch", ref)
+        names = list(branches)
+        gate = asyncio.Semaphore(_REMOTE_READS)
+
+        async def read(chunk: list[str]) -> None:
+            async with gate:
+                try:
+                    results = await self.git.als_remote_refs(
+                        path, chunk, repository_url=repository["url"]
+                    )
+                except Exception:
+                    logger.debug("Subject remote heads unavailable", exc_info=True)
+                    return
+            for branch in chunk:
+                if branch in results:
+                    heads[branches[branch]] = _remote_head(branches[branch], results[branch])
+
+        await asyncio.gather(
+            *(
+                read(names[start : start + _REMOTE_REF_CHUNK])
+                for start in range(0, len(names), _REMOTE_REF_CHUNK)
+            )
         )
+        return heads
 
     async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None:
         path = self.checkout(repository)
         if path is None:
             return None
         return await self.git.ais_ancestor(path, ancestor, descendant, strict=True)
-
 
 class DatabaseObservationReader:
     """Project/repository scoped SELECTs over the existing integration tables.
@@ -307,6 +353,14 @@ class DatabaseObservationReader:
     async def augment_on(self, conn, snapshot: ObservationRows) -> ObservationRows:
         """Extend a snapshot inside the same read-only repeatable-read transaction."""
         return snapshot
+
+
+def _remote_head(ref: str, result) -> RemoteHead:
+    if result.state is RemoteRefState.PRESENT:
+        return RemoteHead(ref=ref, state="present", sha=result.oid)
+    return RemoteHead(
+        ref=ref, state="absent" if result.state is RemoteRefState.ABSENT else "unknown"
+    )
 
 
 def _latest(rows, time_key="created_at") -> Row | None:
@@ -851,12 +905,60 @@ class IntegrationObserver:
         clock: Callable[[], float] = time.time,
         session_probe: SessionProbe | None = None,
         facts_type: type[SubjectFacts] = SubjectFacts,
+        candidate_ci: Callable[[ObservationRows, HeadIdentity], Awaitable[CIEvidence]] | None = None,
     ) -> None:
         if not issubclass(facts_type, SubjectFacts):
             raise TypeError("facts_type must extend SubjectFacts")
         self.reader, self.git, self.clock = reader, git, clock
         self.session_probe = session_probe
         self.facts_type = facts_type
+        self.candidate_ci = candidate_ci
+        self._ancestry: dict[tuple[str, str, str], bool] = {}
+
+    async def _remote_heads(self, repository: Row, refs: list[str]) -> list[RemoteHead]:
+        """Every ref's head, in order; a failed or mismatched answer is unknown."""
+        batched = getattr(self.git, "remote_heads", None)
+        if batched is not None:
+            try:
+                answered = await batched(repository, refs)
+                if not isinstance(answered, Mapping):
+                    heads = list(answered)
+                    if [head.ref for head in heads] != refs:
+                        raise ValueError("remote answered different refs")
+                    answered = dict(zip(refs, heads))
+            except Exception:
+                logger.debug("Subject remote heads unavailable", exc_info=True)
+                answered = {}
+        else:
+            gate = asyncio.Semaphore(_SINGLE_REMOTE_READS)
+
+            async def one(ref: str) -> RemoteHead | None:
+                async with gate:
+                    try:
+                        return await self.git.remote_head(repository, ref)
+                    except Exception:
+                        logger.debug("Subject remote head unavailable", exc_info=True)
+                        return None
+
+            answered = dict(zip(refs, await asyncio.gather(*(one(ref) for ref in refs))))
+        heads = []
+        for ref in refs:
+            remote = answered.get(ref)
+            if remote is None or remote.ref != ref:
+                remote = RemoteHead(ref=ref, state="unknown")
+            heads.append(remote)
+        return heads
+
+    async def _is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None:
+        key = (repository["id"], ancestor, descendant)
+        if key in self._ancestry:
+            return self._ancestry[key]
+        answer = await self.git.is_ancestor(repository, ancestor, descendant)
+        if answer is not None and _OID.fullmatch(ancestor) and _OID.fullmatch(descendant):
+            if len(self._ancestry) >= _ANCESTRY_CACHE:
+                del self._ancestry[next(iter(self._ancestry))]
+            self._ancestry[key] = answer
+        return answer
 
     async def observe(self, subject: Subject) -> SubjectFacts:
         """The reconciler callable: current facts for its supplied subject.
@@ -921,26 +1023,37 @@ class IntegrationObserver:
             refs.add(subject.target_ref)
         if candidate:
             refs.add(candidate.ref)
-        remote_heads = []
-        for ref in sorted(refs):
-            if not include_remote or self.git is None:
-                remote = RemoteHead(ref=ref, state="unknown")
-            else:
-                try:
-                    remote = await self.git.remote_head(snapshot.repository, ref)
-                    if remote.ref != ref:
-                        raise ValueError("remote answered a different ref")
-                except Exception:
-                    logger.debug("Subject remote head unavailable", exc_info=True)
-                    remote = RemoteHead(ref=ref, state="unknown")
-            remote_heads.append(remote)
-            if remote.state == "unknown":
-                unknown.append("remote_unknown:" + ref)
+        if not include_remote or self.git is None:
+            remote_heads = [RemoteHead(ref=ref, state="unknown") for ref in sorted(refs)]
+        else:
+            remote_heads = await self._remote_heads(snapshot.repository, sorted(refs))
+        unknown.extend(
+            "remote_unknown:" + head.ref for head in remote_heads if head.state == "unknown"
+        )
         default = next(head.sha for head in remote_heads if head.ref == default_ref)
         target = candidate or subject.head
         ci = []
         if target:
-            ci.append(_ci(snapshot, target, subject.task_id, now, candidate=candidate is not None))
+            if candidate and self.candidate_ci and subject.engine.value == "reconciler":
+                try:
+                    evidence = await self.candidate_ci(snapshot, target)
+                    if evidence.head_sha != target.sha:
+                        raise ValueError("CI answered a different candidate SHA")
+                    # Legacy repair attempt accounting still names durable CI
+                    # rows. Retain that ID only if live checks agree; it never
+                    # supplies or overrides the current state.
+                    recorded = _ci(snapshot, target, subject.task_id, now, candidate=True)
+                    if recorded.state is evidence.state and recorded.evidence_id:
+                        evidence = evidence.model_copy(update={"evidence_id": recorded.evidence_id})
+                except Exception:
+                    logger.warning("Candidate CI observation unavailable for %s", target.sha,
+                                   exc_info=True)
+                    evidence = CIEvidence(head_sha=target.sha, state=CIState.INFRA,
+                                          observed_at=now)
+                ci.append(evidence)
+            else:
+                ci.append(_ci(snapshot, target, subject.task_id, now,
+                              candidate=candidate is not None))
         # Before construction there is no candidate: members relate to the
         # publication target's observed tip (main for a root batch), not to
         # an absent head. An unread tip still leaves ancestry unknown.
@@ -956,8 +1069,29 @@ class IntegrationObserver:
                 None,
             )
         )
+        gate = asyncio.Semaphore(_ANCESTRY_READS)
+
+        async def ancestry_of(member: MemberFacts) -> str:
+            if not (include_remote and self.git and relative_to and member.head_sha):
+                return "unknown"
+            async with gate:
+                try:
+                    contained = await self._is_ancestor(
+                        snapshot.repository, member.head_sha, relative_to
+                    )
+                    if contained is not False:
+                        return "contained" if contained else "unknown"
+                    ahead = await self._is_ancestor(
+                        snapshot.repository, relative_to, member.head_sha
+                    )
+                except Exception:
+                    logger.debug("Subject ancestry unavailable", exc_info=True)
+                    return "unknown"
+            return {True: "ahead", False: "diverged"}.get(ahead, "unknown")
+
+        ancestries = await asyncio.gather(*(ancestry_of(member) for member in members))
         observed_members = []
-        for member in members:
+        for member, ancestry in zip(members, ancestries):
             state = CIState.NONE
             if member.head_sha:
                 identity = HeadIdentity(
@@ -971,23 +1105,6 @@ class IntegrationObserver:
                 state = evidence.state
                 if not any(item.head_sha == evidence.head_sha for item in ci):
                     ci.append(evidence)
-            ancestry = "unknown"
-            if include_remote and self.git and relative_to and member.head_sha:
-                try:
-                    contained = await self.git.is_ancestor(
-                        snapshot.repository, member.head_sha, relative_to
-                    )
-                    ahead = await self.git.is_ancestor(
-                        snapshot.repository, relative_to, member.head_sha
-                    )
-                    if contained is True:
-                        ancestry = "contained"
-                    elif contained is False and ahead is True:
-                        ancestry = "ahead"
-                    elif contained is False and ahead is False:
-                        ancestry = "diverged"
-                except Exception:
-                    logger.debug("Subject ancestry unavailable", exc_info=True)
             if ancestry == "unknown" and member.head_sha:
                 unknown.append("ancestry_unknown:" + member.task_id)
             observed_members.append(member.model_copy(update={"ci": state, "ancestry": ancestry}))
@@ -1142,7 +1259,7 @@ class IntegrationObserver:
             )
             if owner and stage and published and starting_sha and published != starting_sha:
                 try:
-                    advanced = await self.git.is_ancestor(
+                    advanced = await self._is_ancestor(
                         snapshot.repository, starting_sha, published
                     )
                 except Exception:

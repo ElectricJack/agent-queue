@@ -33,6 +33,7 @@ from src.config import DatabaseConfig, AppConfig
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.runtimes.base import Runtime
+from src.sessions.launch import launch_session
 from src.sessions.provider import SessionSpec
 from src.sessions.spec import named_session_name
 from tests.db_fixtures import lease_dsn
@@ -147,16 +148,16 @@ async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
     )
     fake = orch.session_providers.create("fake")
     session_name = f"s-{task_id}"
-    handle = await fake.start(
+    handle = await launch_session(
+        orch.db,
+        fake,
         SessionSpec(
             session_name=session_name,
             work_dir=str(orch.config.workspace_dir),
             command=("claude",),
             instance_token="tok-busy",
-        )
-    )
-    fake.sessions[handle.name].activity = time.time()  # fresh → busy
-    await orch.db.create_session(
+            env={"AQ_SESSION_ID": f"sess-{task_id}"},
+        ),
         SessionRecord(
             id=f"sess-{task_id}",
             project_id=PROJECT_ID,
@@ -173,6 +174,7 @@ async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
             state="running",
         )
     )
+    fake.sessions[handle.name].activity = time.time()  # fresh → busy
     return handle
 
 
@@ -180,16 +182,16 @@ async def _seed_idle_supervisor_session(orch):
     """Running FakeProvider supervisor session with stale activity (idle)."""
     fake = orch.session_providers.create("fake")
     runtime_name = _supervisor_runtime_name()
-    handle = await fake.start(
+    handle = await launch_session(
+        orch.db,
+        fake,
         SessionSpec(
             session_name=runtime_name,
             work_dir=str(orch.config.workspace_dir),
             command=("claude",),
             instance_token="tok-sup",
-        )
-    )
-    fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
-    await orch.db.create_session(
+            env={"AQ_SESSION_ID": "sess-sup"},
+        ),
         SessionRecord(
             id="sess-sup",
             project_id=PROJECT_ID,
@@ -205,6 +207,7 @@ async def _seed_idle_supervisor_session(orch):
             state="running",
         )
     )
+    fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
     return handle
 
 

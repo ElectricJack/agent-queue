@@ -716,3 +716,27 @@ def test_put_rewrites_an_adopted_file_that_disappears_mid_store(tmp_path, monkey
 
     assert store.put(definition, **keywords) == ref
     assert path.read_bytes() == canonical_bytes(definition)
+
+
+def test_retained_markdown_is_verified_against_immutable_artifact(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import source_digest
+    from src.playbooks.run_state import ArtifactVerificationFailed
+
+    source = "# Reviewed policy\n"
+    definition = _definition().model_copy(update={"source_hash": source_digest(source)})
+    store = ArtifactStore(str(tmp_path))
+    ref = store.put(definition, source_digest=definition.source_hash,
+                    contract_fingerprint="sha256:" + "b" * 64,
+                    profile_fingerprint="profile", compiler_build="test")
+    with pytest.raises(FileNotFoundError):
+        store.load_source(ref.artifact_sha256)
+    store.put_source(ref.artifact_sha256, source)
+    assert store.load_source(ref.artifact_sha256) == source
+    assert store.load(ref.artifact_sha256) == definition
+    with pytest.raises(ArtifactVerificationFailed):
+        store.put_source(ref.artifact_sha256, "another policy")
+    Path(store.path_for(ref.artifact_sha256)).with_suffix(".md").write_text("tampered")
+    with pytest.raises(ArtifactVerificationFailed):
+        store.load_source(ref.artifact_sha256)

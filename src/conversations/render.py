@@ -34,6 +34,10 @@ def notice_text(kind: str, **facts) -> str:
         "rate_limited": f"Too many messages. Please try again after {WINDOW_SECONDS // 60} minutes.",
         "conversation_closed": "This conversation is closed. Send a new message to start another one.",
         "delay": "The supervisor is delayed. Your message is still queued; it has not been answered.",
+        "supervisor_missing": (
+            "No supervisor is running, so nothing is watching this channel. "
+            "Your message is queued."
+        ),
         "open_failed": "Unable to open a conversation thread. Your message remains visible in the dashboard.",
     }
     return notices[kind]
@@ -95,14 +99,21 @@ def sanitise_reply(text: str, *, base_url: str) -> str:
     return sanitise(text, limit=2 * len(text) + 1)
 
 
+def conversation_marker(dedup_key: str) -> str:
+    """The invisible reconciliation marker carried by every conversation reply."""
+    from src.delivery.message import invisible
+
+    return invisible(f"aq-conv:{dedup_key}")
+
+
 def render_reply(text: str, *, dedup_key: str, base_url: str, conversation_id: str) -> str:
     """Render one reply with its reconciliation marker inside the Discord budget."""
     body = sanitise_reply(text, base_url=base_url)
-    marker = f"(aq-conv:{dedup_key})"
-    complete = f"{body} {marker}"
+    marker = conversation_marker(dedup_key)
+    complete = f"{body}{marker}"
     if len(complete) <= MAX_REPLY_CHARS:
         return complete
-    suffix = f" … {conversation_pointer(base_url, conversation_id)} {marker}"
+    suffix = f" … {conversation_pointer(base_url, conversation_id)}{marker}"
     budget = MAX_REPLY_CHARS - len(suffix)
     if budget < 0:
         raise ValueError("conversation pointer and marker exceed the reply limit")

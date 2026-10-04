@@ -79,10 +79,9 @@ logger = logging.getLogger(__name__)
 #: prefix so neither can ever match the other's post.
 MARKER_PREFIX = "aq-dig"
 
-#: The marker is appended as its own line at send time, so the rendered body
-#: is built against a budget that leaves room for it and the finished message
-#: still honours §8's 1,200-character target.
-MARKER_RESERVE = 32
+#: The invisible marker is appended at send time. Its encoded length is fixed
+#: by the prefix and hash width, so reserve that full length in the body budget.
+MARKER_RESERVE = len(operation_marker("", prefix=MARKER_PREFIX))
 
 #: How many earlier sent windows are consulted for wording and fact keys that
 #: have already been reported.  §8 forbids reposting identical highlight text

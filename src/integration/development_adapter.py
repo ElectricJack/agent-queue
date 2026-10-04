@@ -156,7 +156,8 @@ class DevelopmentIntegrationAdapter:
             raise ValueError("development policy does not match subject/project pin")
         return pinned
 
-    def reconciler(self, *, mode: JournalMode = JournalMode.SHADOW, **options) -> IntegrationReconciler:
+    def reconciler(self, *, mode: JournalMode = JournalMode.SHADOW,
+                   subject_db=None, **options) -> IntegrationReconciler:
         """Install at the existing remote-pass boundary only after rollout evidence."""
         ports = PrimitivePorts()
         for primitive in self.shared.bound - {Primitive.SEAL, Primitive.GIT_MERGE_MEMBERS,
@@ -167,7 +168,7 @@ class DevelopmentIntegrationAdapter:
         ports.bind(Primitive.GIT_MERGE_MEMBERS, self.merge)
         CIAdapters(self.db, self.producer_for, clock=self.clock).bind(ports)
         return IntegrationReconciler(
-            self.db, self.observe, _PinnedPolicyRouter(self.policy_for), ports,
+            subject_db or self.db, self.observe, _PinnedPolicyRouter(self.policy_for), ports,
             mode=mode, kinds=(SubjectKind.ROOT_BATCH, SubjectKind.SOURCE),
             clock=self.clock, **options,
         )

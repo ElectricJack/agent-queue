@@ -604,6 +604,43 @@ async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
         await db.due_integration_subject_page(now=NOW, after=None, limit=0)
 
 
+async def test_runtime_mode_scope_filters_before_paging_shared_root_batches(db):
+    from src.integration.reconciler import ScopedIntegrationDB
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(tables.projects),
+            [
+                {
+                    "id": mode, "name": mode, "hierarchical_integration_mode": mode,
+                    "created_at": NOW,
+                }
+                for mode in ("train", "hierarchy", "development")
+            ],
+        )
+    for index, mode in enumerate(("development", "train", "hierarchy", "development")):
+        await _insert_raw(
+            db,
+            id=f"mode-{index}",
+            project_id=mode,
+            subject_key=f"root_batch:repo:mode-{index}",
+            engine="reconciler",
+            next_due_at=NOW - 10 + index,
+            due_set_at=NOW - 10 + index,
+        )
+    root_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
+    first = await root_db.due_integration_subject_page(now=NOW, after=None, limit=1)
+    assert [row["id"] for row in first] == ["mode-1"]
+    second = await root_db.due_integration_subject_page(
+        now=NOW, after=(first[0]["next_due_at"], first[0]["id"]), limit=1
+    )
+    assert [row["id"] for row in second] == ["mode-2"]
+    development_db = ScopedIntegrationDB(db, ("development",))
+    rows = await development_db.due_integration_subject_page(now=NOW, after=None, limit=10)
+    assert [row["id"] for row in rows] == ["mode-0", "mode-3"]
+    assert await root_db.get_integration_subject("mode-1") == first[0]
+
+
 async def test_versioned_writes_refuse_a_stale_visit(db):
     await db.ensure_integration_subject(_row(_subject()))
     wait = schedule_values(

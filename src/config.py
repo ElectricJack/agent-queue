@@ -4961,7 +4961,11 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
         )
         conv = d.get("conversation", {}) or {}
-        conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
+        conversation_cfg = DiscordConversationConfig(
+            enabled=bool(conv.get("enabled", False)),
+            require_mention=bool(conv.get("require_mention", True)),
+            allow_dm=bool(conv.get("allow_dm", False)),
+        )
         escs = d.get("escalations", {}) or {}
         escalations_cfg = DiscordEscalationsConfig(stateful=bool(escs.get("stateful", False)))
         config.discord = DiscordConfig(
