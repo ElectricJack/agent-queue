@@ -135,6 +135,9 @@ def _catalogue_branches(tmp_path):
     repo = tmp_path / "catalogue-repo"
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "--initial-branch=main")
+    # Callers also commit through helpers that scrub ambient identity variables.
+    _git(repo, "config", "user.name", "Tester")
+    _git(repo, "config", "user.email", "tester@example.test")
     for name in ("catalogue.py", "discovery.py"):
         target = repo / "src" / "test_selection" / name
         target.parent.mkdir(parents=True, exist_ok=True)
