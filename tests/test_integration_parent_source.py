@@ -24,7 +24,7 @@ from src.integration.parent_source import ParentHeadObservation, ParentSourceRev
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import TrainService
-from src.models import Project
+from src.models import Project, Task, TaskStatus
 from tests.test_delivery_consumers import Origin, git
 from tests.test_epic_pr_review_evidence import _PollClient, _ReviewGit
 from tests.test_integration_parent_completion import (
@@ -55,9 +55,10 @@ class _Commands(IntegrationCommandsMixin):
         return True
 
 
-async def _finish(case, *, hook=True):
+async def _finish(case, *, hook=True, parent_id="parent"):
     database, completion = case.db, case.commands.completion
-    checkpoint = await database.get_integration_checkpoint("parent")
+    checkpoint = await database.get_integration_checkpoint(parent_id)
+    branch = checkpoint["branch"]
     async with database.immediate() as conn:
         operation = dict(
             (
@@ -74,7 +75,7 @@ async def _finish(case, *, hook=True):
             (
                 await conn.execute(
                     select(t.integration_branch_owners).where(
-                        t.integration_branch_owners.c.ref == "aq/parent",
+                        t.integration_branch_owners.c.ref == branch,
                     )
                 )
             )
@@ -84,36 +85,38 @@ async def _finish(case, *, hook=True):
         fence = await BranchOwnership(database).transfer_detached_on(
             conn,
             Fence(
-                target=BranchKey(repository_id="repo", branch="aq/parent"),
+                target=BranchKey(repository_id="repo", branch=branch),
                 owner_id=owner["owner_id"],
                 token=owner["fence_token"],
             ),
             operation["verifier_task_id"],
             "verifier",
         )
-    assert (await completion.wake_verifier("parent", fence))["outcome"] == "woken"
-    checkpoint = await database.get_integration_checkpoint("parent")
+    assert (await completion.wake_verifier(parent_id, fence))["outcome"] == "woken"
+    checkpoint = await database.get_integration_checkpoint(parent_id)
     generation = checkpoint["generation"]
+    check_id = f"check-{generation}" if parent_id == "parent" else f"check-{parent_id}-{generation}"
     await _trusted_check(
         database,
         {"operation_id": operation["id"]},
         head_sha=checkpoint["checkpoint_sha"],
         generation=generation,
-        id=f"check-{generation}",
-        run_id=f"run-{generation}",
+        parent_task_id=parent_id,
+        id=check_id,
+        run_id=f"run-{check_id}",
     )
     verified = await completion.verify_parent(
-        "parent",
+        parent_id,
         generation,
         checkpoint["checkpoint_sha"],
-        [f"check-{generation}"],
+        [check_id],
     )
     assert verified["outcome"] == "verified"
-    args = {"task_id": "parent", "generation": generation, "head_sha": checkpoint["checkpoint_sha"]}
+    args = {"task_id": parent_id, "generation": generation, "head_sha": checkpoint["checkpoint_sha"]}
     if hook:
         assert (await case.commands._cmd_integration_complete_parent(args))["success"]
     else:
-        assert (await completion.complete_parent("parent", generation, args["head_sha"]))[
+        assert (await completion.complete_parent(parent_id, generation, args["head_sha"]))[
             "outcome"
         ] == "completed"
     # Session close normally settles the verifier after completing the parent.
@@ -127,10 +130,10 @@ async def _finish(case, *, hook=True):
 
 
 @pytest.fixture
-async def completed(db, tmp_path):
+async def completed(db, tmp_path, request):
     origin = Origin(tmp_path)
     base = git(origin.clone, "rev-parse", "origin/main")
-    _, checkpointed, children = await _parent_tree(db, children=2, base_sha=base)
+    hierarchy, checkpointed, children = await _parent_tree(db, children=2, base_sha=base)
     git(origin.clone, "push", "origin", base + ":refs/heads/aq/parent")
     async with db.immediate() as conn:
         policy = dict(
@@ -174,16 +177,72 @@ async def completed(db, tmp_path):
             )
         )
     promotion = PromotionService(db, data_dir=tmp_path / "retained", git_manager=GitManager())
-    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
-    fence = Fence(
-        target=BranchKey(repository_id="repo", branch="aq/parent"),
-        owner_id=owner["owner_id"],
-        token=owner["fence_token"],
+    case = SimpleNamespace(
+        db=db,
+        origin=origin,
+        base=base,
+        commands=_Commands(db, promotion),
+        promotion=promotion,
+        producer=ReviewEvidenceProducer(db, promotion),
+        children=children,
+        grandchildren=[],
     )
+    if getattr(request, "param", False):
+        nested_id = children[0]
+        # The flat-tree helper seeds terminal leaves. Turn one into an
+        # unfinished container before any of its work is promoted to the root.
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == nested_id).values(status="IN_PROGRESS")
+            )
+            await conn.execute(
+                update(t.task_integration_checkpoints)
+                .where(t.task_integration_checkpoints.c.task_id == nested_id)
+                .values(checkpoint_sha=base)
+            )
+        nested_checkpoint = await db.get_integration_checkpoint(nested_id)
+        filed = await hierarchy.file_children(
+            nested_id, [{"title": "grandchild"}], nested_checkpoint["generation"]
+        )
+        nested_operation = await hierarchy.checkpoint_parent(nested_id, base, filed["generation"])
+        case.grandchildren = [row["task_id"] for row in filed["children"]]
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == nested_id).values(status="PAUSED")
+            )
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id.in_(case.grandchildren)).values(status="COMPLETED")
+            )
+        await _collect_children(case, nested_id, nested_operation, case.grandchildren)
+        await _finish(case, parent_id=nested_id, hook=False)
+    case.head = await _collect_children(case, "parent", checkpointed, children)
+    await _finish(case, hook=False)
+    return case
+
+
+async def _collect_children(case, parent_id, checkpointed, children):
+    db, origin, base, promotion = case.db, case.origin, case.base, case.promotion
+    checkpoint = await db.get_integration_checkpoint(parent_id)
+    branch = checkpoint["branch"]
+    git(origin.clone, "push", "origin", base + ":refs/heads/" + branch)
+    git(origin.clone, "fetch", "origin")
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch=branch))
+    async with db.immediate() as conn:
+        fence = await BranchOwnership(db).transfer_detached_on(
+            conn,
+            Fence(
+                target=BranchKey(repository_id="repo", branch=branch),
+                owner_id=owner["owner_id"],
+                token=owner["fence_token"],
+            ),
+            checkpointed["operation_id"],
+            "collector",
+        )
     head = base
     for child in children:
-        child_head = origin.work(child)
         child_checkpoint = await db.get_integration_checkpoint(child)
+        verification_id = child_checkpoint["current_verification_id"]
+        child_head = child_checkpoint["checkpoint_sha"] if verification_id else origin.work(child)
         async with db.immediate() as conn:
             await conn.execute(
                 update(t.task_integration_checkpoints)
@@ -208,10 +267,10 @@ async def completed(db, tmp_path):
                 "reviewed_head_sha": child_head,
                 "reviewed_tree_sha": git(origin.clone, "rev-parse", child_head + "^{tree}"),
                 "reviewer_task_id": None,
-                "review_kind": "leaf",
+                "review_kind": "parent" if verification_id else "leaf",
                 "generation": child_checkpoint["generation"],
                 "verdict": "approved",
-                "evidence": {"checks": ["unit"]},
+                "evidence": {"checks": ["unit"], "verification_id": verification_id},
                 "created_at": 1.0,
             }
         )
@@ -229,22 +288,9 @@ async def completed(db, tmp_path):
         assert pushed.receipt_id
         head = prepared.prepared_sha
     async with db.immediate() as conn:
-        # Both real promotions reached the published aggregate; readiness
-        # files the initial verifier and durable handoff.
-        ready = await ParentCompletion(db).mark_ready_on(conn, "parent", require_verifier=True)
-        assert ready["outcome"] == "ready"
-    case = SimpleNamespace(
-        db=db,
-        origin=origin,
-        base=base,
-        head=head,
-        commands=_Commands(db, promotion),
-        promotion=promotion,
-        producer=ReviewEvidenceProducer(db, promotion),
-        children=children,
-    )
-    await _finish(case, hook=False)
-    return case
+        ready = await ParentCompletion(db).mark_ready_on(conn, parent_id, require_verifier=True)
+        assert ready["outcome"] == "ready", ready
+    return head
 
 
 async def _source(case):
@@ -284,6 +330,7 @@ class _ParentClient(_PollClient):
         return pull
 
 
+@pytest.mark.parametrize("completed", [False, True], ids=["flat", "nested"], indirect=True)
 async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_advances(completed):
     case = completed
     initial = await _source(case)
@@ -308,6 +355,17 @@ async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_ad
         receipts = [
             dict(row) for row in (await conn.execute(select(t.task_delivery_receipts))).mappings()
         ]
+    root_receipts = [row for row in receipts if row["target_task_id"] == "parent"]
+    nested_checkpoints = {
+        task_id: await case.db.get_integration_checkpoint(task_id)
+        for task_id in case.children + case.grandchildren
+    }
+    if case.grandchildren:
+        assert any(
+            row["source_task_id"] in case.grandchildren
+            and row["target_task_id"] == case.children[0]
+            for row in receipts
+        )
     client = _ParentClient(case.head, [])
 
     async def reverify(observation):
@@ -327,6 +385,9 @@ async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_ad
         assert checkpoint["verified_sha"] is None
         assert checkpoint["last_completed_verification_id"] == previous["verification_id"]
         assert checkpoint["generation"] == previous["generation"] + 1
+        for task_id, unchanged in nested_checkpoints.items():
+            assert await case.db.get_integration_checkpoint(task_id) == unchanged
+            assert (await case.db.get_task(task_id)).status is TaskStatus.COMPLETED
         assert await _source(case) is None
         assert await _members(case) == []
         stale_check = await case.commands.completion.verify_parent(
@@ -365,7 +426,7 @@ async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_ad
                 .mappings()
                 .all()
             )
-            assert {row["receipt_id"] for row in accepted} == {row["id"] for row in receipts}
+            assert {row["receipt_id"] for row in accepted} == {row["id"] for row in root_receipts}
         verified = await _finish(case)
         members = await _members(case, green=True)
         assert [member["task_id"] for member in members] == ["parent"]
@@ -384,8 +445,54 @@ async def test_two_child_parent_completes_reviews_and_readmits_after_two_head_ad
         ]
         assert all(review in all_reviews for review in old_reviews)
         assert (
-            len((await conn.execute(select(t.integration_parent_operation_completions))).all()) == 3
+            len((await conn.execute(select(t.integration_parent_operation_completions))).all())
+            == 3 + bool(case.grandchildren)
         )
+
+
+@pytest.mark.parametrize("completed", [True], ids=["nested"], indirect=True)
+async def test_delivered_nested_parent_cannot_rollover_outside_its_subtree(completed):
+    case = completed
+    nested_id = case.children[0]
+    before = await case.db.get_integration_checkpoint(nested_id)
+    with pytest.raises(HierarchyError) as refused:
+        await case.db.transition_task(nested_id, TaskStatus.PAUSED, force=True)
+    assert refused.value.code == "delivery_target_fixed"
+    assert await case.db.get_integration_checkpoint(nested_id) == before
+    assert (await case.db.get_task(nested_id)).status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("target", [None, "outside"])
+@pytest.mark.parametrize("completed", [True], ids=["nested"], indirect=True)
+async def test_nested_parent_reverification_refuses_receipts_leaving_subtree(completed, target):
+    case = completed
+    source = await _source(case)
+    head = case.origin.work("parent", "advance")
+    if target:
+        await case.db.create_task(
+            Task(id=target, project_id="p", title="Other parent", description="")
+        )
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            insert(t.task_delivery_receipts).values(
+                id="external-receipt",
+                domain_key="external-receipt",
+                source_task_id=case.grandchildren[0],
+                target_task_id=target,
+                repository_id="repo",
+                target_branch="aq/outside" if target else "main",
+                disposition="code",
+                created_at=1.0,
+            )
+        )
+    before = await case.db.get_integration_checkpoint("parent")
+    with pytest.raises(HierarchyError) as refused:
+        await ParentSourceReverification(case.db, case.promotion).run(
+            "parent", ParentHeadObservation("parent", source, head, 0)
+        )
+    assert refused.value.code == "delivery_target_fixed"
+    assert await case.db.get_integration_checkpoint("parent") == before
+    assert (await case.db.get_task("parent")).status is TaskStatus.COMPLETED
 
 
 @pytest.mark.parametrize(
