@@ -1,0 +1,1714 @@
+{
+  "controls": {
+    "agent_protocol": [
+      {
+        "command_id": "integration_resolve_candidate_member",
+        "kind": "hand",
+        "path": "integration resolve-candidate-member"
+      }
+    ],
+    "approved": [
+      {
+        "command_id": "integration_gate_answer",
+        "kind": "decision",
+        "path": "integration gate answer"
+      },
+      {
+        "command_id": "integration_authorize_root",
+        "kind": "decision",
+        "path": "integration authorize"
+      },
+      {
+        "command_id": "integration_policy_activate",
+        "kind": "decision",
+        "path": "integration policy activate"
+      },
+      {
+        "command_id": "integration_hold",
+        "kind": "decision",
+        "path": "integration hold"
+      },
+      {
+        "command_id": "integration_status",
+        "kind": "diagnostic",
+        "path": "integration status"
+      },
+      {
+        "command_id": "integration_explain",
+        "kind": "diagnostic",
+        "path": "integration explain"
+      },
+      {
+        "command_id": "integration_flush",
+        "kind": "hand",
+        "path": "integration flush"
+      }
+    ],
+    "legacy": [
+      {
+        "command_id": "integration_record_noop",
+        "kind": "hand",
+        "path": "integration legacy record-noop",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the collector records a no-code child's receipt",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_eject",
+        "kind": "decision",
+        "path": "integration legacy eject",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `eject` choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_enable",
+        "kind": "decision",
+        "path": "integration legacy enable",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration policy activate --mode <mode>",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_reconcile_unmaterialized",
+        "kind": "migration",
+        "path": "integration legacy reconcile-unmaterialized",
+        "removal_gate": "no project's preflight reports a task with repo_id IS NULL",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_waive_history",
+        "kind": "migration",
+        "path": "integration legacy waive-history",
+        "removal_gate": "no project's enable preflight reports a legacy_pr_merge_gate blocker",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_resume",
+        "kind": "decision",
+        "path": "integration legacy resume",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `retry` choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_abort",
+        "kind": "decision",
+        "path": "integration legacy abort",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `eject` choice for every member)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_retry_cleanup",
+        "kind": "hand",
+        "path": "integration legacy retry-cleanup",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the cleanup primitive retries failed items",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_release_owner",
+        "kind": "hand",
+        "path": "integration legacy release-owner",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the writer stop-proof releases a stranded owner",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_reserve_owner",
+        "kind": "hand",
+        "path": "integration legacy reserve-owner",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the writer reserves a missing owner",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_release_stale_owners",
+        "kind": "hand",
+        "path": "integration legacy release-stale-owners",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; drain releases finished owners",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_adopt_legacy_deliveries",
+        "kind": "migration",
+        "path": "integration legacy adopt-legacy-deliveries",
+        "removal_gate": "no status shows missing_receipt/no_parent_collection and adopt-legacy-deliveries answers nothing_to_adopt for every project",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_bind_legacy_repositories",
+        "kind": "migration",
+        "path": "integration legacy bind-legacy-repositories",
+        "removal_gate": "no observe/hierarchy/train project has a terminal hierarchy task with repo_id IS NULL",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_close_delivered_pr",
+        "kind": "hand",
+        "path": "integration legacy close-delivered-pr",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; delivery closes a PR whose content landed",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_clear_stale_request",
+        "kind": "hand",
+        "path": "integration legacy clear-stale-request",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; subjects carry due times instead of sweep requests (aq integration flush)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_redrive_root",
+        "kind": "hand",
+        "path": "integration legacy redrive-root",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the root subject opens its PR or collects",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_materialize_root",
+        "kind": "migration",
+        "path": "integration legacy materialize-root",
+        "removal_gate": "doctor reports no unmaterialized_train_pr",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_authorize_root",
+        "kind": "decision",
+        "path": "integration legacy authorize-root",
+        "removal_gate": "no installed prompt or profile names `authorize-root`",
+        "replacement": "aq integration authorize (the same command, renamed)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_redrive_child",
+        "kind": "hand",
+        "path": "integration legacy redrive-child",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the parent subject collects a delivered child",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_reopen_collection",
+        "kind": "hand",
+        "path": "integration legacy reopen-collection",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a cancelled collection is a fact the parent's policy line answers",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_rebind_reused_identity",
+        "kind": "migration",
+        "path": "integration legacy rebind-reused-identity",
+        "removal_gate": "the legacy integration.reused_task_identity query finds zero rows",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_rebind_repair",
+        "kind": "hand",
+        "path": "integration legacy rebind-repair",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a repair stage follows the current intent",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_recover_preserved_repair",
+        "kind": "hand",
+        "path": "integration legacy recover-preserved-repair",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; preserved work is a writer the next stage resumes",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_rebind_detached_repair",
+        "kind": "hand",
+        "path": "integration legacy rebind-detached-repair",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a detached delegate's head is a fact the stage rebinds to",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_release_delegates",
+        "kind": "hand",
+        "path": "integration legacy release-delegates",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; terminal delegates are retired every tick",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_recover_candidate_member",
+        "kind": "hand",
+        "path": "integration legacy recover-candidate-member",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a pushed candidate member is accepted or rejected on the next visit",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_develop",
+        "kind": "decision",
+        "path": "integration legacy develop",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration policy activate --mode development --policy <file>",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_adopt",
+        "kind": "decision",
+        "path": "integration legacy adopt",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the completion/equivalence choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_development_sweep",
+        "kind": "hand",
+        "path": "integration legacy sweep",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; aq integration flush makes the development subjects due",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_settle_parked",
+        "kind": "decision",
+        "path": "integration legacy settle-parked",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `not owed`/`dismiss` choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_migrate_provenance",
+        "kind": "migration",
+        "path": "integration legacy migrate-provenance",
+        "removal_gate": "every development project's provenance inventory reports zero_fallback=true",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_cancel_preserving",
+        "kind": "decision",
+        "path": "integration legacy cancel-preserving",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `cancel` choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": null,
+        "kind": "diagnostic",
+        "path": "integration legacy onboard-train",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_trust_manifest",
+        "kind": "diagnostic",
+        "path": "integration legacy trust-manifest",
+        "removal_gate": "integration.trust renders the manifest's items",
+        "replacement": "aq doctor --check integration.trust",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_app_verify",
+        "kind": "diagnostic",
+        "path": "integration legacy app-verify",
+        "removal_gate": "integration.trust renders the manifest's items",
+        "replacement": "aq doctor --check integration.trust",
+        "supervisor": true
+      },
+      {
+        "command_id": null,
+        "kind": "diagnostic",
+        "path": "integration legacy app-setup",
+        "removal_gate": "integration.trust renders the manifest's items and its --apply step",
+        "replacement": "aq doctor --check integration.trust",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_recover_parent_head",
+        "kind": "hand",
+        "path": "integration legacy recover-parent-head",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a completed parent repair's head is a fact the parent subject adopts",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_settle_delivered_batch",
+        "kind": "hand",
+        "path": "integration legacy settle-delivered-batch",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; a batch whose candidate landed settles on the next visit",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_engine_transfer",
+        "kind": "migration",
+        "path": "integration legacy engine-transfer",
+        "removal_gate": "every repository's subjects run on the reconciler engine",
+        "replacement": "none: one-off upgrade path",
+        "supervisor": false
+      },
+      {
+        "command_id": "integration_shadow_report",
+        "kind": "diagnostic",
+        "path": "integration legacy shadow-report",
+        "removal_gate": "every repository's subjects run on the reconciler engine",
+        "replacement": "aq integration explain <subject>",
+        "supervisor": true
+      },
+      {
+        "command_id": "integration_recover_unwritten_resolution",
+        "kind": "hand",
+        "path": "system integration-recover-unwritten-resolution",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; an unwritten resolution reservation is superseded on the next visit",
+        "supervisor": false
+      },
+      {
+        "command_id": "integration_transfer_owner",
+        "kind": "hand",
+        "path": "system integration-transfer-owner",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the writer transfers ownership under its fence",
+        "supervisor": true
+      },
+      {
+        "command_id": "task_deliver",
+        "kind": "hand",
+        "path": "task deliver",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "reconciler subjects (\u00a74 blocker catalogue): the observer fact and the policy line act on the next visit; the root subject delivers a passed task",
+        "supervisor": true
+      },
+      {
+        "command_id": null,
+        "kind": "decision",
+        "path": "task close",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `obsolete` choice)",
+        "supervisor": true
+      },
+      {
+        "command_id": "ci_baseline_status",
+        "kind": "diagnostic",
+        "path": "git ci-baseline-status",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status",
+        "supervisor": false
+      },
+      {
+        "command_id": "ci_repair_adopt",
+        "kind": "decision",
+        "path": "git ci-repair-adopt",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration gate answer (the `adopt` choice)",
+        "supervisor": false
+      }
+    ],
+    "visible_cli_entries": [
+      "authorize",
+      "explain",
+      "flush",
+      "gate",
+      "hold",
+      "legacy",
+      "policy",
+      "resolve-candidate-member",
+      "status"
+    ]
+  },
+  "doctor": {
+    "approved": [
+      "integration.subjects_overdue",
+      "integration.subjects_held",
+      "integration.trust"
+    ],
+    "legacy": [
+      {
+        "check_id": "integration.delivered_children_unsettled_parent",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.reviewed_file_guard",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.delivery_path",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.operational",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.orphaned_operations",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.reused_task_identity",
+        "removal_gate": "the legacy integration.reused_task_identity query finds zero rows",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.unreviewed_prs",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.branch_discards",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.stranded_fences",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.missing_canonical_owners",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.stranded_dependents",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.development_publisher_stalled",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "integration.subjects_overdue"
+      },
+      {
+        "check_id": "integration.development_conflicts_unrepaired",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "integration.subjects_held"
+      },
+      {
+        "check_id": "integration.stranded_delegates",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.app_mode",
+        "removal_gate": "no installed prompt or runbook names integration.app_mode",
+        "replacement": "integration.trust (the same probe, renamed)"
+      },
+      {
+        "check_id": "integration.stale_repair_intents",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.missing_repair_owners",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      },
+      {
+        "check_id": "integration.stale_schedule",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "integration.subjects_overdue"
+      },
+      {
+        "check_id": "integration.stuck_children",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "integration.subjects_overdue"
+      },
+      {
+        "check_id": "integration.blocked_collectors",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "aq integration status: an observer fact on the subject"
+      },
+      {
+        "check_id": "integration.finished_branch_owners",
+        "removal_gate": "every repository's subjects run on the reconciler engine (engine-transfer applied, doctor integration.subjects_overdue reads zero) and the module behind it is deleted (\u00a75.2)",
+        "replacement": "none: a state the reconciler cannot reach"
+      }
+    ],
+    "registered": [
+      "integration.app_mode",
+      "integration.blocked_collectors",
+      "integration.branch_discards",
+      "integration.delivered_children_unsettled_parent",
+      "integration.delivery_path",
+      "integration.development_conflicts_unrepaired",
+      "integration.development_publisher_stalled",
+      "integration.finished_branch_owners",
+      "integration.missing_canonical_owners",
+      "integration.missing_repair_owners",
+      "integration.operational",
+      "integration.orphaned_operations",
+      "integration.reused_task_identity",
+      "integration.reviewed_file_guard",
+      "integration.stale_repair_intents",
+      "integration.stale_schedule",
+      "integration.stranded_delegates",
+      "integration.stranded_dependents",
+      "integration.stranded_fences",
+      "integration.stuck_children",
+      "integration.subjects_held",
+      "integration.subjects_overdue",
+      "integration.trust",
+      "integration.unreviewed_prs"
+    ]
+  },
+  "measurement": {
+    "lines": "physical lines, including blank lines and comments",
+    "modules": "top-level src/integration/*.py, including __init__.py",
+    "outcomes": "distinct closed primitive labels; unknown is already included",
+    "tables": "metadata names containing integration plus task origins/receipts"
+  },
+  "modules": {
+    "count": 113,
+    "files": [
+      "src/integration/__init__.py",
+      "src/integration/accepted_repair.py",
+      "src/integration/admission.py",
+      "src/integration/app_mode.py",
+      "src/integration/attestation.py",
+      "src/integration/batch_settlement.py",
+      "src/integration/branch_discard.py",
+      "src/integration/branch_materialization.py",
+      "src/integration/cancelled_collection_recovery.py",
+      "src/integration/candidate_ci.py",
+      "src/integration/candidates.py",
+      "src/integration/canonical_reservation.py",
+      "src/integration/child_delivery.py",
+      "src/integration/ci.py",
+      "src/integration/ci_adapters.py",
+      "src/integration/ci_producers.py",
+      "src/integration/cleanup.py",
+      "src/integration/collecting_parent_recovery.py",
+      "src/integration/collection.py",
+      "src/integration/completion_recovery.py",
+      "src/integration/controls.py",
+      "src/integration/delegate_release.py",
+      "src/integration/delivered_parent_adoption.py",
+      "src/integration/delivery_branches.py",
+      "src/integration/delivery_observer.py",
+      "src/integration/delivery_path.py",
+      "src/integration/delivery_truth.py",
+      "src/integration/detached_repair_rebind.py",
+      "src/integration/development.py",
+      "src/integration/development_adapter.py",
+      "src/integration/development_policy.py",
+      "src/integration/development_result_parser.py",
+      "src/integration/development_runtime.py",
+      "src/integration/development_settlement.py",
+      "src/integration/development_stalls.py",
+      "src/integration/development_validation.py",
+      "src/integration/drain_owners.py",
+      "src/integration/engine.py",
+      "src/integration/epic_branch.py",
+      "src/integration/epic_delivery.py",
+      "src/integration/epic_dependencies.py",
+      "src/integration/epic_pr.py",
+      "src/integration/failed_verification_recovery.py",
+      "src/integration/finished_owners.py",
+      "src/integration/gates.py",
+      "src/integration/github_review_poll.py",
+      "src/integration/gitops.py",
+      "src/integration/green_continuation.py",
+      "src/integration/hierarchy.py",
+      "src/integration/hosted_attestation.py",
+      "src/integration/identity_rebind.py",
+      "src/integration/legacy_deliveries.py",
+      "src/integration/legacy_repositories.py",
+      "src/integration/live_operations.py",
+      "src/integration/main_promotion.py",
+      "src/integration/manual_delivery.py",
+      "src/integration/migration_heads.py",
+      "src/integration/models.py",
+      "src/integration/observe.py",
+      "src/integration/obsolete_close.py",
+      "src/integration/operation_ownership.py",
+      "src/integration/outbox.py",
+      "src/integration/owner_recovery.py",
+      "src/integration/ownership.py",
+      "src/integration/parent_adapters.py",
+      "src/integration/parent_ci.py",
+      "src/integration/parent_completion.py",
+      "src/integration/parent_engine.py",
+      "src/integration/parent_intents.py",
+      "src/integration/parent_repair_heads.py",
+      "src/integration/parent_runtime.py",
+      "src/integration/parent_subjects.py",
+      "src/integration/pr_delivery.py",
+      "src/integration/preflight.py",
+      "src/integration/preserved_repair.py",
+      "src/integration/promotion.py",
+      "src/integration/protection.py",
+      "src/integration/provenance.py",
+      "src/integration/provenance_migration.py",
+      "src/integration/publishable_artifact.py",
+      "src/integration/published_repair_handoff.py",
+      "src/integration/reconciler.py",
+      "src/integration/records.py",
+      "src/integration/recovery_controls.py",
+      "src/integration/regeneration.py",
+      "src/integration/release.py",
+      "src/integration/removal_guard.py",
+      "src/integration/repair.py",
+      "src/integration/repair_progress.py",
+      "src/integration/repair_rebind.py",
+      "src/integration/review_evidence.py",
+      "src/integration/root_adapters.py",
+      "src/integration/root_authorization.py",
+      "src/integration/root_materialization.py",
+      "src/integration/root_pull_requests.py",
+      "src/integration/root_runtime.py",
+      "src/integration/scheduler.py",
+      "src/integration/service.py",
+      "src/integration/settling.py",
+      "src/integration/shadow_report.py",
+      "src/integration/source_ancestry.py",
+      "src/integration/source_ci.py",
+      "src/integration/source_delivery.py",
+      "src/integration/stale_owners.py",
+      "src/integration/stale_schedule.py",
+      "src/integration/status.py",
+      "src/integration/subjects.py",
+      "src/integration/suspended_parent_recovery.py",
+      "src/integration/table_retirement.py",
+      "src/integration/train_onboarding.py",
+      "src/integration/trust_manifest.py",
+      "src/integration/verifier_subject.py",
+      "src/integration/writers.py"
+    ],
+    "lines": 78227
+  },
+  "primitives": {
+    "count": 20,
+    "distinct_outcomes": 48,
+    "outcomes": {
+      "ci_attest": [
+        "already",
+        "attested",
+        "refused"
+      ],
+      "ci_observe": [
+        "green",
+        "infra",
+        "none",
+        "pending",
+        "red",
+        "untrusted"
+      ],
+      "ci_request": [
+        "already_running",
+        "requested",
+        "unavailable"
+      ],
+      "cleanup": [
+        "clean",
+        "irreversible_marker",
+        "pending"
+      ],
+      "eject": [
+        "ejected",
+        "not_a_member"
+      ],
+      "gate": [
+        "answered",
+        "created",
+        "reused"
+      ],
+      "git_ancestry": [
+        "facts"
+      ],
+      "git_materialize_ref": [
+        "created",
+        "exists_exact",
+        "exists_other"
+      ],
+      "git_merge_members": [
+        "base_moved",
+        "conflict",
+        "merged",
+        "source_moved"
+      ],
+      "git_preserve": [
+        "exists",
+        "preserved"
+      ],
+      "git_publish": [
+        "published",
+        "target_moved",
+        "unknown_after_push"
+      ],
+      "integration_observe_subject": [
+        "not_found",
+        "observed"
+      ],
+      "integration_seal": [
+        "busy",
+        "empty",
+        "sealed"
+      ],
+      "record_attempt": [
+        "counted",
+        "not_an_attempt",
+        "stale"
+      ],
+      "record_decision": [
+        "recorded"
+      ],
+      "record_receipt": [
+        "exists",
+        "recorded"
+      ],
+      "wait": [
+        "waiting"
+      ],
+      "writer_file": [
+        "configuration_blocked",
+        "exists",
+        "filed"
+      ],
+      "writer_lease": [
+        "busy",
+        "leased",
+        "stale"
+      ],
+      "writer_stop_proof": [
+        "live",
+        "preserved_and_released",
+        "released",
+        "unknown"
+      ]
+    },
+    "primitive_outcome_pairs": 55
+  },
+  "scope": "checkout source only; no live rollout or CI claims",
+  "source_files": {
+    "src/cli/integration.py": "86815f9572e3b524783ccdc558fcf304d0f04d54b13d9df2cd729d7f06b18188",
+    "src/commands/integration_legacy.py": "4bcf8d63439bff29ada8f9f63cf703811bbce55906a9295c9849f6692baf1326",
+    "src/database/tables.py": "b977c6a70b83f1820d761fcead425c0e56c6cc4b1fed6a604ba00a2c76e090b9",
+    "src/doctor/integration_checks.py": "a5523a5946f805c56af5a45eb93ac47091b42ef63e352cd6ba9671b1bb1137b1",
+    "src/doctor/integration_subject_checks.py": "61db5e7d2a36617f128ea2cbde3ff3affc44d6d948a2315cebe503b79617f867",
+    "src/integration/__init__.py": "68e30bfc12261e9c85309b9b6f1f190169a7154ab2ea52f4b8ecbde47f2140cd",
+    "src/integration/accepted_repair.py": "5771ba2fdeea1ed5f7a73517b84a9652fbbb3b5a281257e58058194b24f17a84",
+    "src/integration/admission.py": "4a4149b75f16c4f993d690a64f57f16473a08fe6ba67da5033280259129627c4",
+    "src/integration/app_mode.py": "9b96548f5283b6ac73060676262842d851e456d84a06710294394a3932a2c657",
+    "src/integration/attestation.py": "552ee9be13cd7852754fa72e7df18cb615d5a79b9ae3aa323ca701c0b7c4d1f2",
+    "src/integration/batch_settlement.py": "86b099c6eb0c7196c116fc3e0af381500a86b85b99047210266fa8bb98d1c559",
+    "src/integration/branch_discard.py": "5d6079d1b3fe07f8d6c797da242a40803937ee94388f39ca7c0af70f79cea90b",
+    "src/integration/branch_materialization.py": "e22a3629cc2aad54da27a252694e47e0b8f60b2935c915ceb86fec189d4cc183",
+    "src/integration/cancelled_collection_recovery.py": "e2ef8a26f5a485c7b7fd90c3ba953a8748305ef0960497c068374fddfb4e088c",
+    "src/integration/candidate_ci.py": "479919686d4bea0ec7da46fcd94088713a92cf489328f34eaae968c5ec31db5a",
+    "src/integration/candidates.py": "88f24a587da3ba2c6adc9cdf530bb04ba2384295a29f1ee03800fa45d3901c27",
+    "src/integration/canonical_reservation.py": "3eef7fddb5b8a2ecaa4437ed0235308e7c9bb53223b68ec5bd25a9ef7d31172b",
+    "src/integration/child_delivery.py": "eec8990c21f9413b5afeda6ba0ff48d64714358b16405afca14c8fc1343e83dc",
+    "src/integration/ci.py": "26e5134824bb27342409fde4a5f73e87bf8b80d9f672fdf8c20d7b98533c76b6",
+    "src/integration/ci_adapters.py": "4ec066a765c6a1ed5cdd4d2b1ac66ab2cb3a36cb40aa9905c79b2b806553fed2",
+    "src/integration/ci_producers.py": "7ba0fcb0a5c617b9c176bd448c9938d366d41330eb7218f717c6e008b9545217",
+    "src/integration/cleanup.py": "a7cb2bc99180671330273f1143496957c9c9841277b289e0ac0ea27ff5464e9e",
+    "src/integration/collecting_parent_recovery.py": "b3448cc847c2c72f49fc220ebeeeb43309dd40196d2001840c3a807267d8fb90",
+    "src/integration/collection.py": "07e6ff7a201a5b6f58d8a72d1a38ac7511eb418256a20abf919b84312388c390",
+    "src/integration/completion_recovery.py": "bdce8c60847d3535785231f009fb6c50fed5699de8cd522f97462e291da3a9fd",
+    "src/integration/controls.py": "b447444e0f01b8a246c0e033e0abe55b05814815aa37556462e3294e66020ed0",
+    "src/integration/delegate_release.py": "62bd5542979cb4459de650900fff4d7d699b5b263a196c87e0ee193a73a27a42",
+    "src/integration/delivered_parent_adoption.py": "79febedf17a53edb949c6ccdea3bed2060b10ca9676ee61ae3e89f0fa1489a74",
+    "src/integration/delivery_branches.py": "6f0e03bc56a1cca4c9f34293eded0a782b0bd609bded9af67b1e35a59f6f1998",
+    "src/integration/delivery_observer.py": "4bd01e604681b30c0f9c15b625ffbff30880be3e8df49a9e4b619c877bd6a9c2",
+    "src/integration/delivery_path.py": "ff91ab72b816695b830aae93767148b6cbc2fe8b2e22ef7edaef174f88011b1f",
+    "src/integration/delivery_truth.py": "651621451ac7edabba77b33d1778cddbb6bc8303a7be56ff2bc6511dbc25273b",
+    "src/integration/detached_repair_rebind.py": "b5f7f62aab11b31220abf86b46544cb298b2e3f444469f54ac2d95cb5cb7ac93",
+    "src/integration/development.py": "fdec9488e507129b038ff4d29d5223b0253251251293b8f24e84f68a700b2aad",
+    "src/integration/development_adapter.py": "b6ba8a95d81d10e9b83bb2ce4a144dbfa8e1f095f2e713a6ef8a39fc3a329c49",
+    "src/integration/development_policy.py": "ddf57995667254d835a2f9fac5b8155e08f444a2f697ee2f6f11330b38074672",
+    "src/integration/development_result_parser.py": "58196cff1e14b6c66760aa6505587fbcf0fa6a813b26f015bdc259b9a383dddf",
+    "src/integration/development_runtime.py": "bb9b4672717116ba93a8d613bab135800ded76515c321c5b8eac9d09adfdab8a",
+    "src/integration/development_settlement.py": "1f6e903ce7efbc2c2fc4738eea5fceb96950eb6b4bb6bd11f1c98ec7fcabb4e4",
+    "src/integration/development_stalls.py": "0d269ac5e9674df1a8a72b8659578c0061a03d2496c01baddc3aa4ff86b52247",
+    "src/integration/development_validation.py": "6bfcab582f5d34b0e278280ea893f7083aa86a1fa4a33fdd80ce50b68944f031",
+    "src/integration/drain_owners.py": "2c36e75cf6c36637694a27a987c7027df581e181b9bdfed832f92b8516e858ed",
+    "src/integration/engine.py": "451a8df0036609458d78187779ce0b0406c3b8bb7fe417bbf25535696de9ddf3",
+    "src/integration/epic_branch.py": "0e81c1985cf9023adef40790b116373d1be241b74fefe1d311409445f843ab0d",
+    "src/integration/epic_delivery.py": "3c1e79f0a0e147ca12918848b64d228b81d9a8025f8e8a0f6108536ede6b2fc9",
+    "src/integration/epic_dependencies.py": "a52c989e3a9d33d0430d7742067fd3176d8bdb2aacf259d6b714e7a433d597b3",
+    "src/integration/epic_pr.py": "dcefc79fe88d811217838e16dac3d6b29d1ddec49f71e064dec45eefaa731b18",
+    "src/integration/failed_verification_recovery.py": "dd85bf54792889918a86dc0bdda3485f629ed712ff83401ee60cf85bb5346b0c",
+    "src/integration/finished_owners.py": "02d053d07abba60540c2b0691019526e62a4ed11ef506a0d4fd1f342043e5694",
+    "src/integration/gates.py": "e487395cfd4dea80fa30a79611082d936bf0b57b45f1bc32bd26a746af4e5afa",
+    "src/integration/github_review_poll.py": "336b48501b5c0a55d4330b0da6ce5045a6b3ad9c61468d882be6ee527a67ae48",
+    "src/integration/gitops.py": "ddd1e624fe5542f2610b13b5294f6b5bf4234159caf98c417ed7029b7a72f959",
+    "src/integration/green_continuation.py": "5873fc58b5356836619bb5ef1e2666515d8ecb5785791fc8d54a390b4eb92ed9",
+    "src/integration/hierarchy.py": "95e1e521e31d5b152c852e6254a3c94b45e00982e70a161e999bf6c33c5aca16",
+    "src/integration/hosted_attestation.py": "bf72bc6bd32543cd85e2ef7c8f8f17f13dea6a22406ee9a4b9d37d1f4b92648e",
+    "src/integration/identity_rebind.py": "503d5cd88d984a99d5c2ac6fd8a16cbd009f2e049717996808767cff5d775b56",
+    "src/integration/legacy_deliveries.py": "600a54930de3b6066522ad87aa9bf54b1c7ad6715fbd1867cae9a40a2c51fae8",
+    "src/integration/legacy_repositories.py": "5d98d546c4b443fde6449cc8c043978206ca0d649e7196ad21cc9b4bf7aea41d",
+    "src/integration/live_operations.py": "ec47aea99c8f9b55d5fa7d33725711f7ee6c41e5dbb79c88366fa38fbe1d709b",
+    "src/integration/main_promotion.py": "17b606d5769b0ff972a7d47047ea17f458a0691356121f4d7a2c6aef33b9be47",
+    "src/integration/manual_delivery.py": "3f2ef45630b5b7bc7702548c88a95376db773a9c75acd0c8aed8c72e217f27a6",
+    "src/integration/migration_heads.py": "9bcf838457de4688a154a0f4a228cc1f0247224bcfa6f81238efcb0309671d10",
+    "src/integration/models.py": "7af56a67f133d45faa16bfb97a3351bf6d75f16dc4eabda735ca282b8539f8ab",
+    "src/integration/observe.py": "c0b51601e4fa7032f92e6d5273e7c5938f57727fe74aa9e6384e1ef55915ece7",
+    "src/integration/obsolete_close.py": "481d2ffcc45f6c1b2a92ec1faf47566fa5040985688f6b7d3db4166ab0d74910",
+    "src/integration/operation_ownership.py": "1e2ce55b2e3445104ab6a7e88a21b52c9a44d06004030b1fe76e89243956f13d",
+    "src/integration/outbox.py": "df3c021cd7bb053fc891243cab2916d705d47af738fc654bfec53a108312d31d",
+    "src/integration/owner_recovery.py": "ec4ba89255d27aff4bcc00e22401fa806a48678ccb667d02f8406f2f1e8c3464",
+    "src/integration/ownership.py": "c67b610e79e47f01c21ba9a64ced3df4bddb5ffbe3b46653f0704ec046bd3128",
+    "src/integration/parent_adapters.py": "7d6f8cc8dffca59bf923201001720bdc2271eda80b894ac07adf523c0602cc0b",
+    "src/integration/parent_ci.py": "70efceee32a1c8bf12ff18870933f28e364732b940afe0cc40cedb0d2fe37ddf",
+    "src/integration/parent_completion.py": "79b8d8128077e124cdc5c4569159b35b7aae9d053eaebbdfc41cdb350854930c",
+    "src/integration/parent_engine.py": "9f5d6471d8c404f5907631cc4d4934484162c23e1d64c067143ebca7182fda85",
+    "src/integration/parent_intents.py": "0f386165dfca3fe8644a81697f23d2fe257a1da37da6f5b296e026be35e79dee",
+    "src/integration/parent_repair_heads.py": "15d643553333ce53f51f7430d1d7b8973340881b63e350b5c7d108c5e99c591c",
+    "src/integration/parent_runtime.py": "d3fc5395e275030068e7da89ed2e099bd30451355783b84aa3687306c57c4c9e",
+    "src/integration/parent_subjects.py": "288cc1698b3547a322815f103695da85de81e0956294e6b46c802eb2eb2ef93e",
+    "src/integration/pr_delivery.py": "478d06a38761d7c420fac79322a49d9636ffb35ac2b43cef51ba12a0407e5cca",
+    "src/integration/preflight.py": "2275bc42a2d60882adb791482763c333babb16c776b6a433abe0617c65f43f3a",
+    "src/integration/preserved_repair.py": "3c9cd627663a3192d4608bf72f225454f431fd96f87299ff1b9bb66a49f05054",
+    "src/integration/promotion.py": "0d32de327de6a8afd2613762e9d1cd9db9ee1ce47f13bdfbfbc4a7bed91b5d60",
+    "src/integration/protection.py": "369891d5e1eb386f5b2de67d3b48606f03eaa6b16c55ad4f44ed11feacbe8884",
+    "src/integration/provenance.py": "62c93360c3d8604389526f479de738a584d26940c372cfca66a19a0d42eeee48",
+    "src/integration/provenance_migration.py": "7aa14543177dd0ed18a21727aeff8736adea3959248ea070c136fba12a61125c",
+    "src/integration/publishable_artifact.py": "ca31ee3199b3979ae69d9549fcd714894fc25535e9d115506cbb851911a000eb",
+    "src/integration/published_repair_handoff.py": "50c91b343f87dfcc4873bb825132347082f521df3e4d897f3d32769cbf41a84e",
+    "src/integration/reconciler.py": "815be507b9e8694061450787ad51ecf2a01ba9071cd57b62eca92c9b45d03ad8",
+    "src/integration/records.py": "9d7454a081faeecab40109b2cd74461558ba06cef622f032992fd1f7f2272c29",
+    "src/integration/recovery_controls.py": "835e5c153f0c07f9890a1758c7aa0344ba42ef0e253a26673cf0c014c3086703",
+    "src/integration/regeneration.py": "429fbcb4a69c9b114ff7befdd26039ffa3e3f442fe524d787c53832426aa72e7",
+    "src/integration/release.py": "2c6b1e51b7b3bfa2260846257be1ec7c2ce3a0df1d30797ff92677a2de005c81",
+    "src/integration/removal_guard.py": "608d2227502c7e47b1bf1a61a2f390c9553a98dbeec2220efe45113a937a9f68",
+    "src/integration/repair.py": "b3eec0813022df265bc815f40f4c6a77989ff0aded15905960916bdcdc6b5e7d",
+    "src/integration/repair_progress.py": "b8bd5d2799dcbc04293efe8f6b0dcdaad8d4803e8609bfa1baf6ece883d79d21",
+    "src/integration/repair_rebind.py": "6cdc8e953779c6c51c1583ecb81bea7f52e4bb78b8597f70df1a52505182fe80",
+    "src/integration/review_evidence.py": "3db8055df72c1245a535817d59928d86e92ca9dfba8f6aaaab835e09e6aa0b03",
+    "src/integration/root_adapters.py": "87ce00be05df07dcaf87ac7ce36485938424660385dcc4a9128756b8f58741be",
+    "src/integration/root_authorization.py": "1a58fdc5096c56d1039003b23b0a4a0bc0a2709c724d50ca918043c6791fba9f",
+    "src/integration/root_materialization.py": "f5aa406587b1e0f304e6695ab4f392f241c3f0ad3bda702267b49a7ff299e175",
+    "src/integration/root_pull_requests.py": "300dc613109a8e3b38197df6c9cbe2927f24d61da9c6e498fe8d5366f6e51e00",
+    "src/integration/root_runtime.py": "26e5507b2b8a6c6c1b30c4ae822158ea790807d81aa91ccaa19d21fb2819c378",
+    "src/integration/scheduler.py": "1fbe483740a2542c83a6ff9ed195012339569e05b7487bac2d162deee4a111af",
+    "src/integration/service.py": "377f7ab4557db9c0480857dd2319e11989f9d76103beb0113366f5c1636d4b3e",
+    "src/integration/settling.py": "12921ea4050afe2e3afa21a5501a5af4cd24130136e6f04aa53c23ecaf4bc138",
+    "src/integration/shadow_report.py": "c34379844ff60bddd259eed7a0efe5ded1712945ff090532e8dec24644c2f090",
+    "src/integration/source_ancestry.py": "39628e8f2e825f2521c8d449db0cbe0846ffaa599f4a539fdfe37dabb59abb73",
+    "src/integration/source_ci.py": "99e9ba36382752397e44442b2b0b3bccd8744a580a25ba4d795b7dde7043afcb",
+    "src/integration/source_delivery.py": "144a4178ce0b76481751714143b93ec1b135b97f309120ecc3022dfcc13bfb76",
+    "src/integration/stale_owners.py": "41601e71e90c61d77f98498c41db5da30a58f76653b67d67e2cdd2ef23d9a519",
+    "src/integration/stale_schedule.py": "94ba5f5e32ef79336b547e238a8c5166346417e6ab503dc9d8b8ba47a69bb0ce",
+    "src/integration/status.py": "2376ec5935d845e4982c46d2562bc280f4e4123095a0a89186485ee58317be3f",
+    "src/integration/subjects.py": "02a53007fec34d7c53a8ec9b3ffe5c96b51f421151bb392afe9e6441c6a0128f",
+    "src/integration/suspended_parent_recovery.py": "0fa047b4a0b4573b93438816a4546564528dee486205d508afe9837949530aaf",
+    "src/integration/table_retirement.py": "651a8824c592975036f15bc231152863b0058cb5b1b518f860c5bb9728eeb92f",
+    "src/integration/train_onboarding.py": "72b68687a3806329410915b33524c39b6fb90b2e965abfb38d88e2c1eb8b6c15",
+    "src/integration/trust_manifest.py": "ec6e0b65884b8c9744d4132e032a02d09a605e721dece73eef5d975745446629",
+    "src/integration/verifier_subject.py": "5ff0cc53af1d0ebb8ac46ebbf31aa1922ac6d21cd34c57c0c0daa828622b622f",
+    "src/integration/writers.py": "4db864c6ab96bb7726a83f05e83b7018f9f1045a64c8a9fe1917728f3d90f001"
+  },
+  "source_files_sha256": "d58bb5c6f0334f9d29478b817f9a0d954af95ba9a8747d9d5b43008105267046",
+  "source_sha": "6f1fb7ed70acb409586f9944ea09d9c61580432f",
+  "tables": {
+    "count": 46,
+    "names": [
+      "integration_attestation_publications",
+      "integration_batch_members",
+      "integration_batches",
+      "integration_branch_owners",
+      "integration_candidate_member_results",
+      "integration_candidate_publications",
+      "integration_candidate_ref_mutations",
+      "integration_candidate_resolutions",
+      "integration_candidate_revisions",
+      "integration_check_evidence",
+      "integration_child_dispositions",
+      "integration_cleanup_items",
+      "integration_delegate_releases",
+      "integration_episode_receipt_acceptances",
+      "integration_history_waiver_consumptions",
+      "integration_history_waivers",
+      "integration_legacy_deliveries",
+      "integration_legacy_gate_applicability",
+      "integration_legacy_suppression",
+      "integration_operation_artifact_pins",
+      "integration_outbox",
+      "integration_outbox_artifact_pins",
+      "integration_owner_recoveries",
+      "integration_parent_episodes",
+      "integration_parent_operation_completions",
+      "integration_parent_verification_evidence",
+      "integration_parent_verifications",
+      "integration_promotion_intents",
+      "integration_release_results",
+      "integration_repair_operations",
+      "integration_repair_stage_evidence",
+      "integration_repair_stages",
+      "integration_retired_rows",
+      "integration_review_evidence",
+      "integration_rollout_transitions",
+      "integration_root_authorizations",
+      "integration_root_intent_members",
+      "integration_source_ci",
+      "integration_subject_journal",
+      "integration_subjects",
+      "integration_table_retirements",
+      "project_integration_leases",
+      "project_integration_schedules",
+      "task_branch_origins",
+      "task_delivery_receipts",
+      "task_integration_checkpoints"
+    ],
+    "retained": {
+      "integration_outbox": "\u00a75.3 target, short retention",
+      "integration_retired_rows": "retirement archive",
+      "integration_review_evidence": "not named by \u00a75.3; unclassified",
+      "integration_subject_journal": "\u00a75.3 target (integration_journal)",
+      "integration_subjects": "\u00a75.3 target",
+      "integration_table_retirements": "retirement receipts",
+      "task_branch_origins": "\u00a75.3 retained task-side table",
+      "task_delivery_receipts": "\u00a75.3 retained task-side table",
+      "task_integration_checkpoints": "not named by \u00a75.3; unclassified"
+    },
+    "retirement_families": [
+      {
+        "code_removed": false,
+        "name": "root_train",
+        "source_references": {
+          "integration_batch_members": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/hierarchy_queries.py",
+            "src/database/queries/integration_train_queries.py",
+            "src/database/queries/pull_request_queries.py",
+            "src/database/tables.py",
+            "src/doctor/task_checks.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/cleanup.py",
+            "src/integration/controls.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/drain_owners.py",
+            "src/integration/epic_delivery.py",
+            "src/integration/hierarchy.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/obsolete_close.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/release.py",
+            "src/integration/removal_guard.py",
+            "src/integration/repair.py",
+            "src/integration/repair_progress.py",
+            "src/integration/root_adapters.py",
+            "src/integration/scheduler.py",
+            "src/integration/stale_owners.py",
+            "src/integration/status.py"
+          ],
+          "integration_batches": [
+            "src/api/target_scope.py",
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/hierarchy_queries.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/integration_train_queries.py",
+            "src/database/queries/pull_request_queries.py",
+            "src/database/queries/session_queries.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/doctor/task_checks.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/ci.py",
+            "src/integration/cleanup.py",
+            "src/integration/controls.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/development.py",
+            "src/integration/drain_owners.py",
+            "src/integration/epic_delivery.py",
+            "src/integration/green_continuation.py",
+            "src/integration/hierarchy.py",
+            "src/integration/live_operations.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/obsolete_close.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/removal_guard.py",
+            "src/integration/repair.py",
+            "src/integration/repair_progress.py",
+            "src/integration/root_runtime.py",
+            "src/integration/scheduler.py",
+            "src/integration/shadow_report.py",
+            "src/integration/stale_owners.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/status.py"
+          ],
+          "integration_candidate_member_results": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/release.py",
+            "src/integration/repair.py"
+          ],
+          "integration_candidate_publications": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/candidate_ci.py",
+            "src/integration/candidates.py",
+            "src/integration/cleanup.py",
+            "src/integration/main_promotion.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/shadow_report.py"
+          ],
+          "integration_candidate_ref_mutations": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/candidates.py",
+            "src/integration/cleanup.py",
+            "src/integration/controls.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/engine.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/finished_owners.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/ownership.py",
+            "src/integration/parent_engine.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/suspended_parent_recovery.py",
+            "src/integration/writers.py"
+          ],
+          "integration_candidate_resolutions": [
+            "src/api/target_scope.py",
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/task_references.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/candidates.py",
+            "src/integration/controls.py",
+            "src/integration/delegate_release.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/observe.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/removal_guard.py",
+            "src/integration/root_runtime.py",
+            "src/integration/shadow_report.py",
+            "src/integration/stale_schedule.py"
+          ],
+          "integration_candidate_revisions": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/ci.py",
+            "src/integration/controls.py",
+            "src/integration/green_continuation.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/repair_progress.py",
+            "src/integration/root_adapters.py",
+            "src/integration/root_runtime.py",
+            "src/integration/shadow_report.py",
+            "src/integration/status.py"
+          ],
+          "integration_promotion_intents": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_delivery_queries.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/child_delivery.py",
+            "src/integration/cleanup.py",
+            "src/integration/collection.py",
+            "src/integration/controls.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/detached_repair_rebind.py",
+            "src/integration/development.py",
+            "src/integration/engine.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/green_continuation.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/parent_engine.py",
+            "src/integration/parent_repair_heads.py",
+            "src/integration/parent_runtime.py",
+            "src/integration/preserved_repair.py",
+            "src/integration/promotion.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/repair_rebind.py",
+            "src/integration/root_adapters.py",
+            "src/integration/scheduler.py",
+            "src/integration/shadow_report.py",
+            "src/integration/stale_owners.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/status.py",
+            "src/integration/suspended_parent_recovery.py"
+          ],
+          "integration_root_authorizations": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/review_evidence.py",
+            "src/integration/root_authorization.py"
+          ],
+          "integration_root_intent_members": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/cleanup.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/main_promotion.py",
+            "src/integration/release.py"
+          ]
+        },
+        "tables": [
+          "integration_batches",
+          "integration_batch_members",
+          "integration_candidate_revisions",
+          "integration_candidate_member_results",
+          "integration_candidate_publications",
+          "integration_candidate_resolutions",
+          "integration_candidate_ref_mutations",
+          "integration_root_intent_members",
+          "integration_promotion_intents",
+          "integration_root_authorizations"
+        ],
+        "target": "integration_subjects, integration_subject_members, integration_journal"
+      },
+      {
+        "code_removed": false,
+        "name": "repair",
+        "source_references": {
+          "integration_delegate_releases": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/integration/delegate_release.py"
+          ],
+          "integration_repair_operations": [
+            "src/commands/integration_commands.py",
+            "src/commands/playbook_v2_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/hierarchy_queries.py",
+            "src/database/queries/integration_delivery_queries.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/integration_train_queries.py",
+            "src/database/queries/task_queries.py",
+            "src/database/queries/task_recovery_queries.py",
+            "src/database/queries/task_references.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/candidates.py",
+            "src/integration/child_delivery.py",
+            "src/integration/ci.py",
+            "src/integration/cleanup.py",
+            "src/integration/collecting_parent_recovery.py",
+            "src/integration/collection.py",
+            "src/integration/controls.py",
+            "src/integration/delegate_release.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/delivery_truth.py",
+            "src/integration/detached_repair_rebind.py",
+            "src/integration/development.py",
+            "src/integration/drain_owners.py",
+            "src/integration/engine.py",
+            "src/integration/epic_delivery.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/green_continuation.py",
+            "src/integration/hierarchy.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/live_operations.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/parent_adapters.py",
+            "src/integration/parent_ci.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_engine.py",
+            "src/integration/parent_intents.py",
+            "src/integration/parent_repair_heads.py",
+            "src/integration/parent_runtime.py",
+            "src/integration/parent_subjects.py",
+            "src/integration/preserved_repair.py",
+            "src/integration/promotion.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/removal_guard.py",
+            "src/integration/repair.py",
+            "src/integration/root_adapters.py",
+            "src/integration/scheduler.py",
+            "src/integration/stale_owners.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/status.py",
+            "src/integration/suspended_parent_recovery.py",
+            "src/integration/writers.py",
+            "src/orchestrator/git_ops.py"
+          ],
+          "integration_repair_stage_evidence": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/attestation.py",
+            "src/integration/repair.py"
+          ],
+          "integration_repair_stages": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/claim_queries.py",
+            "src/database/queries/hierarchy_queries.py",
+            "src/database/queries/integration_delivery_queries.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/task_queries.py",
+            "src/database/queries/task_recovery_queries.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/candidates.py",
+            "src/integration/ci.py",
+            "src/integration/cleanup.py",
+            "src/integration/collection.py",
+            "src/integration/controls.py",
+            "src/integration/delegate_release.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/detached_repair_rebind.py",
+            "src/integration/development.py",
+            "src/integration/epic_delivery.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/green_continuation.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_repair_heads.py",
+            "src/integration/parent_runtime.py",
+            "src/integration/preserved_repair.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/removal_guard.py",
+            "src/integration/repair.py",
+            "src/integration/repair_progress.py",
+            "src/integration/repair_rebind.py",
+            "src/integration/root_adapters.py",
+            "src/integration/root_runtime.py",
+            "src/integration/status.py",
+            "src/integration/suspended_parent_recovery.py"
+          ]
+        },
+        "tables": [
+          "integration_repair_operations",
+          "integration_repair_stages",
+          "integration_repair_stage_evidence",
+          "integration_delegate_releases"
+        ],
+        "target": "integration_subjects, integration_writers, integration_journal"
+      },
+      {
+        "code_removed": false,
+        "name": "parent",
+        "source_references": {
+          "integration_child_dispositions": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/observe.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py"
+          ],
+          "integration_episode_receipt_acceptances": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py"
+          ],
+          "integration_parent_episodes": [
+            "src/api/target_scope.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/task_references.py",
+            "src/database/tables.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/collecting_parent_recovery.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/delivery_truth.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/observe.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/suspended_parent_recovery.py",
+            "src/integration/verifier_subject.py"
+          ],
+          "integration_parent_operation_completions": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_train_queries.py",
+            "src/database/tables.py",
+            "src/integration/delivery_truth.py",
+            "src/integration/drain_owners.py",
+            "src/integration/hierarchy.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py"
+          ],
+          "integration_parent_verification_evidence": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py"
+          ],
+          "integration_parent_verifications": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_train_queries.py",
+            "src/database/queries/task_references.py",
+            "src/database/tables.py",
+            "src/integration/delivery_truth.py",
+            "src/integration/hierarchy.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_subjects.py"
+          ]
+        },
+        "tables": [
+          "integration_parent_episodes",
+          "integration_parent_verifications",
+          "integration_parent_operation_completions",
+          "integration_episode_receipt_acceptances",
+          "integration_parent_verification_evidence",
+          "integration_child_dispositions"
+        ],
+        "target": "integration_subjects, integration_subject_members, integration_journal"
+      },
+      {
+        "code_removed": false,
+        "name": "writers",
+        "source_references": {
+          "integration_branch_owners": [
+            "src/api/target_scope.py",
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/claim_queries.py",
+            "src/database/queries/hierarchy_queries.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/task_queries.py",
+            "src/database/queries/task_recovery_queries.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/doctor/task_checks.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/branch_discard.py",
+            "src/integration/branch_materialization.py",
+            "src/integration/cancelled_collection_recovery.py",
+            "src/integration/candidates.py",
+            "src/integration/canonical_reservation.py",
+            "src/integration/cleanup.py",
+            "src/integration/collecting_parent_recovery.py",
+            "src/integration/completion_recovery.py",
+            "src/integration/controls.py",
+            "src/integration/delivered_parent_adoption.py",
+            "src/integration/delivery_branches.py",
+            "src/integration/detached_repair_rebind.py",
+            "src/integration/development.py",
+            "src/integration/development_adapter.py",
+            "src/integration/drain_owners.py",
+            "src/integration/engine.py",
+            "src/integration/epic_delivery.py",
+            "src/integration/failed_verification_recovery.py",
+            "src/integration/finished_owners.py",
+            "src/integration/gitops.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/obsolete_close.py",
+            "src/integration/owner_recovery.py",
+            "src/integration/ownership.py",
+            "src/integration/parent_completion.py",
+            "src/integration/parent_repair_heads.py",
+            "src/integration/parent_runtime.py",
+            "src/integration/preserved_repair.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/repair_rebind.py",
+            "src/integration/root_pull_requests.py",
+            "src/integration/root_runtime.py",
+            "src/integration/shadow_report.py",
+            "src/integration/stale_owners.py",
+            "src/integration/status.py",
+            "src/integration/suspended_parent_recovery.py",
+            "src/integration/writers.py",
+            "src/orchestrator/execution.py",
+            "src/orchestrator/workspace_attachments.py",
+            "src/task_names.py"
+          ],
+          "integration_owner_recoveries": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/task_recovery_queries.py",
+            "src/database/tables.py",
+            "src/integration/identity_rebind.py",
+            "src/integration/observe.py",
+            "src/integration/owner_recovery.py",
+            "src/integration/preserved_repair.py",
+            "src/integration/repair_progress.py",
+            "src/integration/stale_owners.py",
+            "src/integration/writers.py"
+          ],
+          "project_integration_leases": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/tables.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/controls.py",
+            "src/integration/development.py",
+            "src/integration/main_promotion.py",
+            "src/integration/published_repair_handoff.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/scheduler.py",
+            "src/integration/stale_owners.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/status.py"
+          ],
+          "project_integration_schedules": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/queries/integration_schedule_queries.py",
+            "src/database/tables.py",
+            "src/doctor/integration_checks.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/candidates.py",
+            "src/integration/controls.py",
+            "src/integration/release.py",
+            "src/integration/root_runtime.py",
+            "src/integration/scheduler.py",
+            "src/integration/settling.py",
+            "src/integration/stale_schedule.py",
+            "src/integration/status.py"
+          ]
+        },
+        "tables": [
+          "integration_branch_owners",
+          "integration_owner_recoveries",
+          "project_integration_leases",
+          "project_integration_schedules"
+        ],
+        "target": "integration_writers, integration_subjects"
+      },
+      {
+        "code_removed": false,
+        "name": "evidence",
+        "source_references": {
+          "integration_attestation_publications": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/attestation.py",
+            "src/integration/candidates.py",
+            "src/integration/main_promotion.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/release.py",
+            "src/integration/repair.py",
+            "src/integration/shadow_report.py",
+            "src/integration/stale_schedule.py"
+          ],
+          "integration_check_evidence": [
+            "src/api/target_scope.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/accepted_repair.py",
+            "src/integration/attestation.py",
+            "src/integration/ci.py",
+            "src/integration/main_promotion.py",
+            "src/integration/observe.py",
+            "src/integration/parent_ci.py",
+            "src/integration/parent_completion.py",
+            "src/integration/repair.py",
+            "src/integration/root_adapters.py",
+            "src/integration/status.py"
+          ],
+          "integration_cleanup_items": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_reconciliation_queries.py",
+            "src/database/tables.py",
+            "src/integration/batch_settlement.py",
+            "src/integration/cleanup.py",
+            "src/integration/controls.py",
+            "src/integration/recovery_controls.py",
+            "src/integration/shadow_report.py",
+            "src/integration/status.py"
+          ],
+          "integration_release_results": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/drain_owners.py",
+            "src/integration/release.py",
+            "src/integration/shadow_report.py",
+            "src/integration/status.py"
+          ],
+          "integration_source_ci": [
+            "src/commands/integration_commands.py",
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/task_references.py",
+            "src/database/queries/task_session_queries.py",
+            "src/database/tables.py",
+            "src/integration/observe.py",
+            "src/integration/review_evidence.py",
+            "src/integration/scheduler.py",
+            "src/integration/source_delivery.py",
+            "src/plugins/internal/git.py"
+          ]
+        },
+        "tables": [
+          "integration_check_evidence",
+          "integration_attestation_publications",
+          "integration_source_ci",
+          "integration_release_results",
+          "integration_cleanup_items"
+        ],
+        "target": "integration_attempts, integration_journal"
+      },
+      {
+        "code_removed": false,
+        "name": "legacy",
+        "source_references": {
+          "integration_history_waiver_consumptions": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_control_queries.py",
+            "src/database/tables.py",
+            "src/integration/controls.py"
+          ],
+          "integration_history_waivers": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_control_queries.py",
+            "src/database/tables.py",
+            "src/integration/controls.py"
+          ],
+          "integration_legacy_deliveries": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/tables.py",
+            "src/integration/development_runtime.py",
+            "src/integration/legacy_deliveries.py",
+            "src/integration/legacy_repositories.py",
+            "src/integration/status.py"
+          ],
+          "integration_legacy_gate_applicability": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_control_queries.py",
+            "src/database/tables.py",
+            "src/integration/controls.py"
+          ],
+          "integration_legacy_suppression": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_control_queries.py",
+            "src/database/tables.py",
+            "src/integration/controls.py",
+            "src/integration/development.py",
+            "src/integration/status.py"
+          ],
+          "integration_rollout_transitions": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_control_queries.py",
+            "src/database/tables.py"
+          ]
+        },
+        "tables": [
+          "integration_legacy_gate_applicability",
+          "integration_legacy_suppression",
+          "integration_legacy_deliveries",
+          "integration_history_waivers",
+          "integration_history_waiver_consumptions",
+          "integration_rollout_transitions"
+        ],
+        "target": "integration_journal (dropped once its counts are zero)"
+      },
+      {
+        "code_removed": false,
+        "name": "artifact_pins",
+        "source_references": {
+          "integration_operation_artifact_pins": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/integration_state_queries.py",
+            "src/database/queries/playbook_artifact_queries.py",
+            "src/database/tables.py",
+            "src/integration/parent_completion.py",
+            "src/integration/repair.py"
+          ],
+          "integration_outbox_artifact_pins": [
+            "src/database/legacy_sqlite_import.py",
+            "src/database/queries/playbook_artifact_queries.py",
+            "src/database/tables.py",
+            "src/integration/outbox.py"
+          ]
+        },
+        "tables": [
+          "integration_operation_artifact_pins",
+          "integration_outbox_artifact_pins"
+        ],
+        "target": "integration_subjects.policy_artifact_sha256, integration_journal"
+      }
+    ]
+  },
+  "targets": {
+    "approximate_distinct_outcomes": 45,
+    "doctor_checks": 3,
+    "operator_controls": 6,
+    "primitives": 20,
+    "python_lines_less_than": 12000,
+    "python_modules": 9,
+    "tables": 9
+  }
+}

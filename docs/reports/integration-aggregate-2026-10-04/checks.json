@@ -1,0 +1,80 @@
+{
+  "checks": [
+    {
+      "command": "POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres aq test tests/test_integration_surface.py tests/test_integration_surface_commands.py tests/test_integration_table_retirement.py -m 'not perf and not slow and not tmux and not integration' -q --junitxml=/tmp/quick-glacier-88.4-focused.xml",
+      "junit_path": "/tmp/quick-glacier-88.4-focused.xml",
+      "junit_sha256": "2df7f1936ee72aa011b871d5d9d3b45b281e9f95de830aab3685b84d9666de5c",
+      "junit_totals": {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "DESKTOP-EB8UOME",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "51",
+        "time": "55.602",
+        "timestamp": "2026-10-04T01:16:07.343125-07:00"
+      },
+      "kind": "focused",
+      "log_path": "/tmp/quick-glacier-88.4-focused.log",
+      "log_sha256": "23a0f6e67e03bb2851cc5a7d6cf4d94b933eb63865cb95a220ace6dfbda93639",
+      "result": "passed"
+    },
+    {
+      "command": "POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres aq test tests/test_integration_root_scenarios.py tests/test_integration_parent_reconciler.py tests/test_development_scenarios.py tests/test_integration_gitops.py tests/test_integration_writers.py tests/test_integration_records_and_gates.py tests/test_integration_ci_producers.py tests/test_integration_attestation.py tests/test_integration_app_mode.py tests/test_playbook_v2_integration_policy.py tests/test_selection_catalogue.py -q --junitxml=/tmp/quick-glacier-88.4-area.xml",
+      "junit_path": "/tmp/quick-glacier-88.4-area.xml",
+      "junit_sha256": "bc7411090e3c326fa6e3e1edba89c2a11dc6dd250af724d9e863a87551bf5b33",
+      "junit_totals": {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "DESKTOP-EB8UOME",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "356",
+        "time": "122.599",
+        "timestamp": "2026-10-04T01:18:05.575509-07:00"
+      },
+      "kind": "area",
+      "log_path": "/tmp/quick-glacier-88.4-area.log",
+      "log_sha256": "3745689054f242cd03ac35c55cda7574462ea7280e33c71997cbababbba3bd89",
+      "result": "passed"
+    },
+    {
+      "command": "python scripts/acceptance/integration_simplification_inventory.py --source-sha 6f1fb7ed70acb409586f9944ea09d9c61580432f > /tmp/quick-glacier-88.4-inventory-replay.json && cmp docs/reports/integration-aggregate-2026-10-04/inventory.json /tmp/quick-glacier-88.4-inventory-replay.json",
+      "kind": "inventory replay",
+      "result": "passed"
+    },
+    {
+      "command": "ruff check scripts/acceptance/integration_simplification_inventory.py",
+      "kind": "lint",
+      "result": "passed"
+    },
+    {
+      "command": "python scripts/check-docs.py docs/guides/integration-reconciler-rollout.md docs/guides/hierarchical-integration-trains.md docs/reports/integration-aggregate-2026-10-04/report.md",
+      "kind": "documentation",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "kind": "whitespace",
+      "result": "passed"
+    },
+    {
+      "command": "scripts/regenerate-generated.sh --check",
+      "kind": "generated drift",
+      "log_path": "/tmp/quick-glacier-88.4-generated.log",
+      "log_sha256": "111ac98495b998d18f294ee9cacec037739658e3a0fbdda610de2f8ad4e803b4",
+      "result": "passed"
+    }
+  ],
+  "evidence_kind": "checkout and disposable test evidence; production gates remain external",
+  "not_performed": [
+    "production migration/retirement",
+    "engine transfer or flag activation",
+    "daemon restart",
+    "local full suite",
+    "P4 final exact-head full CI (integration-owned aggregate verification pending after deletion gate)"
+  ],
+  "source_sha": "6f1fb7ed70acb409586f9944ea09d9c61580432f",
+  "task": "quick-glacier-88.4",
+  "warnings": "Both test runs emitted existing pkg_resources/namespace deprecation warnings; no failing or skipped assertions."
+}
