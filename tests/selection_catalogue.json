@@ -221,6 +221,7 @@
         "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
+        "tests/test_development_scenarios.py",
         "tests/test_development_subjects.py",
         "tests/test_development_validation.py",
         "tests/test_slot_report.py",
@@ -548,10 +549,12 @@
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
+        "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
@@ -620,9 +623,10 @@
       ]
     },
     "knowledge-evaluation": {
-      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks.",
+      "description": "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks, plus the thin harness delivery/resume adapters and the integrated runner replayed against the real context service.",
       "modules": [
-        "tests/test_knowledge_evaluation.py"
+        "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_harness_delivery.py"
       ]
     },
     "knowledge-inventory": {
@@ -637,17 +641,28 @@
         "tests/test_api_knowledge.py",
         "tests/test_knowledge_authority.py",
         "tests/test_knowledge_authorization.py",
+        "tests/test_knowledge_budget.py",
+        "tests/test_knowledge_capture.py",
+        "tests/test_knowledge_citations.py",
         "tests/test_knowledge_commands.py",
         "tests/test_knowledge_compatibility.py",
+        "tests/test_knowledge_context.py",
+        "tests/test_knowledge_deprecation.py",
         "tests/test_knowledge_evaluation.py",
+        "tests/test_knowledge_extraction.py",
+        "tests/test_knowledge_extraction_store.py",
+        "tests/test_knowledge_harness_delivery.py",
         "tests/test_knowledge_import.py",
         "tests/test_knowledge_import_inventory.py",
+        "tests/test_knowledge_index_receipts.py",
         "tests/test_knowledge_inventory.py",
+        "tests/test_knowledge_memory_adapter.py",
         "tests/test_knowledge_migrations.py",
         "tests/test_knowledge_proposals.py",
         "tests/test_knowledge_provider_absence.py",
         "tests/test_knowledge_redaction.py",
         "tests/test_knowledge_retrieval.py",
+        "tests/test_knowledge_retrieval_benchmark.py",
         "tests/test_knowledge_service.py",
         "tests/test_knowledge_task_creation.py",
         "tests/test_record_backfill.py",
@@ -1068,6 +1083,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1397,7 +1413,7 @@
       ]
     }
   },
-  "digest": "sha256:f3416b0d56a8f03d29095bb6aa5df0f6855e1bebbe00d73defe6b3ba49ed8432",
+  "digest": "sha256:aae83a0d910bf55c2e915642dfaa1f8ea04f9732103305fc9ac85efdee208ce7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3478,10 +3494,12 @@
         "src.cli",
         "src.cli.app",
         "src.cli.client",
-        "src.plugins.base"
+        "src.plugins.base",
+        "src.tools.command_catalogue"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Offline and lazy-startup contracts for the ``aq`` command tree."
     },
@@ -4711,6 +4729,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.proposal_commands",
         "src.doctor.integration_checks",
         "src.playbooks.definition",
@@ -4915,12 +4935,48 @@
       ],
       "summary": "Real Git + private PostgreSQL coverage for the development delivery path."
     },
+    "tests/test_development_scenarios.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.development_adapter",
+        "src.integration.development_policy",
+        "src.integration.development_runtime",
+        "src.integration.engine",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.integration.observe",
+        "src.integration.ownership",
+        "src.integration.service",
+        "src.integration.subjects",
+        "src.jobs.result",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.definition",
+        "src.playbooks.integration_policy"
+      ],
+      "markers": [],
+      "summary": "Rev-2 section-6 phase-3 Development acceptance over real Git and PostgreSQL."
+    },
     "tests/test_development_subjects.py": {
       "areas": [
         "development-delivery"
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.integration.ci_producers",
@@ -4936,7 +4992,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Development policy equivalence and incremental engine ownership on PostgreSQL."
+      "summary": "Development policy equivalence, engine ownership and its audited transfer."
     },
     "tests/test_development_validation.py": {
       "areas": [
@@ -6263,9 +6319,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.integration.development"
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.regeneration",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
+        "parametrize",
         "slow"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
@@ -6335,11 +6396,13 @@
         "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -6665,6 +6728,7 @@
         "src.api",
         "src.api.dependencies",
         "src.api.health",
+        "src.api.health_monitor",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
@@ -7345,6 +7409,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
         "src.database.tables",
         "src.git.manager",
         "src.integration.cancelled_collection_recovery",
@@ -7386,7 +7451,8 @@
         "src.integration.recovery_controls",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -7483,6 +7549,7 @@
         "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
+        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -7569,6 +7636,30 @@
         "parametrize"
       ],
       "summary": "Releasing the delegates of an integration operation that has ended."
+    },
+    "tests/test_integration_delivered_parent_adoption.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.delivered_parent_adoption",
+        "src.integration.delivery_truth",
+        "src.integration.epic_delivery",
+        "src.integration.parent_subjects",
+        "src.integration.provenance",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git recovery for parents whose children reached main by other routes."
     },
     "tests/test_integration_eject.py": {
       "areas": [
@@ -7973,10 +8064,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
@@ -8018,6 +8111,7 @@
         "src.integration.child_delivery",
         "src.integration.collection",
         "src.integration.engine",
+        "src.integration.gates",
         "src.integration.models",
         "src.integration.parent_adapters",
         "src.integration.parent_ci",
@@ -8037,6 +8131,37 @@
         "parametrize"
       ],
       "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
+    },
+    "tests/test_integration_parent_source.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.git.manager",
+        "src.integration.cancelled_collection_recovery",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.parent_completion",
+        "src.integration.parent_source",
+        "src.integration.promotion",
+        "src.integration.review_evidence",
+        "src.integration.scheduler",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Two-child aggregate admission survives an advanced canonical PR head."
     },
     "tests/test_integration_parent_subjects.py": {
       "areas": [
@@ -8062,8 +8187,11 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
         "src.integration.promotion",
         "src.models"
@@ -8099,7 +8227,8 @@
         "src.integration.promotion",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -8541,6 +8670,7 @@
         "src.integration.development",
         "src.integration.release",
         "src.integration.scheduler",
+        "src.integration.service",
         "src.integration.settling",
         "src.integration.stale_schedule",
         "src.models",
@@ -8819,7 +8949,9 @@
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",
+        "src.jobs.result",
         "src.jobs.service",
+        "src.object_loop.render_profile",
         "src.resources.box_lock",
         "src.resources.semaphore"
       ],
@@ -8981,6 +9113,53 @@
       ],
       "summary": "Core access remains fail closed with legacy capability enforcement disabled."
     },
+    "tests/test_knowledge_budget.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.knowledge.budget",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Hard aggregate caps include required text, tools, wrappers and output."
+    },
+    "tests/test_knowledge_capture.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.knowledge.capture",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact retained capture, lost-wake reconciliation, rollback and role separation."
+    },
+    "tests/test_knowledge_citations.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.service",
+        "src.profiles.capabilities",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Only observed, authorized delivery becomes persistent injected evidence."
+    },
     "tests/test_knowledge_commands.py": {
       "areas": [
         "knowledge-records"
@@ -9007,6 +9186,60 @@
       "markers": [],
       "summary": "Ownership stays fenced across disabled writes and filesystem divergence."
     },
+    "tests/test_knowledge_context.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.budget",
+        "src.knowledge.context",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.messages",
+        "src.models",
+        "src.prime.models",
+        "src.prime.renderer",
+        "src.profiles.capabilities",
+        "src.prompt_builder",
+        "src.records.auth",
+        "src.records.models",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared selection, access rechecks, exact pins and conservative budgets."
+    },
+    "tests/test_knowledge_deprecation.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.engine",
+        "src.database.tables",
+        "src.knowledge.deprecation",
+        "src.knowledge.imports.apply",
+        "src.knowledge.imports.compatibility",
+        "src.knowledge.imports.manifest",
+        "src.knowledge.models",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "K14 synthetic reconciliation, honest telemetry and disposable restore proof."
+    },
     "tests/test_knowledge_evaluation.py": {
       "areas": [
         "knowledge-evaluation",
@@ -9018,6 +9251,70 @@
         "parametrize"
       ],
       "summary": "Offline knowledge fixtures: exact output, privacy, caps and adapter compatibility."
+    },
+    "tests/test_knowledge_extraction.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.registry",
+        "src.commands.knowledge_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.event_bus",
+        "src.knowledge.extraction",
+        "src.knowledge.extraction_diagnostics",
+        "src.knowledge.generation_port",
+        "src.knowledge.models",
+        "src.knowledge.service",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Crash/replay, ambiguous charges, scope policy, independent budgets and proposal safety."
+    },
+    "tests/test_knowledge_extraction_store.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.knowledge.extraction_schema",
+        "src.knowledge.extraction_store",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL race, fenced lease, crash replay and independent budget checks."
+    },
+    "tests/test_knowledge_harness_delivery.py": {
+      "areas": [
+        "knowledge-evaluation",
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.knowledge.budget",
+        "src.knowledge.context",
+        "src.knowledge.delivery",
+        "src.records.models",
+        "src.sessions.harness_parser",
+        "src.sessions.spec",
+        "src.sessions.subprocess"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "K09 — thin harness delivery/resume adapters and the integrated fixture runner."
     },
     "tests/test_knowledge_import.py": {
       "areas": [
@@ -9063,6 +9360,28 @@
       ],
       "summary": "K06 legacy read-only import inventory: schema, authorization and dry-run CLI."
     },
+    "tests/test_knowledge_index_receipts.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.record_checks",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Derived index receipts, the chunk manifest and local provider registration."
+    },
     "tests/test_knowledge_inventory.py": {
       "areas": [
         "knowledge-inventory",
@@ -9078,6 +9397,25 @@
         "parametrize"
       ],
       "summary": "Offline inventory: exact evidence, reconciliation, confinement and sealed hashes."
+    },
+    "tests/test_knowledge_memory_adapter.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.knowledge.memory_port",
+        "src.knowledge.providers",
+        "src.knowledge.registration",
+        "src.knowledge.service",
+        "src.records.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The legacy aq-memory adapter port: scope isolation and summary suppression."
     },
     "tests/test_knowledge_migrations.py": {
       "areas": [
@@ -9163,6 +9501,23 @@
         "parametrize"
       ],
       "summary": "Reference-only optional ranking with real core PostgreSQL authorization."
+    },
+    "tests/test_knowledge_retrieval_benchmark.py": {
+      "areas": [
+        "knowledge-records"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.knowledge.benchmark",
+        "src.knowledge.index_receipts",
+        "src.knowledge.registration",
+        "src.knowledge.service"
+      ],
+      "markers": [],
+      "summary": "The G5 pre-gate comparison: lexical vs offline semantic over one corpus."
     },
     "tests/test_knowledge_service.py": {
       "areas": [
@@ -9712,6 +10067,7 @@
       "imports": [
         "src.config",
         "src.metrics.histogram",
+        "src.metrics.loop_watchdog",
         "src.metrics.perf"
       ],
       "markers": [
@@ -10104,6 +10460,7 @@
         "src.database",
         "src.database.engine",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
@@ -10528,14 +10885,22 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.scope",
+        "src.commands.contracts.job",
         "src.commands.contracts.object_loop",
+        "src.commands.formula_commands",
+        "src.commands.job_commands",
         "src.commands.object_loop_commands",
         "src.database.tables",
         "src.integration.child_delivery",
         "src.integration.development",
         "src.integration.promotion",
+        "src.jobs.artifacts",
+        "src.jobs.matter",
         "src.models",
-        "src.object_loop.contracts"
+        "src.object_loop.artifacts",
+        "src.object_loop.contracts",
+        "src.object_loop.render_profile"
       ],
       "markers": [
         "parametrize"
@@ -10604,8 +10969,10 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.playbooks.artifact_store",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
+        "src.playbooks.services",
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
@@ -13786,6 +14153,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13845,6 +14229,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
@@ -15389,6 +15774,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.health",
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
@@ -15623,12 +16009,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.models",
         "src.commands.principal",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.playbook_v2_checks",
+        "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.executors.foreach",
         "src.playbooks.executors.wait",
         "src.playbooks.receipts",
+        "src.playbooks.recovery",
         "src.playbooks.run_state",
         "src.playbooks.waits"
       ],
@@ -15637,7 +16029,7 @@
         "integration",
         "parametrize"
       ],
-      "summary": "Restart and idempotency boundaries — Package 4 child plan T-15."
+      "summary": "Restart recovery and idempotency boundaries — Package 4 child plan T-15."
     },
     "tests/test_v2_shadow.py": {
       "areas": [

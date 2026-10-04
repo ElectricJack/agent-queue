@@ -6597,6 +6597,34 @@
       }
     },
     {
+      "name": "escalation_resolve",
+      "description": "Close an answered human escalation with the outcome its channel post will show. Owning supervisor only; a newer human reply wins and is reported as a stale revision. Cancelling an unanswered question is escalation_update --state cancelled.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "escalation_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What was done, in the words the human will read."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional compare-and-set fence. Omit to resolve the revision this incident has now."
+          }
+        },
+        "required": [
+          "escalation_id",
+          "outcome"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "escalation_apply_reply",
       "description": "Apply one bound verified human reply through the owning supervisor's exact question, human-gate, or task-recovery service.",
       "input_schema": {
@@ -6648,6 +6676,30 @@
       }
     },
     {
+      "name": "escalation_sweep",
+      "description": "Plan the \u00a75.6 back-fill sweep over the escalation pile and, with apply, run it. Without apply it is a dry run that writes nothing: it returns the plan per escalation, what it would close, and what it would list for supervisor triage. Gated by discord.escalations.stateful; idempotent, so a second run is a no-op.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false,
+            "description": "Close and triage as planned instead of only printing it."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 500
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "digest_preview",
       "description": "Dry-run the current hourly digest window: the message that would be sent, or the reason it would stay silent. Sends nothing and advances no delivery cursor.",
       "input_schema": {
@@ -6667,6 +6719,58 @@
     {
       "name": "digest_status",
       "description": "Configured digest destination and schedule generation, next evaluation, recent windows and pending/unknown/failed delivery health.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "digest_facts",
+      "description": "Read the frozen facts for one supervisor-authored digest window: landed, stuck, needs-you and session counts, plus the deadline the deterministic fallback posts at.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number",
+            "description": "Window start as epoch seconds (default: newest window)."
+          },
+          "now": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "digest_post",
+      "description": "Post the supervisor's digest body for one held window. The daemon renders it inside the size budget and appends the needs-you link.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "number",
+            "description": "Window start as epoch seconds."
+          },
+          "body": {
+            "type": "string",
+            "description": "Three sentences, no links."
+          }
+        },
+        "required": [
+          "window",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "digest_request",
+      "description": "Queue the supervisor author turn for every reserved digest window (install-wide digest service/playbook only).",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -7588,6 +7692,53 @@
         },
         "required": [
           "job_id"
+        ]
+      }
+    },
+    {
+      "name": "job_retain",
+      "description": "Retain a completed capture as durable artifact identities, with its candidate artifact and render profile.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "views": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64
+          },
+          "include_channels": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    },
+    {
+      "name": "artifact_verify",
+      "description": "Resolve a durable artifact URI and re-hash the bytes it names.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "uri"
         ]
       }
     },
@@ -13381,6 +13532,20 @@
             ],
             "default": null
           },
+          "incumbent_capture_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Incumbent Capture Sha256",
+            "type": "string"
+          },
+          "reference_kind": {
+            "default": "calibrated",
+            "enum": [
+              "calibrated",
+              "self"
+            ],
+            "title": "Reference Kind",
+            "type": "string"
+          },
           "reference_sha256": {
             "pattern": "^[0-9a-f]{64}$",
             "title": "Reference Sha256",
@@ -13444,6 +13609,13 @@
             "title": "Noise Band",
             "type": "number"
           },
+          "max_rounds": {
+            "default": 8,
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Max Rounds",
+            "type": "integer"
+          },
           "max_repair_rounds": {
             "default": 2,
             "maximum": 8,
@@ -13474,6 +13646,7 @@
           "object_id",
           "attempt_id",
           "incumbent_sha256",
+          "incumbent_capture_sha256",
           "reference_sha256",
           "rig_sha256",
           "scorer_sha256",
@@ -14743,6 +14916,7 @@
     "test_selection": "Smart test selection \u2014 records, policy and promotion",
     "digest": "Hourly activity digest \u2014 dry preview of the current window and the configured schedule's destination, generation and delivery health",
     "job": "Finite managed jobs, durable results and logs",
+    "artifact": "Durable artifact identities \u2014 resolve an artifact:// URI and re-hash the bytes it names",
     "wait": "Durable typed agent waits and result history",
     "collaboration": "Bounded ordered threads between 2 to 4 held tasks",
     "report": "Durable supervisor report requests, paged briefs and submissions",
@@ -14837,7 +15011,9 @@
     "escalation_get": "escalation",
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
+    "escalation_resolve": "escalation",
     "escalation_apply_reply": "escalation",
+    "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
@@ -14860,12 +15036,17 @@
     "review_import_edits": "review",
     "digest_preview": "digest",
     "digest_status": "digest",
+    "digest_facts": "digest",
+    "digest_post": "digest",
+    "digest_request": "digest",
     "job_submit": "job",
     "job_get": "job",
     "job_list": "job",
     "job_cancel": "job",
     "job_result": "job",
     "job_logs": "job",
+    "job_retain": "job",
+    "artifact_verify": "artifact",
     "wait_register": "wait",
     "wait_get": "wait",
     "wait_list": "wait",

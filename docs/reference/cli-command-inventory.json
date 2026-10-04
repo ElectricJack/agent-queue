@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 515,
+    "leaf_commands": 524,
     "registration": {
-      "generated": 338,
-      "handwritten": 177
+      "generated": 343,
+      "handwritten": 181
     },
     "ownership": {
-      "core": 476,
+      "core": 485,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 514
+      "supported": 523
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 338,
-      "registration": 163
+      "dispatch": 343,
+      "registration": 167
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 455
+      "untested": 464
     }
   },
   "commands": [
@@ -815,6 +815,39 @@
         ],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq artifact verify",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "artifact_verify",
+      "callback": "src.cli.artifacts.artifact_verify",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "uri"
+        ],
+        "optional": [
+          "--sha256",
           "--json",
           "--brief",
           "--save-output",
@@ -3860,6 +3893,8 @@
         "optional": [
           "--target-ref",
           "--accept-equivalent",
+          "--settle-delivered-children",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -4181,6 +4216,42 @@
       }
     },
     {
+      "path": "aq integration development-engine-transfer",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_development_engine_transfer",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "--engine"
+        ],
+        "optional": [
+          "--expected-subject",
+          "--reason",
+          "--evidence",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration eject",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -4378,6 +4449,8 @@
           "--offset",
           "--task-id",
           "--source",
+          "--no-artifact",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",
@@ -4803,6 +4876,41 @@
         ],
         "optional": [
           "--archive-obsolete",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration release-held-gate",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_release_held_gate",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "subject_id",
+          "gate_id"
+        ],
+        "optional": [
+          "--expected-version",
+          "--reason",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -5441,6 +5549,39 @@
       }
     },
     {
+      "path": "aq job retain",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.jobs.job_retain",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "job_id"
+        ],
+        "optional": [
+          "--view",
+          "--include-channels",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq job show",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -5593,6 +5734,92 @@
         "nullable": [
           "--project-id",
           "--if-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge cite",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_cite",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--identity",
+          "--revision-id",
+          "--kind",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--project-id",
+          "--global-scope",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--claim-epoch"
+        ]
+      }
+    },
+    {
+      "path": "aq knowledge context-deliver",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_context_deliver",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--bundle-id",
+          "--transport",
+          "--idempotency-key",
+          "--rendered-sha256"
+        ],
+        "optional": [
+          "--project-id",
+          "--state",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id",
+          "--claim-epoch"
         ]
       }
     },
@@ -5762,6 +5989,70 @@
           "--project-id",
           "--revision-id",
           "--global-scope",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge generation-status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_generation_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq knowledge generation-tick",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "knowledge_generation_tick",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",
@@ -13733,6 +14024,48 @@
       }
     },
     {
+      "path": "aq system integration-development-engine-transfer",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_development_engine_transfer",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--engine"
+        ],
+        "optional": [
+          "--expected-versions",
+          "--reason",
+          "--evidence",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--expected-versions",
+          "--evidence"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system integration-eject",
       "registration": "generated",
       "owner_kind": "core",
@@ -17002,6 +17335,7 @@
           "--object-id",
           "--attempt-id",
           "--incumbent-sha256",
+          "--incumbent-capture-sha256",
           "--reference-sha256",
           "--rig-sha256",
           "--scorer-sha256",
@@ -17019,6 +17353,8 @@
         ],
         "optional": [
           "--incumbent-artifact",
+          "--reference-kind",
+          "--max-rounds",
           "--max-repair-rounds",
           "--max-plateau-rounds",
           "--json",
