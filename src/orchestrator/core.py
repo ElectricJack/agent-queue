@@ -1222,6 +1222,13 @@ class Orchestrator(
                 observation
             )
 
+    async def _reverify_integration_parent_source(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-parent-source")):
+            return await self._command_handler.reverify_integration_parent_source(observation)
+
     async def _dispatch_integration_repair_stage(self, row):
         """Dispatch one stage the integration service selected; it owns pacing."""
         from src.commands.principal import ExecutionPrincipal, principal_context
@@ -1963,6 +1970,7 @@ class Orchestrator(
                 self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
                 source_ci_handler=self._observe_integration_source_ci,
                 ancestry_handler=self._repair_integration_source_ancestry,
+                parent_head_handler=self._reverify_integration_parent_source,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
             repair_dispatcher=self._dispatch_integration_repair_stage,
