@@ -67,6 +67,45 @@ operation or parent until fresh trusted verification passes. A replay retains
 that new verification and enqueues no duplicate handoff. The advanced-head path
 requires an aggregate verifier even when the parent already has a past session.
 
+## Empty stages and duplicate receipt edges
+
+Stage dossiers carry cumulative repair commit lists. Determine whether a stage
+introduced commits using the shared repair-lineage helper, excluding inherited
+commits; never infer an empty stage from the cumulative list alone. Empty
+verification recovery still requires the exact no-progress incident, unchanged
+starting SHA and subject, an audited passing empty completion and accepted-close
+identity, settled detached delegates, a clean confirmed workspace and a complete
+trusted receipt chain. It retains every existing gate and ownership check.
+
+Before walking the collection, a recorded extension is covered by exactly one
+trusted code receipt only when operation, episode, repository, branch and parent
+identity agree and both endpoints are identical. Its complete ordered Git range,
+using the same helper as the resolution proof, must equal its recorded commits
+and the receipt's recorded resolution commits. A clean single-parent squash
+receipt proves its one squash commit. A squash-shaped merge receipt proves only
+a merge whose parents are exactly the aggregate before SHA and the reviewed head,
+in that order: its complete ordered range must equal the complete reviewed-source
+range followed by the merge tip. The base must lie on
+the tip's first-parent lineage and the tip must remain an ancestor of the
+published head. Merge receipts can include commits from their merged ancestry;
+their complete range is not restricted to first-parent commits.
+
+Covered edges are excluded from the repair walker and consumed by their receipt.
+Apply preserves the original edge and records `receipt_covered_extensions` on its
+originating stage exactly once. True durable extensions bridge receipt gaps with
+their existing proof, validated against the complete strict first-parent range;
+they need no second gap proof and are never appended again. Unconsumed edges,
+foreign or untrusted receipts and mismatched ranges refuse recovery. Missing
+extensions retain the historical gap-origin and multi-close proofs below.
+Apply accumulates every gap edge, coverage marker and active-stage marker in one
+dossier per ordinal and writes each stage once, including when multiple gaps
+originate in the same or active stage. Empty aggregate Git proof preserves exact
+ordered equality per receipt and requires exact unique set coverage of the whole
+aggregate; merged ancestry can interleave in the aggregate's Git order, which is
+returned as the proved commit range.
+Preview and replay preserve receipts, subjects, deadlines, attempts and stage
+budgets. Fresh aggregate verification continues to own completion.
+
 ## Operator acceptance for vivid-quest-44
 
 After review, delivery and daemon deployment, preview the current aggregate:
