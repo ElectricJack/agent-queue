@@ -926,6 +926,15 @@ the empty completion and original receipts, clears stale verification, and files
 the normal verifier handoff if no verifier exists. Run the preview's exact apply
 command and require fresh checks for the recovered head before completion.
 
+For a finished collection stage whose final head already has a resolution
+receipt, the command can use that receipt and its exact committed intent when
+the delegate-close audit is absent. Both must preserve the same original writer,
+fence, commit range, tree and observed push. Gaps between earlier child receipts
+still need their own completed stage, fenced close and published commit lineage.
+The preview reports each proved gap and refuses an unattributed one. Apply settles
+the final stage, records the historical edges and queues ordinary verification;
+fresh checks and the configured parent review still gate completion and delivery.
+
 `integration_repair_dispatch` answers `unknown` (with `reason` and
 `reason_code`) for a state it did not expect — a missing or mismatched delegate,
 an id collision, a missing or non-predecessor owner, an incoherent handoff.
