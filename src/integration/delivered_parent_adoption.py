@@ -250,6 +250,13 @@ class DeliveredParentAdoption:
         if gate:
             raise ValueError(f"open human gate {gate} must be resolved")
         branch = parent["branch_name"].removeprefix("refs/heads/")
+        child_branches = {
+            child["id"]: child["branch_name"].removeprefix("refs/heads/")
+            for child in children
+            if child["branch_name"] and child["repo_id"] == repo["id"]
+        }
+        branches = {branch, *child_branches.values()}
+        refs = sorted({ref for name in branches for ref in (name, "refs/heads/" + name)})
         owners = (
             (
                 await conn.execute(
@@ -260,9 +267,7 @@ class DeliveredParentAdoption:
                                 [operation["id"], *scope_ids]
                             ),
                             (t.integration_branch_owners.c.repository_id == repo["id"])
-                            & t.integration_branch_owners.c.ref.in_(
-                                (branch, "refs/heads/" + branch)
-                            ),
+                            & t.integration_branch_owners.c.ref.in_(refs),
                         )
                     )
                     .order_by(t.integration_branch_owners.c.id)
@@ -274,17 +279,28 @@ class DeliveredParentAdoption:
         for owner in owners:
             if owner["handoff_state"] == "released":
                 continue
+            owner_branch = owner["ref"].removeprefix("refs/heads/")
+            parent_reservation = (
+                owner_branch == branch
+                and owner["owner_id"] in {task_id, operation["id"], *delegate_ids}
+            )
+            child_reservation = (
+                owner["owner_role"] == "worker"
+                and child_branches.get(owner["owner_id"]) == owner_branch
+                and owner_branch not in {
+                    branch, repo["default_branch"].removeprefix("refs/heads/")
+                }
+            )
             if (
                 owner["handoff_state"] != "reserved"
                 or owner["session_id"]
                 or owner["workspace_id"]
                 or owner["confirmed_workspace_id"]
                 or owner["repository_id"] != repo["id"]
-                or owner["ref"].removeprefix("refs/heads/") != branch
-                or owner["owner_id"] not in {task_id, operation["id"], *delegate_ids}
+                or not (parent_reservation or child_reservation)
             ):
                 raise ValueError(f"branch owner {owner['id']} must be recovered first")
-        # Only the exact quiet branch reservation may be exempted from writer
+        # Only an exact quiet branch reservation may be exempted from writer
         # ambiguity. Every irreversible/pending external write remains binding.
         for owner in owners:
             blockers = await IntegrationRecoveryControls._ambiguous_writes_on(
@@ -314,7 +330,7 @@ class DeliveredParentAdoption:
                 select(table.c.id)
                 .where(
                     table.c.repository_id == repo["id"],
-                    column.in_((branch, "refs/heads/" + branch)),
+                    column.in_(refs),
                     condition,
                 )
                 .limit(1)
@@ -463,6 +479,16 @@ class DeliveredParentAdoption:
                 "verifier_task_id": facts["operation"]["verifier_task_id"],
                 "children": proofs,
                 "retire_delegates": facts["delegate_ids"],
+                "ownership": [
+                    {
+                        key: owner[key]
+                        for key in (
+                            "id", "repository_id", "ref", "owner_id", "owner_role", "fence_token"
+                        )
+                    }
+                    for owner in facts["owners"]
+                    if owner["handoff_state"] != "released"
+                ],
                 "conclusion": "not_ci_attested",
                 "accept_equivalent": accept_equivalent,
             }

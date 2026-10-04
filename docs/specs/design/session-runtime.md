@@ -297,13 +297,12 @@ composer**, and the answer is three-valued (`StalledDeferral`, `_deferral_verdic
 |---|---|---|
 | `hold` | a person is at the composer, or the harness's own record shows the conversation moving within the lease | nothing spent, nothing announced — as before |
 | `report` | no record exists to ask, or the one named cannot be resolved or stat'ed | nothing spent; **announced** — a WARNING and `task.stalled` with `evidence="unverified"`, quoting how long the pane has shown the same thing |
-| `escalate` | that record is older than the lease (`harness_progress`: the reader-resolved transcript's mtime) | the rung is spent with nothing typed: `task.stalled` carries `deferred_reason`, no `task.nudged` follows, and the existing backoff → restart/quarantine (or pool termination) path runs |
+| `escalate` | that record is older than the lease (`harness_progress`: the reader-resolved transcript's mtime, or a CLI's own store) | the rung is spent with nothing typed: `task.stalled` carries `deferred_reason`, no `task.nudged` follows, and the existing backoff → restart/quarantine (or pool termination) path runs |
 
 **Unknown is not stalled, and it is not silent either.** `hold`-worthy evidence is the
 progress record: a person typing into a composer writes nothing there. When there *is* no
-such record — `opencode` has no reader and no session identity (neither opencode harness
-declares `session_id_flag`, so `session_key` is null and there is nothing to scope a lookup
-to), or the file cannot be resolved or stat'ed — that is unknown, and unknown must never
+such record — a harness with neither a transcript reader nor a store of its own, or a file
+that cannot be resolved or stat'ed — that is unknown, and unknown must never
 release a claim. Such a stall is **announced** instead: a WARNING naming session, task,
 idle time and reason, plus `task.stalled` with `evidence="unverified"`, rate-limited to
 one announcement per `_STALL_REPORT_INTERVAL_SECONDS` (900 s) per holder instance. That
@@ -321,11 +320,53 @@ predecessor's observations; the clock is the time the screen last *changed*, not
 was last sampled, and a failed read leaves the previous reading untouched rather than
 re-stamping it. Both caches are pruned by age.
 
-Closing this last gap for `opencode` needs **scoped, per-session** activity evidence for a
-harness AQ cannot read — report R7's missing OpenCode session identity, since neither
-opencode harness declares `session_id_flag` and there is therefore nothing to scope a store
-lookup to. Until that exists, a wedged OpenCode holder is reported to a person every
-`_STALL_REPORT_INTERVAL_SECONDS` (900 s) rather than terminated on a reading of a terminal.
+#### 4.3.1 A pane is not a clock: the wedged-turn check
+
+The gate the ladder starts from is tmux's `window_activity`, and a TUI can keep it fresh
+forever. OpenCode repaints its in-turn spinner indefinitely, so a session whose model was
+never loaded looks busy for as long as the pane lives: `crisp-horizon-90.10` (2026-10-03,
+AQ session `6fbd60ca`) held its task for 42 minutes after its last store row — a
+byte-identical pane, `ollama /api/ps` empty, **zero** nudge attempts, `task.stalled` events
+or restarts — because the gate below the ladder never opened.
+
+So a stall may also be declared from two clocks AQ does not control
+(`_wedged_mid_turn`, `src/sessions/reconciler.py`), and **all four** readings must hold:
+
+| Reading | Source | Why it is required |
+|---|---|---|
+| the CLI's own store has written nothing for this session for longer than the lease | `src/sessions/opencode_store.py`, scoped by worktree directory + `max(started_at, claim_phase_at)` | progress that is not terminal-derived; a pane-derived guess is not evidence |
+| that store reports no tool call still `pending`/`running` | the same read | silence is what one long `bash` looks like from outside |
+| the provider reports nothing resident and nothing in flight | `GET <local endpoint>/api/ps` via `src/llm/providers/local_probe.py` | "not writing" and "not generating" are different facts, and only the second is a wedge |
+| the pane claimed otherwise | the call site — the check runs only where the ordinary idle test would have skipped the session | a genuinely quiet session reaches the ladder by its own path, unchanged |
+
+The bound is `sessions.lease_ttl_seconds`, the same one every other no-progress bound uses.
+Nothing else is new state: the check feeds the ladder the store's clock as the session's
+`last`, and every rung below behaves exactly as it does for any other stall — composer guard
+included, so a person at the keyboard still holds it. `task.stalled` carries
+`evidence="store_stalled"`, naming what AQ measured rather than what it infers, so an
+operator (and the digest) can tell a stall declared from the store and the provider from a
+pane-derived guess; `evidence="unverified"` keeps its meaning of *announced, nothing spent*.
+
+**Every unknown holds the ladder.** No store for the harness, no rows at all for this
+session (nothing there that could have stopped), an unreadable store, a store scoped to
+nothing, a provider key AQ cannot map to a local endpoint, an endpoint that is down or is not
+Ollama, and anything resident at all — including a model merely held warm by `keep_alive`,
+which is not proof of work and therefore never acted on. A read is cached per holder
+instance for `_WEDGE_SCAN_SECONDS` (60 s), because a wedged TUI repaints forever and the
+store is tens of gigabytes; a failed read is cached like a successful one, so an unreadable
+store cannot become a read on every tick either.
+
+**The store is read in place, never copied** (~64 GB on the diagnosed box): a read-only URI
+connection plus `PRAGMA query_only` and aggregate `MAX(time_updated)` reads over indexed
+`session_id` columns — no dump, no `VACUUM`, no lock, no bytes moved
+(`tests/test_sqlite_removal.py` keeps the SQLite ratchet's foreign-store allowance honest, and
+`tests/test_session_opencode_liveness.py` covers the read).
+
+**R7, closed.** `harness_progress` reads that store for a harness whose CLI keeps one,
+resolved through `runs_cli`, so an `opencode` holder's refused composer now escalates on its
+own record instead of being announced as unmeasurable. Neither opencode harness declares
+`session_id_flag`, and none is needed: the store is scoped by worktree directory and time,
+which is how `src/sessions/native_questions.py` has always matched a session's dialogs.
 
 Named/supervisor sessions, durable waits and instance-token fencing are unchanged: they are
 filtered before the ladder, and every rung still addresses the session by its exact

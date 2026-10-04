@@ -1060,6 +1060,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1388,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:2d0a033a2ae6ec50c26db9739c575f4a6f7be76d587a3917cc72a9f1749a45cf",
+  "digest": "sha256:cadd3789539a5ec002bb5df2b6f43cfd091d204af591e23ffa208b35f7e41f72",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7872,6 +7873,7 @@
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
@@ -13635,6 +13637,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13694,6 +13713,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
