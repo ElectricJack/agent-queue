@@ -715,6 +715,9 @@ def integration_reopen_collection(
     `--apply` needs that head and a reason: it reclaims the collector fence for
     the same operation and, for one current conflict, opens a fresh repair stage
     that files a new delegate. Archived delegates are never restored.
+    An escalated no-progress stage can resume a later child conflict after
+    proving its detached collector, published head and terminal stage history.
+    A conflict already bound to an exhausted stage cannot buy another budget.
     A settled failed aggregate verifier requires a completed additional child
     fix. Recovery preserves its failed completion, advances the checkpoint
     generation and creates a fresh verifier after collecting the fix.
@@ -806,7 +809,7 @@ def integration_rebind_repair(
 
 @integration.command("recover-parent-head")
 @click.argument("operation_id")
-@click.option("--head", "head_sha", required=True, help="Exact published repair commit SHA.")
+@click.option("--head", "head_sha", required=True, help="Exact published aggregate commit SHA.")
 @click.option("--dry-run/--apply", default=True)
 @click.option("--episode", "expected_episode_id", help="Episode from preview.")
 @click.option("--generation", "expected_generation", type=int, help="Generation from preview.")
@@ -819,7 +822,7 @@ def integration_recover_parent_head(
     ctx, operation_id, head_sha, dry_run, expected_episode_id, expected_generation,
     expected_stage, expected_fence_token, reason,
 ):
-    """Prove a completed parent repair extends the original child receipts.
+    """Prove a completed parent repair and any subsequent child collection.
 
     Apply advances the aggregate checkpoint and requires fresh verification.
     """

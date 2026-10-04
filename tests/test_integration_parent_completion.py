@@ -757,6 +757,413 @@ async def test_repair_edge_survives_more_children_in_the_same_episode(db, tmp_pa
     assert readiness["outcome"] == "ready" and readiness["head_sha"] == "f" * 40
 
 
+async def _advanced_parent_repair_case(db, tmp_path, *, edge_exists=False, receipt_case=None):
+    recovery, hierarchy, request, git, collected, repair_head = await _parent_repair_case(
+        db, tmp_path
+    )
+    if edge_exists:
+        request.dry_run = False
+        assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    filed = await hierarchy.file_children("parent", [{"title": "K09 collected after repair"}], 1)
+    child = filed["children"][0]["task_id"]
+    git("commit", "--allow-empty", "-m", "collect K09")
+    if receipt_case == "unaudited_range":
+        git("commit", "--allow-empty", "-m", "unreceipted commit")
+        git("commit", "--allow-empty", "-m", "collect K09 over unreceipted work")
+    elif receipt_case == "non_ancestor":
+        git("switch", "--orphan", "unrelated")
+        git("commit", "--allow-empty", "-m", "unrelated aggregate")
+    head = git("rev-parse", "HEAD")
+    git("push", "origin", "HEAD:refs/heads/aq/parent", "--force")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == child).values(status="COMPLETED"))
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(
+                task_integration_checkpoints.c.task_id == child,
+            )
+            .values(checkpoint_sha="b" * 40)
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(
+                task_integration_checkpoints.c.task_id == "parent",
+            )
+            .values(checkpoint_sha=head, state="integration_ready")
+        )
+        await conn.execute(update(integration_repair_operations).values(state="escalated"))
+    receipt_overrides = {}
+    if receipt_case == "foreign_receipt":
+        async with db.immediate() as conn:
+            episode = dict(
+                (await conn.execute(select(integration_parent_episodes))).mappings().one()
+            )
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    **(episode | {"id": "another-episode"}),
+                )
+            )
+        receipt_overrides["parent_episode_id"] = "another-episode"
+    repair_head_for_receipt = "f" * 40 if receipt_case == "receipt_gap" else repair_head
+    if receipt_case != "missing_receipt":
+        await _code_receipt(db, child, repair_head_for_receipt, head, **receipt_overrides)
+    request.head_sha, request.expected_generation, request.dry_run = head, 2, True
+    return recovery, hierarchy, request, git, child, repair_head, head
+
+
+@pytest.mark.parametrize("stage_generation", [1, 2])
+@pytest.mark.parametrize("edge_exists", [False, True])
+async def test_repair_head_advanced_by_receipts_settles_repair_and_reverifies_current_head(
+    db,
+    tmp_path,
+    edge_exists,
+    stage_generation,
+):
+    from src.commands.contracts.integration import IntegrationRecoverParentHeadValue
+    from src.integration.outbox import enqueue_integration_event
+
+    (
+        recovery,
+        hierarchy,
+        request,
+        _git,
+        _child,
+        repair_head,
+        head,
+    ) = await _advanced_parent_repair_case(
+        db,
+        tmp_path,
+        edge_exists=edge_exists,
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            current_subject={"kind": "parent", "generation": stage_generation, "head_sha": repair_head},
+        ))
+        await enqueue_integration_event(
+            conn, event_id=f"parent-ready-{request.operation_id}-2",
+            dedup_key=f"task.integration_ready:{request.operation_id}:2",
+            project_id="p", event_type="task.integration_ready", available_at=30.0,
+            payload={"head_sha": repair_head},
+        )
+    async with db._engine.connect() as conn:
+        receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+        original = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+        operation = dict(
+            (await conn.execute(select(integration_repair_operations))).mappings().one()
+        )
+    before = await db.get_integration_checkpoint("parent")
+    preview = await recovery.run(request, principal="operator")
+    IntegrationRecoverParentHeadValue.model_validate(
+        {key: value for key, value in preview.items() if key != "outcome"},
+    )
+    assert preview["outcome"] == "would_recover"
+    assert preview["repair_head_sha"] == repair_head
+    assert len(preview["collection_receipt_ids"]) == 1
+    assert await db.get_integration_checkpoint("parent") == before
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    after = await db.get_integration_checkpoint("parent")
+    assert after["checkpoint_sha"] == head and after["current_verification_id"] is None
+    assert (await hierarchy.readiness("parent"))["head_sha"] == head
+    async with db.immediate() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        assert stage["state"] == "passed"
+        assert stage["current_subject"]["head_sha"] == repair_head
+        assert stage["dossier"]["parent_head_extensions"][0]["after_sha"] == repair_head
+        assert len(stage["dossier"]["parent_head_extensions"]) == 1
+        for key in ("attempts", "deadline_at", "starting_sha", "policy", "deadline_event_id"):
+            assert stage[key] == original[key]
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
+        current = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        assert current["state"] == "active"
+        assert current["episode_id"] == operation["episode_id"]
+        events = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "task.integration_ready",
+                        integration_outbox.c.payload["head_sha"].as_string() == head,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(events) == 1
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="fresh-advanced-check",
+                operation_id=request.operation_id,
+                parent_task_id="parent",
+                parent_generation=2,
+                parent_head_sha=head,
+                producer_id="forge-observer",
+                workflow_id="workflow",
+                run_id="new-run",
+                attempt=1,
+                required_check_version="parent-v1",
+                checks={"unit": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=40.0,
+            )
+        )
+    ready_event = events[0]["payload"]
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    transferred = await BranchOwnership(db).transfer(
+        Fence(target=target, owner_id=request.operation_id, token=request.expected_fence_token),
+        ready_event["next_owner_id"], "verifier",
+    )
+    assert (await hierarchy.wake_verifier("parent", transferred))["outcome"] == "woken"
+    assert (await db.get_task(ready_event["next_owner_id"])).status == TaskStatus.READY
+    request.expected_fence_token = transferred.token
+    assert (await hierarchy.complete_parent("parent", 2, head))[
+        "outcome"
+    ] == AWAITING_TRUSTED_VERIFICATION
+    assert (await hierarchy.verify_parent("parent", 2, head, ["fresh-advanced-check"]))[
+        "outcome"
+    ] == "verified"
+    verified = await db.get_integration_checkpoint("parent")
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "already_recovered"
+    assert await db.get_integration_checkpoint("parent") == verified
+
+
+async def test_advanced_repair_files_fresh_verifier_for_parent_with_a_prior_session(db, tmp_path):
+    from src.database.tables import task_session_attempts
+
+    recovery, _hierarchy, request, _git, _child, _repair_head, head = (
+        await _advanced_parent_repair_case(db, tmp_path)
+    )
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_session_attempts).values(
+            id="prior-parent-attempt", session_id="prior-parent-session", task_id="parent",
+            project_id="p", profile_id="worker", name="old-parent", lifecycle="task",
+            harness="codex", provider="fake", state="stopped", work_dir=str(tmp_path),
+            started_at=1.0, session_started_at=1.0, ended_at=2.0,
+        ))
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    async with db._engine.connect() as conn:
+        operation = (
+            await conn.execute(select(integration_repair_operations))
+        ).mappings().one()
+        event = (
+            await conn.execute(select(integration_outbox.c.payload).where(
+                integration_outbox.c.event_type == "task.integration_ready",
+                integration_outbox.c.payload["head_sha"].as_string() == head,
+            ))
+        ).scalar_one()
+    verifier_id = operation["verifier_task_id"]
+    assert verifier_id and verifier_id != "parent"
+    assert event["next_owner_id"] == verifier_id
+    assert (await db.get_task(verifier_id)).status == TaskStatus.PAUSED
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "undelivered_child",
+        "missing_receipt",
+        "foreign_receipt",
+        "receipt_gap",
+        "unaudited_range",
+        "non_ancestor",
+        "holder",
+        "missing_close_audit",
+        "future_generation",
+        "completed_verifier",
+    ],
+)
+async def test_advanced_repair_recovery_refuses_gaps_and_live_holders(db, tmp_path, case):
+    from src.models import SessionRecord
+
+    (
+        recovery,
+        _hierarchy,
+        request,
+        _git,
+        child,
+        repair_head,
+        _head,
+    ) = await _advanced_parent_repair_case(
+        db,
+        tmp_path,
+        receipt_case=case,
+    )
+    if case == "holder":
+        await db.create_session(
+            SessionRecord(
+                id="holder",
+                project_id="p",
+                task_id="repair",
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name="holder",
+                lifecycle="pool",
+                work_dir=str(tmp_path / "work"),
+                epoch="epoch",
+                instance_token="token",
+                started_at=40.0,
+                state="running",
+            )
+        )
+    elif case == "completed_verifier":
+        await db.create_task(
+            Task(
+                id="old-verifier",
+                project_id="p",
+                repo_id="repo",
+                branch_name="aq/parent",
+                title="Old completed verifier",
+                description="",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_operations).values(
+                    verifier_task_id="old-verifier",
+                )
+            )
+    else:
+        async with db.immediate() as conn:
+            if case == "undelivered_child":
+                await conn.execute(update(tasks).where(tasks.c.id == child).values(status="READY"))
+            elif case == "missing_close_audit":
+                await conn.execute(
+                    delete(integration_outbox).where(integration_outbox.c.id == "repair-closed")
+                )
+            elif case == "future_generation":
+                await conn.execute(
+                    update(integration_repair_stages).values(
+                        current_subject={
+                            "kind": "parent",
+                            "generation": 3,
+                            "head_sha": repair_head,
+                        },
+                    )
+                )
+    checkpoint = await db.get_integration_checkpoint("parent")
+    async with db._engine.connect() as conn:
+        stage = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+    for dry_run in (True, False):
+        request.dry_run = dry_run
+        with pytest.raises(ValueError):
+            await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    async with db._engine.connect() as conn:
+        assert (
+            dict((await conn.execute(select(integration_repair_stages))).mappings().one()) == stage
+        )
+
+
+@pytest.mark.parametrize("case", ["current", "ancestor", "diverged", "dirty", "writer"])
+async def test_advanced_repair_recovery_checks_confirmed_collector_workspace(db, tmp_path, case):
+    (
+        recovery,
+        _hierarchy,
+        request,
+        git,
+        _child,
+        repair_head,
+        _head,
+    ) = await _advanced_parent_repair_case(
+        db,
+        tmp_path,
+    )
+    if case == "writer":
+        await db.create_task(Task(
+            id="unrelated-writer", project_id="p", title="Retained writer", description="",
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="former-slot",
+                project_id="p",
+                workspace_path=str(tmp_path / "work"),
+                source_type="link",
+                enabled=True,
+                created_at=30.0,
+                locked_by_task_id="unrelated-writer" if case == "writer" else None,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners).values(
+                confirmed_workspace_id="former-slot",
+            )
+        )
+    if case == "ancestor":
+        git("reset", "--hard", repair_head)
+    elif case == "diverged":
+        git("commit", "--allow-empty", "-m", "unpublished collector work")
+    elif case == "dirty":
+        (tmp_path / "work" / "unpublished.txt").write_text("retain me")
+    before = await db.get_integration_checkpoint("parent")
+    if case in {"current", "ancestor"}:
+        assert (await recovery.run(request, principal="operator"))["outcome"] == "would_recover"
+        assert await db.get_integration_checkpoint("parent") == before
+        request.dry_run = False
+        assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+        assert git("rev-parse", "aq/parent") == (
+            repair_head if case == "ancestor" else request.head_sha
+        )
+    else:
+        for dry_run in (True, False):
+            request.dry_run = dry_run
+            with pytest.raises(ValueError, match="confirmed parent"):
+                await recovery.run(request, principal="operator")
+        assert await db.get_integration_checkpoint("parent") == before
+
+
+async def test_advanced_repair_recovery_rechecks_local_changes_before_apply(
+    db, tmp_path, monkeypatch
+):
+    (
+        recovery,
+        _hierarchy,
+        request,
+        _git,
+        _child,
+        _repair_head,
+        _head,
+    ) = await _advanced_parent_repair_case(
+        db,
+        tmp_path,
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(workspaces).values(
+                id="former-slot",
+                project_id="p",
+                workspace_path=str(tmp_path / "work"),
+                source_type="link",
+                enabled=True,
+                created_at=30.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners).values(
+                confirmed_workspace_id="former-slot",
+            )
+        )
+    before = await db.get_integration_checkpoint("parent")
+    prove, calls = recovery._git_proof, 0
+
+    async def change_local(*args):
+        nonlocal calls
+        result = await prove(*args)
+        calls += 1
+        if calls == 2:
+            (tmp_path / "work" / "unpublished.txt").write_text("arrived during recovery")
+        return result
+
+    monkeypatch.setattr(recovery, "_git_proof", change_local)
+    request.dry_run = False
+    with pytest.raises(ValueError, match="unpublished changes"):
+        await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == before
+
 @pytest.fixture
 async def db(tmp_path, reuse_database):
     database = await reuse_database("parent-completion.db")

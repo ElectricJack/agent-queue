@@ -336,7 +336,7 @@ class ParentCompletion:
             )
 
     async def mark_ready_on(
-        self, conn, task_id: str, *, require_verifier: bool = False
+        self, conn, task_id: str, *, require_verifier: bool = False, event_suffix: str = ""
     ) -> dict[str, Any]:
         """Project readiness into checkpoint state and one durable event."""
         if not await legacy_parent_allowed_on(conn, self.db, task_id):
@@ -460,9 +460,9 @@ class ParentCompletion:
         if projected.rowcount:
             await enqueue_integration_event(
                 conn,
-                event_id=f"parent-ready-{operation['id']}-{checkpoint['generation']}",
+                event_id=f"parent-ready-{operation['id']}-{checkpoint['generation']}{event_suffix}",
                 dedup_key=(
-                    f"task.integration_ready:{operation['id']}:{checkpoint['generation']}"
+                    f"task.integration_ready:{operation['id']}:{checkpoint['generation']}{event_suffix}"
                 ),
                 project_id=parent["project_id"],
                 event_type="task.integration_ready",
@@ -495,6 +495,7 @@ class ParentCompletion:
         project: dict[str, Any],
         checkpoint: dict[str, Any],
         operation: dict[str, Any],
+        additional_extension: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         episode = (
             await conn.execute(
@@ -691,6 +692,10 @@ class ParentCompletion:
         except ValueError:
             extensions = []
             blockers.append({"task_id": parent["id"], "reason": "repair_head_proof"})
+        if additional_extension is not None:
+            # Recovery previews a strictly audited edge before committing it.
+            # Ordinary readiness reads only the durable stage dossiers.
+            extensions.append(additional_extension)
 
         def extend_head(head):
             while True:
