@@ -202,7 +202,6 @@ def apply_formatter(command: str, result: dict, console, *, data_override: Any =
 def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
-        agent_proxy,
         plain_proxy,
         project_proxy,
         task_proxy,
@@ -210,7 +209,7 @@ def _register_all():
     from .formatters import (
         format_active_tasks_all,
         format_task_recent_activity,
-        format_agent_table,
+        format_flock,
         format_archived_tasks,
         format_available_tools,
         format_chain_health,
@@ -308,14 +307,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
 
     # -- Task extra commands ---------------------------------------------------
 
@@ -413,14 +405,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
     FORMATTERS["list_profiles"] = FormatterSpec(
         render=format_profile_list,
         extract=None,

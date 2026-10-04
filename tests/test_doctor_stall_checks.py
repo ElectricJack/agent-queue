@@ -120,6 +120,23 @@ async def test_explain_calls_are_bounded_and_cached(context):
     assert context.handler.calls.count("work-0") == 1
 
 
+async def test_untracked_sessions_are_an_error_even_without_active_projects(context, monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.doctor.models import CheckResult
+
+    monkeypatch.setattr(context.db, "list_projects", AsyncMock(return_value=[]))
+    sessions = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(sessions, "_check_flock", AsyncMock(return_value=CheckResult(
+        "sessions.untracked", Severity.ERROR, "hidden", data={"findings": [{
+            "kind": "provider_untracked", "detail": "live n-supervisor--global is hidden",
+        }]},
+    )))
+    result = await module._check_sweep(context)
+    assert result.severity == Severity.ERROR
+    assert result.data["findings"][0]["kind"] == "flock_untracked"
+    assert "n-supervisor--global" in result.detail
+
+
 async def test_restore_branch_requires_explain_to_name_that_blocker(context, monkeypatch):
     async def candidates(_ctx, *, candidate_statuses):
         assert set(candidate_statuses) == {

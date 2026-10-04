@@ -5,8 +5,9 @@ from uuid import uuid4
 
 from src.agents.configuration import SUPERVISOR_AGENT_ID
 from src.agents.service import list_agent_flock
+from src.agents.sessions import flock_session_rows
 from src.agents.subagents import flock_rollup
-from src.models import Agent
+from src.models import Agent, TaskStatus
 
 
 class FlockCommandsMixin:
@@ -22,10 +23,35 @@ class FlockCommandsMixin:
         project_id = args.get("project_id")
         if project_id and await self.db.get_project(project_id) is None:
             return {"error": f"Project '{project_id}' not found"}
-        rows = await list_agent_flock(self.orchestrator, project_id=project_id)
+        agents = await self.db.list_agents()
+        records = await self.db.list_sessions()
+        active_tasks = await self.db.list_tasks(statuses={
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT,
+        })
+        rows = await list_agent_flock(
+            self.orchestrator, project_id=project_id,
+            agents=agents, sessions=records, tasks=active_tasks,
+        )
+        include_stopped = bool(args.get("include_stopped"))
+        # Only hydrate history referenced by a visible session. Never read
+        # the task backlog just to render the flock.
+        visible = [record for record in records if (
+            (project_id is None or record.project_id == project_id)
+            and (include_stopped or record.state not in {"stopped", "quarantined"})
+        )]
+        missing = {row.task_id for row in visible if row.task_id} - {
+            task.id for task in active_tasks
+        }
+        history = await self.db.list_tasks(task_ids=missing) if missing else []
+        sessions = flock_session_rows(
+            visible, agents, tasks=[*active_tasks, *history],
+            project_id=project_id, include_stopped=include_stopped,
+        )
         rollup = flock_rollup(rows)
         return {
             "agents": rows,
+            "sessions": sessions,
+            "session_count": len(sessions),
             "count": len(rows),
             "project_id": project_id,
             # The flock header shows one number; computing it here means the
