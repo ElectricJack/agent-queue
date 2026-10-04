@@ -983,13 +983,18 @@ def integration_develop(
 @click.option("--target-ref", default="refs/heads/main")
 @click.option("--head-sha", required=True)
 @click.option("--accept-equivalent", is_flag=True, help="Explicitly accept operator-edited or evidence-only delivery.")
+@click.option("--settle-delivered-children", is_flag=True,
+              help="Settle one quiet managed parent after proving every completed child on the default branch.")
+@click.option("--dry-run", is_flag=True, help="Report delivered-child settlement without writing.")
 @click.option("--reason", required=True)
 @click.pass_context
 @_handle_errors
-def integration_adopt(ctx, project_id, task_ids, target_ref, head_sha, accept_equivalent, reason):
+def integration_adopt(ctx, project_id, task_ids, target_ref, head_sha, accept_equivalent,
+                      settle_delivered_children, dry_run, reason):
     """Record already-delivered work without replaying old repair checkpoints."""
     _execute(ctx, "integration_adopt", {"project_id": project_id, "task_ids": list(task_ids),
-        "target_ref": target_ref, "head_sha": head_sha, "accept_equivalent": accept_equivalent, "reason": reason})
+        "target_ref": target_ref, "head_sha": head_sha, "accept_equivalent": accept_equivalent,
+        "settle_delivered_children": settle_delivered_children, "dry_run": dry_run, "reason": reason})
 
 
 @integration.command("sweep")

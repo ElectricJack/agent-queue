@@ -40,6 +40,12 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["adopt", "p", "--task", "parent", "--head-sha", "a" * 40,
+          "--settle-delivered-children", "--dry-run", "--reason", "children delivered"],
+         "integration_adopt", {"project_id": "p", "task_ids": ["parent"],
+          "target_ref": "refs/heads/main", "head_sha": "a" * 40,
+          "accept_equivalent": False, "settle_delivered_children": True,
+          "dry_run": True, "reason": "children delivered"}),
         (["settle-delivered-batch", "batch"], "integration_settle_delivered_batch",
          {"batch_id": "batch", "dry_run": True}),
         (["settle-delivered-batch", "batch", "--apply", "--candidate", "a" * 40,

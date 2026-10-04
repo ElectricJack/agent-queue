@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 vi.mock("@xyflow/react", () => ({ Handle: () => null, Position: { Top: "t", Bottom: "b", Left: "l", Right: "r" } }));
 import ContainerNode from "../ContainerNode";
 import { EPIC_DELIVERY as EPIC } from "../../../../testUtils/epicDelivery";
@@ -198,5 +199,34 @@ describe("ContainerNode epic delivery", () => {
     cleanup();
     render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.delivered }, projectId: "p1" }} /> as never);
     expect(screen.getByText("Delivered")).toBeInTheDocument();
+  });
+});
+
+describe("ContainerNode review wait", () => {
+  const wait = {
+    review_id: "rev-epic", review_state: "changes_requested", review_kind: "spec", review_title: "Epic spec",
+    gate_id: "g1", gate_type: "review", gate_status: "open", blocking: true,
+  };
+
+  it("links an epic gated by a review to the review page from its header", async () => {
+    const onOpenTask = vi.fn();
+    render(
+      <MemoryRouter initialEntries={["/graph"]}>
+        <Routes>
+          <Route path="/graph" element={<ContainerNode id="e" data={{ node: { ...node, review_waits: [wait] }, projectId: "p1", onOpenTask }} />} />
+          <Route path="/reviews/:reviewId" element={<p>review page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link", { name: /Waiting on spec review rev-epic \(changes requested\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/rev-epic");
+    await userEvent.click(link);
+    expect(screen.getByText("review page")).toBeInTheDocument();
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  it("shows no review link for an epic no review gates", () => {
+    render(<ContainerNode id="e" data={{ node: { ...node, review_waits: [] }, projectId: "p1" }} /> as never);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 });

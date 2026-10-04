@@ -3687,6 +3687,8 @@
         "optional": [
           "--target-ref",
           "--accept-equivalent",
+          "--settle-delivered-children",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",

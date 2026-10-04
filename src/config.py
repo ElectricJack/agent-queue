@@ -1599,6 +1599,20 @@ class SessionsConfig:
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
+    #: Grace before the reconciler stops a session that has nothing left to
+    #: do -- its task closed, or its claim budget is spent -- even though the
+    #: harness never exited.  ``sessions.last_activity`` cannot measure that
+    #: idle: tmux's ``window_activity`` advances on *any* pane output, so an
+    #: OpenCode TUI sitting at its final summary keeps the stamp fresh for as
+    #: long as it is left alone, and the worker holds its pool slot and
+    #: worktree forever (2026-10-03).  The clock here is the first tick the
+    #: finished shape was *observed*, not the pane.  0 disables the stop and
+    #: leaves the diagnosis to ``sessions.stop_intent_pending``.
+    idle_stop_grace_seconds: int = 60
+    #: How long a recorded stop intent may stand before ``aq doctor`` reports
+    #: the session.  It is a report threshold, not an action: the reconciler
+    #: owns the stop, and this only says the graceful path is not converging.
+    stop_intent_report_seconds: int = 600
     stall_max_nudges: int = 3
     stall_backoff_seconds: int = 300
     max_restarts: int = 3
@@ -1678,6 +1692,8 @@ class SessionsConfig:
                 pass
         for name in (
             "lease_ttl_seconds",
+            "idle_stop_grace_seconds",
+            "stop_intent_report_seconds",
             "stall_max_nudges",
             "stall_backoff_seconds",
             "max_restarts",
@@ -5012,6 +5028,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "provider": str,
                     "tmux_socket": str,
                     "lease_ttl_seconds": int,
+                    "idle_stop_grace_seconds": int,
+                    "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,
                     "stall_backoff_seconds": int,
                     "max_restarts": int,

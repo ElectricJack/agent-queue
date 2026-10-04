@@ -264,8 +264,11 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "session_id"],
         # ``deferred_reason`` is the structured NudgeReason when the rung was
         # spent on a composer that could not be read: the stall is real, but
-        # no text was typed, so no ``task.nudged`` follows.  ``evidence`` is
-        # ``"unverified"`` on the rarer event where the stall is announced
+        # no text was typed, so no ``task.nudged`` follows.  ``evidence`` says
+        # what the stall rests on: ``"store_stalled"`` when the pane was still
+        # reporting activity and the stall came from the harness's own record
+        # plus the provider reporting nothing in flight (a rung, and a climb),
+        # and ``"unverified"`` on the rarer event where it is announced
         # *without* a rung, because no progress record exists to corroborate
         # it — nothing downstream may read that one as a climb — and
         # ``screen_unchanged_seconds`` is the terminal observation quoted
@@ -1140,6 +1143,14 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     "session.claim_timeout": {
         "required": ["session_id"],
         "optional": ["task_id"],
+    },
+    # A session that had nothing left to do -- a recorded stop intent
+    # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
+    # claim budget -- kept its harness process alive past the idle-stop grace,
+    # and the reconciler stopped it the way ``aq session kill`` does (2026-10-03).
+    "session.stop_intent_stopped": {
+        "required": ["session_id", "name", "lifecycle"],
+        "optional": ["task_id", "project_id", "idle_seconds"],
     },
     "session.sleeping": {
         "required": ["session_id", "name", "reason"],

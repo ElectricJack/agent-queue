@@ -544,6 +544,7 @@
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
+        "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
@@ -1069,6 +1070,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1397,7 +1399,7 @@
       ]
     }
   },
-  "digest": "sha256:7dd036fb8d6730195dc6a87c4222bf75a7e9f3bcfed5e668fc81bf69bc56f037",
+  "digest": "sha256:f8e63dd799c5dbd59698ad5578b0a7302ed0acb908fe312508049d1490947ba9",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4663,6 +4665,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.proposal_commands",
         "src.doctor.integration_checks",
         "src.playbooks.definition",
@@ -6133,9 +6137,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.integration.development"
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.regeneration",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
+        "parametrize",
         "slow"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
@@ -6537,6 +6546,7 @@
         "src.api",
         "src.api.dependencies",
         "src.api.health",
+        "src.api.health_monitor",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
@@ -7258,7 +7268,8 @@
         "src.integration.recovery_controls",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -7441,6 +7452,29 @@
         "parametrize"
       ],
       "summary": "Releasing the delegates of an integration operation that has ended."
+    },
+    "tests/test_integration_delivered_parent_adoption.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.integration.delivered_parent_adoption",
+        "src.integration.delivery_truth",
+        "src.integration.epic_delivery",
+        "src.integration.parent_subjects",
+        "src.integration.provenance",
+        "src.integration.subjects",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git recovery for parents whose children reached main by other routes."
     },
     "tests/test_integration_eject.py": {
       "areas": [
@@ -7849,6 +7883,7 @@
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
@@ -7971,7 +8006,8 @@
         "src.integration.promotion",
         "src.integration.repair",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -9785,6 +9821,7 @@
       "imports": [
         "src.config",
         "src.metrics.histogram",
+        "src.metrics.loop_watchdog",
         "src.metrics.perf"
       ],
       "markers": [
@@ -13811,6 +13848,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13870,6 +13924,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
@@ -15414,6 +15469,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.health",
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",

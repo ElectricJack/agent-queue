@@ -147,7 +147,8 @@ class TestWebSocketReplay:
         assert len(live_frames) == 1
         assert live_frames[0]["seq"] is None
 
-    async def test_replay_filters_non_forwarded_event_types(self, db):
+    @pytest.mark.parametrize("replay_delay", [0, 0.1])
+    async def test_replay_filters_non_forwarded_event_types(self, db, monkeypatch, replay_delay):
         """Replay respects the same ``_FORWARDED_PREFIXES`` filter as live
         mode.  The filter was extended in Wave-4 (D3/D1/D2) to cover
         ``gate.*`` / ``session.*`` / ``task.*`` alongside ``notify.*`` and
@@ -158,18 +159,40 @@ class TestWebSocketReplay:
         await db.log_event("gate.resolved", project_id=PROJECT, payload="g")
         await db.log_event("message.chat", project_id=PROJECT, payload="c")
 
+        get_recent_events = db.get_recent_events
+
+        async def delayed_get_recent_events(**kwargs):
+            await asyncio.sleep(replay_delay)
+            return await get_recent_events(**kwargs)
+
+        monkeypatch.setattr(db, "get_recent_events", delayed_get_recent_events)
+
         bus = EventBus()
         mgr = WebSocketManager(bus, db=db)
         mgr.start()
         ws = _FakeWS(after_seq="0")
 
+        replayed = asyncio.Event()
+        send_json = ws.send_json
+
+        async def signal_last_replay_frame(frame):
+            await send_json(frame)
+            if frame.get("_event_type") == "message.chat":
+                replayed.set()
+
+        ws.send_json = signal_last_replay_frame
+
         task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
-        await asyncio.sleep(0.05)
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            # Wait for delivery, even when a replay query takes longer than 50 ms.
+            await asyncio.wait_for(replayed.wait(), timeout=2)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            mgr.shutdown()
 
         types = [f.get("_event_type") for f in ws.sent]
         assert "notify.a" in types

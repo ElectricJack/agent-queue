@@ -213,6 +213,7 @@ A new deterministic step `_sweep_gates()` runs each cycle between approvals and 
 ### 5.5 Consumers and producers (cross-spec)
 
 - The dashboard gates inbox invokes `gate_resolve`. Discord gate buttons and task-thread approval paths are retired; Discord only carries durable escalation replies to the supervisor.
+- The dashboard task graph reads review gates through `LayoutNode.review_waits` (`list_review_waits_for_tasks`, one statement per tiles/list/node response): every gate attached to the task that is a review's own gate (`doc_reviews.gate_id`, shared by `--after-review` holds) or awaits a review by id. An entry is `blocking` under the same unresolved-gate test `aq task explain` reports as `blocked_gate`; an approved review whose gate released a not-yet-completed task is still listed, non-blocking. The card gives a blocking wait a violet border and links the first wait (id and state) to `/reviews/<id>`.
 - **[supervisor-agent](supervisor-agent.md)**: `aq ask` creates a `human` gate attached to the asking task; the reply resolves it (and is delivered as a nudge).
 - **[worktree-execution](worktree-execution.md)**: "PR merged" / "CI green" completion gates replace bespoke polling states in the merge pipeline.
 - The gates table is the substrate the later status collapse (§12) lands on.
