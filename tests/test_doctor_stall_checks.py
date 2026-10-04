@@ -259,6 +259,7 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
 
     monkeypatch.setattr(module, "_branch_findings", branches)
     monkeypatch.setattr(module, "_unmaterialized_pr_findings", lambda *args: branches())
+    monkeypatch.setattr(module, "_unadmitted_parent_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
     assert module.stall_checks()[0].fix is None

@@ -436,6 +436,8 @@ class IntegrationRecoverParentHeadValue(CommandValue):
     receipt_head_sha: str | None = None
     repair_task_id: str | None = None
     completion_id: str | None = None
+    repair_head_sha: str | None = None
+    collection_receipt_ids: tuple[str, ...] = ()
     attempts: int | None = None
     deadline_at: float | None = None
     stage_state: str | None = None

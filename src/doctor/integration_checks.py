@@ -24,6 +24,7 @@ and a ``run_check`` wrapper for tests and ad-hoc calls.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -67,6 +68,8 @@ _STUCK_CHILD_AFTER_SECONDS = 5 * 60
 #: offline; a backlog of 200 stranded PRs is already diagnosed by the first
 #: handful, and the count in ``data`` stays accurate regardless.
 _MAX_PR_PROBES = 20
+_PARENT_PR_PROBE_SECONDS = 2.0
+_PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
 
 
 def _operational_projection(status: dict) -> dict:
@@ -506,6 +509,130 @@ async def _check_unreviewed_prs(ctx: DoctorContext) -> CheckResult:
             "review pipeline (aq playbook list-runs)"
         ),
         data={"count": len(findings), "tasks": findings[:50]},
+    )
+
+
+async def _parent_pr_observation(ctx: DoctorContext, row: dict) -> dict:
+    """Use the configured repository credential; unavailable reads stay unknown."""
+    git = getattr(getattr(ctx.handler, "orchestrator", None), "git", None)
+    if git is None or not row["repo_url"]:
+        return {"pr_open": None, "pr_head": None}
+    try:
+        binding = await git.bind_github_repository(row["repo_url"])
+        pull = await git._github_client(binding).pull_request(row["pr_url"])
+        head = pull.get("head") or {}
+        base = pull.get("base") or {}
+        canonical = (
+            head.get("ref") == row["branch_name"]
+            and (head.get("repo") or {}).get("id") == binding.repository_id
+            and base.get("ref") == row["default_branch"]
+            and (base.get("repo") or {}).get("id") == binding.repository_id
+        )
+        return {"pr_open": pull.get("state") == "open", "pr_head": head.get("sha"),
+                "pr_canonical": canonical}
+    except Exception:
+        return {"pr_open": None, "pr_head": None}
+
+
+async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
+    """Completed aggregate PRs invisible to the frontier, with exact blockers."""
+    from sqlalchemy import and_, exists, or_, select
+    from src.database import tables as t
+    from src.database.queries.integration_train_queries import (
+        _ACTIVE_BATCH_LIFECYCLES, _root_delivery_receipt_conditions,
+    )
+    from src.integration.review_evidence import ReviewEvidenceProducer
+
+    child, archived = t.tasks.alias("unadmitted_child"), t.archived_tasks.alias("unadmitted_archived")
+    statement = select(
+        t.tasks.c.id.label("task_id"), t.tasks.c.project_id, t.tasks.c.pr_url,
+        t.tasks.c.branch_name, t.tasks.c.task_type,
+        t.repos.c.url.label("repo_url"), t.repos.c.default_branch,
+        t.projects.c.hierarchical_integration_generation.label("policy_generation"),
+        t.task_integration_checkpoints.c.checkpoint_sha,
+        t.task_integration_checkpoints.c.current_verification_id,
+        t.task_integration_checkpoints.c.last_completed_verification_id,
+    ).select_from(t.tasks.join(t.projects, t.projects.c.id == t.tasks.c.project_id).join(
+        t.repos, and_(t.repos.c.id == t.tasks.c.repo_id, t.repos.c.project_id == t.tasks.c.project_id),
+    ).outerjoin(t.task_integration_checkpoints,
+                t.task_integration_checkpoints.c.task_id == t.tasks.c.id)).where(
+        t.projects.c.status == "ACTIVE", t.projects.c.hierarchical_integration_mode == "train",
+        t.projects.c.integration_repository_id == t.tasks.c.repo_id,
+        t.tasks.c.parent_task_id.is_(None), t.tasks.c.status == "COMPLETED",
+        t.tasks.c.pr_url.is_not(None), t.tasks.c.pr_url != "",
+        t.tasks.c.updated_at < time.time() - _STUCK_CHILD_AFTER_SECONDS,
+        or_(exists(select(child.c.id).where(child.c.parent_task_id == t.tasks.c.id)),
+            exists(select(archived.c.id).where(archived.c.parent_task_id == t.tasks.c.id))),
+        ~exists(select(t.integration_batch_members.c.task_id).join(
+            t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
+        ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
+                t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
+        ~exists(select(t.task_delivery_receipts.c.id).where(
+            t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
+            *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
+        )),
+    ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
+    producer = ReviewEvidenceProducer(ctx.db, None)
+    findings = []
+    probe_deadline = time.monotonic() + _PARENT_PR_PROBE_BUDGET_SECONDS
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement)).mappings().all()
+        for index, record in enumerate(rows):
+            row = dict(record)
+            observed = {"pr_open": None, "pr_head": None}
+            remaining = probe_deadline - time.monotonic()
+            if index < _MAX_PR_PROBES and remaining > 0:
+                try:
+                    async with asyncio.timeout(min(_PARENT_PR_PROBE_SECONDS, remaining)):
+                        observed = await _parent_pr_observation(ctx, row)
+                except TimeoutError:
+                    pass  # Local findings remain visible when GitHub cannot answer.
+            if observed["pr_open"] is False:
+                continue
+            source = await producer._pull_request_source_on(conn, row["task_id"])
+            review = None
+            if source:
+                review = (await conn.execute(select(t.integration_review_evidence).where(
+                    t.integration_review_evidence.c.source_task_id == row["task_id"],
+                    t.integration_review_evidence.c.repository_id == source["repository_id"],
+                    t.integration_review_evidence.c.source_base == source["base"],
+                    t.integration_review_evidence.c.reviewed_head_sha == source["head"],
+                    t.integration_review_evidence.c.generation == source["generation"],
+                ).order_by(t.integration_review_evidence.c.created_at.desc(),
+                           t.integration_review_evidence.c.id.desc()).limit(1))).mappings().first()
+            if observed.get("pr_canonical") is False:
+                reason = "pr_identity_changed"
+            elif observed["pr_head"] and observed["pr_head"] != row["checkpoint_sha"]:
+                reason = "parent_head_moved"
+            elif source is None:
+                reason = "aggregate_verification_missing_or_stale"
+            elif review is not None and review["verdict"] == "rejected":
+                reason = "parent_review_rejected"
+            elif review is None and not await producer._authorization_on(
+                conn, row["task_id"], source, row["policy_generation"],
+            ):
+                reason = "parent_admission_not_authorized"
+            elif (review is None or review["review_kind"] != "parent"
+                  or (review["evidence"] or {}).get("verification_id") != source["verification_id"]):
+                reason = "exact_parent_review_missing"
+            else:
+                reason = "awaiting_train_admission"
+            findings.append({**row, **observed, "reason": reason,
+                             "review_evidence_id": review["id"] if review else None})
+    return findings
+
+
+async def _check_unadmitted_parents(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(id="integration.unadmitted_parents", severity=Severity.INFO,
+                           detail="database not initialised — parent admission unknown")
+    findings = await _find_unadmitted_parents(ctx)
+    return CheckResult(
+        id="integration.unadmitted_parents", severity=Severity.WARN if findings else Severity.OK,
+        detail=(f"{len(findings)} completed parent PR(s) awaiting train admission; "
+                "inspect exact verification, review and admission blockers"
+                if findings else "no completed parent PRs stranded outside the train"),
+        data={"count": len(findings), "tasks": findings},
     )
 
 
@@ -2364,6 +2491,12 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.unreviewed_prs",
             run=_check_unreviewed_prs,
+            owner=OWNER,
+            timeout_s=30.0,
+        ),
+        DoctorCheck(
+            id="integration.unadmitted_parents",
+            run=_check_unadmitted_parents,
             owner=OWNER,
             timeout_s=30.0,
         ),

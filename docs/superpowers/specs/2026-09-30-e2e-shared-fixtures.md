@@ -22,6 +22,13 @@ build/start/stop, CLI calls, condition waits and provider recovery. They remain
 visible in stdout and JUnit properties. Compare the same machine, worker count,
 markers and scenario coverage against the source baseline before rebalancing.
 
+S16's recovery-to-all-down transition stops the fake-provider recovery sessions,
+including draining sessions and launches that appear after the first snapshot,
+until a fresh launch reports the simulated login failure. Each observed session
+is stopped once. The bounded wait still requires `prova` to become
+`unauthenticated`; cleanup does not override provider availability or extend the
+convergence budget.
+
 Regression checks cover scenario collection and selection, prerequisites, failure
 cleanup, fixture reuse, daemon isolation, global restoration and coverage parity.
 Fixture/probe safety suites remain separate from the real-daemon acceptance arm.

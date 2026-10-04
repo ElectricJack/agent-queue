@@ -2010,6 +2010,29 @@ def live_sessions_for(profile_id: str) -> list[dict]:
     ]
 
 
+def _wait_for_failover_logout() -> dict:
+    """Clear recovery sessions until a fresh fake launch observes the logout."""
+    stopped: set[str] = set()
+
+    def logged_out():
+        # Recovery can still have a launch in flight when the fake script
+        # changes. A single snapshot misses that healthy session, leaving
+        # the pool full and preventing the login failure from being observed.
+        live = [
+            session for session in pool_sessions(None, include_draining=True)
+            if session.get("profile_id") in (STD_A, SOLO_A, STD_B)
+        ]
+        for session in live:
+            session_id = session["id"]
+            if session_id not in stopped:
+                api_checked("session_kill", {"session_id": session_id})
+                stopped.add(session_id)
+        row = provider(PROVA)
+        return row if not live and row.get("state") == "unauthenticated" else None
+
+    return wait_for(logged_out, what=f"{PROVA} to become unauthenticated (the second logout)")
+
+
 def failover_task(title: str, profile: str, cls: str, *, priority: int, pin: bool = False) -> str:
     """File a hint-only task, then route it to *profile*.
 
@@ -2342,9 +2365,7 @@ def _s16_recovery(outage: dict) -> str:
     # cap); stopping them makes prova relaunch into the login dialog and
     # frees a slot for the claude session this phase keeps across the outage.
     fake_script(prova="login_required", provb="usage_limit")
-    for sess in live_sessions_for(STD_A) + live_sessions_for(SOLO_A) + live_sessions_for(STD_B):
-        aq("session", "kill", sess["id"], check_ok=False)
-    wait_provider(PROVA, ("unauthenticated",), what="the second logout")
+    _wait_for_failover_logout()
     filler = create_task("S16 claude worker", profile=POOL_PROFILE)
     claude_sess = wait_for_pool_session(
         lambda: next(iter(live_sessions_for(POOL_PROFILE)), None),

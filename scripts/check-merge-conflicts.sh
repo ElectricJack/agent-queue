@@ -65,7 +65,9 @@ while IFS= read -r branch_ref; do
     # Use merge-tree to check for conflicts without touching the worktree
     merge_output=$(git merge-tree "$merge_base" "$MAIN_REF" "$branch_ref" 2>/dev/null || true)
 
-    if echo "$merge_output" | grep -q "^+<<<<<<< "; then
+    # grep -q exits at the first marker. A pipe can then give echo SIGPIPE,
+    # which pipefail would mistake for a clean merge (especially with large diffs).
+    if grep -q "^+<<<<<<< " <<< "$merge_output"; then
         # Extract conflicting file names from merge-tree output
         conflicting_files=$(echo "$merge_output" | grep -E "^changed in both" | sed 's/^changed in both//' | xargs || echo "unknown files")
 
