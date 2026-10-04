@@ -40,6 +40,13 @@ def _client(result):
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
+        (["release-held-gate", "subject", "gate"], "integration_release_held_gate",
+         {"subject_id": "subject", "gate_id": "gate", "expected_version": None,
+          "reason": "", "dry_run": True}),
+        (["release-held-gate", "subject", "gate", "--expected-version", "7",
+          "--reason", "resume", "--apply"], "integration_release_held_gate",
+         {"subject_id": "subject", "gate_id": "gate", "expected_version": 7,
+          "reason": "resume", "dry_run": False}),
         (["adopt", "p", "--task", "parent", "--head-sha", "a" * 40,
           "--settle-delivered-children", "--dry-run", "--reason", "children delivered"],
          "integration_adopt", {"project_id": "p", "task_ids": ["parent"],
@@ -531,6 +538,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
     from src.cli.auto_commands import HANDCRAFTED_COVERAGE
 
     expected = {
+        "integration_release_held_gate",
         "integration_status",
         "integration_flush",
         "integration_enable",
@@ -796,6 +804,20 @@ def test_development_engine_transfer_apply_needs_the_previewed_fences(argv, mess
 
     assert result.exit_code != 0
     assert message in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("options", [[], ["--reason", "resume"], ["--expected-version", "1"],
+                                     ["--expected-version", "1", "--reason", "   "]])
+def test_release_held_gate_apply_requires_exact_version_and_reason(options):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "release-held-gate", "subject", "gate",
+                                          "--apply", *options])
+    assert result.exit_code != 0
+    assert "--apply needs --expected-version and a nonblank --reason" in result.output
     client.execute.assert_not_awaited()
 
 

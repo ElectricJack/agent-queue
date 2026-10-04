@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:9d155e18fabbc8771172a07d9469f05a5c63bc5adf15705d8050bd941d816ac5",
+  "digest": "sha256:ae0b3c9f3e61bc27f2b084b33216a2325663e3b99e5fde2c17c720980eb2684f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7934,6 +7934,7 @@
         "src.integration.child_delivery",
         "src.integration.collection",
         "src.integration.engine",
+        "src.integration.gates",
         "src.integration.models",
         "src.integration.parent_adapters",
         "src.integration.parent_ci",

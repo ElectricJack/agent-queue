@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 516,
+    "leaf_commands": 517,
     "registration": {
       "generated": 338,
-      "handwritten": 178
+      "handwritten": 179
     },
     "ownership": {
-      "core": 477,
+      "core": 478,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 515
+      "supported": 516
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 338,
-      "registration": 164
+      "registration": 165
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 456
+      "untested": 457
     }
   },
   "commands": [
@@ -4670,6 +4670,41 @@
         ],
         "optional": [
           "--archive-obsolete",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration release-held-gate",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_release_held_gate",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "subject_id",
+          "gate_id"
+        ],
+        "optional": [
+          "--expected-version",
+          "--reason",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
