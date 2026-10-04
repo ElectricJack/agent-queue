@@ -4282,11 +4282,14 @@ async def test_generated_conflict_advances_with_rebuilt_tree(db, tmp_path):
     assert [row["result"] for row in applied] == ["applied", "applied"]
 
 
-async def test_ci_repair_main_rebuild_regenerates_conflicting_catalogue(db, tmp_path):
+async def test_ci_repair_main_rebuild_regenerates_conflicting_catalogue(db, tmp_path, monkeypatch):
     from src.git.github_app import GitHubRepositoryBinding
     from src.integration.candidates import CandidateService
     from src.test_selection.catalogue import CATALOGUE_PATH
 
+    # Hosted runners have no global identity; the fixture must supply its own.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     work, base, new_main, source = _catalogue_branches(tmp_path)
     origin = tmp_path / "catalogue-origin.git"
     _git(tmp_path, "clone", "--bare", str(work), str(origin))
