@@ -142,6 +142,8 @@ class IntegrationService:
         owner_recovery_handler: DrainHandler | None = None,
         review_handler: DrainHandler | None = None,
         root_pull_request_handler: DrainHandler | None = None,
+        pr_cleanup_handler: DrainHandler | None = None,
+        aborted_cleanup_handler: DrainHandler | None = None,
         repair_dispatch_handler: DrainHandler | None = None,
         repair_dispatcher: RepairDispatcher | None = None,
         green_promotion_handler: DrainHandler | None = None,
@@ -183,6 +185,8 @@ class IntegrationService:
         self._owner_recovery_handler = owner_recovery_handler
         self._review_handler = review_handler
         self._root_pull_request_handler = root_pull_request_handler
+        self._pr_cleanup_handler = pr_cleanup_handler
+        self._aborted_cleanup_handler = aborted_cleanup_handler
         self._repair_dispatch_handler = repair_dispatch_handler
         self._repair_dispatcher = repair_dispatcher
         self._green_promotion_handler = green_promotion_handler
@@ -273,6 +277,8 @@ class IntegrationService:
                 await self._source(
                     "train root pull requests", self._root_pull_request_handler, self._clock()
                 )
+            if self._pr_cleanup_handler is not None:
+                await self._source("delivered PR cleanup", self._pr_cleanup_handler, self._clock())
             if self._review_handler is not None:
                 await self._source("GitHub PR reviews", self._review_handler, self._clock())
             if self._collection_handler is not None:
@@ -295,6 +301,10 @@ class IntegrationService:
                 await self._source("parent CI", self._parent_ci_handler, self._clock())
             await self._source("integration intent", self._tick_intents, self._clock())
             if self._cleanup_handler is not None:
+                if self._aborted_cleanup_handler is not None:
+                    await self._source(
+                        "aborted batch cleanup", self._aborted_cleanup_handler, self._clock()
+                    )
                 await self._source("integration cleanup", self._tick_cleanup, self._clock())
             if self._drain_handler is not None:
                 await self._source("integration drain", self._drain_handler, self._clock())

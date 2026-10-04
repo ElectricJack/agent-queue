@@ -766,7 +766,8 @@ class SessionCommandsMixin:
                 ),
             }
         service = ObsoleteClose(
-            self.db, release_owner=obsolete_owner_release_for(self.orchestrator)
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
         )
         try:
             result = await service.close(

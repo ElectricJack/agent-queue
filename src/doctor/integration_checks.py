@@ -2442,8 +2442,62 @@ async def _check_delivered_children_unsettled_parent(ctx: DoctorContext) -> Chec
     )
 
 
+async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+    from src.git.github import GitHubAccess
+    from src.git.manager import GitManager
+    from src.integration.pr_cleanup import orphaned_pull_requests
+
+    if ctx.db is None or not hasattr(ctx.db, "_engine"):
+        return [], []
+    factory = getattr(ctx.handler, "_integration_promotion_service", None)
+    if factory is not None:
+        git = factory().git
+    else:
+        integration = getattr(ctx.config, "integration", None)
+        git = GitManager(github_access=GitHubAccess.from_config(
+            getattr(integration, "github_app", None),
+        ))
+    statement = select(projects.c.id).where(projects.c.integration_repository_id.is_not(None))
+    if project_ids is not None:
+        statement = statement.where(projects.c.id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        ids = list((await conn.execute(statement.order_by(projects.c.id))).scalars())
+    findings, errors = [], []
+    for project_id in ids:
+        try:
+            findings.extend(await orphaned_pull_requests(ctx.db, git, project_id, now=now))
+        except Exception as exc:
+            errors.append({"project_id": project_id, "error": str(exc)})
+    return findings, errors
+
+
+async def _check_orphaned_prs(ctx):
+    check_id = "integration.orphaned_prs"
+    if ctx.db is None:
+        return CheckResult(check_id, Severity.INFO, "database required")
+    findings, errors = await _find_orphaned_prs(ctx)
+    detail = "\n".join(
+        f"{item['project_id']}: {item['pr_url']} ({item['branch']}) is "
+        f"{int(item['age_seconds'] / 3600)}h old with no live task or train owner"
+        for item in findings
+    ) or "no open aq/ PRs older than 24h without a live task or train owner"
+    detail += "".join(f"\n{item['project_id']}: PR inventory failed: {item['error']}"
+                      for item in errors)
+    return CheckResult(
+        check_id, Severity.WARN if findings or errors else Severity.OK, detail,
+        data={"count": len(findings), "pull_requests": findings, "errors": errors},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="integration.orphaned_prs", run=_check_orphaned_prs, owner=OWNER,
+            timeout_s=60.0,
+        ),
         DoctorCheck(
             id="integration.delivered_children_unsettled_parent",
             run=_check_delivered_children_unsettled_parent,

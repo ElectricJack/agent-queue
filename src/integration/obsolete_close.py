@@ -162,10 +162,12 @@ class ObsoleteClose:
         db,
         *,
         release_owner: ReleaseOwner | None,
+        git_manager=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
         self.release_owner = release_owner
+        self.git = git_manager
         self.clock = clock
 
     # -- the close --------------------------------------------------------------
@@ -413,6 +415,23 @@ class ObsoleteClose:
                 }
             )
 
+        pr_cleanup = None
+        if task.pr_url:
+            from src.integration.pr_cleanup import SettledTaskPullRequestClosure
+
+            async with self.db._engine.connect() as conn:
+                marker = await self._marker(conn, task_id)
+            if self.git is None:
+                pr_cleanup = {"outcome": "blocked", "reason": "GitHub cleanup unavailable"}
+            else:
+                pr_cleanup = await SettledTaskPullRequestClosure(self.db, self.git).run(
+                    task_id, reason=f"Superseded/obsolete: {marker['reason']}",
+                    principal=principal,
+                )
+            if pr_cleanup["outcome"] == "blocked":
+                pending.append({"kind": "pull_request", "pr_url": task.pr_url,
+                                "reason": "pr_cleanup_failed", "detail": pr_cleanup["reason"]})
+
         state = "pending" if pending else "done"
         summary = {
             "state": state,
@@ -421,6 +440,8 @@ class ObsoleteClose:
             "dropped_batches": dropped,
             "pending": pending,
         }
+        if pr_cleanup is not None:
+            summary["pr_cleanup"] = pr_cleanup
         await self._record_cleanup(task_id, task.project_id, summary)
         return summary
 

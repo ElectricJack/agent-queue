@@ -712,6 +712,32 @@ def service(db, release=None):
 
 
 class TestObsoleteClose:
+    async def test_supersession_pr_cleanup_retries_after_github_failure(self, db, monkeypatch):
+        from types import SimpleNamespace
+        from src.integration.obsolete_close import ObsoleteClose
+        from tests.test_integration_pr_delivery import _GitHub
+
+        await superseded(db)
+        await db.update_task("dup", pr_url="https://github.com/o/r/pull/81")
+        github = _GitHub()
+        github.open(81, "aq/dup", SHA)
+        git_manager = GitManager()
+        monkeypatch.setattr(git_manager, "bind_github_repository", AsyncMock(
+            return_value=SimpleNamespace(repository_id=7, full_name="o/r")))
+        monkeypatch.setattr(git_manager, "_github_client", lambda _binding: github)
+        close = github.close_pull_request
+        monkeypatch.setattr(github, "close_pull_request", AsyncMock(side_effect=RuntimeError("offline")))
+        closer = ObsoleteClose(db, release_owner=fake_release(db), git_manager=git_manager)
+        result = await closer.close("dup", reason="superseded by PR #82", principal="local")
+        assert result["outcome"] == "closed" and result["cleanup"]["state"] == "pending"
+        assert result["cleanup"]["pending"][0]["kind"] == "pull_request"
+        assert github.closed == [] and await status(db, "dup") == TaskStatus.COMPLETED
+        monkeypatch.setattr(github, "close_pull_request", close)
+        [retried] = await closer.retry_pending()
+        assert retried["state"] == "done" and github.closed == [81]
+        assert len(github.comments[81]) == 1 and "PR #82" in github.comments[81][0]
+        assert await closer.retry_pending() == []
+
     async def test_superseded_task_closes_releases_everything_and_can_be_deleted(self, db):
         from src.database.queries.hierarchy_queries import HierarchyError
 
