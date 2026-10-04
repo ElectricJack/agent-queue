@@ -1414,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:fa0a0a5d037619a0fcfbef4fa39e4554441a5bd14ae66d3a04b8f144798b43e8",
+  "digest": "sha256:cd7bb8c29b8dd798549eac93cb863bf8a68789b83ae0b78f0de24f711b340fad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4988,9 +4988,11 @@
         "src.integration.development",
         "src.integration.development_adapter",
         "src.integration.development_policy",
+        "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.subjects",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
       ],
@@ -7904,9 +7906,11 @@
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.root_runtime",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8445,6 +8449,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.development",
         "src.integration.engine",
         "src.integration.models",
@@ -8743,6 +8748,7 @@
         "src.database",
         "src.database.tables",
         "src.integration.models",
+        "src.integration.reconciler",
         "src.integration.subjects"
       ],
       "markers": [
@@ -11524,6 +11530,7 @@
         "src.commands.principal",
         "src.database",
         "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.playbooks.profiles",
         "src.playbooks.validation",
         "src.profiles.capabilities",
@@ -13433,6 +13440,7 @@
         "src.doctor.review_checks",
         "src.event_bus",
         "src.models",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.reviews.vault"
       ],
