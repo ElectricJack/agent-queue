@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from uuid import uuid4
 
 from sqlalchemy import insert, or_, select, update
 
 from src.database import tables as t
+from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.queries.task_queries import _OPERATOR_ADOPTION_TOKEN
+from src.git.manager import GitError
 from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
 from src.integration.delegate_release import release_delegates_on
 from src.integration.delivery_truth import (
@@ -276,6 +279,7 @@ class DeliveredParentAdoption:
             .mappings()
             .all()
         )
+        confirmed_workspaces = {}
         for owner in owners:
             if owner["handoff_state"] == "released":
                 continue
@@ -295,11 +299,22 @@ class DeliveredParentAdoption:
                 owner["handoff_state"] != "reserved"
                 or owner["session_id"]
                 or owner["workspace_id"]
-                or owner["confirmed_workspace_id"]
+                or (owner["confirmed_workspace_id"] and not child_reservation)
                 or owner["repository_id"] != repo["id"]
                 or not (parent_reservation or child_reservation)
             ):
                 raise ValueError(f"branch owner {owner['id']} must be recovered first")
+            if owner["confirmed_workspace_id"]:
+                workspace = (
+                    (await conn.execute(
+                        select(t.workspaces).where(
+                            t.workspaces.c.id == owner["confirmed_workspace_id"],
+                        )
+                    )).mappings().one_or_none()
+                )
+                if workspace is None or workspace["project_id"] != project["id"]:
+                    raise ValueError(f"branch owner {owner['id']}: confirmed workspace unavailable")
+                confirmed_workspaces[workspace["id"]] = dict(workspace)
         # Only an exact quiet branch reservation may be exempted from writer
         # ambiguity. Every irreversible/pending external write remains binding.
         for owner in owners:
@@ -359,7 +374,67 @@ class DeliveredParentAdoption:
             "children": [dict(row) for row in children],
             "requests": requests,
             "owners": [dict(row) for row in owners],
+            "confirmed_workspaces": confirmed_workspaces,
         }
+
+    async def prove_confirmed_workspaces_on(self, conn, facts, truth):
+        """A historical slot is harmless only when its child ref has no writer or local work."""
+        if not facts["confirmed_workspaces"]:
+            return
+        writer_paths = {
+            os.path.realpath(path)
+            for path in (await conn.execute(
+                select(t.workspaces.c.workspace_path).where(or_(
+                    t.workspaces.c.locked_by_task_id.is_not(None),
+                    t.workspaces.c.locked_by_agent_id.is_not(None),
+                ))
+            )).scalars()
+        }
+        writer_paths.update(
+            os.path.realpath(path)
+            for path in (await conn.execute(
+                select(t.sessions.c.work_dir).where(session_attached_clause())
+            )).scalars() if path
+        )
+        for owner in facts["owners"]:
+            if owner["handoff_state"] == "released" or not owner["confirmed_workspace_id"]:
+                continue
+            workspace = facts["confirmed_workspaces"][owner["confirmed_workspace_id"]]
+            path = workspace["workspace_path"]
+            branch = owner["ref"].removeprefix("refs/heads/")
+            try:
+                if await self.service.run_git(path, "remote", "get-url", "origin") != (
+                    facts["repo"]["url"]
+                ):
+                    raise ValueError("confirmed workspace repository mismatch")
+                local_ref = "refs/heads/" + branch
+                exists = await self.service.git.aref_exists(path, local_ref)
+                local_sha = await self.service.git.arev_parse(path, local_ref) if exists else None
+                if exists is None or (exists and not local_sha):
+                    raise ValueError("local child ref cannot be observed")
+                remote_sha = truth.source_heads.get("refs/remotes/origin/" + branch)
+                if local_sha:
+                    for published in (remote_sha, truth.target_oid):
+                        if published and await self.service.git.ais_ancestor(
+                            truth.store, local_sha, published, strict=True,
+                        ) is True:
+                            break
+                    else:
+                        raise ValueError(
+                            "local child ref has unpublished commits or cannot be proved"
+                        )
+                for entry in await self.service.git.aworktree_list(path):
+                    if entry.get("branch") != branch:
+                        continue
+                    if entry.get("head") != local_sha:
+                        raise ValueError("child ref moved during workspace observation")
+                    if os.path.realpath(entry["path"]) in writer_paths:
+                        raise ValueError("a writer still holds a checkout of the child ref")
+                    dirty = await self.service.git.aget_dirty_paths(entry["path"])
+                    if dirty is None or any(p != ".agent-queue-lock" for p in dirty):
+                        raise ValueError("child ref checkout has local changes or cannot be observed")
+            except (GitError, OSError, ValueError) as exc:
+                raise ValueError(f"branch owner {owner['id']} must be recovered first: {exc}") from exc
 
     async def prove(self, facts, truth, *, accept_equivalent=False):
         proofs = []
@@ -400,6 +475,8 @@ class DeliveredParentAdoption:
                     "kind": kind,
                 }
             )
+        async with self.db._engine.connect() as conn:
+            await self.prove_confirmed_workspaces_on(conn, facts, truth)
         return proofs
 
     async def lock_facts_on(self, conn, facts):
@@ -432,6 +509,7 @@ class DeliveredParentAdoption:
                 t.integration_candidate_resolutions.c.operation_id,
                 [facts["operation"]["id"]],
             ),
+            (t.workspaces, t.workspaces.c.id, sorted(facts["confirmed_workspaces"])),
             (
                 t.tasks,
                 t.tasks.c.id,
@@ -501,6 +579,7 @@ class DeliveredParentAdoption:
                     current = await self.facts_on(conn, task_id)
                     if current != facts:
                         raise ValueError("parent or child generation changed; repeat the dry run")
+                    await self.prove_confirmed_workspaces_on(conn, current, truth)
                     if not await truth.is_fresh():
                         raise ValueError("target moved before adoption; repeat the dry run")
                     completion_id, identity = str(uuid4()), str(uuid4())
