@@ -56,6 +56,40 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_release_held_gate(self, args: dict) -> dict:
+        """A human may lift a hold without changing its immutable gate answer."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReleaseHeldGateArgs
+        from src.integration.engine import EngineRefused
+        from src.integration.gates import GatePrimitives
+        from src.integration.subjects import Subject
+
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            return _failure("unauthorized", "a verified human operator is required")
+        try:
+            request = IntegrationReleaseHeldGateArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("refused", str(exc))
+        if not request.dry_run and (
+            request.expected_version is None or not request.reason.strip()
+        ):
+            return _failure("refused", "release requires an exact subject version and reason")
+        row = await self.db.get_integration_subject(request.subject_id)
+        if row is None:
+            return _failure("refused", "integration subject is missing")
+        if not request.dry_run and row["version"] != request.expected_version:
+            return _failure("refused", "stale_subject")
+        try:
+            result = await GatePrimitives(self.db).release_hold(
+                Subject.from_row(row), request.gate_id, reason=request.reason,
+                operator_id="human:local-operator", verified_human=True, dry_run=request.dry_run,
+            )
+        except EngineRefused as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def reverify_integration_parent_source(self, observation) -> dict:
         """Daemon-only adapter for a configured canonical PR head observation."""
         from src.integration.cancelled_collection_recovery import _ProofFailed

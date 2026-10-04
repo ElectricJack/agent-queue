@@ -19,6 +19,7 @@ from src.database import tables as t
 from src.integration.collection import CollectionService
 from src.integration.child_delivery import ChildDelivery
 from src.integration.engine import EngineRefused
+from src.integration.gates import GatePrimitives
 from src.integration.parent_adapters import ParentPolicyFacts, ParentPrimitiveAdapters
 from src.integration.parent_engine import ParentEngineOwnership
 from src.integration.parent_ci import ParentCIService
@@ -33,6 +34,7 @@ from src.integration.parent_subjects import ParentDatabaseObservationReader, Par
 from src.integration.models import PromotionInput
 from src.integration.repair import RepairService
 from src.integration.subjects import (
+    GateArgs,
     PolicyArtifactPin,
     Subject,
 )
@@ -154,7 +156,7 @@ def runtime_env(db, hierarchy, subject, *, promotion=None, parent_ci=None, activ
         commands=commands,
         adapters=adapters,
         policy=policy,
-        loop=runtime.loops[0],
+        loop=runtime.loops[0] if runtime.loops else None,
         runtime=runtime,
     )
 
@@ -873,6 +875,252 @@ async def test_rollback_preserves_binding_gate_for_legacy_mutations(db, answer):
             assert (await hierarchy.parent_completion.mark_ready_on(conn, "parent"))["outcome"] == "waiting"
     assert (await db.get_integration_subject(env.subject.id))["gate_id"] == gate_id
     assert len(await _rows(db, t.gates)) == 1
+
+
+async def held_parent(db, *, answer="hold", legacy=False):
+    hierarchy, _, children = await _parent_tree(db, children=1)
+    async with db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == children[0]).values(status="FAILED"))
+    env = await setup(db, hierarchy)
+    await visit(env)
+    row = await db.get_integration_subject(env.subject.id)
+    gate_id = row["gate_id"]
+    if answer:
+        result = await env.commands.execute(
+            "gate_resolve", {"gate_id": gate_id, "resolution": answer, "resolved_by": "fixture"},
+        )
+        assert result["success"], result
+    if legacy:
+        await ParentEngineOwnership(db).transfer(
+            "repo", task_id="parent", engine="legacy",
+            expected_versions={row["id"]: row["version"]}, reason="hold-preserving rollback",
+        )
+        await env.runtime.stop()
+    row = await db.get_integration_subject(env.subject.id)
+    request = {
+        "subject_id": row["id"], "gate_id": gate_id, "expected_version": row["version"],
+        "reason": "human is ready to resume", "dry_run": False,
+    }
+    return env, hierarchy, children, request
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_release_held_gate_resumes_after_restart_without_rewriting_answer(db, legacy):
+    env, hierarchy, _, request = await held_parent(db, legacy=legacy)
+    env = await restart(env, hierarchy, active=not legacy)
+    before = await db.get_integration_subject(env.subject.id)
+    old_journal = await db.list_integration_subject_journal(env.subject.id)
+    old_gates = await _rows(db, t.gates)
+    old_receipts = await _rows(db, t.task_delivery_receipts)
+    # Ordinary resolution still cannot revise a hold into approval.
+    assert (await env.commands.execute("gate_resolve", {
+        "gate_id": request["gate_id"], "resolution": "retry", "resolved_by": "fixture",
+    }))["reason"] == "answer_immutable"
+    preview = await env.commands.execute(
+        "integration_release_held_gate", {**request, "dry_run": True},
+    )
+    assert preview["success"] and preview["expected_version"] == before["version"]
+    assert await db.get_integration_subject(env.subject.id) == before
+    assert await db.list_integration_subject_journal(env.subject.id) == old_journal
+    result = await env.commands.execute("integration_release_held_gate", request)
+    assert result["success"] and result["outcome"] == "released", result
+    after = await db.get_integration_subject(env.subject.id)
+    assert after["version"] == before["version"] + 1 and after["gate_id"] is None
+    assert after["next_due_at"] == after["wake_requested_at"]
+    for field in ("engine", "parent_episode_id", "head_sha", "generation", "writer_task_id",
+                  "writer_fence_token", "policy_artifact_sha256"):
+        assert after[field] == before[field]
+    assert await _rows(db, t.gates) == old_gates
+    assert await _rows(db, t.task_delivery_receipts) == old_receipts
+    journal = await db.list_integration_subject_journal(env.subject.id)
+    assert journal[:-1] == old_journal
+    release = journal[-1]
+    assert release["idempotency_key"] == f"gate-release:{request['gate_id']}"
+    assert release["subject_version"] == before["version"]
+    assert release["payload"]["previous_answer"]["choice"] == "hold"
+    assert release["payload"]["operator_id"] == "human:local-operator"
+    assert release["payload"]["reason"] == request["reason"]
+    env = await restart(env, hierarchy, active=not legacy)
+    if legacy:
+        async with ParentEngineOwnership(db).operation("parent"):
+            pass
+        # The actual legacy entry point reaches collection instead of the gate refusal.
+        collection = CollectionService(db, hierarchy_service_factory=lambda: hierarchy)
+        result = await collection.collect_parent("parent", 1000)
+        assert result is None or not isinstance(result, dict), result
+        row = await db.get_integration_subject(env.subject.id)
+        await ParentEngineOwnership(db).transfer(
+            "repo", task_id="parent", engine="reconciler",
+            expected_versions={row["id"]: row["version"]}, reason="resume reconciler",
+            evidence=("scenario",),
+        )
+        env = await restart(env, hierarchy)
+    # The failed child still needs a decision: ask a fresh gate, never reuse hold.
+    await visit(env)
+    fresh = await db.get_integration_subject(env.subject.id)
+    assert fresh["gate_id"] and fresh["gate_id"] != request["gate_id"]
+    assert len(await _rows(db, t.gates)) == 2
+    old_answer = await env.commands.execute("gate_resolve", {
+        "gate_id": request["gate_id"], "resolution": "retry", "resolved_by": "fixture",
+    })
+    assert old_answer["reason"] == "gate_not_current"
+
+
+async def test_release_held_gate_allows_real_legacy_promotion(case):
+    env = await setup(case.db, case.hierarchy, task_id="epic", promotion=case.promotion)
+    gate = await GatePrimitives(case.db).gate(
+        env.subject, GateArgs(question="Resume collection?", choices=("retry", "hold"),
+                              no_default=True),
+    )
+    gate_id = gate.detail["gate_id"]
+    assert (await env.commands.execute("gate_resolve", {
+        "gate_id": gate_id, "resolution": "hold", "resolved_by": "fixture",
+    }))["success"]
+    row = await case.db.get_integration_subject(env.subject.id)
+    await env.runtime.stop()
+    await ParentEngineOwnership(case.db).transfer(
+        "repo", task_id="epic", engine="legacy", expected_versions={row["id"]: row["version"]},
+        reason="rollback before release",
+    )
+    row = await case.db.get_integration_subject(env.subject.id)
+    assert (await env.commands.execute("integration_release_held_gate", {
+        "subject_id": row["id"], "gate_id": gate_id, "expected_version": row["version"],
+        "reason": "resume approved child", "dry_run": False,
+    }))["success"]
+    assert await _promote_next(case, 1000)
+    receipt = (await _rows(case.db, t.task_delivery_receipts))[0]
+    assert receipt["parent_episode_id"] == row["parent_episode_id"]
+    assert _git(["rev-parse", "refs/heads/aq/epic"], case.origin) == receipt["after_sha"]
+    assert _git(["rev-parse", "refs/heads/main"], case.origin) == case.base
+
+
+@pytest.mark.parametrize("change", ["version", "gate", "reason", "missing_version", "head",
+                                    "generation", "policy", "terminal", "unanswered", "retry"])
+async def test_release_held_gate_refuses_stale_or_nonheld_requests_without_writes(
+    db, change, monkeypatch,
+):
+    env, _, _, request = await held_parent(
+        db, answer=None if change == "unanswered" else "retry" if change == "retry" else "hold",
+        legacy=True,
+    )
+    if change == "version":
+        request["expected_version"] -= 1
+    elif change == "gate":
+        request["gate_id"] = "old-gate"
+    elif change == "reason":
+        request["reason"] = "   "
+    elif change == "missing_version":
+        request.pop("expected_version")
+    elif change == "policy":
+        # Policies and journal entries are immutable in PostgreSQL. Exercise the
+        # identity fence with a stale journal observation, without disabling it.
+        import src.integration.gates as gates_module
+
+        read_entry = gates_module.journal_entry_on
+
+        async def stale_policy(*args):
+            entry = await read_entry(*args)
+            return {**entry, "policy_artifact_sha256": "sha256:" + "e" * 64}
+
+        monkeypatch.setattr(gates_module, "journal_entry_on", stale_policy)
+    elif change in {"head", "generation", "terminal"}:
+        values = {
+            "head": {"head_sha": "f" * 40}, "generation": {"generation": 99},
+            "terminal": {"phase": "done", "gate_id": None, "next_due_at": None,
+                         "closed_reason": "closed"},
+        }[change]
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(t.integration_subjects).where(t.integration_subjects.c.id == env.subject.id)
+                .values(**values),
+            )
+    before = await db.get_integration_subject(env.subject.id)
+    journal = await db.list_integration_subject_journal(env.subject.id)
+    result = await env.commands.execute("integration_release_held_gate", request)
+    assert not result["success"] and result["outcome"] == "refused", result
+    assert await db.get_integration_subject(env.subject.id) == before
+    assert await db.list_integration_subject_journal(env.subject.id) == journal
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.SERVICE,
+                                PrincipalKind.PLAYBOOK])
+async def test_agent_and_policy_principals_cannot_release_held_gate(db, kind):
+    env, _, _, request = await held_parent(db)
+    before = await db.get_integration_subject(env.subject.id)
+    with principal_context(ExecutionPrincipal(kind=kind, policy=DENY_ALL, elevated=True)):
+        result = await env.commands.execute("integration_release_held_gate", request)
+    assert not result["success"] and result["outcome"] == "unauthorized"
+    assert await db.get_integration_subject(env.subject.id) == before
+
+
+@pytest.mark.parametrize("choice", ["reject", "abort"])
+async def test_release_held_gate_cannot_lift_a_rejection(db, choice):
+    hierarchy, _, _ = await _parent_tree(db, children=1)
+    env = await setup(db, hierarchy)
+    gate = await GatePrimitives(db).gate(
+        env.subject, GateArgs(question="Proceed?", choices=("hold", "reject", "abort"),
+                              no_default=True),
+    )
+    gate_id = gate.detail["gate_id"]
+    assert (await env.commands.execute("gate_resolve", {
+        "gate_id": gate_id, "resolution": choice, "resolved_by": "fixture",
+    }))["success"]
+    row = await db.get_integration_subject(env.subject.id)
+    result = await env.commands.execute("integration_release_held_gate", {
+        "subject_id": row["id"], "gate_id": gate_id, "expected_version": row["version"],
+        "reason": "resume", "dry_run": False,
+    })
+    assert not result["success"] and result["error"] == "gate_not_held"
+    assert await db.get_integration_subject(env.subject.id) == row
+
+
+async def test_release_held_gate_rolls_back_its_audit_if_subject_update_fails(db, monkeypatch):
+    env, _, _, request = await held_parent(db)
+    before = await db.get_integration_subject(env.subject.id)
+    journal = await db.list_integration_subject_journal(env.subject.id)
+    monkeypatch.setattr(db, "update_integration_subject_on", AsyncMock(return_value=None))
+    with pytest.raises(RuntimeError, match="locked subject changed"):
+        await env.commands.execute("integration_release_held_gate", request)
+    assert await db.get_integration_subject(env.subject.id) == before
+    assert await db.list_integration_subject_journal(env.subject.id) == journal
+
+
+async def test_release_held_gate_preserves_manual_and_project_pause(db):
+    env, _, _, request = await held_parent(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(t.task_metadata).values(task_id="parent", key="manual_pause", value="{}"),
+        )
+        await conn.execute(update(t.projects).where(t.projects.c.id == "p").values(status="PAUSED"))
+    pause_before = await db.get_task_meta("parent", "manual_pause")
+    assert pause_before is not None
+    assert (await env.commands.execute("integration_release_held_gate", request))["success"]
+    await visit(env)
+    facts = await env.observer.observe(Subject.from_row(await db.get_integration_subject(env.subject.id)))
+    assert facts.holds
+    assert await db.get_task_meta("parent", "manual_pause") == pause_before
+    assert (await db.get_project("p")).status.value == "PAUSED"
+
+
+async def test_release_held_gate_waits_for_parent_operation_and_rechecks_version(db):
+    env, _, _, request = await held_parent(db)
+    owner = ParentEngineOwnership(db)
+    async with owner.operation("parent", subject=Subject.from_row(
+        await db.get_integration_subject(env.subject.id),
+    )):
+        release = asyncio.create_task(env.commands.execute("integration_release_held_gate", request))
+        await asyncio.sleep(0.02)
+        assert not release.done()
+        async with db.immediate() as conn:
+            await db.update_integration_subject_on(
+                conn, subject_id=env.subject.id, expected_version=request["expected_version"],
+                values={"refusal_streak": 1}, now=2000,
+            )
+    result = await release
+    assert not result["success"] and result["error"] == "stale_subject"
+    assert (await db.get_integration_subject(env.subject.id))["gate_id"] == request["gate_id"]
+    assert not any(r["outcome"] == "released" for r in
+                   await db.list_integration_subject_journal(env.subject.id))
 
 
 async def test_transfer_waits_for_remote_action_and_spawned_task_cannot_inherit_authority(db):
