@@ -28,26 +28,40 @@ setup those suites keep honest.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.commands import CommandHandler
 from src.commands.contracts.integration import IntegrationAdoptArgs
+from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.config import AppConfig, DatabaseConfig
 from src.database import tables as t
+from src.database.queries.result_queries import close_identity
+from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.git.manager import GitManager
 from src.integration.delivery_truth import DeliveryState
 from src.integration.github_review_poll import GitHubReviewPoller
-from src.integration.models import BranchKey, PromotionInput
-from src.integration.ownership import BranchBusy, BranchOwnership
+from src.integration.models import BranchKey, Fence, PromotionInput
+from src.integration.outbox import enqueue_integration_event
+from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.promotion import PromotionService
+from src.integration.repair import RepairService
 from src.integration.service import DISPATCH_RETRY_BASE_SECONDS, IntegrationService
-from src.models import RepoSourceType, SessionRecord, Task, TaskStatus, Workspace
+from src.models import (
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskCompletion,
+    TaskStatus,
+    Workspace,
+)
 from src.orchestrator.core import Orchestrator
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
@@ -55,6 +69,7 @@ from src.sessions.provider import SessionSpec
 from src.sessions.reconciler import SessionReconciler
 from src.test_selection.catalogue import CATALOGUE_PATH
 from tests import test_development_integration as dev
+from tests import test_integration_cancelled_collection as cancelled_tests
 from tests import test_integration_owner_recovery as owner_tests
 from tests import test_integration_parent_source as parent_source
 from tests import test_integration_promotion as promotion_tests
@@ -62,6 +77,15 @@ from tests.db_fixtures import lease_dsn
 from tests.test_development_integration import _merge_on_main, feature, git
 from tests.test_epic_pr_review_evidence import _ReviewGit
 from tests.test_generated_artifacts import _catalogue_branches
+from tests.test_integration_cancelled_collection import (
+    _failed_aggregate,
+    _operation,
+    _owner,
+    _promote_next,
+    _remote_tip,
+    _rows,
+)
+from tests.test_integration_parent_completion import _boundary, _code_receipt, _parent_tree
 from tests.test_integration_parent_source import _finish, _members, _ParentClient, _source
 from tests.test_integration_promotion import _review
 from tests.test_integration_repair_rollover import _batch_writer, _stage
@@ -70,9 +94,10 @@ from tests.test_integration_repair_rollover import _batch_writer, _stage
 # scenarios' own ``db`` locals do not shadow an import.
 promotion_db = promotion_tests.db  # 1: promotion database with a repo row
 setup = dev.setup  # 2-3: PostgreSQL + bare origin for ``integration_adopt``
-db = parent_source.db  # 4: requested by ``completed`` by name
+db = parent_source.db  # 4-5: requested by ``completed`` by name; 5 builds its tree on it
 completed = parent_source.completed  # 4: a collected, verified two-child epic
 env = owner_tests.env  # 6: PostgreSQL + origin for the repair-stage writer
+train_epic = cancelled_tests.case  # 7: train epic with a red aggregate and a fix child
 
 
 # --- 1. Generated catalogue overlap (prime-vault-27) ------------------------------------------
@@ -698,6 +723,364 @@ async def test_keen_quest_99_multi_child_epic_admitted_and_reverified_after_main
     assert review["id"] != first_review["id"]
 
 
+# --- 5. Escalated parent operation, every child delivered (crisp-horizon-90) ------------------
+# An operator recovers a finished post-collection repair, through ``recover-parent-head``.
+
+
+async def _crisp_horizon_case(db, tmp_path, *, final_close_audits: int):
+    """Three receipted children, two audited repair gaps, and a finished final stage.
+
+    This is the crisp-horizon-90 shape, scaled down from 11 children and 7 stages:
+
+    * Every child carries a delivery receipt into ``aq/parent``, and every
+      receipt's ``after_sha`` is an ancestor of the live parent tip.
+    * Stages 0 and 1 each published a repair commit between two receipts. That
+      is the "receipt chain does not bind the current parent head" gap.
+    * Stage 2 resolved child 3's conflict. Its promotion intent is committed
+      with the resolution fields and the delegate task is COMPLETED, yet the
+      stage is still ``active`` and the operation is ``escalated``.
+    * The parent task is PAUSED.
+
+    ``final_close_audits`` is how many ``integration.repair_delegate_closed``
+    audits the final stage has. A clean close leaves one. Live stage 6 of
+    operation 6397b45b had two (fences 37 and 40, from two delegate sessions).
+    The shape fresh-meadow-81's fix a389deba1 (approved at 9c85fbad0) reconciles
+    has none, with the resolution receipt standing in for the audit.
+    """
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=work if work.exists() else tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "--bare", "--initial-branch=main", str(origin))
+    git("clone", str(origin), str(work))
+    git("config", "user.name", "Repair Test")
+    git("config", "user.email", "repair@example.test")
+    git("commit", "--allow-empty", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    git("push", "origin", "main")
+    git("switch", "-c", "aq/parent")
+    shas = {}
+    for name in ("child_1", "gap_1", "child_2", "gap_2", "final"):
+        git("commit", "--allow-empty", "-m", name)
+        shas[name] = git("rev-parse", "HEAD")
+    final_tree = git("rev-parse", "HEAD^{tree}")
+    git("push", "origin", "aq/parent")
+
+    hierarchy, checkpointed, children = await _parent_tree(db, children=3, base_sha=base)
+    operation_id = checkpointed["operation_id"]
+    await _code_receipt(db, children[0], base, shas["child_1"])
+    await _code_receipt(db, children[1], shas["gap_1"], shas["child_2"])
+    authoring = {
+        "operation_id": operation_id,
+        "stage_ordinal": 2,
+        "repair_task_id": "repair-final",
+        "repair_session_id": "final-session",
+        "repair_session_instance_token": "final-instance",
+        "repair_workspace_id": "final-workspace",
+        "fence": {"repository_id": "repo", "branch": "aq/parent",
+                  "owner_id": "repair-final", "token": 6},
+    }
+    push = {"kind": "exact_resolution_push_observed", "remote_sha": shas["final"]}
+    remote = {
+        "kind": "exact_resolution_tip",
+        "remote_sha": shas["final"],
+        "resolved_tree_sha": final_tree,
+        "repair_commit_shas": [shas["final"]],
+    }
+    await _code_receipt(
+        db,
+        children[2],
+        shas["gap_2"],
+        shas["final"],
+        squash_sha=None,
+        review_evidence={"review": {"source_base": "a" * 40}},
+        resolution_evidence={
+            "kind": "conflict_resolution",
+            "original_source_base": "a" * 40,
+            "original_source_head": "b" * 40,
+            "original_source_tree": "c" * 40,
+            "original_expected_target": shas["gap_2"],
+            "resolved_head_sha": shas["final"],
+            "resolved_tree_sha": final_tree,
+            "repair_commit_shas": [shas["final"]],
+            "authoring": authoring,
+            "push_authority": push,
+            "remote_proof": remote,
+        },
+    )
+    delegates = (
+        ("repair", shas["gap_1"], 20.0),
+        ("repair-middle", shas["gap_2"], 22.0),
+        ("repair-final", shas["final"], 26.0),
+    )
+    for task_id, head, completed_at in delegates:
+        await db.create_task(
+            Task(
+                id=task_id, project_id="p", repo_id="repo", branch_name="aq/parent",
+                title=task_id, description="Authorized collection repair",
+                status=TaskStatus.COMPLETED, created_by_kind="integration_repair",
+                created_by_id=operation_id,
+            )
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id=f"completion-{task_id}", task_id=task_id, outcome="pass",
+                branch="aq/parent",
+                # The resolving delegate closed with no commits of its own:
+                # its work is the committed resolution intent.
+                commits=[] if task_id == "repair-final" else [head],
+                completed_at=completed_at,
+            )
+        )
+    await db.set_task_meta(
+        "repair-final",
+        ACCEPTED_CLOSE_KEY,
+        close_identity("completion-repair-final", session_id="final-session", claim_epoch=0),
+    )
+    close_audits = [
+        (0, "repair", "repair-session", "repair-instance", "repair-workspace", 2),
+        (1, "repair-middle", "middle-session", "middle-instance", "middle-workspace", 4),
+    ]
+    if final_close_audits:
+        close_audits.append(
+            (2, "repair-final", "final-session", "final-instance", "final-workspace", 6)
+        )
+    if final_close_audits > 1:
+        # Live stage 6 was closed a second time by a later delegate session.
+        close_audits.append(
+            (2, "repair-final", "final-retry-session", "final-retry-instance",
+             "final-workspace", 6)
+        )
+    async with db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == "parent").values(status="PAUSED"))
+        await conn.execute(
+            update(t.task_integration_checkpoints)
+            .where(t.task_integration_checkpoints.c.task_id == "parent")
+            .values(checkpoint_sha=shas["child_1"], state="verifying")
+        )
+        await conn.execute(
+            update(t.integration_branch_owners).values(
+                owner_id=operation_id, owner_role="collector",
+                handoff_state="reserved", fence_token=7,
+            )
+        )
+        await conn.execute(
+            update(t.integration_repair_operations)
+            .where(t.integration_repair_operations.c.id == operation_id)
+            .values(state="escalated", active_stage=2)
+        )
+        for index, (stage, task_id, session, instance, workspace, token) in enumerate(
+            close_audits
+        ):
+            await enqueue_integration_event(
+                conn,
+                event_id=f"closed-{index}",
+                dedup_key=f"closed-{index}",
+                project_id="p",
+                event_type="integration.repair_delegate_closed",
+                available_at=20.0 + index,
+                payload={
+                    "operation_id": operation_id, "stage": stage, "task_id": task_id,
+                    "session_id": session, "instance_token": instance,
+                    "workspace_id": workspace, "fence_token": token,
+                },
+            )
+        stages = (
+            (0, "repair", shas["child_1"], shas["gap_1"], "expired"),
+            (1, "repair-middle", shas["child_2"], shas["gap_2"], "expired"),
+            (2, "repair-final", shas["gap_2"], shas["final"], "active"),
+        )
+        for ordinal, task_id, start, head, state in stages:
+            await conn.execute(
+                insert(t.integration_repair_stages).values(
+                    operation_id=operation_id,
+                    ordinal=ordinal,
+                    policy=_boundary().repair.model_dump(mode="json"),
+                    intelligence_class="medium",
+                    starting_sha=start,
+                    trigger_id="failed-check",
+                    writer_kind="repair_delegate",
+                    repair_task_id=task_id,
+                    current_subject={"kind": "parent", "generation": 1, "head_sha": head},
+                    started_at=2.0,
+                    deadline_at=10.0,
+                    deadline_event_id=f"deadline-{ordinal}",
+                    attempts=1,
+                    state=state,
+                    dossier={"repair_commits": [head], "branch_sha": head},
+                )
+            )
+        await conn.execute(
+            insert(t.integration_promotion_intents).values(
+                id="final-intent",
+                domain_key="final-intent",
+                operation_key=operation_id,
+                project_id="p",
+                receipt_id=f"receipt-{children[2]}",
+                source_task_id=children[2],
+                target_task_id="parent",
+                source_head="b" * 40,
+                source_base="a" * 40,
+                repository_id="repo",
+                target_branch="aq/parent",
+                expected_target=shas["gap_2"],
+                fence_owner_id=operation_id,
+                fence_token=5,
+                state="committed",
+                resolution_head_sha=shas["final"],
+                resolution_tree_sha=final_tree,
+                resolution_commit_shas=[shas["final"]],
+                resolution_operation_id=operation_id,
+                resolution_stage_ordinal=2,
+                resolution_task_id="repair-final",
+                resolution_session_id="final-session",
+                resolution_session_instance_token="final-instance",
+                resolution_workspace_id="final-workspace",
+                resolution_fence_owner_id="repair-final",
+                resolution_fence_token=6,
+                resolution_push_started_at=24.0,
+                resolution_push_evidence=push,
+                remote_evidence=remote,
+                committed_at=25.0,
+                created_at=23.0,
+                updated_at=25.0,
+            )
+        )
+    repo = RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin))
+    promotion = PromotionService(
+        db,
+        data_dir=tmp_path / "retained",
+        git_manager=GitManager(),
+        repository_resolver=lambda _: repo,
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(
+        hierarchy_integration=hierarchy,
+        promotion_service=promotion,
+        repair_service=RepairService(db),
+    )
+    args = {
+        "operation_id": operation_id,
+        "head_sha": shas["final"],
+        "dry_run": True,
+        "expected_episode_id": checkpointed["episode_id"],
+        "expected_generation": 1,
+        "expected_stage": 2,
+        "expected_fence_token": 7,
+        "reason": "Reconcile the finished collection of crisp-horizon-90",
+    }
+    return SimpleNamespace(
+        handler=handler, hierarchy=hierarchy, git=git, shas=shas, args=args,
+        operation_id=operation_id, children=children,
+    )
+
+
+@pytest.mark.parametrize(
+    "final_close_audits",
+    [
+        pytest.param(
+            0,
+            id="resolution-receipt-only",
+            marks=pytest.mark.xfail(
+                reason=(
+                    "fresh-meadow-81: recover-parent-head refuses an escalated finished "
+                    "collection ('repair lacks its exact fenced delegate-close audit'); "
+                    "passes on its approved head 9c85fbad0; remove when that is on main"
+                ),
+                strict=False,
+            ),
+        ),
+        pytest.param(
+            2,
+            id="two-close-audits-as-live",
+            marks=pytest.mark.xfail(
+                reason=(
+                    "no ticket yet: live stage 6 had two delegate-close audits and "
+                    "recover-parent-head accepts exactly one, even on fresh-meadow-81's "
+                    "approved head 9c85fbad0; remove when that is fixed"
+                ),
+                strict=False,
+            ),
+        ),
+    ],
+)
+async def test_escalated_parent_with_all_children_delivered_moves_to_fresh_verification(
+    db, tmp_path, final_close_audits
+):
+    """crisp-horizon-90 (Discord epic): an escalated finished collection must reach fresh verification.
+
+    Incident 2026-10-03/04, ticket fresh-meadow-81 part 2 (fix a389deba1,
+    "fix(integration): reconcile proven historical parent recovery", approved
+    at 9c85fbad0 and not on main).
+    Related fixes: stark-ridge-78 (3399edc2d, on main) and wise-torrent
+    (6d9ca2d7d, on main).
+
+    All 11 children were receipted into the parent, and each was an ancestor of
+    the epic head. Parent repair operation 6397b45b finished its conflict
+    resolutions, yet it stayed ``escalated`` with its last stage ``active`` while
+    the stage's delegate was COMPLETED. The parent stayed PAUSED (stale_head:
+    "delivery receipt chain does not bind the current parent head"). Every
+    supported control refused: redrive-root ("PAUSED, not COMPLETED"),
+    reopen-collection ("collection operation is escalated"), resume
+    (invalid_state), and recover-parent-head ("repair lacks its exact fenced
+    delegate-close audit").
+
+    Required: recover-parent-head, the supported control for a finished
+    post-collection repair, binds the receipt chain to the live tip. It moves
+    the parent to fresh aggregate verification of that tip and leaves receipts
+    and the remote unchanged.
+    """
+    case = await _crisp_horizon_case(db, tmp_path, final_close_audits=final_close_audits)
+    final = case.shas["final"]
+
+    # The incident shape, which holds on main today.
+    receipts = await _rows(db, t.task_delivery_receipts)
+    assert {row["source_task_id"] for row in receipts} == set(case.children)
+    for row in receipts:
+        case.git("merge-base", "--is-ancestor", row["after_sha"], final)
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+    [operation] = await _rows(db, t.integration_repair_operations)
+    assert (operation["state"], operation["active_stage"]) == ("escalated", 2)
+    [final_stage] = await _rows(
+        db, t.integration_repair_stages, t.integration_repair_stages.c.ordinal == 2
+    )
+    assert final_stage["state"] == "active"
+    assert (await db.get_task(final_stage["repair_task_id"])).status is TaskStatus.COMPLETED
+    refs = case.git("ls-remote", "origin")
+
+    preview = await case.handler._cmd_integration_recover_parent_head(case.args)
+    assert preview["outcome"] == "would_recover", f"{preview.get('error')}: {preview}"
+    applied = await case.handler._cmd_integration_recover_parent_head(
+        {**case.args, "dry_run": False}
+    )
+    assert applied["success"] and applied["outcome"] == "recovered", applied
+
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["checkpoint_sha"] == final
+    assert checkpoint["state"] == "integration_ready"
+    assert checkpoint["verified_sha"] is None
+    assert checkpoint["current_verification_id"] is None
+    verifier = await db.get_task(f"verify-{case.operation_id}")
+    assert verifier is not None and verifier.status is TaskStatus.PAUSED
+    # Recovery is not verification: the recovered tip needs fresh evidence.
+    unverified = await case.hierarchy.verify_parent("parent", 1, final, [])
+    assert unverified["outcome"] != "verified", unverified
+    assert await _rows(db, t.task_delivery_receipts) == receipts
+    assert case.git("ls-remote", "origin") == refs
+    again = await case.handler._cmd_integration_recover_parent_head(
+        {**case.args, "dry_run": False}
+    )
+    assert again["outcome"] == "already_recovered", again
+
+
 # --- 6. Repair delegate claim after a stage handoff (keen-cascade-74) -------------------------
 # Stage deadline and dispatch, the session reconciler, then the claim check.
 
@@ -848,3 +1231,143 @@ async def test_keen_cascade_74_successor_repair_delegate_claimable_after_lingeri
     assert role == "repair" and fence.owner_id == successor
     assert fence.token == owner["fence_token"]
     assert origin["operation_id"] == case.operation
+
+
+# --- 7. Held aggregate verifier and reopen-collection (clear-ember-89) ------------------------
+# The completed fix child is collected, through ``reopen-collection``.
+
+
+def _reopen_handler(case) -> IntegrationCommandsMixin:
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    handler.orchestrator = SimpleNamespace(
+        hierarchy_integration=case.hierarchy,
+        promotion_service=case.promotion,
+        repair_service=RepairService(case.db),
+    )
+    return handler
+
+
+async def _reopen_and_collect_fix(case, red_head: str, verifier_id: str, old_owner: dict):
+    """Reopen through the operator control, then collect the completed fix child."""
+    handler = _reopen_handler(case)
+    preview = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert preview["outcome"] == "would_reopen", f"{preview.get('reason')}: {preview}"
+    assert preview["head_sha"] == red_head
+    result = await handler._cmd_integration_reopen_collection(
+        {
+            "task_id": "epic",
+            "dry_run": False,
+            "expected_head_sha": red_head,
+            "reason": "Collect the completed aggregate fix child",
+        }
+    )
+    assert result["outcome"] == "reopened", result
+    assert (await case.db.get_integration_checkpoint("epic"))["state"] == "awaiting_children"
+    assert (await _operation(case))["verifier_task_id"] is None
+    # The verifier's fence no longer authorizes a write to the epic branch.
+    with pytest.raises(StaleFence):
+        async with case.db.immediate() as conn:
+            await BranchOwnership(case.db).transfer_detached_on(
+                conn,
+                Fence(target=BranchKey(repository_id="repo", branch="aq/epic"),
+                      owner_id=verifier_id, token=old_owner["fence_token"]),
+                "old-verifier-writer", "verifier",
+            )
+    assert await _promote_next(case, 30.0) is not None
+    fix = [
+        row for row in await _rows(case.db, t.task_delivery_receipts)
+        if row["source_task_id"] == "epic.3"
+    ]
+    assert len(fix) == 1 and fix[0]["parent_operation_id"] == case.operation_id
+    assert _remote_tip(case) == fix[0]["after_sha"] != red_head
+
+
+async def test_failed_verifier_close_releases_epic_owner_and_reopen_collects_fix(train_epic):
+    """clear-ember-89 hand fix: after the held verifier closes FAIL, reopen-collection collects the fix.
+
+    Incident 2026-10-03/04 on epic clear-ember-89, aggregate verifier
+    verify-f357b7f3, branch aq/epic/phase-6-epic-extraction-proposals. Context:
+    bold-flare-79 (comment) and stark-ridge-78 (3399edc2d).
+
+    The supervisor's only exit was for the verifier to close FAIL. Its session
+    teardown then released the attached owner row: handoff ``released``, no
+    session or workspace, and the checkout kept as ``confirmed_workspace_id``.
+    After that, reopen-collection reopened the epic and the completed fix child
+    (clear-ember-89.4/.5) was collected. This guards that path, which passes on
+    main.
+    """
+    case = train_epic
+    red_head, verifier_id = await _failed_aggregate(case)
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            update(t.integration_branch_owners)
+            .where(t.integration_branch_owners.c.ref == "aq/epic")
+            .values(handoff_state="released", session_id=None, workspace_id=None,
+                    confirmed_workspace_id="verifier-workspace")
+        )
+    old_owner = await _owner(case)
+    assert (old_owner["owner_id"], old_owner["owner_role"]) == (verifier_id, "verifier")
+    await _reopen_and_collect_fix(case, red_head, verifier_id, old_owner)
+
+
+@pytest.mark.xfail(
+    reason=(
+        "no ticket yet: a held aggregate verifier with a red trusted conclusion keeps the "
+        "epic owner attached; reopen-collection refuses ('the verifier has no settled "
+        "failed completion for this exact head') and the completed fix child is never "
+        "collected; remove when a ticket for it lands"
+    ),
+    strict=False,
+)
+async def test_held_red_verifier_does_not_strand_completed_fix_child(train_epic):
+    """clear-ember-89: a held verifier after a red trusted conclusion must not block collection.
+
+    Incident 2026-10-03/04 on epic clear-ember-89, verifier verify-f357b7f3.
+    Supervisor evidence (bold-flare-79 comment): "the held aggregate verifier
+    keeps an attached owner on the epic branch, so completed fix children stay
+    reserved and are never collected. The only exit is the verifier closing
+    FAIL." No open ticket tracks this. bold-flare-79 (on main) stages the first
+    red but does not release the verifier. stark-ridge-78 (3399edc2d, on main)
+    covers an escalated no-progress collector, not a held verifier.
+
+    Required: once trusted exact-head CI is red, either the red conclusion
+    releases or supersedes the held verifier, or reopen-collection can collect
+    the completed fix child past it. Either way the verifier's fence stops
+    authorizing writes.
+    """
+    case = train_epic
+    red_head, verifier_id = await _failed_aggregate(case)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    async with case.db.immediate() as conn:
+        # The verifier is still held: it is in progress on a live session, it
+        # has not closed, and its owner row is attached to its checkout.
+        await conn.execute(
+            update(t.tasks).where(t.tasks.c.id == verifier_id).values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            delete(t.task_completion_records).where(
+                t.task_completion_records.c.task_id == verifier_id
+            )
+        )
+        await conn.execute(
+            update(t.integration_branch_owners)
+            .where(t.integration_branch_owners.c.ref == "aq/epic")
+            .values(handoff_state="attached", session_id="verifier-session",
+                    workspace_id="verifier-workspace")
+        )
+        # Trusted exact-head CI concluded red on the aggregate head.
+        await conn.execute(
+            insert(t.integration_check_evidence).values(
+                id="red-aggregate-check", operation_id=case.operation_id,
+                parent_task_id="epic", parent_generation=checkpoint["generation"],
+                parent_head_sha=red_head, producer_id="forge", workflow_id="ci",
+                run_id="red-run", attempt=1, required_check_version="test",
+                checks={"unit": "failure"}, conclusion="failure",
+                classification="conclusive", observed_at=50.0,
+            )
+        )
+    old_owner = await _owner(case)
+    assert (old_owner["owner_id"], old_owner["handoff_state"]) == (verifier_id, "attached")
+    assert (await case.db.get_task("epic.3")).status is TaskStatus.COMPLETED
+    await _reopen_and_collect_fix(case, red_head, verifier_id, old_owner)

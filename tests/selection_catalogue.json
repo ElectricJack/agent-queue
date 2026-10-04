@@ -1391,7 +1391,7 @@
       ]
     }
   },
-  "digest": "sha256:0b6b957efac8e35c4d30ffb207baec56a104c7abb8b99f74a5c7895a1f279180",
+  "digest": "sha256:3840560390f2973eda8283315450600823bbdb24896e2f7fb5ec9c804c1bde3b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8545,16 +8545,21 @@
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.delivery_truth",
         "src.integration.github_review_poll",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.repair",
         "src.integration.service",
         "src.models",
         "src.orchestrator.core",
