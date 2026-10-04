@@ -13908,6 +13908,7 @@
         ],
         "optional": [
           "--expected-revision",
+          "--expected-base-sha",
           "--json",
           "--brief",
           "--save-output",
@@ -13915,7 +13916,8 @@
         ],
         "structured": [],
         "nullable": [
-          "--expected-revision"
+          "--expected-revision",
+          "--expected-base-sha"
         ]
       }
     },

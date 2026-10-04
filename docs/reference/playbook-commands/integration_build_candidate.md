@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:62780f0cd1ec694421d627754851ef78550e269be99dd203b58576c218091f9a` |
+| Contract fingerprint | `sha256:dbbd7443a271eba9ef5288c57dde1246ebfb683a66eb0d6a1515a845695cd2f4` |
 
 ## Parameters
 
@@ -22,6 +22,7 @@
 |---|---|---|---|---|
 | `batch_id` | `string` | yes | — | — |
 | `expected_revision` | `integer \| null` | no | `null` | — |
+| `expected_base_sha` | `string \| null` | no | `null` | — |
 
 ## Result
 
