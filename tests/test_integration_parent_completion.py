@@ -73,7 +73,7 @@ from src.profiles.capabilities import DENY_ALL
 from src.database.queries.task_queries import StaleClaim
 
 
-async def _parent_repair_case(db, tmp_path, *, children=1):
+async def _parent_repair_case(db, tmp_path, *, children=1, first_receipt_child=0):
     from src.git.manager import GitManager
     from src.integration.parent_repair_heads import ParentHeadRecovery
     from src.integration.promotion import PromotionService
@@ -103,7 +103,10 @@ async def _parent_repair_case(db, tmp_path, *, children=1):
     head = git("rev-parse", "HEAD")
     git("push", "origin", "aq/parent")
     hierarchy, checkpointed, children = await _parent_tree(db, children=children, base_sha=base)
-    await _code_receipt(db, children[0], base, collected)
+    await _code_receipt(
+        db, children[first_receipt_child], base, collected,
+        created_at=float(first_receipt_child + 1),
+    )
     await db.create_task(
         Task(
             id="repair",
@@ -1676,6 +1679,848 @@ async def test_advanced_repair_recovery_rechecks_local_changes_before_apply(
         await recovery.run(request, principal="operator")
     assert await db.get_integration_checkpoint("parent") == before
 
+
+async def _empty_verification_stage_case(db, tmp_path, *, invalid=None, redundant_edge=True):
+    """vivid-quest-44: .3 squash, stage-0 .1 resolution, empty stage 1, .2 squash."""
+    from src.database.queries.result_queries import close_identity
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.integration.outbox import enqueue_integration_event
+    from src.integration.parent_repair_heads import EXTENSIONS, extension
+
+    recovery, hierarchy, request, git, collected, repair_head = await _parent_repair_case(
+        db,
+        tmp_path,
+        children=3,
+        first_receipt_child=2,
+    )
+    base = git("rev-parse", "main")
+    if invalid == "outside_receipts":
+        git("commit", "--allow-empty", "-m", "unreceipted change")
+    git("commit", "--allow-empty", "-m", "collect K09 after empty verification")
+    head = git("rev-parse", "HEAD")
+    git("push", "origin", "aq/parent")
+    before = "f" * 40 if invalid == "gap" else collected
+    evidence = {
+        "kind": "conflict_resolution",
+        "original_source_base": "a" * 40,
+        "original_source_head": "b" * 40,
+        "original_source_tree": "c" * 40,
+        "original_expected_target": before,
+        "resolved_head_sha": repair_head,
+        "resolved_tree_sha": git("rev-parse", repair_head + "^{tree}"),
+        "repair_commit_shas": [repair_head],
+        "authoring": {
+            "operation_id": request.operation_id,
+            "stage_ordinal": 0,
+            "repair_task_id": "repair",
+            "repair_session_id": "former-repair-session",
+            "repair_session_instance_token": "former-instance",
+            "repair_workspace_id": "former-workspace",
+            "fence": {
+                "repository_id": "repo",
+                "branch": "aq/parent",
+                "owner_id": "repair",
+                "token": 2,
+            },
+        },
+    }
+    evidence["remote_proof"] = {
+        "kind": "exact_resolution_tip",
+        "remote_sha": repair_head,
+        "resolved_tree_sha": evidence["resolved_tree_sha"],
+        "repair_commit_shas": [repair_head],
+    }
+    if invalid == "untrusted_receipt":
+        evidence["remote_proof"] = {}
+    await _code_receipt(
+        db,
+        "parent.1",
+        before,
+        repair_head,
+        created_at=4.0,
+        squash_sha=None,
+        review_evidence={"review": {"source_base": "a" * 40}},
+        resolution_evidence=evidence,
+    )
+    await _code_receipt(db, "parent.2", repair_head, head, created_at=5.0)
+    await db.create_task(
+        Task(
+            id="repair-empty",
+            project_id="p",
+            repo_id="repo",
+            branch_name="aq/parent",
+            title="Verification only",
+            description="No commits",
+            status=TaskStatus.COMPLETED,
+            created_by_kind="integration_repair",
+            created_by_id=request.operation_id,
+        )
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id="empty-completion",
+            task_id="repair-empty",
+            outcome="pass",
+            branch="aq/parent",
+            commits=[],
+            completed_at=40.0,
+        )
+    )
+    await db.set_task_meta(
+        "repair-empty",
+        ACCEPTED_CLOSE_KEY,
+        close_identity("empty-completion", session_id="empty-session", claim_epoch=0),
+    )
+    async with db.immediate() as conn:
+        stage = dict((await conn.execute(select(integration_repair_stages))).mappings().one())
+        checkpoint = (
+            (
+                await conn.execute(
+                    select(task_integration_checkpoints).where(
+                        task_integration_checkpoints.c.task_id == "parent",
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        edge = extension(
+            {"id": request.operation_id, "episode_id": request.expected_episode_id},
+            checkpoint,
+            stage,
+            {"base_sha": collected, "head_sha": repair_head, "commits": [repair_head]},
+            {
+                "task_id": "repair",
+                "session_id": "former-repair-session",
+                "instance_token": "former-instance",
+                "workspace_id": "former-workspace",
+                "fence_token": 2,
+            },
+        )
+        await conn.execute(
+            update(integration_repair_stages).values(
+                state="passed",
+                dossier=stage["dossier"] | ({EXTENSIONS: [edge]} if redundant_edge else {}),
+            )
+        )
+        subject = {"kind": "parent", "generation": 1, "head_sha": repair_head}
+        incident = {
+            "incident_id": f"repair-no-progress:{request.operation_id}:1",
+            "stage": 1,
+            "subject": subject,
+            "attempts": stage["attempts"],
+            "deadline_at": stage["deadline_at"],
+            "repair_task_id": "repair-empty",
+            "recorded_at": 41.0,
+        }
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                **(
+                    stage
+                    | {
+                        "ordinal": 1,
+                        "starting_sha": repair_head,
+                        "repair_task_id": "repair-empty",
+                        "current_subject": subject,
+                        "deadline_event_id": "empty-stage-deadline",
+                        "state": "expired",
+                        "completed_at": 41.0,
+                        "dossier": {
+                            "repair_commits": [],
+                            "branch_sha": repair_head,
+                            "supervisor_recovery": incident,
+                        },
+                    }
+                )
+            )
+        )
+        await conn.execute(
+            update(integration_repair_operations).values(state="escalated", active_stage=1)
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(
+                task_integration_checkpoints.c.task_id == "parent",
+            )
+            .values(
+                generation=2,
+                checkpoint_sha=base,
+                state="verifying",
+                verified_sha=repair_head,
+                verified_generation=1,
+            )
+        )
+        await conn.execute(
+            insert(workspaces).values(
+                id="confirmed-parent",
+                project_id="p",
+                workspace_path=str(tmp_path / "work"),
+                source_type="link",
+                enabled=True,
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners).values(
+                fence_token=8,
+                confirmed_workspace_id="confirmed-parent",
+            )
+        )
+        await enqueue_integration_event(
+            conn,
+            event_id="empty-closed",
+            dedup_key="empty-closed",
+            project_id="p",
+            event_type="integration.repair_delegate_closed",
+            available_at=40.0,
+            payload={
+                "operation_id": request.operation_id,
+                "stage": 1,
+                "task_id": "repair-empty",
+                "session_id": "empty-session",
+                "instance_token": "empty-instance",
+                "workspace_id": "empty-workspace",
+                "fence_token": 6,
+            },
+        )
+        await enqueue_integration_event(
+            conn,
+            event_id="stale-ready",
+            dedup_key=f"task.integration_ready:{request.operation_id}:2",
+            project_id="p",
+            event_type="task.integration_ready",
+            available_at=30.0,
+            payload={"head_sha": repair_head},
+        )
+    request.head_sha, request.expected_generation = head, 2
+    request.expected_stage, request.expected_fence_token = 1, 8
+    return recovery, hierarchy, request, git, base, repair_head
+
+
+@pytest.mark.parametrize("redundant_edge", [False, True])
+async def test_empty_verification_stage_recovers_receipt_proven_head_and_fresh_verification(
+    db,
+    tmp_path,
+    redundant_edge,
+):
+    from src.commands.contracts.integration import IntegrationRecoverParentHeadValue
+    from src.database.tables import task_session_attempts
+    from src.integration.parent_repair_heads import EMPTY_VERIFICATION_RECOVERY, EXTENSIONS
+
+    recovery, hierarchy, request, _git, _base, repair_head = await _empty_verification_stage_case(
+        db,
+        tmp_path,
+        redundant_edge=redundant_edge,
+    )
+    if redundant_edge:
+        readiness = await hierarchy.readiness("parent")
+        assert readiness["blockers"] == [{"task_id": "parent", "reason": "repair_head_chain"}]
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id="old-parent-attempt",
+                session_id="old-parent-session",
+                task_id="parent",
+                project_id="p",
+                profile_id="worker",
+                name="old-parent",
+                lifecycle="task",
+                harness="codex",
+                provider="fake",
+                state="stopped",
+                work_dir=str(tmp_path),
+                started_at=1.0,
+                session_started_at=1.0,
+                ended_at=2.0,
+            )
+        )
+        receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+        stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    checkpoint = await db.get_integration_checkpoint("parent")
+    preview = await recovery.run(request, principal="operator")
+    IntegrationRecoverParentHeadValue.model_validate(
+        {k: v for k, v in preview.items() if k != "outcome"}
+    )
+    assert preview["outcome"] == "would_recover" and preview["stage"] == 1
+    assert preview["repair_head_sha"] == repair_head
+    assert preview["collection_receipt_ids"] == [
+        "receipt-parent.3",
+        "receipt-parent.1",
+        "receipt-parent.2",
+    ]
+    assert "--fence 8" in preview["apply_command"]
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    current = await db.get_integration_checkpoint("parent")
+    assert current["episode_id"] == checkpoint["episode_id"] and current["generation"] == 2
+    assert current["checkpoint_sha"] == request.head_sha
+    assert current["verified_sha"] is None and current["verified_generation"] is None
+    assert current["current_verification_id"] is None
+    assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+    async with db.immediate() as conn:
+        new_stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert new_stages[1]["state"] == "passed"
+        assert EXTENSIONS not in new_stages[1]["dossier"]
+        assert (
+            new_stages[1]["dossier"][EMPTY_VERIFICATION_RECOVERY]["completion_id"]
+            == "empty-completion"
+        )
+        assert (
+            new_stages[1]["dossier"]["supervisor_recovery"]
+            == stages[1]["dossier"]["supervisor_recovery"]
+        )
+        assert new_stages[0]["dossier"].get(EXTENSIONS) == stages[0]["dossier"].get(EXTENSIONS)
+        for old, new in zip(stages, new_stages, strict=True):
+            for key in (
+                "attempts",
+                "deadline_at",
+                "starting_sha",
+                "current_subject",
+                "policy",
+                "deadline_event_id",
+            ):
+                assert new[key] == old[key]
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        assert operation["state"] == "active" and operation["active_stage"] == 1
+        verifier = (
+            (
+                await conn.execute(
+                    select(tasks).where(
+                        tasks.c.id == operation["verifier_task_id"],
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert verifier["status"] == "PAUSED" and verifier["branch_name"] == "aq/parent"
+        events = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.event_type == "task.integration_ready",
+                        integration_outbox.c.payload["head_sha"].as_string() == request.head_sha,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(events) == 1 and events[0]["dedup_key"].endswith(f":recovery:{request.head_sha}")
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="fresh-empty-stage-check",
+                operation_id=request.operation_id,
+                parent_task_id="parent",
+                parent_generation=2,
+                parent_head_sha=request.head_sha,
+                producer_id="forge-observer",
+                workflow_id="workflow",
+                run_id="fresh-after-empty-stage",
+                attempt=1,
+                required_check_version="parent-v1",
+                checks={"unit": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=50.0,
+            )
+        )
+    assert (await hierarchy.complete_parent("parent", 2, request.head_sha))[
+        "outcome"
+    ] == AWAITING_TRUSTED_VERIFICATION
+    assert (
+        await hierarchy.verify_parent("parent", 2, request.head_sha, ["fresh-empty-stage-check"])
+    )["outcome"] == "verified"
+    verified = await db.get_integration_checkpoint("parent")
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "already_recovered"
+    assert await db.get_integration_checkpoint("parent") == verified
+    async with db._engine.connect() as conn:
+        assert (
+            len(
+                (
+                    await conn.execute(
+                        select(integration_outbox).where(
+                            integration_outbox.c.event_type == "task.integration_ready",
+                            integration_outbox.c.payload["head_sha"].as_string()
+                            == request.head_sha,
+                        )
+                    )
+                ).all()
+            )
+            == 1
+        )
+    assert (await db.get_task_completions("repair-empty"))[0].commits == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "gap",
+        "outside_receipts",
+        "untrusted_receipt",
+        "recorded_stage_commits",
+        "non_pass_completion",
+        "missing_incident",
+        "wrong_incident",
+        "changed_incident_subject",
+        "changed_incident_budget",
+        "missing_close_audit",
+        "wrong_close_fence",
+        "missing_accepted_close",
+        "different_completion",
+        "live_holder",
+        "earlier_live_holder",
+        "remote_moved",
+        "dirty_workspace",
+        "stage_changed_head",
+        "open_gate",
+        "ambiguous_write",
+        "completed_verifier",
+        "extension_outside_receipts",
+        "subject_not_receipt_tip",
+        "non_empty_completion",
+        "missing_confirmed_workspace",
+    ],
+)
+async def test_empty_verification_stage_refuses_incomplete_or_live_proof(db, tmp_path, case):
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.database.tables import task_completion_records, task_metadata
+    from src.models import SessionRecord
+
+    recovery, _hierarchy, request, git, _base, repair_head = await _empty_verification_stage_case(
+        db,
+        tmp_path,
+        invalid=case,
+    )
+    if case in {"live_holder", "earlier_live_holder"}:
+        await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
+        await db.create_session(
+            SessionRecord(
+                id="retained-session",
+                task_id="repair" if case == "earlier_live_holder" else "repair-empty",
+                project_id="p",
+                profile_id="repairer",
+                harness="fake",
+                provider="fake",
+                name="retained",
+                lifecycle="task",
+                state="running",
+                work_dir=str(tmp_path / "work"),
+                epoch="epoch",
+                instance_token="retained-instance",
+                started_at=2.0,
+            )
+        )
+    elif case == "remote_moved":
+        git("push", "origin", f"{repair_head}:refs/heads/aq/parent", "--force")
+    elif case == "dirty_workspace":
+        (tmp_path / "work" / "unpublished.txt").write_text("unpublished")
+    elif case == "completed_verifier":
+        await db.create_task(
+            Task(
+                id="finished-verifier",
+                project_id="p",
+                repo_id="repo",
+                branch_name="aq/parent",
+                title="Finished verifier",
+                description="",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+    async with db.immediate() as conn:
+        stage = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        dossier = dict(stage["dossier"])
+        if case == "recorded_stage_commits":
+            dossier["repair_commits"] = [repair_head]
+        elif case == "missing_incident":
+            dossier.pop("supervisor_recovery")
+        elif case in {"wrong_incident", "changed_incident_subject", "changed_incident_budget"}:
+            incident = dict(dossier["supervisor_recovery"])
+            if case == "wrong_incident":
+                incident["incident_id"] = f"repair-no-progress:{request.operation_id}:0"
+            elif case == "changed_incident_subject":
+                incident["subject"] = incident["subject"] | {"head_sha": request.head_sha}
+            else:
+                incident["attempts"] += 1
+            dossier["supervisor_recovery"] = incident
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(dossier=dossier)
+        )
+        if case == "non_pass_completion":
+            await conn.execute(
+                update(task_completion_records)
+                .where(
+                    task_completion_records.c.task_id == "repair-empty",
+                )
+                .values(outcome="fail")
+            )
+        elif case == "non_empty_completion":
+            await conn.execute(
+                update(task_completion_records)
+                .where(
+                    task_completion_records.c.task_id == "repair-empty",
+                )
+                .values(commits=json.dumps([repair_head]))
+            )
+        elif case == "extension_outside_receipts":
+            earlier = dict(
+                await conn.scalar(
+                    select(integration_repair_stages.c.dossier).where(
+                        integration_repair_stages.c.ordinal == 0,
+                    )
+                )
+            )
+            edge = dict(earlier["parent_head_extensions"][0])
+            edge["commits"] = [edge["before_sha"], repair_head]
+            earlier["parent_head_extensions"] = [edge]
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.ordinal == 0,
+                )
+                .values(dossier=earlier)
+            )
+        elif case == "subject_not_receipt_tip":
+            base = git("rev-parse", "main")
+            subject = {"kind": "parent", "generation": 1, "head_sha": base}
+            dossier["branch_sha"] = base
+            dossier["supervisor_recovery"] = dossier["supervisor_recovery"] | {"subject": subject}
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.ordinal == 1,
+                )
+                .values(current_subject=subject, starting_sha=base, dossier=dossier)
+            )
+        elif case == "missing_close_audit":
+            await conn.execute(
+                delete(integration_outbox).where(integration_outbox.c.id == "empty-closed")
+            )
+        elif case == "wrong_close_fence":
+            payload = await conn.scalar(
+                select(integration_outbox.c.payload).where(
+                    integration_outbox.c.id == "empty-closed"
+                )
+            )
+            await conn.execute(
+                update(integration_outbox)
+                .where(integration_outbox.c.id == "empty-closed")
+                .values(
+                    payload=payload | {"fence_token": 8},
+                )
+            )
+        elif case == "missing_accepted_close":
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == "repair-empty",
+                    task_metadata.c.key == ACCEPTED_CLOSE_KEY,
+                )
+            )
+        elif case == "different_completion":
+            await db._upsert_meta(
+                "repair-empty",
+                ACCEPTED_CLOSE_KEY,
+                json.dumps(
+                    {
+                        "completion_id": "another-completion",
+                        "session_id": "empty-session",
+                        "claim_epoch": 0,
+                    }
+                ),
+                conn=conn,
+            )
+        elif case == "stage_changed_head":
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(integration_repair_stages.c.ordinal == 1)
+                .values(
+                    starting_sha=git("rev-parse", "main"),
+                )
+            )
+        elif case == "missing_confirmed_workspace":
+            await conn.execute(
+                update(integration_branch_owners).values(confirmed_workspace_id=None)
+            )
+        elif case == "open_gate":
+            await conn.execute(
+                insert(gates).values(
+                    id="human-gate",
+                    project_id="p",
+                    gate_type="human",
+                    title="Human approval",
+                    status="open",
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(insert(task_gates).values(task_id="parent", gate_id="human-gate"))
+        elif case == "ambiguous_write":
+            await conn.execute(
+                insert(integration_promotion_intents).values(
+                    id="ambiguous-write",
+                    domain_key="ambiguous-write",
+                    receipt_id="future-write-receipt",
+                    operation_key=request.operation_id,
+                    project_id="p",
+                    source_task_id="parent.2",
+                    source_head="b" * 40,
+                    source_base="a" * 40,
+                    repository_id="repo",
+                    target_task_id="parent",
+                    target_branch="aq/parent",
+                    expected_target=repair_head,
+                    fence_owner_id=request.operation_id,
+                    fence_token=8,
+                    state="prepared",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+        elif case == "completed_verifier":
+            await conn.execute(
+                update(integration_repair_operations).values(verifier_task_id="finished-verifier")
+            )
+        original = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(integration_repair_stages.c.ordinal)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+    checkpoint = await db.get_integration_checkpoint("parent")
+    for dry_run in (True, False):
+        request.dry_run = dry_run
+        with pytest.raises(ValueError):
+            await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    async with db._engine.connect() as conn:
+        assert (
+            await conn.execute(
+                select(integration_repair_stages).order_by(integration_repair_stages.c.ordinal)
+            )
+        ).mappings().all() == original
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == receipts
+
+
+async def test_empty_verification_stage_rechecks_close_proof_before_apply(
+    db, tmp_path, monkeypatch
+):
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+    recovery, _hierarchy, request, _git, _base, _repair_head = await _empty_verification_stage_case(
+        db, tmp_path
+    )
+    checkpoint = await db.get_integration_checkpoint("parent")
+    prove = recovery._git_proof
+
+    async def change_close(*args):
+        proof = await prove(*args)
+        await db.set_task_meta(
+            "repair-empty",
+            ACCEPTED_CLOSE_KEY,
+            {
+                "completion_id": "empty-completion",
+                "session_id": "different-session",
+                "claim_epoch": 0,
+            },
+        )
+        return proof
+
+    monkeypatch.setattr(recovery, "_git_proof", change_close)
+    request.dry_run = False
+    with pytest.raises(ValueError, match="accepted-close identity"):
+        await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+
+
+@pytest.mark.parametrize("change", ["remote", "workspace", "dirty_workspace"])
+async def test_empty_verification_stage_rechecks_git_and_workspace_under_apply_lock(
+    db,
+    tmp_path,
+    monkeypatch,
+    change,
+):
+    recovery, _hierarchy, request, git, _base, repair_head = await _empty_verification_stage_case(
+        db,
+        tmp_path,
+    )
+    checkpoint = await db.get_integration_checkpoint("parent")
+    prove, calls = recovery._git_proof, 0
+
+    async def change_git(*args):
+        nonlocal calls
+        proof = await prove(*args)
+        calls += 1
+        if change == "remote" and calls == 1:
+            git("push", "origin", f"{repair_head}:refs/heads/aq/parent", "--force")
+        elif calls == 2:
+            if change == "workspace":
+                # Still clean, and still published ancestry: it must also be unchanged.
+                git("reset", "--hard", repair_head)
+            elif change == "dirty_workspace":
+                (tmp_path / "work" / "unpublished.txt").write_text("arrived during apply")
+        return proof
+
+    monkeypatch.setattr(recovery, "_git_proof", change_git)
+    request.dry_run = False
+    with pytest.raises(
+        ValueError,
+        match={
+            "remote": "published parent head differs",
+            "workspace": "workspace changed during recovery",
+            "dirty_workspace": "unpublished changes",
+        }[change],
+    ):
+        await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    async with db._engine.connect() as conn:
+        stage = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert stage["state"] == "expired"
+        assert "empty_verification_recovery" not in stage["dossier"]
+
+
+async def test_empty_verification_stage_rolls_back_if_fresh_verifier_cannot_be_filed(db, tmp_path):
+    recovery, _hierarchy, request, _git, _base, _head = await _empty_verification_stage_case(
+        db, tmp_path
+    )
+    async with db.immediate() as conn:
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        policy = dict(operation["policy_snapshot"])
+        policy["parent"] = dict(policy["parent"]) | {"verifier_intelligence_class": None}
+        await conn.execute(update(integration_repair_operations).values(policy_snapshot=policy))
+        stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).order_by(
+                        integration_repair_stages.c.ordinal,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    checkpoint = await db.get_integration_checkpoint("parent")
+    request.dry_run = False
+    with pytest.raises(ValueError, match="cannot project verifier readiness"):
+        await recovery.run(request, principal="operator")
+    assert await db.get_integration_checkpoint("parent") == checkpoint
+    assert await db.get_task(f"verify-{request.operation_id}") is None
+    async with db._engine.connect() as conn:
+        assert (
+            await conn.execute(
+                select(integration_repair_stages).order_by(
+                    integration_repair_stages.c.ordinal,
+                )
+            )
+        ).mappings().all() == stages
+
+
+async def test_empty_verification_stage_without_later_collection_still_requires_fresh_verifier(
+    db,
+    tmp_path,
+):
+    recovery, _hierarchy, request, _git, _base, _head = await _empty_verification_stage_case(
+        db, tmp_path
+    )
+    async with db.immediate() as conn:
+        dossier = dict(
+            await conn.scalar(
+                select(integration_repair_stages.c.dossier).where(
+                    integration_repair_stages.c.ordinal == 1,
+                )
+            )
+        )
+        subject = {"kind": "parent", "generation": 2, "head_sha": request.head_sha}
+        dossier["branch_sha"] = request.head_sha
+        dossier["supervisor_recovery"] = dossier["supervisor_recovery"] | {"subject": subject}
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.ordinal == 1,
+            )
+            .values(starting_sha=request.head_sha, current_subject=subject, dossier=dossier)
+        )
+    request.dry_run = False
+    assert (await recovery.run(request, principal="operator"))["outcome"] == "recovered"
+    async with db._engine.connect() as conn:
+        stage = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.ordinal == 1,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        assert stage["state"] == "passed" and operation["state"] == "active"
+        assert operation["verifier_task_id"] is not None
+        assert (
+            len(
+                (
+                    await conn.execute(
+                        select(integration_outbox).where(
+                            integration_outbox.c.event_type == "task.integration_ready",
+                            integration_outbox.c.payload["head_sha"].as_string()
+                            == request.head_sha,
+                        )
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
 @pytest.fixture
 async def db(tmp_path, reuse_database):
     database = await reuse_database("parent-completion.db")
@@ -1693,9 +2538,7 @@ async def _enable_project(
         branchless_parent="verifier",
         on_failed_child=on_failed_child,
     ).model_dump(mode="json")
-    await db.create_repo(
-        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
-    )
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK))
     await db.update_project(
         "p",
         hierarchical_integration_mode="hierarchy",
