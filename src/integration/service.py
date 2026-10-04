@@ -208,6 +208,7 @@ class IntegrationService:
         )
         self._cursors: dict[str, tuple[Any, ...] | None] = {
             "schedules": None,
+            "orphaned_sweep": None,
             "repair_stages": None,
             "repair_dispatch": None,
             "repair_dispatch_refused": None,
@@ -321,6 +322,45 @@ class IntegrationService:
                 self._clock(),
                 "periodic",
             )
+
+    async def release_orphaned_sweep_requests(self, now: float) -> int:
+        """Free the sweep requests a restart orphaned; returns the schedules swept.
+
+        A daemon start owes the frontier one thing here.  ``integration.sweep_due``
+        is delivered once and then sealed by a playbook run this process is
+        executing; a restart drops that task and nothing re-drives the run, so the
+        request would keep coalescing every flush and tick until the unsealed grace
+        runs out -- an hour per restart, measured on agent-queue at 59 minutes.
+        ``_tick_schedules`` cannot notice it either, because the schedule it is
+        named on may not be due for another sweep interval.
+
+        This is one bounded page of every schedule holding a request, driven
+        through the same ``mark_due`` the periodic tick uses, so the enabled and
+        settling gates and the catch-up rules apply exactly as they do on a tick:
+        the orphaned request is freed, and the next due boundary mints its
+        successor.  Whatever this page leaves -- a fleet wider than one page, a
+        schedule that is not due yet -- self-heals on the next due tick.
+        """
+        rows = await self._page(
+            "orphaned_sweep",
+            self._db.outstanding_sweep_schedule_page,
+            lambda row: (row["project_id"],),
+        )
+        for row in rows:
+            await self._isolated(
+                "orphaned sweep",
+                row,
+                self._scheduler.mark_due,
+                row["project_id"],
+                now,
+                "periodic",
+            )
+        if rows:
+            logger.info(
+                "integration: swept %d schedule(s) holding a sweep request at start",
+                len(rows),
+            )
+        return len(rows)
 
     async def _tick_repair_stages(self, now: float) -> None:
         rows = await self._page(

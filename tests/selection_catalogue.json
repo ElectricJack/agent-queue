@@ -1390,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:ab4758edc6400933e1606037a52ffc4eb1e944fd053c3bc0c0f909213010b2b3",
+  "digest": "sha256:1c44fa0c35eee3bd41e7560f5b03d1ff7e1f8721b0f67850ef67ae31ca1191b3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8472,6 +8472,7 @@
         "src.integration.development",
         "src.integration.release",
         "src.integration.scheduler",
+        "src.integration.service",
         "src.integration.settling",
         "src.integration.stale_schedule",
         "src.models",
