@@ -34,6 +34,23 @@ from src.integration.recovery_controls import IntegrationRecoveryControls
 
 EXTENSIONS = "parent_head_extensions"
 COLLECTION_RECOVERY = "collection_head_recovery"
+EMPTY_VERIFICATION_RECOVERY = "empty_verification_recovery"
+RECEIPT_COVERED_EXTENSIONS = "receipt_covered_extensions"
+
+
+def receipt_covers_extension(receipt, edge):
+    """Two proofs may describe the same edge, only with the same complete range."""
+    commits = (
+        [receipt["squash_sha"]]
+        if receipt["squash_sha"]
+        else (receipt["resolution_evidence"] or {}).get("repair_commit_shas")
+    )
+    return (
+        ParentCompletion._trusted_code_receipt(receipt)
+        and receipt["before_sha"] == edge["before_sha"]
+        and receipt["after_sha"] == edge["after_sha"]
+        and commits == edge["commits"]
+    )
 
 
 def extension(operation, checkpoint, stage, proof, authoring):
@@ -111,6 +128,39 @@ async def extensions_on(conn, operation, checkpoint):
                 or not author.get("fence_token")
             ):
                 raise ValueError("parent repair extension identity or commit proof is invalid")
+            covered = [
+                item
+                for item in (stage["dossier"] or {}).get(RECEIPT_COVERED_EXTENSIONS, [])
+                if item.get("extension") == edge
+            ]
+            if covered:
+                receipt = (
+                    (
+                        await conn.execute(
+                            select(task_delivery_receipts).where(
+                                task_delivery_receipts.c.id == covered[0].get("receipt_id"),
+                                task_delivery_receipts.c.parent_operation_id == operation["id"],
+                                task_delivery_receipts.c.parent_episode_id
+                                == checkpoint["episode_id"],
+                                task_delivery_receipts.c.target_task_id
+                                == operation["parent_task_id"],
+                                task_delivery_receipts.c.repository_id
+                                == checkpoint["repository_id"],
+                                task_delivery_receipts.c.target_branch == checkpoint["branch"],
+                                task_delivery_receipts.c.disposition == "code",
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    len(covered) != 1
+                    or receipt is None
+                    or not receipt_covers_extension(receipt, edge)
+                ):
+                    raise ValueError("parent repair extension lacks its reconciled receipt proof")
+                continue
             # Later stages inherit dossiers for diagnostics. An edge is owned
             # by its original stage and must never be counted twice.
             if edge not in edges:
@@ -150,7 +200,9 @@ class ParentHeadRecovery:
                 for gap in proof["gap_proofs"]
             ]
         async with self.db._engine.connect() as conn:
-            await self._workspace_proof_on(conn, proof, repository, request.head_sha)
+            workspace_proof = await self._workspace_proof_on(
+                conn, proof, repository, request.head_sha
+            )
         result = {
             "operation_id": request.operation_id,
             "head_sha": request.head_sha,
@@ -173,6 +225,8 @@ class ParentHeadRecovery:
                 f"stage {gap['stage']['ordinal']} {edge['base_sha']} -> {edge['head_sha']}"
                 for gap, edge in zip(proof["gap_proofs"], gap_git_proofs, strict=True)
             )
+        if proof["empty_verification"]:
+            result["reason"] = "settle audited empty verification stage at the receipt-proven head"
         if request.dry_run:
             command = [
                 "aq",
@@ -229,9 +283,15 @@ class ParentHeadRecovery:
                         != expected_gap
                     ):
                         raise ValueError("historical repair proof changed")
-            await self._workspace_proof_on(conn, current, repository, request.head_sha)
-            if current["recovered_collection"] or (
-                current["existing"] and (not current["advanced"] or current["settled"])
+            if (
+                await self._workspace_proof_on(conn, current, repository, request.head_sha)
+                != workspace_proof
+            ):
+                raise ValueError("confirmed parent workspace changed during recovery")
+            if (
+                current["recovered_collection"]
+                or (current["empty_verification"] and current["settled"])
+                or (current["existing"] and (not current["advanced"] or current["settled"]))
             ):
                 return result | {"outcome": "already_recovered"}
             if current["collection_recovery"]:
@@ -245,20 +305,33 @@ class ParentHeadRecovery:
                 )
             stage = current["stage"]
             dossier = dict(stage["dossier"] or {})
-            edge = extension(
-                current["operation"],
-                current["checkpoint"] | {"generation": stage["current_subject"]["generation"]},
-                stage,
-                git_proof,
-                current["authoring"]
-                | {
+            reverify = current["advanced"] or current["empty_verification"]
+            if current["empty_verification"]:
+                await self._cover_extensions_on(conn, current["covered_extensions"])
+                dossier[EMPTY_VERIFICATION_RECOVERY] = {
+                    "head_sha": request.head_sha,
+                    "episode_id": current["checkpoint"]["episode_id"],
+                    "generation": current["checkpoint"]["generation"],
+                    "receipt_ids": result["collection_receipt_ids"],
                     "completion_id": current["completion"]["id"],
-                    "recovery_fence_token": current["owner"]["fence_token"],
+                    "authoring": current["authoring"],
                     "principal": principal,
                     "reason": request.reason,
-                },
-            )
-            if not current["existing"]:
+                }
+            elif not current["existing"]:
+                edge = extension(
+                    current["operation"],
+                    current["checkpoint"] | {"generation": stage["current_subject"]["generation"]},
+                    stage,
+                    git_proof,
+                    current["authoring"]
+                    | {
+                        "completion_id": current["completion"]["id"],
+                        "recovery_fence_token": current["owner"]["fence_token"],
+                        "principal": principal,
+                        "reason": request.reason,
+                    },
+                )
                 dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
             if current["advanced"]:
                 dossier["collected_head_recovery"] = {
@@ -278,9 +351,7 @@ class ParentHeadRecovery:
                 )
                 .values(
                     **(
-                        {"state": "passed", "completed_at": self.parent.clock()}
-                        if current["advanced"]
-                        else {}
+                        {"state": "passed", "completed_at": self.parent.clock()} if reverify else {}
                     ),
                     dossier=dossier,
                 )
@@ -288,7 +359,7 @@ class ParentHeadRecovery:
             await advance_checkpoint_on(
                 conn, current["checkpoint"], request.head_sha, self.parent.clock()
             )
-            if current["advanced"]:
+            if reverify:
                 await conn.execute(
                     update(integration_repair_operations)
                     .where(
@@ -303,17 +374,20 @@ class ParentHeadRecovery:
                     )
                     .values(state="awaiting_children")
                 )
-            if current["operation"]["verifier_task_id"] is None or current["advanced"]:
+            if current["operation"]["verifier_task_id"] is None or reverify:
                 # A legacy close can strand the aggregate before its first
                 # readiness event. Use the ordinary projection to file the
                 # verifier and queue its fenced handoff in this transaction.
                 ready = await self.parent.mark_ready_on(
                     conn,
                     current["operation"]["parent_task_id"],
-                    require_verifier=current["advanced"],
-                    event_suffix=f":recovery:{request.head_sha}" if current["advanced"] else "",
+                    require_verifier=reverify,
+                    event_suffix=f":recovery:{request.head_sha}" if reverify else "",
                 )
-                if ready.get("state") != "integration_ready":
+                if (
+                    ready.get("state") != "integration_ready"
+                    or ready.get("head_sha") != request.head_sha
+                ):
                     raise ValueError(
                         "recovered parent cannot project verifier readiness: " + str(ready)
                     )
@@ -678,6 +752,11 @@ class ParentHeadRecovery:
         collection_recovery = (
             resolution is not None and gap_base is None and repair_head == request.head_sha
         )
+        empty_verification = (
+            not collection_recovery
+            and gap_base is None
+            and (stage["dossier"] or {}).get("repair_commits") == []
+        )
         if collection_recovery:
             from src.database.tables import integration_check_evidence
 
@@ -720,7 +799,22 @@ class ParentHeadRecovery:
             if original["outcome"] == "ready"
             else stage["starting_sha"]
         )
-        if collection_recovery or gap_base is not None:
+        covered_extensions = []
+        if empty_verification:
+            following, covered_extensions = await self._empty_verification_proof_on(
+                conn, operation, checkpoint, stage, completion, original, request.head_sha
+            )
+            base_sha = original["checkpoint_sha"]
+            recovered = (stage["dossier"] or {}).get(EMPTY_VERIFICATION_RECOVERY) or {}
+            settled = (
+                recovered.get("head_sha") == request.head_sha
+                and recovered.get("episode_id") == checkpoint["episode_id"]
+                and recovered.get("generation") == checkpoint["generation"]
+                and recovered.get("receipt_ids") == [row["id"] for row in following]
+                and recovered.get("completion_id") == completion["id"]
+                and stage["state"] == "passed"
+            )
+        elif collection_recovery or gap_base is not None:
             if any(
                 item["reason"] not in {"receipt_chain", "repair_head_chain"}
                 for item in original["blockers"]
@@ -771,7 +865,9 @@ class ParentHeadRecovery:
                 and recovered.get("receipt_ids") == [row["id"] for row in following]
                 and stage["state"] == "passed"
             )
-        if (advanced or collection_recovery) and operation["verifier_task_id"]:
+        if (advanced or collection_recovery or empty_verification) and operation[
+            "verifier_task_id"
+        ]:
             verifier = (
                 (
                     await conn.execute(
@@ -815,6 +911,8 @@ class ParentHeadRecovery:
             "collection_recovery": collection_recovery,
             "recovered_collection": recovered_collection,
             "gap_proofs": [],
+            "empty_verification": empty_verification,
+            "covered_extensions": covered_extensions,
         }
         if collection_recovery:
             from types import SimpleNamespace
@@ -850,6 +948,126 @@ class ParentHeadRecovery:
                 )
                 proof["gap_proofs"].append(gap)
         return proof
+
+    async def _empty_verification_proof_on(
+        self, conn, operation, checkpoint, stage, completion, readiness, head_sha
+    ):
+        """An empty stage supplies no edge: receipts must prove the entire aggregate."""
+        dossier = stage["dossier"] or {}
+        incident = dossier.get("supervisor_recovery")
+        if (
+            not isinstance(incident, dict)
+            or incident.get("incident_id")
+            != f"repair-no-progress:{operation['id']}:{stage['ordinal']}"
+            or incident.get("stage") != stage["ordinal"]
+            or incident.get("subject") != stage["current_subject"]
+            or any(
+                incident.get(key) != stage[key]
+                for key in ("attempts", "deadline_at", "repair_task_id")
+            )
+            or stage["state"] not in {"failed", "expired", "passed"}
+            or (stage["state"] == "passed" and not dossier.get(EMPTY_VERIFICATION_RECOVERY))
+            or stage["starting_sha"] != stage["current_subject"]["head_sha"]
+            or json.loads(completion["commits"]) != []
+        ):
+            raise ValueError("empty verification stage lacks its exact no-progress close proof")
+        if any(item["reason"] != "repair_head_chain" for item in readiness["blockers"]):
+            raise ValueError("child collection is not ready: " + str(readiness["blockers"]))
+        chain = sorted(
+            (row for row in readiness["receipts"] if row["disposition"] == "code"),
+            key=lambda row: (row["created_at"], row["id"]),
+        )
+        cursor = readiness["checkpoint_sha"]
+        tips = []
+        for receipt in chain:
+            if (
+                receipt["parent_operation_id"] != operation["id"]
+                or receipt["parent_episode_id"] != checkpoint["episode_id"]
+                or receipt["target_task_id"] != operation["parent_task_id"]
+                or receipt["repository_id"] != checkpoint["repository_id"]
+                or receipt["target_branch"] != checkpoint["branch"]
+                or receipt["before_sha"] != cursor
+                or not self.parent._trusted_code_receipt(receipt)
+            ):
+                raise ValueError("empty verification requires a contiguous trusted receipt chain")
+            cursor = receipt["after_sha"]
+            tips.append(cursor)
+        if (
+            cursor != head_sha
+            or stage["current_subject"]["head_sha"] not in tips
+            or checkpoint["checkpoint_sha"] not in [readiness["checkpoint_sha"], *tips]
+        ):
+            raise ValueError("empty verification head is not covered by the complete receipt chain")
+        stages = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages)
+                    .where(integration_repair_stages.c.operation_id == operation["id"])
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        delegate_ids = [row["repair_task_id"] for row in stages if row["repair_task_id"]]
+        if any(row["state"] not in {"passed", "failed", "expired"} for row in stages):
+            raise ValueError("another repair stage remains live")
+        for task_id in delegate_ids:
+            if await self.db._read_manual_pause(conn, task_id) is not None:
+                raise ValueError(f"manual pause on {task_id}")
+        if await conn.scalar(
+            select(gates.c.id)
+            .join(task_gates, task_gates.c.gate_id == gates.c.id)
+            .where(task_gates.c.task_id.in_(delegate_ids), gates.c.status == "open")
+            .limit(1)
+        ):
+            raise ValueError("open human or task gate must be resolved first")
+        if await conn.scalar(
+            select(sessions.c.id)
+            .where(
+                sessions.c.task_id.in_(delegate_ids),
+                (sessions.c.state != "stopped") | sessions.c.claim_phase.is_not(None),
+            )
+            .limit(1)
+        ) or await conn.scalar(
+            select(workspaces.c.id)
+            .where(
+                workspaces.c.locked_by_task_id.in_(delegate_ids),
+            )
+            .limit(1)
+        ):
+            raise ValueError("an earlier repair delegate retains a session or workspace")
+        covered = []
+        for edge in await extensions_on(conn, operation, checkpoint):
+            matches = [receipt for receipt in chain if receipt_covers_extension(receipt, edge)]
+            if len(matches) != 1 or edge["stage"] == stage["ordinal"]:
+                raise ValueError("empty verification cannot consume a repair outside the receipts")
+            origin = next(row for row in stages if row["ordinal"] == edge["stage"])
+            covered.append(
+                {"stage": dict(origin), "extension": edge, "receipt_id": matches[0]["id"]}
+            )
+        return chain, covered
+
+    @staticmethod
+    async def _cover_extensions_on(conn, covered):
+        """Keep original edges byte-identical, recording which immutable receipt covers them."""
+        dossiers = {}
+        for item in covered:
+            stage = item["stage"]
+            dossier = dossiers.setdefault(stage["ordinal"], dict(stage["dossier"] or {}))
+            dossier[RECEIPT_COVERED_EXTENSIONS] = [
+                *(dossier.get(RECEIPT_COVERED_EXTENSIONS) or []),
+                {"extension": item["extension"], "receipt_id": item["receipt_id"]},
+            ]
+        for ordinal, dossier in dossiers.items():
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == covered[0]["stage"]["operation_id"],
+                    integration_repair_stages.c.ordinal == ordinal,
+                )
+                .values(dossier=dossier)
+            )
 
     async def _resolution_receipt_on(self, conn, operation, checkpoint, stage, *, project_id):
         """A committed resolution preserves the original writer's exact push fence."""
@@ -990,6 +1208,8 @@ class ParentHeadRecovery:
         """A detached reservation still preserves any unpublished work in its former slot."""
         workspace = proof["workspace"]
         if workspace is None:
+            if proof["empty_verification"]:
+                raise ValueError("empty verification requires a confirmed parent workspace")
             return
         git = self.promotion.git
         path, branch = workspace["workspace_path"], proof["checkpoint"]["branch"]
@@ -1033,6 +1253,7 @@ class ParentHeadRecovery:
             ).scalars()
             if p
         )
+        checkouts = []
         for checkout in await git.aworktree_list(path):
             if checkout.get("branch") != branch:
                 continue
@@ -1041,6 +1262,8 @@ class ParentHeadRecovery:
             dirty = await git.aget_dirty_paths(checkout["path"])
             if dirty is None or any(p != ".agent-queue-lock" for p in dirty):
                 raise ValueError("confirmed parent checkout has unpublished changes")
+            checkouts.append((os.path.realpath(checkout["path"]), checkout["head"]))
+        return {"local_sha": local_sha, "checkouts": sorted(checkouts)}
 
     async def _git_proof(self, proof, repository, head_sha, *, published_head_sha=None):
         store = repository.retained_git_dir
@@ -1053,6 +1276,8 @@ class ParentHeadRecovery:
         )
         if remote.state is not RemoteRefState.PRESENT or remote.oid != published_head_sha:
             raise ValueError("published parent head differs from the supplied exact head")
+        if proof["empty_verification"]:
+            return await self._empty_verification_git_proof(proof, store, head_sha)
         repair_head = proof["repair_head_sha"]
         if not await self.promotion._is_ancestor(store, head_sha, published_head_sha):
             raise ValueError("historical repair is absent from the published parent head")
@@ -1117,3 +1342,29 @@ class ParentHeadRecovery:
             ):
                 raise ValueError("head loses an original child receipt")
         return {"base_sha": base_sha, "head_sha": repair_head, "commits": commits}
+
+    async def _empty_verification_git_proof(self, proof, store, head_sha):
+        covered = []
+        for receipt in proof["following_receipts"]:
+            if not await self.promotion._is_ancestor(
+                store, receipt["before_sha"], receipt["after_sha"]
+            ):
+                raise ValueError("collection receipt has a non-ancestor head")
+            commits = await self.promotion._resolution_commit_range(
+                store, receipt["before_sha"], receipt["after_sha"]
+            )
+            expected = (
+                [receipt["squash_sha"]]
+                if receipt["squash_sha"]
+                else receipt["resolution_evidence"]["repair_commit_shas"]
+            )
+            if commits != expected:
+                raise ValueError("collection receipt does not cover its complete Git commit range")
+            covered.extend(commits)
+        if (
+            not await self.promotion._is_ancestor(store, proof["base_sha"], head_sha)
+            or await self.promotion._resolution_commit_range(store, proof["base_sha"], head_sha)
+            != covered
+        ):
+            raise ValueError("published head contains commits outside the complete receipt chain")
+        return {"base_sha": proof["base_sha"], "head_sha": head_sha, "commits": covered}
