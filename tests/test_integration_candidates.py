@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 from contextlib import asynccontextmanager
@@ -40,6 +41,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
+from tests.test_generated_artifacts import _catalogue_branches
 
 
 BASE = "a" * 40
@@ -4278,6 +4280,58 @@ async def test_generated_conflict_advances_with_rebuilt_tree(db, tmp_path):
             .all()
         )
     assert [row["result"] for row in applied] == ["applied", "applied"]
+
+
+async def test_ci_repair_main_rebuild_regenerates_conflicting_catalogue(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.test_selection.catalogue import CATALOGUE_PATH
+
+    work, base, new_main, source = _catalogue_branches(tmp_path)
+    origin = tmp_path / "catalogue-origin.git"
+    _git(tmp_path, "clone", "--bare", str(work), str(origin))
+    _git(origin, "update-ref", "refs/heads/main", base)
+    _git(origin, "update-ref", "refs/heads/root-0", source)
+    members = [(base, source, _git(work, "rev-parse", f"{source}^{{tree}}"))]
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db, data_dir=tmp_path / "data", git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(), app_client=app, clock=lambda: 100.0,
+    )
+    built = await service.build("batch")
+    assert built.outcome == "built"
+    store = next((tmp_path / "data" / "integration-repositories").iterdir())
+    _git(work, "fetch", str(store), built.head_sha)
+    _git(work, "switch", "-qc", "ci-repair", built.head_sha)
+    (work / "ci-repair.txt").write_text("accepted fix\n")
+    _git(work, "add", "ci-repair.txt")
+    _git(work, "commit", "-qm", "accepted CI repair")
+    repaired = _git(work, "rev-parse", "HEAD")
+    _git(store, "fetch", str(work), "ci-repair")
+    _git(origin, "update-ref", "refs/heads/main", new_main)
+    _git(store, "fetch", str(origin), "main")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            dossier={"repair_commits": [repaired]}
+        ))
+    state = await service._locked_state("batch")
+    head = await service._preserve_ci_repair(
+        state, {"state": "red", "head_sha": repaired, "revision": 0}, store, new_main
+    )
+    assert isinstance(head, str)
+    assert _git(store, "show", "-s", "--format=%P", head) == f"{new_main} {repaired}"
+    assert _git(store, "show", f"{head}:ci-repair.txt") == "accepted fix"
+    catalogue = json.loads(_git(store, "show", f"{head}:{CATALOGUE_PATH}"))
+    assert set(catalogue["modules"]) == {
+        "tests/test_a.py", "tests/test_b.py", "tests/test_c.py",
+    }
+    assert _git(store, "show", f"{head}:tests/test_b.py")
+    assert _git(store, "show", f"{head}:tests/test_c.py")
+    assert _git(origin, "rev-parse", "main") == new_main
+    assert not list(store.parent.glob("aq-regen-*"))
 
 
 async def test_non_generated_conflict_still_dispatches(db, tmp_path):
