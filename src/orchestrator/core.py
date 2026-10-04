@@ -1953,6 +1953,7 @@ class Orchestrator(
             RepairService(
                 self.db,
                 owner_recovery=owner_recovery,
+                promotion=self.promotion_service,
             ),
             self.integration_outbox,
             candidate_ci_handler=candidate_ci.handle,

@@ -13,6 +13,7 @@ from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     DESIGN_INTEGRATION_COMMANDS,
     IntegrationAdoptArgs,
+    IntegrationReevaluateRepairArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
@@ -53,6 +54,44 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("missing", [
+    "expected_head_sha", "expected_generation", "expected_stage", "expected_fence_token",
+    "expected_snapshot_digest", "reason",
+])
+def test_noop_recovery_apply_contract_requires_exact_reviewed_preview(missing):
+    args = dict(operation_id="op", dry_run=False, expected_head_sha="a" * 40,
+                expected_generation=2, expected_stage=1, expected_fence_token=3,
+                expected_snapshot_digest="b" * 64, reason="Reviewed green no-op")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationReevaluateRepairArgs(**args)
+    assert IntegrationReevaluateRepairArgs(operation_id="op").dry_run is True
+
+
+async def test_noop_recovery_adapter_preserves_snapshot_and_claim_release_plan():
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_reevaluate_repair"
+            assert payload["dry_run"] is True
+            return {"outcome": "would_reevaluate", "operation_id": "op", "stage": 2,
+                    "snapshot_digest": "b" * 64, "apply_command": "aq integration reevaluate-repair op --apply",
+                    "planned_steps": ["release_stale_parent_claim_to_paused_collection",
+                                      "project_fresh_aggregate_verifier"]}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_reevaluate_repair").invoke(
+            IntegrationReevaluateRepairArgs(operation_id="op"), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.value.snapshot_digest == "b" * 64
+    assert result.value.planned_steps[0] == "release_stale_parent_claim_to_paused_collection"
+    assert result.value.apply_command.endswith("--apply")
 
 
 @pytest.mark.parametrize("overrides", [
@@ -322,6 +361,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_reconcile_unmaterialized",
         "integration_waive_history",
         "integration_resume",
+        "integration_reevaluate_repair",
         "integration_abort",
         "integration_settle_delivered_batch",
         "integration_develop",

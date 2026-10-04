@@ -353,7 +353,8 @@ async def _finished_collection_case(
                                         head,
                                     ]
                                     if interior_gap
-                                    else [head]
+                                    else [first_gap, head] if ordinal == 1
+                                    else [first_gap, middle_head, head]
                                 ),
                                 "branch_sha": head,
                             },
@@ -554,21 +555,13 @@ async def _finished_collection_case(
     return recovery, hierarchy, request, git, ((collected, first_gap), (second_child, second_gap))
 
 
-async def _captured_collection_case(db, tmp_path):
-    """Replay captured identities over a real Git DAG with translated object IDs."""
+def _captured_recovery_git(tmp_path, captured):
+    """Rebuild captured Git facts without requiring the live repository objects."""
     import os
     import re
-    from pathlib import Path
 
     from src.git.manager import GitManager
-    from src.integration.outbox import enqueue_integration_event
-    from src.integration.parent_repair_heads import ParentHeadRecovery
-    from src.integration.promotion import PromotionService
-    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 
-    captured = json.loads(
-        (Path(__file__).parent / "fixtures/integration/parent_recovery_6397.json").read_text()
-    )
     origin, work = tmp_path / "origin.git", tmp_path / "work"
 
     def git(*args, stdin=None, stamp=None):
@@ -626,6 +619,25 @@ async def _captured_collection_case(db, tmp_path):
             result = await super().als_remote_ref(*args, **kwargs)
             return replace(result, oid=reverse.get(result.oid, result.oid))
 
+    return git, CapturedGit(), origin, aliases
+
+
+async def _captured_collection_case(db, tmp_path, *, snapshot=False, damage=None):
+    """Replay captured identities over a real Git DAG with translated object IDs."""
+    from pathlib import Path
+
+    from src.integration.outbox import enqueue_integration_event
+    from src.integration.parent_repair_heads import ParentHeadRecovery
+    from src.integration.promotion import PromotionService
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+    captured = json.loads(
+        (Path(__file__).parent / "fixtures/integration/parent_recovery_6397.json").read_text()
+    )
+    live_snapshot = json.loads((Path(__file__).parent / (
+        "fixtures/integration/parent_recovery_6397_0441.json"
+    )).read_text()) if snapshot else None
+    git, git_manager, origin, aliases = _captured_recovery_git(tmp_path, captured)
     branch = captured["intents"][0]["target_branch"]
     git("push", "origin", f"{aliases[captured['base_sha']]}:refs/heads/main")
     git("push", "origin", f"{aliases[captured['head_sha']]}:refs/heads/{branch}")
@@ -636,6 +648,26 @@ async def _captured_collection_case(db, tmp_path):
         parent_id=captured["parent_id"],
         branch=branch,
     )
+    if live_snapshot:
+        episode_id = live_snapshot["operation"]["episode_id"]
+        async with db.immediate() as conn:
+            episode = (await conn.execute(select(integration_parent_episodes).where(
+                integration_parent_episodes.c.id == checkpointed["episode_id"],
+            ))).mappings().one()
+            await conn.execute(insert(integration_parent_episodes).values(
+                **(dict(episode) | {"id": episode_id}),
+            ))
+            if damage == "other_episode":
+                await conn.execute(insert(integration_parent_episodes).values(
+                    **(dict(episode) | {"id": "unrelated-episode"}),
+                ))
+            await conn.execute(update(integration_repair_operations).where(
+                integration_repair_operations.c.id == checkpointed["operation_id"],
+            ).values(episode_id=episode_id))
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == captured["parent_id"],
+            ).values(episode_id=episode_id))
+        checkpointed["episode_id"] = episode_id
     operation_id, parent_id = captured["operation_id"], captured["parent_id"]
     for stage in captured["stages"]:
         await db.create_task(
@@ -721,6 +753,9 @@ async def _captured_collection_case(db, tmp_path):
                     dossier={
                         "repair_commits": stage["repair_commits"],
                         "branch_sha": stage["branch_sha"],
+                        **({"parent_head_extensions": live_snapshot["stages"][stage["ordinal"]][
+                            "parent_head_extensions"
+                        ]} if live_snapshot else {}),
                     },
                 )
             )
@@ -844,18 +879,33 @@ async def _captured_collection_case(db, tmp_path):
             first_parent.append(cursor)
             cursor = nodes[cursor]["parents"][0]
         first_parent.reverse()
+        if live_snapshot:
+            receipt_rows = live_snapshot["receipts"]
         for row in receipt_rows:
+            row = dict(row)
+            if live_snapshot:
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == row["source_task_id"],
+                ).values(checkpoint_sha=row["reviewed_head_sha"]))
+                edge = live_snapshot["stages"][0]["parent_head_extensions"][0]
+                if (row["before_sha"], row["after_sha"]) == (edge["before_sha"], edge["after_sha"]):
+                    _damage_captured_receipt(row, damage)
             await conn.execute(
                 insert(task_delivery_receipts).values(
-                    **row,
-                    domain_key=row["id"],
-                    target_task_id=parent_id,
-                    repository_id="repo",
-                    target_branch=branch,
-                    parent_operation_id=operation_id,
-                    parent_episode_id=checkpoint["episode_id"],
-                    disposition="code",
-                    created_at=float(first_parent.index(row["after_sha"]) + 1),
+                    **(row | {"domain_key": row["id"], "target_task_id": parent_id,
+                    "repository_id": "repo", "target_branch": branch,
+                    "parent_operation_id": operation_id,
+                    "parent_episode_id": (
+                        "unrelated-episode" if live_snapshot and damage == "other_episode"
+                        and row["after_sha"] == live_snapshot["stages"][0][
+                            "parent_head_extensions"
+                        ][0]["after_sha"] else checkpoint["episode_id"]
+                    ),
+                    "disposition": "code",
+                    "created_at": row.get("created_at", float(first_parent.index(
+                        row["after_sha"],
+                    ) + 1)),
+                    }),
                 )
             )
     repo = RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin))
@@ -863,7 +913,7 @@ async def _captured_collection_case(db, tmp_path):
         PromotionService(
             db,
             data_dir=tmp_path / "retained",
-            git_manager=CapturedGit(),
+            git_manager=git_manager,
             repository_resolver=lambda _: repo,
         )
     )
@@ -872,7 +922,359 @@ async def _captured_collection_case(db, tmp_path):
         expected_episode_id=checkpoint["episode_id"], expected_generation=checkpoint["generation"],
         expected_stage=6, expected_fence_token=41, reason="Replay the captured collection proof",
     )
+    return recovery, hierarchy, request, live_snapshot or captured
+
+
+async def _captured_phase4_case(db, tmp_path, *, damage=None):
+    from pathlib import Path
+
+    from src.database.queries.result_queries import close_identity
+    from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+    from src.integration.outbox import enqueue_integration_event
+    from src.integration.parent_repair_heads import ParentHeadRecovery
+    from src.integration.promotion import PromotionService
+
+    captured = json.loads((Path(__file__).parent / (
+        "fixtures/integration/parent_recovery_phase4_0441.json"
+    )).read_text())
+    git, git_manager, origin, aliases = _captured_recovery_git(tmp_path, captured)
+    operation = captured["operation"]
+    parent_id = operation["parent_task_id"]
+    branch = captured["completions"][0]["branch"]
+    git("push", "origin", f"{aliases[captured['base_sha']]}:refs/heads/main")
+    git("push", "origin", f"{aliases[captured['head_sha']]}:refs/heads/{branch}")
+    hierarchy, initial, _children = await _parent_tree(
+        db, children=3, base_sha=captured["base_sha"], parent_id=parent_id, branch=branch,
+    )
+    for stage in captured["stages"]:
+        await db.create_task(Task(
+            id=stage["repair_task_id"], project_id="p", repo_id="repo", branch_name=branch,
+            title="Captured phase4 repair", description="Snapshot replay", status=TaskStatus.COMPLETED,
+            created_by_kind="integration_repair", created_by_id=operation["id"],
+        ))
+    for index, row in enumerate(captured["completions"]):
+        completion_id = f"captured-phase4-completion-{index}"
+        await db.save_task_completion(TaskCompletion(
+            **(row | {"id": completion_id, "commits": json.loads(row["commits"])}),
+        ))
+        await db.set_task_meta(row["task_id"], ACCEPTED_CLOSE_KEY, close_identity(
+            completion_id, session_id=captured["close_audits"][index]["payload"]["session_id"],
+            claim_epoch=0,
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == parent_id).values(status="PAUSED"))
+        pins = (await conn.execute(select(integration_operation_artifact_pins).where(
+            integration_operation_artifact_pins.c.operation_id == initial["operation_id"],
+        ))).mappings().all()
+        await conn.execute(delete(integration_operation_artifact_pins).where(
+            integration_operation_artifact_pins.c.operation_id == initial["operation_id"],
+        ))
+        episode = (await conn.execute(select(integration_parent_episodes).where(
+            integration_parent_episodes.c.id == initial["episode_id"],
+        ))).mappings().one()
+        await conn.execute(insert(integration_parent_episodes).values(
+            **(dict(episode) | {"id": operation["episode_id"], "generation": 2}),
+        ))
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.id == initial["operation_id"],
+        ).values(id=operation["id"], episode_id=operation["episode_id"], state=operation["state"],
+                 active_stage=1))
+        for pin in pins:
+            await conn.execute(insert(integration_operation_artifact_pins).values(
+                **(dict(pin) | {"operation_id": operation["id"]}),
+            ))
+        if damage == "other_episode":
+            await conn.execute(insert(integration_parent_episodes).values(
+                **(dict(episode) | {"id": "unrelated-episode"}),
+            ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == parent_id,
+        ).values(episode_id=operation["episode_id"], generation=2, state="verifying",
+                 checkpoint_sha=captured["base_sha"]))
+        for stage in captured["stages"]:
+            incident = stage["supervisor_recovery"]
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id=operation["id"], ordinal=stage["ordinal"],
+                policy=_boundary().repair.model_dump(mode="json"), intelligence_class="deep-high",
+                starting_sha=stage["starting_sha"], trigger_id="captured-phase4-check",
+                writer_kind="repair_delegate", repair_task_id=stage["repair_task_id"],
+                current_subject=stage["current_subject"], success_subject=stage["success_subject"],
+                started_at=1.0, deadline_at=incident["deadline_at"] if incident else 2.0,
+                deadline_event_id=f"captured-phase4-deadline-{stage['ordinal']}",
+                attempts=stage["attempts"], state=stage["state"], completed_at=stage["completed_at"],
+                dossier={
+                    "repair_commits": stage["repair_commits"],
+                    "branch_sha": stage["current_subject"]["head_sha"],
+                    "parent_head_extensions": stage["parent_head_extensions"],
+                    **({"supervisor_recovery": incident} if incident else {}),
+                },
+            ))
+        for row in captured["close_audits"]:
+            event_id = row["payload"]["event_id"]
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id, project_id="p",
+                event_type="integration.repair_delegate_closed", payload=row["payload"],
+                available_at=row["created_at"],
+            )
+            await conn.execute(update(integration_outbox).where(
+                integration_outbox.c.id == event_id,
+            ).values(created_at=row["created_at"]))
+        for index, row in enumerate(captured["receipts"]):
+            receipt = dict(row)
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == row["source_task_id"],
+            ).values(checkpoint_sha=row["reviewed_head_sha"]))
+            if index == 1:
+                _damage_captured_receipt(receipt, damage)
+                if damage == "other_episode":
+                    receipt["parent_episode_id"] = "unrelated-episode"
+            await conn.execute(insert(task_delivery_receipts).values(**receipt))
+        await conn.execute(insert(workspaces).values(
+            id="captured-phase4-confirmed", project_id="p", workspace_path=str(tmp_path / "work"),
+            source_type="link", enabled=True, created_at=1.0,
+        ))
+        await conn.execute(update(integration_branch_owners).values(
+            owner_id=operation["id"], owner_role="collector", handoff_state="reserved",
+            fence_token=8, confirmed_workspace_id="captured-phase4-confirmed",
+        ))
+    repo = RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin))
+    recovery = ParentHeadRecovery(PromotionService(
+        db, data_dir=tmp_path / "retained", git_manager=git_manager,
+        repository_resolver=lambda _: repo,
+    ))
+    request = SimpleNamespace(
+        operation_id=operation["id"], head_sha=captured["head_sha"], dry_run=True,
+        expected_episode_id=operation["episode_id"], expected_generation=2,
+        expected_stage=1, expected_fence_token=8, reason="Replay captured phase4 snapshot",
+    )
     return recovery, hierarchy, request, captured
+
+
+def _damage_captured_receipt(receipt, damage):
+    """Insert bad evidence as captured; append-only receipt triggers stay enabled."""
+    from copy import deepcopy
+
+    if damage in {"receipt_range", "untrusted_receipt"}:
+        evidence = deepcopy(receipt["resolution_evidence"])
+        if damage == "receipt_range":
+            evidence["repair_commit_shas"] = ["a" * 40, *evidence["repair_commit_shas"]]
+            evidence["remote_proof"]["repair_commit_shas"] = evidence["repair_commit_shas"]
+        else:
+            evidence["remote_proof"] = {}
+        receipt["resolution_evidence"] = evidence
+
+
+async def _captured_discord_snapshot_case(db, tmp_path, *, damage=None):
+    return await _captured_collection_case(db, tmp_path, snapshot=True, damage=damage)
+
+
+@pytest.mark.parametrize("active_origin", [False, True])
+async def test_collection_apply_keeps_two_proved_gaps_from_one_stage(db, tmp_path, active_origin):
+    """Repeated origin snapshots must not drop a gap before projecting readiness."""
+    recovery, hierarchy, request, _git, gaps = await _finished_collection_case(db, tmp_path)
+    assert (await recovery.run(request, principal="supervisor"))["outcome"] == "would_recover"
+    async with db.immediate() as conn:
+        proof = await recovery._proof_on(conn, request)
+        origin = proof["stage"] if active_origin else proof["gap_proofs"][0]["stage"]
+        author = proof["authoring"] if active_origin else proof["gap_proofs"][0]["authoring"]
+        for gap in proof["gap_proofs"]:
+            gap["stage"], gap["authoring"] = dict(origin), dict(author)
+        await recovery._recover_collection_on(
+            conn, proof,
+            [{"base_sha": before, "head_sha": after, "commits": [after]}
+             for before, after in gaps],
+            request=request, principal="supervisor", result={},
+        )
+        dossier = await conn.scalar(select(integration_repair_stages.c.dossier).where(
+            integration_repair_stages.c.ordinal == origin["ordinal"],
+        ))
+        assert [(edge["before_sha"], edge["after_sha"])
+                for edge in dossier["parent_head_extensions"]] == list(gaps)
+        if active_origin:
+            assert dossier["collection_head_recovery"]["head_sha"] == request.head_sha
+            assert dossier["resolution_verification"]["resolution_head_sha"] == request.head_sha
+    assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+
+
+@pytest.mark.parametrize("damage", ["duplicate", "missing", "extra"])
+async def test_empty_aggregate_requires_each_git_commit_exactly_once(db, tmp_path, damage):
+    recovery, _hierarchy, request, captured = await _captured_phase4_case(db, tmp_path)
+    receipts = list(captured["receipts"])
+    git = recovery.promotion.git
+    repository = await recovery.promotion._resolve_repository("repo")
+    await recovery.promotion._ensure_retained_repository(repository)
+    store = repository.retained_git_dir
+    async with git.arepository_transaction(str(store)):
+        await recovery.promotion._fetch_all_heads(store, repository.origin_url)
+        if damage == "duplicate":
+            receipts.append(receipts[0])
+        elif damage == "missing":
+            receipts.pop(0)
+        else:
+            # A valid receipt for a new Git commit is outside the published head.
+            extra = await git.arun_git_result(
+                ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                 "commit-tree", captured["git_nodes"][0]["tree"],
+                 "-p", request.head_sha, "-m", "Extra receipted commit"],
+                cwd=str(store), lock_held=True,
+            )
+            assert extra.returncode == 0
+            row = dict(receipts[0])
+            row.update(before_sha=request.head_sha, after_sha=extra.stdout.strip(),
+                       squash_sha=extra.stdout.strip())
+            receipts.append(row)
+        with pytest.raises(ValueError, match="outside the complete receipt chain"):
+            await recovery._empty_verification_git_proof(
+                {"base_sha": captured["base_sha"], "following_receipts": receipts},
+                store, request.head_sha,
+            )
+
+
+@pytest.mark.parametrize("damage", ["wrong_second_parent", "three_parents"])
+async def test_squash_merge_requires_exact_aggregate_and_review_parents(db, tmp_path, damage):
+    recovery, _hierarchy, _request, captured = await _captured_phase4_case(db, tmp_path)
+    receipt = dict(captured["receipts"][0])
+    repository = await recovery.promotion._resolve_repository("repo")
+    await recovery.promotion._ensure_retained_repository(repository)
+    store, git = repository.retained_git_dir, recovery.promotion.git
+    async with git.arepository_transaction(str(store)):
+        await recovery.promotion._fetch_all_heads(store, repository.origin_url)
+        if damage == "wrong_second_parent":
+            receipt["reviewed_head_sha"] = captured["head_sha"]
+        else:
+            extra = await git.arun_git_result(
+                ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                 "commit-tree", captured["git_nodes"][0]["tree"],
+                 "-p", receipt["before_sha"], "-p", receipt["reviewed_head_sha"],
+                 "-p", captured["head_sha"], "-m", "Unreviewed third merge parent"],
+                cwd=str(store), lock_held=True,
+            )
+            assert extra.returncode == 0
+            receipt.update(after_sha=extra.stdout.strip(), squash_sha=extra.stdout.strip())
+        with pytest.raises(ValueError, match="merge parents differ from aggregate and review"):
+            await recovery._receipt_git_commits(receipt, store)
+
+
+@pytest.mark.parametrize("damage", ["first_parent_base", "complete_range"])
+async def test_receipt_duplicate_requires_exact_git_range_and_lineage(db, tmp_path, damage):
+    from copy import deepcopy
+
+    recovery, _hierarchy, request, captured = await _captured_phase4_case(db, tmp_path)
+    edge = deepcopy(captured["stages"][0]["parent_head_extensions"][0])
+    node = next(n for n in captured["git_nodes"] if n["sha"] == edge["after_sha"])
+    assert len(node["parents"]) == 2
+    if damage == "first_parent_base":
+        edge["before_sha"] = node["parents"][1]
+    repository = await recovery.promotion._resolve_repository("repo")
+    await recovery.promotion._ensure_retained_repository(repository)
+    store = repository.retained_git_dir
+    async with recovery.promotion.git.arepository_transaction(str(store)):
+        await recovery.promotion._fetch_all_heads(store, repository.origin_url)
+        edge["commits"] = await recovery.promotion._resolution_commit_range(
+            store, edge["before_sha"], edge["after_sha"],
+        )
+        assert await recovery.promotion._is_ancestor(store, edge["before_sha"], edge["after_sha"])
+        if damage == "complete_range":
+            edge["commits"] = edge["commits"][1:]
+        reason = (
+            "base is absent from its first-parent lineage"
+            if damage == "first_parent_base" else "differs from its complete Git commit range"
+        )
+        with pytest.raises(ValueError, match=reason):
+            await recovery._recorded_extensions_git_proof(
+                {"recorded_extensions": [edge], "covered_extensions": [{
+                    "extension": edge, "receipt": captured["receipts"][1],
+                }]},
+                store, request.head_sha,
+            )
+
+
+@pytest.mark.parametrize(("snapshot", "damage"), [
+    (snapshot, damage)
+    for snapshot in ("discord", "phase4")
+    for damage in (None, "edge_range", "receipt_range", "untrusted_receipt", "other_episode",
+                   "unconsumed_edge", "introduced_commit", "non_empty_completion")
+    if snapshot == "phase4" or damage not in {"introduced_commit", "non_empty_completion"}
+])
+async def test_parent_recovery_replays_0441_snapshot(db, tmp_path, snapshot, damage):
+    from copy import deepcopy
+
+    build = _captured_discord_snapshot_case if snapshot == "discord" else _captured_phase4_case
+    recovery, hierarchy, request, captured = await build(db, tmp_path, damage=damage)
+    async with db.immediate() as conn:
+        stages = (await conn.execute(select(integration_repair_stages).order_by(
+            integration_repair_stages.c.ordinal,
+        ))).mappings().all()
+        first = stages[0]
+        dossier = deepcopy(first["dossier"])
+        edge = dossier["parent_head_extensions"][0]
+        if damage == "edge_range":
+            edge["commits"] = edge["commits"][:-2] + edge["commits"][-1:]
+        elif damage == "unconsumed_edge":
+            extra = deepcopy(edge)
+            extra["before_sha"], extra["after_sha"], extra["commits"] = (
+                "e" * 40, "f" * 40, ["f" * 40],
+            )
+            dossier["parent_head_extensions"].append(extra)
+        elif damage == "introduced_commit":
+            current = stages[-1]
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.ordinal == current["ordinal"],
+            ).values(dossier=current["dossier"] | {
+                "repair_commits": [*current["dossier"]["repair_commits"], "a" * 40],
+            }))
+        elif damage == "non_empty_completion":
+            current = stages[-1]
+            await conn.execute(update(task_completion_records).where(
+                task_completion_records.c.task_id == current["repair_task_id"],
+            ).values(commits=json.dumps([current["current_subject"]["head_sha"]])))
+        if damage in {"edge_range", "unconsumed_edge"}:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.ordinal == 0,
+            ).values(dossier=dossier))
+        before_stages = (await conn.execute(select(integration_repair_stages))).mappings().all()
+        before_receipts = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+    checkpoint = await db.get_integration_checkpoint(captured["operation"]["parent_task_id"])
+    if damage:
+        for dry_run in (True, False):
+            request.dry_run = dry_run
+            with pytest.raises(ValueError):
+                await recovery.run(request, principal="supervisor")
+    else:
+        preview = await recovery.run(request, principal="supervisor")
+        assert preview["outcome"] == "would_recover"
+        assert preview["episode_id"] == captured["operation"]["episode_id"]
+        if snapshot == "discord":
+            assert preview["head_sha"] == "cd394b1a6c90d4cffcae1ce99aa6c8948286d021"
+            assert preview["stage"] == 6
+            assert "stage 2 6b2e6236" in preview["reason"]
+            assert "stage 4 9c7910c7" in preview["reason"]
+        else:
+            assert preview["head_sha"] == "0c61aada8cb782c3a6a0d4150c62ff55feb47869"
+            assert (preview["generation"], preview["stage"], preview["fence_token"]) == (2, 1, 8)
+    assert await db.get_integration_checkpoint(captured["operation"]["parent_task_id"]) == checkpoint
+    async with db.immediate() as conn:
+        assert (await conn.execute(select(integration_repair_stages))).mappings().all() == before_stages
+        assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == before_receipts
+    if damage is None:
+        request.dry_run = False
+        assert (await recovery.run(request, principal="supervisor"))["outcome"] == "recovered"
+        assert (await recovery.run(request, principal="supervisor"))["outcome"] == "already_recovered"
+        readiness = await hierarchy.readiness(captured["operation"]["parent_task_id"])
+        assert readiness["outcome"] == "ready"
+        async with db.immediate() as conn:
+            stages = (await conn.execute(select(integration_repair_stages).order_by(
+                integration_repair_stages.c.ordinal,
+            ))).mappings().all()
+            assert sum(len((s["dossier"] or {}).get("receipt_covered_extensions", []))
+                       for s in stages) == (10 if snapshot == "discord" else 1)
+            for original, stage in zip(before_stages, stages, strict=True):
+                assert stage["dossier"]["parent_head_extensions"] == (
+                    original["dossier"]["parent_head_extensions"]
+                )
+                for field in ("attempts", "deadline_at", "current_subject"):
+                    assert stage[field] == original[field]
+            assert (await conn.execute(select(task_delivery_receipts))).mappings().all() == before_receipts
 
 
 @pytest.mark.parametrize(
@@ -3112,7 +3514,7 @@ async def _empty_verification_stage_case(db, tmp_path, *, invalid=None, redundan
                         "state": "expired",
                         "completed_at": 41.0,
                         "dossier": {
-                            "repair_commits": [],
+                            "repair_commits": list(stage["dossier"]["repair_commits"]),
                             "branch_sha": repair_head,
                             "supervisor_recovery": incident,
                         },
@@ -3449,7 +3851,7 @@ async def test_empty_verification_stage_refuses_incomplete_or_live_proof(db, tmp
         )
         dossier = dict(stage["dossier"])
         if case == "recorded_stage_commits":
-            dossier["repair_commits"] = [repair_head]
+            dossier["repair_commits"] = [*dossier["repair_commits"], request.head_sha]
         elif case == "missing_incident":
             dossier.pop("supervisor_recovery")
         elif case in {"wrong_incident", "changed_incident_subject", "changed_incident_budget"}:

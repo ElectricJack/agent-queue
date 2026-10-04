@@ -37,6 +37,17 @@ def _client(result):
     return client
 
 
+def test_reevaluate_repair_apply_requires_exact_preview():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "reevaluated"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reevaluate-repair", "operation", "--apply"])
+    assert result.exit_code == 2
+    assert "--apply requires --head, --generation, --stage, --fence, --snapshot and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("argv", "command", "args"),
     [
@@ -214,6 +225,16 @@ def _client(result):
             },
         ),
         (["resume", "op-1"], "integration_resume", {"operation_id": "op-1"}),
+        (["reevaluate-repair", "op-1"], "integration_reevaluate_repair", {"operation_id": "op-1", "dry_run": True}),
+        (["reevaluate-repair", "op-1", "--apply", "--head", "a" * 40,
+          "--episode", "episode", "--generation", "2", "--stage", "2", "--fence", "9",
+          "--snapshot", "b" * 64,
+          "--reason", "reviewed"], "integration_reevaluate_repair", {
+              "operation_id": "op-1", "dry_run": False, "expected_head_sha": "a" * 40,
+              "expected_episode_id": "episode", "expected_generation": 2,
+              "expected_stage": 2, "expected_fence_token": 9, "reason": "reviewed",
+              "expected_snapshot_digest": "b" * 64,
+          }),
         (
             ["abort", "op-1", "--reason", "operator decision"],
             "integration_abort",
@@ -544,6 +565,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_enable",
         "integration_waive_history",
         "integration_resume",
+        "integration_reevaluate_repair",
         "integration_abort",
         "integration_retry_cleanup",
         "integration_bind_legacy_repositories",
@@ -567,6 +589,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "enable",
         "waive-history",
         "resume",
+        "reevaluate-repair",
         "abort",
         "retry-cleanup",
         "bind-legacy-repositories",

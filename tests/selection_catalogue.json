@@ -553,6 +553,7 @@
         "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
+        "tests/test_integration_repair_lineage.py",
         "tests/test_integration_repair_rollover.py",
         "tests/test_integration_review_evidence.py",
         "tests/test_integration_root_authorization.py",
@@ -1400,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:59156a18f607bcf4fac082c7b97068168c59844285eef861a4393f8e7bf24ddc",
+  "digest": "sha256:64ff98f3b17ef3ac742b77d6778fc70926f5f1f70f13318cf2cae44a7ed631fc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8176,6 +8177,19 @@
         "parametrize"
       ],
       "summary": "Durable bounded repair stages and execution delegates."
+    },
+    "tests/test_integration_repair_lineage.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.repair_lineage"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The repair ladder inherits history; only new commits belong to a stage."
     },
     "tests/test_integration_repair_rollover.py": {
       "areas": [

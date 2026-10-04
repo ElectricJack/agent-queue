@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 517,
+    "leaf_commands": 518,
     "registration": {
       "generated": 338,
-      "handwritten": 179
+      "handwritten": 180
     },
     "ownership": {
-      "core": 478,
+      "core": 479,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 516
+      "supported": 517
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 338,
-      "registration": 165
+      "registration": 166
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 457
+      "untested": 458
     }
   },
   "commands": [
@@ -4637,6 +4637,45 @@
         "optional": [
           "--apply",
           "--head",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration reevaluate-repair",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_reevaluate_repair",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "operation_id"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--episode",
+          "--generation",
+          "--stage",
+          "--fence",
+          "--snapshot",
           "--reason",
           "--json",
           "--brief",
