@@ -19,8 +19,9 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from src.api.auth import LOCAL_SCOPE
+from src.api.auth import LOCAL_SCOPE, request_operator_viewer
 from src.models import TaskStatus
+from src.sessions.host_shell import HostShellManager, is_host_shell_name
 from src.sessions.terminal_pty import TerminalAttachError
 
 _PROTOCOL = "aq-terminal-v1"
@@ -148,7 +149,25 @@ class TerminalStreamService:
         if not local_same_origin and origin not in {_origin(item) for item in trusted}:
             raise TerminalStreamError("Terminal origin is not allowed", 4403)
 
-    async def _authorize(self, ws, token):
+    def host_shells(self) -> HostShellManager:
+        return HostShellManager(self.orchestrator.session_providers.create("tmux"))
+
+    def host_shell_enabled(self) -> bool:
+        cfg = getattr(self.config, "host_shell", None)
+        return bool(cfg is not None and cfg.enabled is True)
+
+    async def _authorize(self, ws, token, *, host_shell: bool = False):
+        if host_shell:
+            # A host shell is remote code execution by design: only the local
+            # operator (no bearer token at all, so never a worker or a
+            # supervisor) on loopback or through the dashboard edge's
+            # operator verdict.
+            if not self.host_shell_enabled():
+                raise TerminalStreamError("Host shells are disabled", 4403)
+            if token is not None:
+                raise TerminalStreamError("Host shells are for the local operator only", 4403)
+            if not request_operator_viewer(ws):
+                raise TerminalStreamError("Host shells are for the local operator only", 4403)
         scope = LOCAL_SCOPE
         if token is not None:
             if self.token_store is None:
@@ -166,7 +185,18 @@ class TerminalStreamService:
         if not ws.client or ws.client.host not in {"127.0.0.1", "::1", "localhost"}:
             raise TerminalStreamError("Terminal access is restricted to loopback", 4403)
 
+    async def _host_shell(self, session_id, generation=None):
+        shell = await self.host_shells().get(session_id)
+        if shell is None:
+            raise TerminalStreamError("Terminal session is no longer available")
+        identity = (shell.name, shell.instance_token)
+        if generation is not None and identity != generation:
+            raise TerminalStreamError("Terminal session instance has changed")
+        return shell, identity
+
     async def _session(self, session_id, generation=None):
+        if is_host_shell_name(session_id):
+            return await self._host_shell(session_id, generation)
         db = self.orchestrator.db
         row = await db.get_session(session_id)
         if (
@@ -223,10 +253,11 @@ class TerminalStreamService:
         children = []
         current = asyncio.current_task()
         registered = False
+        host_shell = is_host_shell_name(session_id)
         try:
             self._check_origin(ws)
             token = self._credentials(ws)
-            await self._authorize(ws, token)
+            await self._authorize(ws, token, host_shell=host_shell)
             if len(self._handlers) >= self.connection_limit:
                 raise TerminalStreamError("Too many terminal connections", 4429)
             self._handlers.add(current)
@@ -250,7 +281,7 @@ class TerminalStreamService:
                 client = await self.attach(provider, row, cols=cols, rows=rows)
                 ready = {"type": "ready", "session_id": session_id, "cols": cols, "rows": rows}
             await self._session(session_id, generation)
-            await self._authorize(ws, token)
+            await self._authorize(ws, token, host_shell=host_shell)
             if not await client.verify():
                 raise TerminalStreamError("Terminal session instance has changed")
             await asyncio.wait_for(ws.send_json(ready), self.ack_timeout)
@@ -335,10 +366,12 @@ class TerminalStreamService:
                 nonlocal touched_input_at
                 while True:
                     await asyncio.sleep(self.recheck_seconds)
-                    await self._authorize(ws, token)
+                    await self._authorize(ws, token, host_shell=host_shell)
                     await self._session(session_id, generation)
                     if not await client.verify():
                         raise TerminalStreamError("Terminal session instance has changed")
+                    if host_shell:
+                        continue  # no sessions row to touch
                     # tmux window_activity measures output, not silent typing.
                     # Amortize persistence here; input never awaits a DB request.
                     observed_input = last_input_at
@@ -395,7 +428,7 @@ def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -
         try:
             service._check_origin(request, browser_probe=True, browser_origin=browser_origin)
             token = service._credentials(request)
-            await service._authorize(request, token)
+            await service._authorize(request, token, host_shell=is_host_shell_name(session_id))
             await service._session(session_id)
             if len(service._handlers) >= service.connection_limit:
                 raise TerminalStreamError("Too many terminal connections", 4429)
@@ -415,5 +448,8 @@ def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -
         # Phones type here and watch the pane stream: never an attach at phone size.
         await service.handle(websocket, session_id, input_only=True)
 
+    from src.api.host_shell import add_host_shell_routes
+
+    add_host_shell_routes(router, service)
     router.add_event_handler("shutdown", service.shutdown)
     return router

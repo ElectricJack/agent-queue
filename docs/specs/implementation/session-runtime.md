@@ -357,6 +357,21 @@ class SessionReconciler:
    `aq handoff` semantics through CommandHandler, then kill + relaunch with resume).
 6. **Backstop** — `stuck_timeout_seconds` exceeded end-to-end → force-kill + exit-classify.
 
+Between the orphan sweep and the ladder sits the **idle stop intent**
+(`_step_idle_stop_intent`, azure-dune-51): a live session with a recorded stop
+intent (`desired_state='stopped'`) or a spent claim budget, holding no open task,
+inside no claim and blocked on no agent question, is stopped after
+`idle_stop_grace_seconds` with the fenced stop `aq session kill` uses — a pool
+worker through `_terminate_pool_session`, so the slot, claim and worktree are
+released. The grace is measured from the first tick the shape was *observed*,
+keyed by instance token, never from `last_activity`: tmux's `window_activity`
+advances on any pane output, so an OpenCode TUI at its final summary keeps the
+activity stamp fresh and no pane-derived idle bound can fire on one (which is
+also why such a worker counted as idle *supply* and the abandoned-claim-loop
+recycle never saw it). `aq doctor --check sessions.stop_intent_pending` reports
+anything that outlives `stop_intent_report_seconds`, aged from the session's own
+`task_session_attempts.ended_at` when it has one.
+
 `adopt_on_start()`: `list_running("s-") + list_running("n-")`, cross-checked with
 `proctable.scan_by_env_marker("AQ_SESSION_ID")`; live matches → rebind (update `epoch`,
 keep task IN_PROGRESS, emit `session.adopted`); dead rows → step 3; unknown live sessions

@@ -34,7 +34,8 @@ POINTER_BODY = {
 
 @asynccontextmanager
 async def daemon_app(
-    tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db"
+    tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db",
+    health_provider: Any = None,
 ) -> AsyncIterator[Any]:
     """A real ``create_app()`` application over a PostgreSQL-backed orchestrator.
 
@@ -71,15 +72,19 @@ async def daemon_app(
         deps._command_handler,
         deps._token_store,
         deps._require_session_token,
+        deps._health_provider,
+        deps._health_monitor,
     )
     try:
-        yield create_app(orch, config)
+        yield create_app(orch, config, health_provider=health_provider)
     finally:
         (
             deps._orchestrator,
             deps._command_handler,
             deps._token_store,
             deps._require_session_token,
+            deps._health_provider,
+            deps._health_monitor,
         ) = saved
         await db.close()
 
@@ -88,6 +93,47 @@ async def daemon_app(
 async def live_app(tmp_path):
     async with daemon_app(tmp_path) as app:
         yield app
+
+
+async def test_api_lifespan_starts_health_collection_and_cancels_it(tmp_path):
+    import asyncio
+    from httpx import ASGITransport, AsyncClient
+    from src.api import dependencies as deps
+
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def provider():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async with daemon_app(tmp_path, health_provider=provider) as app:
+        monitor = deps._health_monitor
+        monitor.timeout = 60
+        async with app.router.lifespan_context(app):
+            await asyncio.wait_for(started.wait(), 5)
+            assert monitor._task is not None
+            async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+                response = await client.get("/health")
+            assert response.status_code == 503
+            assert response.json()["status"] == "busy"
+            assert not stopped.is_set()
+        assert stopped.is_set() and monitor._task is None
+
+
+async def test_api_restart_restores_websocket_event_subscription(tmp_path):
+    from src.api import dependencies as deps
+
+    async with daemon_app(tmp_path) as app:
+        bus = deps._orchestrator.bus
+        assert len(bus._handlers["*"]) == 1
+        for _ in range(2):
+            async with app.router.lifespan_context(app):
+                assert len(bus._handlers["*"]) == 1
+            assert bus._handlers["*"] == []
 
 
 def _server(**overrides: Any) -> Any:
@@ -208,3 +254,40 @@ async def test_a_disabled_dashboard_server_gets_a_404_with_a_null_url(tmp_path):
                 assert response.status_code == 404, path
                 assert "location" not in response.headers, path
                 assert response.json() == {**POINTER_BODY, "dashboard_url": None}, path
+
+
+async def test_the_first_dashboard_request_builds_no_route_contexts(live_app, monkeypatch):
+    """``create_app`` resolves every included router before the first request.
+
+    Otherwise the first ``/dashboard/`` -- matched past every include -- rebuilt
+    them all on the daemon's event loop: ~0.5 s on a quiet host, past the 2 s
+    the pre-change updater's probe allows on a loaded CI runner.
+    """
+    from fastapi import routing
+
+    included_router = getattr(routing, "_IncludedRouter", None)
+    if included_router is None:
+        # Supported older FastAPI versions copy included routes eagerly.
+        assert any(
+            isinstance(route, routing.APIRoute) and route.path == "/api/health"
+            for route in live_app.routes
+        )
+        builder_type = routing.APIRouter
+        builder_name = "add_api_route"
+    else:
+        assert any(isinstance(route, included_router) for route in live_app.routes)
+        builder_type = included_router
+        builder_name = "_build_effective_context"
+
+    built: list[object] = []
+    build = getattr(builder_type, builder_name)
+
+    def counting(self: Any, *args: Any, **kwargs: Any) -> Any:
+        built.append(args)
+        return build(self, *args, **kwargs)
+
+    monkeypatch.setattr(builder_type, builder_name, counting)
+    with TestClient(live_app, follow_redirects=False) as client:
+        assert client.get("/dashboard/").status_code == 307
+        assert client.get("/no-such-route").status_code == 404
+    assert built == []

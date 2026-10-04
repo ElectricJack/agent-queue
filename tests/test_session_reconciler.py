@@ -1034,6 +1034,261 @@ class TestAbandonedPoolClaimLoop:
         assert "session.claim_timeout" not in bus.types()
 
 
+class TestIdleStopIntent:
+    """azure-dune-51: an OpenCode pool session outlived its own close.
+
+    The worker protocol asks an agent to leave when its task is closed or its
+    claim budget is spent, and the harness is expected to exit.  OpenCode's
+    turn ends and its pane stays: on 2026-10-03 two verifiers sat in
+    ``state=running, desired_state=stopped`` for 18 and 26 minutes, each
+    holding a pool slot and a worktree until someone ran ``aq session kill``.
+    """
+
+    async def _finished_worker(self, db, provider, tmp_path, **overrides):
+        """A pool worker whose task closed and whose claim was released."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await db.transition_task(
+            "t1", TaskStatus.COMPLETED, context="pool_test_close", force=True
+        )
+        task = await db.get_task("t1")
+        defaults = {
+            "sid": "p-done",
+            "task_id": None,
+            "name": "p-done",
+            "lifecycle": "pool",
+            "agent_id": "a1",
+            "desired_state": "stopped",
+            "claims": 1,
+            "last_claim_epoch": task.claim_epoch,
+            "started_at": NOW - 5_000,
+            "last_activity": NOW,
+        }
+        defaults.update(overrides)
+        return await _session(db, provider, **defaults)
+
+    async def _idle_stop(self, reconciler, *, at):
+        return await reconciler._step_idle_stop_intent(
+            await reconciler._step_observe(at), at
+        )
+
+    async def test_a_finished_worker_is_stopped_and_its_slot_freed(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("stopped", "stopped")
+        assert current.end_reason == "stop_intent_idle"
+        # The process went with it, and the durable worker the slot held is
+        # reusable again: the agent is IDLE and the worktree lock is gone.
+        assert await provider.list_running("p-") == []
+        agent = await db.get_agent("a1")
+        assert agent.state is AgentState.IDLE
+        assert agent.current_task_id is None
+        assert (await db.get_workspace("ws1")).locked_by_agent_id is None
+        stopped = pool_reconciler.bus.payload("session.stop_intent_stopped")
+        assert stopped is not None
+        assert (stopped["session_id"], stopped["lifecycle"]) == (row.id, "pool")
+
+    async def test_the_grace_is_not_spent_before_it_expires(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        await self._idle_stop(pool_reconciler, at=NOW + 59)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_session_mid_turn_is_never_stopped(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        """The same shape with the task still open is a worker at work."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db,
+            provider,
+            sid="p-working",
+            name="p-working",
+            lifecycle="pool",
+            agent_id="a1",
+            desired_state="stopped",
+            claims=1,
+            last_claim_epoch=(await db.get_task("t1")).claim_epoch,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+        for at in (NOW, NOW + 61, NOW + 600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+        assert [h.name for h in await provider.list_running("p-")] == [row.name]
+
+    async def test_a_worker_inside_a_claim_is_never_stopped(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path, claim_phase="preparing")
+
+        for at in (NOW, NOW + 61):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_spent_claim_budget_stops_a_worker_that_was_never_drained(
+        self, db, provider, pool_reconciler
+    ):
+        """``session_exhausted`` is the other exit the worker prompt names.
+
+        Nothing records it durably -- ``take_claim_slot`` answers it from
+        ``claims >= cap`` -- and with ``fresh_context_per_task`` off the
+        budget is the profile's, so ``desired_state`` stays ``running`` and
+        ``_step_drain_ack`` never sees a drain at all.
+        """
+        from src.models import AgentProfile
+
+        pool_reconciler.config.swarm.fresh_context_per_task = False
+        await db.create_profile(
+            AgentProfile(id="claude-opus", name="Claude", harness="claude",
+                         max_claims_per_session=1)
+        )
+        row = await _session(
+            db,
+            provider,
+            sid="p-spent",
+            task_id=None,
+            name="p-spent",
+            lifecycle="pool",
+            claims=1,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+        await self._idle_stop(pool_reconciler, at=NOW)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_an_unclaimed_worker_is_not_a_spent_one(
+        self, db, provider, pool_reconciler
+    ):
+        row = await _session(
+            db,
+            provider,
+            sid="p-fresh",
+            task_id=None,
+            name="p-fresh",
+            lifecycle="pool",
+            claims=0,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+
+        for at in (NOW, NOW + 61, NOW + 3_600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_named_session_is_stopped_without_claiming_a_death(
+        self, db, provider, releasing_reconciler
+    ):
+        """``state`` stays an observation; ``_step_exits`` writes it next tick."""
+        row = await _session(
+            db,
+            provider,
+            sid="n1",
+            task_id=None,
+            name="n-supervisor--global",
+            lifecycle="named",
+            desired_state="stopped",
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+
+        await self._idle_stop(releasing_reconciler, at=NOW)
+        assert [h.name for h in await provider.list_running("n-")] == [row.name]
+
+        await self._idle_stop(releasing_reconciler, at=NOW + 61)
+
+        assert await provider.list_running("n-") == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_the_clock_restarts_when_the_session_takes_work_again(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        await self._idle_stop(pool_reconciler, at=NOW)
+
+        await db.update_session(
+            row.id, task_id="t1", claim_phase="active", desired_state="running"
+        )
+        await self._idle_stop(pool_reconciler, at=NOW + 30)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await db.update_session(
+            row.id, task_id=None, claim_phase=None, desired_state="stopped"
+        )
+        await self._idle_stop(pool_reconciler, at=NOW + 50)
+        assert pool_reconciler.test_orch.terminations == []
+
+        await self._idle_stop(pool_reconciler, at=NOW + 111)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_a_relaunched_instance_starts_its_own_clock(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        await self._idle_stop(pool_reconciler, at=NOW)
+
+        await db.update_session(row.id, instance_token="tok-relaunched")
+        await self._idle_stop(pool_reconciler, at=NOW + 120)
+
+        # The clock is keyed by the instance token, so the old observation
+        # cannot stop a process that was never seen in this shape.
+        assert pool_reconciler.test_orch.terminations == []
+        await self._idle_stop(pool_reconciler, at=NOW + 181)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+
+    async def test_the_grace_can_be_switched_off(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        pool_reconciler.config.sessions.idle_stop_grace_seconds = 0
+        row = await self._finished_worker(db, provider, tmp_path)
+
+        for at in (NOW, NOW + 3_600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_pool_worker_without_an_orchestrator_is_left_alone(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        pool_reconciler.orchestrator = None
+
+        await self._idle_stop(pool_reconciler, at=NOW)
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+
+        assert (await db.get_session(row.id)).state == "running"
+        assert [h.name for h in await provider.list_running("p-")] == [row.name]
+
+
 class TestPoolLifecycle:
     @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
     async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(

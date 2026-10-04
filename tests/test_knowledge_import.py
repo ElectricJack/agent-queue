@@ -495,6 +495,31 @@ async def test_retained_snapshot_ignores_human_edits_preserves_source(importer, 
     assert source.read_text() == "Human edit after sealing"
 
 
+async def _container_publishing(url):
+    """Name the running Docker container that publishes *url*'s local port."""
+    if url.host not in {"localhost", "127.0.0.1"} or shutil.which("docker") is None:
+        return None
+    ps = await asyncio.create_subprocess_exec(
+        "docker",
+        "ps",
+        "--format",
+        "{{.Names}}\t{{.Ports}}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await ps.communicate()
+    if ps.returncode != 0:
+        return None
+    port = str(url.port or 5432)
+    for line in out.decode().splitlines():
+        name, _, ports = line.partition("\t")
+        # Ports reads like "127.0.0.1:5534->5432/tcp, [::]:5534->5432/tcp".
+        published = {p.split("->")[0].rsplit(":", 1)[-1] for p in ports.split(", ") if "->" in p}
+        if port in published:
+            return name
+    return None
+
+
 async def test_backup_restore_keeps_exact_history_mappings_and_receipts(importer, tmp_path):
     """Actual PostgreSQL dump/restore plus the confined artifact directory."""
     from src.database.engine import create_postgres_engine
@@ -511,18 +536,22 @@ async def test_backup_restore_keeps_exact_history_mappings_and_receipts(importer
         dump_url = importer.db._engine.url.set(drivername="postgresql")
         target_url = engine.url.set(drivername="postgresql")
 
-        # The repository's disposable cluster ships matching client tools in
-        # its container. Other test servers use the installed native clients.
+        # A disposable cluster in a local container (aq-postgres-test here,
+        # ci-postgres in CI) ships client tools of its own server version;
+        # pg_dump refuses a newer server, so the host's clients are only the
+        # fallback for servers no local container publishes.
+        container = await _container_publishing(dump_url)
+
         def pg_command(tool, url):
-            if url.host in {"localhost", "127.0.0.1"} and url.port == 5534:
+            if container is not None:
                 return [
                     "docker",
                     "exec",
                     "-i",
-                    "aq-postgres-test",
+                    container,
                     tool,
                     "-U",
-                    "agent_queue_test",
+                    url.username,
                     "-d",
                     url.database,
                 ]

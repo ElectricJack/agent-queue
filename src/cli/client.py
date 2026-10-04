@@ -105,6 +105,7 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_adopt": 180.0,
     # A page stops starting Git batches after 45s (provenance_migration).
     "integration_migrate_provenance": 300.0,
+    "integration_adopt_legacy_deliveries": 600.0,
 }
 
 

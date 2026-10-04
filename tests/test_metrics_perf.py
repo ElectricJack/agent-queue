@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 
 import pytest
 
 from src.config import AppConfig, MetricsConfig
 from src.metrics.histogram import percentile
+from src.metrics.loop_watchdog import LoopWatchdog
 from src.metrics.perf import (
     OVERFLOW_LABEL,
     ROUTE_LIMIT,
@@ -177,12 +179,84 @@ async def test_stop_cancels_the_task_and_is_idempotent():
     probe = LoopLagProbe(PerfRegistry(), interval_ms=10)
     probe.start()
     task = probe._task
+    watchdog = probe._watchdog
     probe.start()  # a second start does not spawn a second probe
     assert probe._task is task
     await probe.stop()
     await probe.stop()
     assert probe._task is None
     assert task.done()
+    assert not watchdog._thread.is_alive()
+
+
+def test_watchdog_samples_code_locations_and_rate_limits_warnings(monkeypatch, caplog):
+    now = [0.0]
+    watchdog = LoopWatchdog(threading.get_ident(), clock=lambda: now[0])
+    watchdog.touch(0.1)
+    assert "test_watchdog_samples_code_locations" in " ".join(watchdog._stack())
+    monkeypatch.setattr(watchdog, "_stack", lambda: ("codex.py:581 (_read_new_sync)",))
+    watchdog.poll()
+    assert not caplog.records
+    now[0] = 2.0
+    watchdog.poll()
+    for _ in range(20):
+        watchdog.poll()
+    assert len(caplog.records) == 1
+    assert "codex.py:581" in caplog.text and watchdog._samples == 21
+    now[0] = 32.0
+    watchdog.poll()
+    assert len(caplog.records) == 2
+    watchdog.touch(0.1)
+    watchdog.poll()
+    assert "recovered" in caplog.text and "22 samples" in caplog.text
+    assert not watchdog._stacks and watchdog._samples == 0
+
+
+def test_watchdog_stack_storage_is_bounded(monkeypatch):
+    now = [2.0]
+    watchdog = LoopWatchdog(threading.get_ident(), clock=lambda: now[0])
+    watchdog._deadline = 0.0
+    stack = ["location-0"]
+    monkeypatch.setattr(watchdog, "_stack", lambda: tuple(stack))
+    for i in range(200):
+        stack[0] = f"location-{i}"
+        watchdog.poll()
+    assert len(watchdog._stacks) <= 64
+    assert sum(watchdog._stacks.values()) == 200
+
+
+def test_watchdog_thread_samples_while_the_loop_thread_is_blocked(monkeypatch):
+    sampled = threading.Event()
+    loop_thread = threading.get_ident()
+    watchdog = LoopWatchdog(loop_thread, threshold=0.01)
+    original = watchdog._stack
+    observations = []
+
+    def sample():
+        observations.append((threading.get_ident(), original()))
+        sampled.set()
+        return observations[-1][1]
+
+    monkeypatch.setattr(watchdog, "_stack", sample)
+    watchdog.start()
+    try:
+        assert sampled.wait(5), "watchdog must sample without a loop callback"
+    finally:
+        watchdog.stop()
+    assert observations[0][0] != loop_thread
+    assert "test_watchdog_thread_samples" in " ".join(observations[0][1])
+    assert not watchdog._thread.is_alive()
+
+
+async def test_a_disabled_probe_does_not_start_a_stack_sampler():
+    registry = PerfRegistry()
+    registry.enabled = False
+    probe = LoopLagProbe(registry)
+    probe.start()
+    try:
+        assert probe._watchdog is None
+    finally:
+        await probe.stop()
 
 
 async def test_stop_before_start_is_a_no_op():

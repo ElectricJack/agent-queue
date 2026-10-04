@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.phase_hold_detail import PhaseHoldDetail
+    from ..models.review_wait import ReviewWait
 
 
 T = TypeVar("T", bound="LayoutNode")
@@ -51,6 +52,7 @@ class LayoutNode:
         phase_label (None | str | Unset):
         phase_hold (None | PhaseHoldDetail | Unset):
         delivery (EpicDeliveryStatus | None | Unset):
+        review_waits (list[ReviewWait] | Unset):
     """
 
     id: str
@@ -84,6 +86,7 @@ class LayoutNode:
     phase_label: None | str | Unset = UNSET
     phase_hold: None | PhaseHoldDetail | Unset = UNSET
     delivery: EpicDeliveryStatus | None | Unset = UNSET
+    review_waits: list[ReviewWait] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -200,6 +203,13 @@ class LayoutNode:
         else:
             delivery = self.delivery
 
+        review_waits: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.review_waits, Unset):
+            review_waits = []
+            for review_waits_item_data in self.review_waits:
+                review_waits_item = review_waits_item_data.to_dict()
+                review_waits.append(review_waits_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -259,6 +269,8 @@ class LayoutNode:
             field_dict["phase_hold"] = phase_hold
         if delivery is not UNSET:
             field_dict["delivery"] = delivery
+        if review_waits is not UNSET:
+            field_dict["review_waits"] = review_waits
 
         return field_dict
 
@@ -266,6 +278,7 @@ class LayoutNode:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.phase_hold_detail import PhaseHoldDetail
+        from ..models.review_wait import ReviewWait
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -423,6 +436,15 @@ class LayoutNode:
 
         delivery = _parse_delivery(d.pop("delivery", UNSET))
 
+        _review_waits = d.pop("review_waits", UNSET)
+        review_waits: list[ReviewWait] | Unset = UNSET
+        if _review_waits is not UNSET:
+            review_waits = []
+            for review_waits_item_data in _review_waits:
+                review_waits_item = ReviewWait.from_dict(review_waits_item_data)
+
+                review_waits.append(review_waits_item)
+
         layout_node = cls(
             id=id,
             title=title,
@@ -455,6 +477,7 @@ class LayoutNode:
             phase_label=phase_label,
             phase_hold=phase_hold,
             delivery=delivery,
+            review_waits=review_waits,
         )
 
         layout_node.additional_properties = d

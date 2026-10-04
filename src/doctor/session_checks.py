@@ -81,6 +81,8 @@ BACKLOG_CHECK_ID = "messages.idle_worker_backlog"
 
 UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
 
+STOP_INTENT_CHECK_ID = "sessions.stop_intent_pending"
+
 #: Refusal reasons a person is responsible for: the ladder will not advance
 #: on these however long the holder is idle, so they are the ones an operator
 #: has to clear.  Anything else (a stale frame, an unreadable composer) is
@@ -276,6 +278,147 @@ def _lease_ttl(config) -> float:
     sessions = getattr(config, "sessions", None)
     ttl = getattr(sessions, "lease_ttl_seconds", None)
     return float(SessionsConfig.lease_ttl_seconds if ttl is None else ttl)
+
+
+def _stop_intent_report_seconds(config) -> float:
+    from src.config import SessionsConfig
+
+    sessions = getattr(config, "sessions", None)
+    value = getattr(sessions, "stop_intent_report_seconds", None)
+    if value is None:
+        return float(SessionsConfig.stop_intent_report_seconds)
+    return float(value)
+
+
+async def _last_attempt_end(ctx: DoctorContext, session_id: str) -> float | None:
+    """When this session last let go of a task, from its own attempt history.
+
+    The clock the reconciler's own stop grace cannot use, and the one this
+    report has to: ``sessions.last_activity`` is tmux's ``window_activity``,
+    which advances on *any* pane output, so a TUI that keeps repainting an
+    idle summary never looks idle by it.  ``task_session_attempts.ended_at``
+    is written by the very release that records the stop intent, so it ages
+    the right way even for a session whose pane never goes quiet.
+    """
+    from sqlalchemy import func, select
+
+    from src.database.tables import task_session_attempts
+
+    engine = getattr(ctx.db, "_engine", None) if ctx.db is not None else None
+    if engine is None:
+        return None
+    try:
+        async with engine.connect() as conn:
+            value = (
+                await conn.execute(
+                    select(func.max(task_session_attempts.c.ended_at)).where(
+                        task_session_attempts.c.session_id == session_id
+                    )
+                )
+            ).scalar()
+    except Exception:
+        logger.debug("could not read attempt history for session %s", session_id, exc_info=True)
+        return None
+    return float(value) if value is not None else None
+
+
+async def _find_stop_intent_pending(ctx: DoctorContext, *, threshold: float, now: float) -> list[dict]:
+    """Live sessions whose recorded stop intent has outlasted *threshold*.
+
+    ``desired_state='stopped'`` with nothing still held is the shape a close, a
+    drain, a scale-down and ``aq session kill`` all leave behind; the harness is
+    then supposed to go away on its own.  It does not always -- an OpenCode
+    worker's pane simply stays -- and the reconciler stops it within
+    ``sessions.idle_stop_grace_seconds``.  A session still here well past that
+    is the case where the graceful path did not run: the grace disabled, the
+    reconciler not ticking, or an instance fence that keeps failing.
+    """
+    from src.pool_claims import is_live_pool_claim_task_status
+
+    try:
+        rows = await ctx.db.list_sessions(desired_state="stopped", live_only=True)
+    except Exception:
+        logger.debug("could not list stop-pending sessions", exc_info=True)
+        return []
+    pending: list[dict] = []
+    for row in rows:
+        if row.claim_phase is not None:
+            continue  # inside a claim: not idle, and the claim may still be won
+        if row.task_id:
+            task = await ctx.db.get_task(row.task_id)
+            if task is not None and is_live_pool_claim_task_status(task.status):
+                continue  # still holds open work; mid-turn is not reportable
+            if task is not None:
+                try:
+                    if await ctx.db.blocking_wait_for(row, task.claim_epoch, now):
+                        continue
+                except Exception:
+                    logger.debug(
+                        "could not read the wait for session %s", row.id, exc_info=True
+                    )
+        ended = await _last_attempt_end(ctx, row.id)
+        source = "attempt" if ended else "activity"
+        since = ended or row.last_activity or row.started_at
+        if since is None:
+            continue
+        age = now - since
+        pending.append({
+            "session_id": row.id,
+            "name": row.name,
+            "lifecycle": row.lifecycle,
+            "harness": row.harness,
+            "task_id": row.task_id,
+            "project_id": row.project_id,
+            "age_seconds": int(age),
+            "age_source": source,
+            "state": row.state,
+            "desired_state": row.desired_state,
+        })
+    pending.sort(key=lambda entry: -entry["age_seconds"])
+    return [entry for entry in pending if entry["age_seconds"] >= threshold]
+
+
+async def _check_stop_intent_pending(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id=STOP_INTENT_CHECK_ID,
+            severity=Severity.INFO,
+            detail="no database is available to read sessions from",
+        )
+    threshold = _stop_intent_report_seconds(ctx.config)
+    if threshold <= 0:
+        return CheckResult(
+            id=STOP_INTENT_CHECK_ID,
+            severity=Severity.INFO,
+            detail="the report is disabled (sessions.stop_intent_report_seconds <= 0)",
+        )
+    now = time.time()
+    pending = await _find_stop_intent_pending(ctx, threshold=threshold, now=now)
+    if not pending:
+        return CheckResult(
+            id=STOP_INTENT_CHECK_ID,
+            severity=Severity.OK,
+            detail=(
+                "no session has held a stop intent while its process stayed alive "
+                f"for {int(threshold)}s"
+            ),
+        )
+    shown = "; ".join(
+        f"{entry['name']} ({entry['lifecycle']}, state={entry['state']}, "
+        f"{entry['age_seconds'] // 60}m by {entry['age_source']})"
+        for entry in pending[:5]
+    )
+    return CheckResult(
+        id=STOP_INTENT_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(pending)} session(s) still running with a stop intent after "
+            f"{int(threshold) // 60}m, so their harness process never left: {shown}. "
+            "`aq session kill <id>` returns the slot; the reconciler does this "
+            "automatically within sessions.idle_stop_grace_seconds."
+        ),
+        data={"count": len(pending), "sessions": pending},
+    )
 
 
 async def _stalled_holders(ctx: DoctorContext, ttl: float, now: float) -> list:
@@ -532,6 +675,12 @@ def session_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id=UNREACHABLE_CHECK_ID,
             run=_check_stall_unreachable,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
+        DoctorCheck(
+            id=STOP_INTENT_CHECK_ID,
+            run=_check_stop_intent_pending,
             owner=OWNER,
             timeout_s=15.0,
         ),

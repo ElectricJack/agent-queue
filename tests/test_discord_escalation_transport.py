@@ -1,8 +1,9 @@
 """The Discord half of escalation delivery, without a gateway.
 
 Only the parts that are genuinely Discord-shaped are tested here: how an HTTP
-failure is classified into the port's fault taxonomy, and what the client is
-allowed to mention.  Everything about *when* to send lives in
+failure is classified into the port's fault taxonomy, what the client is
+allowed to mention, and how content is fitted under the 2000-character
+message ceiling.  Everything about *when* to send lives in
 ``tests/test_escalation_delivery.py`` and runs against the sink transport.
 """
 
@@ -16,9 +17,13 @@ import discord
 from src.config import AppConfig, DiscordConfig, DiscordEscalationConfig
 from src.discord.escalation_transport import DiscordEscalationTransport, _allowed_mentions
 from src.escalations.transport import (
+    MAX_CONTENT_CHARS,
+    TRUNCATION_NOTICE,
     TransportMissing,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
+    bound_content,
 )
 
 USER_ID = "111111111111111111"
@@ -48,8 +53,22 @@ def make_transport(*, allow: bool = True) -> tuple[DiscordEscalationTransport, F
     return DiscordEscalationTransport(bot, config), tracker
 
 
-def http(status: int) -> discord.HTTPException:
-    return discord.HTTPException(SimpleNamespace(status=status, reason=""), "boom")
+def http(status: int, message: str | dict = "boom") -> discord.HTTPException:
+    return discord.HTTPException(SimpleNamespace(status=status, reason=""), message)
+
+
+#: What Discord answered for the rev-bright-ridge notice (2026-10-03).
+TOO_LONG = {
+    "code": 50035,
+    "message": "Invalid Form Body",
+    "errors": {
+        "content": {
+            "_errors": [
+                {"code": "BASE_TYPE_MAX_LENGTH", "message": "Must be 2000 or fewer in length."}
+            ]
+        }
+    },
+}
 
 
 def test_only_the_configured_ids_may_ever_be_mentioned():
@@ -75,7 +94,10 @@ def test_no_configured_mention_means_no_mention_at_all():
         (404, TransportMissing),
         (429, TransportRetryable),
         (500, TransportRetryable),
-        (400, TransportRetryable),
+        (502, TransportRetryable),
+        (401, TransportRetryable),
+        (400, TransportRejected),
+        (413, TransportRejected),
     ],
 )
 def test_http_failures_are_classified_for_the_dispatcher(status, expected):
@@ -83,6 +105,15 @@ def test_http_failures_are_classified_for_the_dispatcher(status, expected):
     assert isinstance(transport._http_error(http(status)), expected)
     if status in (401, 403, 429):
         assert status in tracker.recorded
+
+
+def test_a_validation_400_is_rejected_for_good_and_names_discords_error_code():
+    """Resending the same invalid form body gets the same 400 forever."""
+    transport, _ = make_transport()
+    error = transport._http_error(http(400, TOO_LONG))
+    assert isinstance(error, TransportRejected)
+    assert not isinstance(error, TransportRetryable)
+    assert "50035" in str(error) and "2000 or fewer" in str(error)
 
 
 async def test_a_hot_rate_guard_holds_the_send_instead_of_dropping_it():
@@ -152,3 +183,131 @@ async def test_ensure_thread_rebinds_an_existing_thread_instead_of_making_a_seco
     assert (handle.thread_id, handle.created) == ("555", False)
     assert channel.message.created == []
     assert channel.sent == []
+
+
+# ------------------------------------------------------------ content bound
+
+
+class RecordingMessage:
+    def __init__(self, content: str = "") -> None:
+        self.id = 77
+        self.content = content
+        self.edits: list[str] = []
+
+    async def edit(self, *, content: str, **_kwargs) -> None:
+        self.edits.append(content)
+
+
+class RecordingChannel:
+    """A channel (or thread) that keeps what it was asked to send."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.message = RecordingMessage()
+
+    async def send(self, content, **_kwargs):
+        if len(content) > MAX_CONTENT_CHARS:
+            raise http(400, TOO_LONG)
+        self.sent.append(content)
+        return RecordingMessage(content)
+
+    async def fetch_message(self, _id: int) -> RecordingMessage:
+        return self.message
+
+
+def oversized(last_line: str) -> str:
+    return "\n".join(["**Heading**", "x" * 5000, last_line])
+
+
+async def test_post_root_fits_an_oversized_post_and_keeps_its_marker_line():
+    transport, _ = make_transport()
+    channel = RecordingChannel()
+    bind(transport, channel)
+
+    await transport.post_root(
+        channel_id="424242424242424242", content=oversized("-# escalation `e` · aq-esc:k")
+    )
+
+    [content] = channel.sent
+    assert len(content) <= MAX_CONTENT_CHARS
+    assert content.startswith("**Heading**\n")
+    assert content.endswith("\n-# escalation `e` · aq-esc:k")
+    assert TRUNCATION_NOTICE in content
+
+
+async def test_post_thread_message_fits_an_oversized_message_and_keeps_its_marker_line():
+    transport, _ = make_transport()
+    thread = RecordingChannel()
+    bind(transport, thread)
+
+    await transport.post_thread_message(thread_id="555", content=oversized("-# aq-dig:abc"))
+
+    [content] = thread.sent
+    assert len(content) <= MAX_CONTENT_CHARS
+    assert content.endswith("\n-# aq-dig:abc")
+    assert TRUNCATION_NOTICE in content
+
+
+async def test_edit_root_fits_an_oversized_edit_and_keeps_its_marker_line():
+    transport, _ = make_transport()
+    channel = RecordingChannel()
+    bind(transport, channel)
+
+    await transport.edit_root(
+        channel_id="424242424242424242",
+        root_message_id="77",
+        content=oversized("-# escalation `e` · aq-esc:k"),
+    )
+
+    [content] = channel.message.edits
+    assert len(content) <= MAX_CONTENT_CHARS
+    assert content.endswith("\n-# escalation `e` · aq-esc:k")
+
+
+def test_content_that_fits_is_sent_unchanged():
+    content = "\n".join(["heading", "y" * 1500, "https://aq.example.test/reviews/r"])
+    assert bound_content(content) == content
+    exact = "z" * MAX_CONTENT_CHARS
+    assert bound_content(exact) == exact
+
+
+def test_the_body_is_cut_from_its_end_so_the_heading_and_last_line_survive():
+    link = "https://aq.example.test/reviews/rev-bright-ridge"
+    content = "\n".join(
+        ["📄 Revised plan (rev 2): Knowledge records", "Project: agent-queue", "n" * 5000, link]
+    )
+
+    bounded = bound_content(content)
+
+    assert len(bounded) <= MAX_CONTENT_CHARS
+    assert bounded.startswith("📄 Revised plan (rev 2): Knowledge records\nProject: agent-queue\nn")
+    assert bounded.endswith(f"n{TRUNCATION_NOTICE}\n{link}")
+
+
+def test_astral_characters_count_twice_so_the_bound_holds_however_discord_counts():
+    bounded = bound_content("\n".join(["📄" * 1500, "tail"]))
+    assert len(bounded.encode("utf-16-le")) // 2 <= MAX_CONTENT_CHARS
+    assert bounded.endswith(f"{TRUNCATION_NOTICE}\ntail")
+
+
+def test_a_cut_inside_a_code_block_closes_it_so_the_last_line_stays_live():
+    """An unclosed fence would swallow the notice and render the link as code."""
+    link = "https://aq.example.test/reviews/r"
+    bounded = bound_content("\n".join(["notes:", "```", "log line\n" * 600, link]))
+
+    assert len(bounded) <= MAX_CONTENT_CHARS
+    assert bounded.count("```") % 2 == 0
+    assert bounded.endswith(f"```\n{TRUNCATION_NOTICE}\n{link}")
+
+
+def test_a_single_oversized_line_is_cut_with_the_notice():
+    bounded = bound_content("w" * 5000)
+    assert len(bounded) <= MAX_CONTENT_CHARS
+    assert bounded.endswith(TRUNCATION_NOTICE)
+
+
+def test_an_oversized_last_line_falls_back_to_a_plain_cut():
+    bounded = bound_content("\n".join(["heading", "v" * 5000]))
+    assert len(bounded) <= MAX_CONTENT_CHARS
+    assert bounded.startswith("heading\nv")
+    assert bounded.endswith(TRUNCATION_NOTICE)
