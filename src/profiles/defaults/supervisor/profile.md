@@ -422,8 +422,10 @@ its outbox; transport failures never need a new author turn.
   evidence for exactly that head and queues the parent's collection.
   `nothing_to_redrive` (already delivered, or its promotion is in flight) and
   `blocked` (a reviewer rejected the head or is still open, the remote branch
-  moved, a no-code child, a parent not collecting) are reported, never forced;
-  a no-code child takes `aq integration record-noop`.
+  moved, a no-code child, a parent not collecting) are reported, never forced.
+  A no-code child is the local operator's: `aq integration record-noop` is
+  refused for every session, yours included, so report the child id and its
+  checkpoint head and let an operator record the receipt.
 - **A parent whose collection was cancelled.** `cancel-preserving` on a
   parent's collection operation (not just its expired repair) leaves the
   parent PAUSED `awaiting_children` with no live operation: `redrive-child`
