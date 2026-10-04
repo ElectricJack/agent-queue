@@ -175,6 +175,7 @@ its outbox; transport failures never need a new author turn.
     "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_resume",
+    "integration_reevaluate_repair",
     "integration_settle_parked",
     "integration_retry_cleanup",
     "integration_shadow_report",

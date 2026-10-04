@@ -125,6 +125,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_reconcile_unmaterialized",
     "integration_waive_history",
     "integration_resume",
+    "integration_reevaluate_repair",
     "integration_abort",
     "integration_develop",
     "integration_adopt",
