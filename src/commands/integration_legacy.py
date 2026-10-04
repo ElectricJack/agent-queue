@@ -244,9 +244,11 @@ def _check(check_id: str, replacement: str) -> LegacyDoctorCheck:
     return LegacyDoctorCheck(f"integration.{check_id}", replacement, _ENGINE_GATE)
 
 
-#: The checks that read pre-reconciler state.  They stay registered (and run)
-#: until the module whose state they read is deleted.
+#: The checks that read pre-reconciler state, including delivered-parent
+#: adoption added after the original twenty-check inventory.  They stay
+#: registered (and run) until the module whose state they read is deleted.
 LEGACY_INTEGRATION_DOCTOR_CHECKS: tuple[LegacyDoctorCheck, ...] = (
+    _check("delivered_children_unsettled_parent", _STATUS),
     _check("reviewed_file_guard", _STATUS),
     _check("delivery_path", _STATUS),
     _check("operational", _STATUS),

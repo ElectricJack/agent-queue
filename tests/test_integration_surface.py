@@ -194,7 +194,7 @@ def test_doctor_has_three_subject_checks_and_gates_every_older_one():
         "integration.")}
     legacy = {entry.check_id for entry in LEGACY_INTEGRATION_DOCTOR_CHECKS}
     assert len(APPROVED_INTEGRATION_DOCTOR_CHECKS) == 3
-    assert len(legacy) == len(LEGACY_INTEGRATION_DOCTOR_CHECKS) == 20
+    assert len(legacy) == len(LEGACY_INTEGRATION_DOCTOR_CHECKS) == 21
     assert not legacy & set(APPROVED_INTEGRATION_DOCTOR_CHECKS)
     assert registered == legacy | set(APPROVED_INTEGRATION_DOCTOR_CHECKS)
     for entry in LEGACY_INTEGRATION_DOCTOR_CHECKS:

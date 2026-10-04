@@ -52,3 +52,9 @@ Git and disposable PostgreSQL, including the agile-harbor-62 incident shape:
 four independently delivered children, a stale unmaterialized READY verifier,
 and no verified parent completion. Live application belongs to the supervisor;
 a worker must not mutate another task or restart the operator daemon.
+
+During the reconciler migration, this diagnostic is a gated legacy check in
+`LEGACY_INTEGRATION_DOCTOR_CHECKS`. Its replacement is the subject's observer
+fact in `aq integration status`, and it shares the legacy engine cutover removal
+gate. The migration inventory therefore includes twenty-one legacy checks;
+the three approved reconciler checks remain unchanged.
