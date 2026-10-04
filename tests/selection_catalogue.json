@@ -1389,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:6843e2b1a79c36ecf2131246ffde21317ca429dc9d773af0560341ee09484ea7",
+  "digest": "sha256:cadd3789539a5ec002bb5df2b6f43cfd091d204af591e23ffa208b35f7e41f72",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7873,6 +7873,7 @@
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.result_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
