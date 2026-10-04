@@ -1390,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:1c44fa0c35eee3bd41e7560f5b03d1ff7e1f8721b0f67850ef67ae31ca1191b3",
+  "digest": "sha256:202c8d63bad8ccc6aec504ef60c9829f059ef90a8554942c94f4947ffdddc899",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10489,8 +10489,10 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.playbooks.artifact_store",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
+        "src.playbooks.services",
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
@@ -15527,12 +15529,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts.models",
         "src.commands.principal",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.playbook_v2_checks",
+        "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.executors.foreach",
         "src.playbooks.executors.wait",
         "src.playbooks.receipts",
+        "src.playbooks.recovery",
         "src.playbooks.run_state",
         "src.playbooks.waits"
       ],
@@ -15541,7 +15549,7 @@
         "integration",
         "parametrize"
       ],
-      "summary": "Restart and idempotency boundaries — Package 4 child plan T-15."
+      "summary": "Restart recovery and idempotency boundaries — Package 4 child plan T-15."
     },
     "tests/test_v2_shadow.py": {
       "areas": [
