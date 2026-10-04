@@ -780,6 +780,159 @@ class TestLegacyGitProvenanceMigration:
 
     @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
     @pytest.mark.parametrize("no_artifact", [False, True])
+    async def test_missing_row_attestation_survives_findings_and_description_edits(
+        self, provenance_repo, db, recorded_id, no_artifact,
+    ):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "legacy")
+        if recorded_id:
+            await db.set_task_meta("legacy", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        db.set_delivery_observer(observer)
+        await ProvenanceMigration(db, git).run(
+            "p", task_id="legacy", source=None if no_artifact else base,
+            no_artifact=no_artifact, reason="legacy work reviewed", apply=True,
+        )
+        expected = DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED
+        generation = (await observer.observe(["legacy"])).get("legacy").request.completion_id
+        version = await db.get_task_updated_at("legacy")
+        await db.add_task_comment("legacy", "ordinary comment", author_kind="supervisor",
+                                  author_id="supervisor-p")
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        assert proof.request.task_version > version
+        assert (proof.request.completion_id, proof.state) == (generation, expected)
+        await db.update_task_description("legacy", "confirmed findings", expected_description="d")
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        assert (proof.request.completion_id, proof.state) == (generation, expected)
+        await db.update_task("legacy", description="edited description")
+        await db.transition_task("legacy", TaskStatus.COMPLETED)
+        await db.update_task("legacy", status=TaskStatus.COMPLETED)
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        assert (proof.request.completion_id, proof.state) == (generation, expected)
+        assert await db.archive_task("legacy")
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        assert proof.request.archived
+        assert proof.state == expected
+        assert proof.source_oid == base
+
+    @pytest.mark.parametrize("raw_update", [False, True])
+    async def test_legacy_generation_rotates_only_across_completed_boundary(
+        self, provenance_repo, db, raw_update,
+    ):
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, _store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "legacy")
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        await ProvenanceMigration(db, git).run(
+            "p", task_id="legacy", source=base, reason="legacy work reviewed", apply=True,
+        )
+        before = (await observer.observe(["legacy"])).get("legacy")
+        if raw_update:
+            await db.update_task("legacy", status=TaskStatus.READY)
+        else:
+            await db.transition_task("legacy", TaskStatus.READY)
+        opened = (await observer.observe(["legacy"])).get("legacy")
+        assert opened.request.legacy_generation != before.request.legacy_generation
+        if raw_update:
+            await db.update_task("legacy", status=TaskStatus.COMPLETED)
+        else:
+            await db.transition_task("legacy", TaskStatus.COMPLETED)
+        reclosed = (await observer.observe(["legacy"])).get("legacy")
+        assert reclosed.request.legacy_generation != opened.request.legacy_generation
+        assert reclosed.request.completion_id != before.request.completion_id
+        assert reclosed.state == DeliveryState.UNKNOWN
+
+    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
+    @pytest.mark.parametrize("no_artifact", [False, True])
+    @pytest.mark.parametrize("reopened", [False, True])
+    async def test_upgrade_restores_audited_timestamp_identity_only_before_reopen(
+        self, provenance_repo, db, recorded_id, no_artifact, reopened,
+    ):
+        import hashlib
+        import json
+        from importlib import import_module
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.development import DevelopmentIntegration
+        from src.integration.delivery_truth import DeliveryState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, path, remote, base = provenance_repo
+        await self._seed(db, remote, base)
+        await self._completed(db, "legacy")
+        version = await db.get_task_updated_at("legacy")
+        old_id = "legacy:" + hashlib.sha256(json.dumps(
+            ["p", "r", "legacy", version], separators=(",", ":"),
+        ).encode()).hexdigest()
+        identity = CompletionIdentity("p", "r", "legacy", old_id)
+        await store.write_completion(CompletedSource(identity, base), artifact=not no_artifact)
+        if recorded_id:
+            await db.set_task_meta("legacy", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
+            await store.write_completion(CompletedSource(
+                CompletionIdentity("p", "r", "legacy", recorded_id), base,
+            ), artifact=not no_artifact)
+        await db.log_event("development.provenance_attested", project_id="p", task_id="legacy",
+            payload=json.dumps({"operator_id": "supervisor-p", "reason": "legacy reviewed",
+                "source_oid": None if no_artifact else base, "artifact": not no_artifact,
+                "results": [{"task_id": "legacy", "generation": recorded_id or old_id,
+                             "legacy_generation": old_id, "action": "written",
+                             "source_oid": base, "artifact": not no_artifact, "error": None}]}))
+        await db.add_task_comment("legacy", "post-attestation comment", author_kind="supervisor",
+                                  author_id="supervisor-p")
+        await db.update_task_description("legacy", "new findings", expected_description="d")
+        await db.update_task("legacy", description="new description")
+        if reopened:
+            await db.transition_task("legacy", TaskStatus.READY)
+            await db.transition_task("legacy", TaskStatus.COMPLETED)
+        revision = import_module("migrations.versions.a00000000062_legacy_completion_identity")
+
+        def upgrade_old_schema(conn):
+            # Only this fixture's disposable DB is changed, never an operator DB.
+            with Operations.context(MigrationContext.configure(conn)):
+                revision.downgrade()
+                revision.upgrade()
+
+        async with db._engine.begin() as conn:
+            await conn.run_sync(upgrade_old_schema)
+        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        db.set_delivery_observer(observer)
+        proof = (await observer.observe(["legacy"])).get("legacy")
+        if reopened:
+            assert proof.request.legacy_generation != old_id
+            assert proof.state == DeliveryState.UNKNOWN
+        else:
+            expected = DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED
+            assert proof.request.legacy_generation == old_id
+            assert proof.state == expected
+            assert await db.archive_task("legacy")
+            archived = (await observer.observe(["legacy"])).get("legacy")
+            assert archived.request.completion_id == old_id
+            assert archived.state == expected
+        # Repeating upgrade must not replace a recovered or newly rotated identity.
+        async with db._engine.begin() as conn:
+            def repeat(conn):
+                with Operations.context(MigrationContext.configure(conn)):
+                    revision.upgrade()
+            await conn.run_sync(repeat)
+        assert (await observer.observe(["legacy"])).get("legacy") == (
+            archived if not reopened else proof
+        )
+
+    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
+    @pytest.mark.parametrize("no_artifact", [False, True])
     async def test_missing_row_attestation_survives_archival(
         self, provenance_repo, db, recorded_id, no_artifact,
     ):

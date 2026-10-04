@@ -167,6 +167,12 @@ Repair migration requires the full explicit source contract, unique original
 and repair generations, a nonempty base/source pair, and current target ancestry
 of the complete repair source. Missing generations outside a page are reported
 instead of guessed. Repeating apply produces the same immutable objects/refs.
+Missing-row legacy identities use the dedicated `legacy_completion_id` on live
+and archived tasks, which changes only across the COMPLETED status boundary.
+Ordinary task edits do not revoke an operator decision. Revision `a00000000062`
+preserves timestamp-derived locators and restores audited live attestations
+only after the last recorded reopen, without asserting delivery: the retained
+Git record must still exist and bind the exact subject and source.
 Legacy operator equivalence without an exact source generation or a nonempty
 replacement base/source pair remains unmigratable and needs explicit new
 operator evidence. Missing branch refs are never interpreted as empty work.
