@@ -531,6 +531,43 @@ async def _parent_adoptions_on(conn, task_ids, repository_id):
     return adoptions
 
 
+async def adopted_children_on(db, conn, parent_ids):
+    """Children each parent's still-binding operator adoption proved delivered.
+
+    A parent answers only while the delivery read binds its adoption: a
+    reopen, newer close, rework fence or changed checkpoint leaves it out, so
+    a caller deciding whether a child removal changes the parent fails closed.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import repos
+    from src.database.tables import task_integration_checkpoints as checkpoint
+
+    if not parent_ids:
+        return {}
+    rows = (await conn.execute(
+        select(checkpoint.c.task_id, checkpoint.c.repository_id, repos.c.default_branch)
+        .join(repos, repos.c.id == checkpoint.c.repository_id)
+        .where(checkpoint.c.task_id.in_(parent_ids))
+    )).all()
+    proven = {}
+    for task_id, repository_id, default_branch in rows:
+        adoption = (await _parent_adoptions_on(conn, [task_id], repository_id)).get(task_id)
+        if adoption is None:
+            continue
+        request = (await load_delivery_requests(
+            db, [task_id], repository_id=repository_id,
+            target_ref="refs/heads/" + default_branch, conn=conn,
+        )).get(task_id)
+        bound = request.parent_adoption if request is not None else None
+        if bound is not None and bound.completion_id == adoption["completion_id"]:
+            proven[task_id] = {
+                proof["task_id"] for proof in adoption.get("children") or ()
+                if isinstance(proof, dict) and isinstance(proof.get("task_id"), str)
+            }
+    return proven
+
+
 async def _adopted_parents_on(conn, task_ids, repository_id):
     """Parent tasks an operator adoption audit names, whatever its binding says now.
 

@@ -832,6 +832,94 @@ async def test_parent_adoption_cannot_be_borrowed_after_binding_changes(incident
     assert proof.reason == "invalid_parent_completion"
 
 
+async def reserve_child_origins(incident, children):
+    """Every managed child keeps the live origin its reservation recorded."""
+    setup, _children, heads, _main = incident
+    db, _service, _source, _remote, repo = setup
+    async with db.immediate() as conn:
+        for child in children:
+            await conn.execute(
+                insert(t.task_branch_origins).values(
+                    id="origin-" + child,
+                    task_id=child,
+                    repository_id=repo.id,
+                    branch_name="aq/" + child,
+                    parent_task_id=PARENT,
+                    parent_repository_id=repo.id,
+                    parent_ref="aq/epic/old-aggregate",
+                    base_sha=heads[child],
+                    creation_generation=6,
+                    reserved=True,
+                    materialized=False,
+                    created_at=time.time(),
+                )
+            )
+
+
+async def parent_checkpoint(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(t.task_integration_checkpoints).where(
+            t.task_integration_checkpoints.c.task_id == PARENT,
+        ))).mappings().one()
+
+
+@pytest.mark.parametrize("removal", ["archive", "delete"])
+async def test_removing_a_proven_child_keeps_the_parent_adoption_binding(incident, removal):
+    setup, children, _heads, main = incident
+    db, service, *_ = setup
+    await reserve_child_origins(incident, children)
+    await adopt(incident)
+    adopted = await parent_checkpoint(db)
+    for child in children:
+        if removal == "archive":
+            assert await db.archive_task(child)
+        else:
+            await db.delete_task(child, branch_policy="keep")
+        assert await db.get_task(child) is None
+        checkpoint = await parent_checkpoint(db)
+        assert (checkpoint["generation"], checkpoint["version"]) == (
+            adopted["generation"], adopted["version"],
+        )
+        proof = (await service.delivery_observer.observe([PARENT])).get(PARENT)
+        assert (proof.state, proof.source_oid) == (DeliveryState.CONTAINED, main)
+    async with db._engine.connect() as conn:
+        live = (await conn.execute(select(t.task_branch_origins.c.task_id).where(
+            t.task_branch_origins.c.task_id.in_(children),
+            t.task_branch_origins.c.retired_at.is_(None),
+        ))).scalars().all()
+    assert live == []
+    if removal == "archive":
+        # A child archived first no longer strands the parent as undelivered.
+        assert await db.archive_task(PARENT)
+
+
+@pytest.mark.parametrize("change", ["reopened_parent", "unproven_child"])
+async def test_child_removal_still_invalidates_a_parent_the_adoption_no_longer_covers(
+    incident, change,
+):
+    setup, children, _heads, main = incident
+    db, *_ = setup
+    await reserve_child_origins(incident, children)
+    await adopt(incident)
+    child = children[0]
+    if change == "reopened_parent":
+        await db.transition_task(PARENT, TaskStatus.READY, context="reopen for new work")
+    else:
+        # A child the adoption never proved is not covered by its decision.
+        child = "late-child"
+        await db.create_task(Task(
+            id=child, project_id="p", title="late", description="",
+            parent_task_id=PARENT, status=TaskStatus.COMPLETED,
+        ))
+        await reserve_child_origins((setup, [child], {child: main}, main), [child])
+    before = await parent_checkpoint(db)
+    await db.delete_task(child, branch_policy="keep")
+    checkpoint = await parent_checkpoint(db)
+    assert checkpoint["generation"] == before["generation"] + 1
+    assert checkpoint["version"] == before["version"] + 1
+    assert checkpoint["verified_sha"] is None
+
+
 async def test_doctor_names_delivered_children_and_stale_verifier(incident):
     setup, _children, _heads, main = incident
     db, _service, *_ = setup

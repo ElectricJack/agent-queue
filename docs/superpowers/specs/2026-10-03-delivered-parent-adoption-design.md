@@ -57,7 +57,11 @@ No successful CI, parent verification or verified-operation completion is added.
 Delivery readers recognize this exact audited operator generation and evaluate
 its immutable Git source against their current target. A reopen, newer close or
 changed checkpoint invalidates the adoption binding. It is never a fallback for
-a damaged verified-parent binding or an ordinary leaf completion.
+a damaged verified-parent binding or an ordinary leaf completion. Archiving or
+deleting a child the binding adoption proved retires that child's origin but
+leaves the parent's checkpoint alone: the removal changes the active view, not
+the adopted source. Removing any other child, or a child of a parent whose
+adoption no longer binds, still advances the parent's generation.
 
 `aq doctor --check integration.delivered_children_unsettled_parent` names these
 paused parents and reports current Git proof, verifier identity, blockers and

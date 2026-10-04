@@ -1302,7 +1302,16 @@ class HierarchyQueryMixin:
                 for row in origins
                 if row["parent_task_id"] and row["parent_task_id"] not in ids
             }
+            # An operator adoption proved its children on the target and binds
+            # this checkpoint.  Removing one of those children changes the
+            # active view, not the adopted source, so it must not invalidate it.
+            from src.integration.delivery_truth import adopted_children_on
+
+            proven = await adopted_children_on(self, conn, surviving_parents)
             for parent_id in sorted(surviving_parents):
+                removed = {row["task_id"] for row in origins if row["parent_task_id"] == parent_id}
+                if removed <= proven.get(parent_id, set()):
+                    continue
                 await conn.execute(
                     update(task_integration_checkpoints)
                     .where(task_integration_checkpoints.c.task_id == parent_id)
