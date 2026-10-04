@@ -35,6 +35,7 @@ from src.conversations.preconditions import conversation_preconditions
 from src.conversations.render import (
     STATUS_BACK,
     STATUS_OFFLINE,
+    conversation_marker,
     render_brief,
     render_reply,
     sanitise_reply,
@@ -352,7 +353,7 @@ class ConversationCommandsMixin:
             "delivery_dedup_key": dedup_key,
             "discord_text_chars": len(discord_text),
             "truncated": discord_text
-            != f"{sanitise_reply(text, base_url=base_url)} (aq-conv:{dedup_key})",
+            != f"{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}",
         }
 
     async def _conversation_notice(
