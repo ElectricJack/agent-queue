@@ -767,6 +767,300 @@ def _recovery(case, dispatch=None):
     return CancelledCollectionRecovery(case.db, case.promotion, dispatch=dispatch)
 
 
+async def _no_progress_collection(case):
+    """A later real child conflict is stranded behind a terminal debug incident."""
+    conflict = await _deliver_first_and_conflict_second(case)
+    operation = await _operation(case)
+    subject = {"kind": "parent", "generation": 3, "head_sha": conflict["expected_target"]}
+    for ordinal, status in ((0, TaskStatus.COMPLETED), (1, TaskStatus.FAILED)):
+        await case.db.create_task(
+            Task(
+                id=f"old-repair-{ordinal}",
+                project_id="p",
+                repo_id="repo",
+                branch_name="aq/epic",
+                title="Ended repair",
+                description="",
+                status=status,
+                created_by_kind="integration_repair",
+                created_by_id=case.operation_id,
+            )
+        )
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(
+                integration_repair_operations.c.id == case.operation_id,
+            )
+            .values(state="escalated", active_stage=1)
+        )
+        for ordinal, state in ((0, "passed"), (1, "expired")):
+            incident = {
+                "incident_id": f"repair-no-progress:{case.operation_id}:1",
+                "stage": 1,
+                "subject": subject,
+                "attempts": 0,
+                "deadline_at": 20.0,
+                "repair_task_id": "old-repair-1",
+                "recorded_at": 20.0,
+            }
+            await conn.execute(
+                insert(integration_repair_stages).values(
+                    operation_id=case.operation_id,
+                    ordinal=ordinal,
+                    policy=operation["policy_snapshot"]["parent"]["repair"],
+                    starting_sha=conflict["expected_target"],
+                    trigger_id=f"stage-exhausted:{case.operation_id}:{ordinal - 1}",
+                    current_subject=subject,
+                    repair_task_id=f"old-repair-{ordinal}",
+                    writer_kind="repair_delegate",
+                    state=state,
+                    attempts=0,
+                    started_at=12.0,
+                    deadline_at=20.0,
+                    completed_at=20.0,
+                    deadline_event_id=f"old-deadline-{ordinal}",
+                    dossier={"supervisor_recovery": incident} if ordinal == 1 else {},
+                )
+            )
+    return conflict
+
+
+@pytest.mark.parametrize("confirmed_workspace", [False, True])
+async def test_no_progress_collection_reopens_only_its_later_conflict(case, confirmed_workspace):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.database.tables import workspaces
+
+    conflict = await _no_progress_collection(case)
+    if confirmed_workspace:
+        _git(["fetch", "origin", "aq/epic"], case.work)
+        _git(["switch", "-c", "aq/epic", "origin/aq/epic"], case.work)
+        async with case.db.immediate() as conn:
+            await conn.execute(
+                insert(workspaces).values(
+                    id="former-repair",
+                    project_id="p",
+                    workspace_path=str(case.work),
+                    source_type="link",
+                    enabled=True,
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                update(integration_branch_owners).values(
+                    confirmed_workspace_id="former-repair",
+                )
+            )
+    old_stages = await _rows(case.db, integration_repair_stages)
+    receipts = await _rows(case.db, task_delivery_receipts)
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    original_owner = await _owner(case)
+    recovery = _recovery(case, RepairService(case.db).dispatch)
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    handler.orchestrator = SimpleNamespace(
+        promotion_service=case.promotion,
+        repair_service=RepairService(case.db),
+    )
+    preview = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
+    assert preview["outcome"] == "would_reopen", preview
+    assert preview["conflict"]["intent_id"] == conflict["id"]
+    assert preview["stage"]["ordinal"] == 2
+    assert await _rows(case.db, integration_repair_stages) == old_stages
+    assert await _owner(case) == original_owner
+
+    result = await handler._cmd_integration_reopen_collection(
+        {
+            "task_id": "epic",
+            "dry_run": False,
+            "expected_head_sha": preview["head_sha"],
+            "reason": "Resume a later conflict stranded by no-progress",
+        }
+    )
+    assert result["outcome"] == "reopened", result
+    assert result["dispatch"]["outcome"] == "dispatched"
+    new_delegate = f"repair-{case.operation_id}-2"
+    assert result["dispatch"]["repair_task_id"] == new_delegate
+    assert (await case.db.get_task(new_delegate)).status is TaskStatus.READY
+    assert (await _owner(case))["fence_token"] == original_owner["fence_token"] + 2
+    assert await case.db.get_integration_checkpoint("epic") == checkpoint
+    assert await _rows(case.db, task_delivery_receipts) == receipts
+    assert (
+        await _rows(case.db, integration_repair_stages, integration_repair_stages.c.ordinal < 2)
+        == old_stages
+    )
+    assert _remote_tip(case) == conflict["expected_target"]
+    scope = await case.db.get_repair_filing_scope(new_delegate)
+    assert scope["trigger_id"] == conflict["id"]
+    assert PromotionService._repair_subject_matches_intent(scope, conflict)
+    assert (await recovery.run("epic"))["outcome"] == "nothing_to_reopen"
+    assert len(await _rows(case.db, integration_repair_stages)) == 3
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        "missing_incident",
+        "same_conflict",
+        "wrong_fence",
+        "moved_child",
+        "live_holder",
+        "two_conflicts",
+        "dirty_checkout",
+        "unpublished_ref",
+        "remote_moved",
+        "gate",
+    ],
+)
+async def test_no_progress_collection_keeps_proofs_and_rejects_retrying_old_work(case, blocker):
+    from src.database.tables import sessions, workspaces
+
+    conflict = await _no_progress_collection(case)
+    async with case.db.immediate() as conn:
+        if blocker == "missing_incident":
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.ordinal == 1,
+                )
+                .values(dossier={})
+            )
+        elif blocker == "same_conflict":
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.ordinal == 1,
+                )
+                .values(trigger_id=conflict["id"])
+            )
+        elif blocker == "wrong_fence":
+            await conn.execute(
+                update(integration_branch_owners).values(
+                    fence_token=conflict["fence_token"] + 1,
+                )
+            )
+        elif blocker == "moved_child":
+            await conn.execute(
+                update(task_integration_checkpoints)
+                .where(
+                    task_integration_checkpoints.c.task_id == "epic.2",
+                )
+                .values(checkpoint_sha="e" * 40)
+            )
+        elif blocker == "live_holder":
+            await conn.execute(
+                insert(sessions).values(
+                    id="live-old-repair",
+                    task_id="old-repair-1",
+                    project_id="p",
+                    profile_id="debugger",
+                    work_dir=str(case.work),
+                    state="running",
+                    harness="fake",
+                    provider="fake",
+                    name="live-old-repair",
+                    lifecycle="task",
+                    instance_token="live",
+                    epoch="epoch",
+                    started_at=21.0,
+                )
+            )
+        elif blocker == "two_conflicts":
+            await conn.execute(
+                insert(integration_promotion_intents).values(
+                    **{
+                        key: value
+                        for key, value in conflict.items()
+                        if value is not None and key not in {"id", "domain_key", "receipt_id"}
+                    },
+                    id="other-conflict",
+                    domain_key="other-conflict",
+                    receipt_id="other-receipt",
+                )
+            )
+        elif blocker == "gate":
+            await conn.execute(
+                insert(gates).values(
+                    id="human-gate",
+                    project_id="p",
+                    gate_type="human",
+                    title="Held",
+                    status="open",
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(insert(task_gates).values(task_id="epic", gate_id="human-gate"))
+        elif blocker in {"dirty_checkout", "unpublished_ref"}:
+            _git(["fetch", "origin", "aq/epic"], case.work)
+            _git(["switch", "-c", "aq/epic", "origin/aq/epic"], case.work)
+            await conn.execute(
+                insert(workspaces).values(
+                    id="former-repair",
+                    project_id="p",
+                    workspace_path=str(case.work),
+                    source_type="link",
+                    enabled=True,
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                update(integration_branch_owners).values(
+                    confirmed_workspace_id="former-repair",
+                )
+            )
+            (case.work / "unpublished.txt").write_text("preserve me\n")
+            if blocker == "unpublished_ref":
+                _git(["add", "unpublished.txt"], case.work)
+                _git(["commit", "-m", "unpublished parent work"], case.work)
+        elif blocker == "remote_moved":
+            _git(["push", "origin", f"{case.base}:refs/heads/aq/epic", "--force"], case.work)
+    stages = await _rows(case.db, integration_repair_stages)
+    receipts = await _rows(case.db, task_delivery_receipts)
+    owner = await _owner(case)
+    operation = await _operation(case)
+    recovery = _recovery(case)
+    for apply in (False, True):
+        refused = await recovery.run(
+            "epic",
+            dry_run=not apply,
+            expected_head_sha=conflict["expected_target"],
+            reason="Must not bypass evidence",
+            operator_id="supervisor:p",
+        )
+        assert refused["outcome"] in {"blocked", "ambiguous", "nothing_to_reopen"}, refused
+    assert await _rows(case.db, integration_repair_stages) == stages
+    assert await _rows(case.db, task_delivery_receipts) == receipts
+    assert await _owner(case) == owner
+    assert await _operation(case) == operation
+
+
+async def test_no_progress_collection_rechecks_remote_under_apply_lock(case, monkeypatch):
+    conflict = await _no_progress_collection(case)
+    stages = await _rows(case.db, integration_repair_stages)
+    owner = await _owner(case)
+    recovery = _recovery(case)
+    original_proof = recovery._prove
+    calls = 0
+
+    async def moved_remote(facts):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            _git(["push", "origin", f"{case.base}:refs/heads/aq/epic", "--force"], case.work)
+        return await original_proof(facts)
+
+    monkeypatch.setattr(recovery, "_prove", moved_remote)
+    result = await recovery.run(
+        "epic",
+        dry_run=False,
+        expected_head_sha=conflict["expected_target"],
+        reason="A concurrent remote change must refuse",
+    )
+    assert result["outcome"] == "changed", result
+    assert await _owner(case) == owner
+    assert await _rows(case.db, integration_repair_stages) == stages
+
+
 # ---------------------------------------------------------------------------
 # The production shape: receipts, one later conflict, an archived delegate
 # ---------------------------------------------------------------------------

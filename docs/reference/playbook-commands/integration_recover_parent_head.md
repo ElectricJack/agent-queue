@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:ac4a2cefb7bcd3270937e61322c3296a0661a38812fa50e6fc8a1ea1bd708fbb` |
+| Contract fingerprint | `sha256:8149427440d23a755733f725085dbc6010526dead1641f2f2fa24148140f8780` |
 
 ## Parameters
 
@@ -44,6 +44,8 @@ Redacted in receipts and explanations: `reason`.
 | `receipt_head_sha` | `string \| null` | — |
 | `repair_task_id` | `string \| null` | — |
 | `completion_id` | `string \| null` | — |
+| `repair_head_sha` | `string \| null` | — |
+| `collection_receipt_ids` | `string[]` | — |
 | `attempts` | `integer \| null` | — |
 | `deadline_at` | `number \| null` | — |
 | `stage_state` | `string \| null` | — |
@@ -51,7 +53,7 @@ Redacted in receipts and explanations: `reason`.
 | `apply_command` | `string \| null` | — |
 | `reason` | `string \| null` | — |
 
-Projected into the run receipt: `operation_id`, `head_sha`, `episode_id`, `generation`, `stage`, `fence_token`, `receipt_head_sha`, `repair_task_id`, `completion_id`, `attempts`, `deadline_at`, `stage_state`, `operation_state`, `apply_command`, `reason`.
+Projected into the run receipt: `operation_id`, `head_sha`, `episode_id`, `generation`, `stage`, `fence_token`, `receipt_head_sha`, `repair_task_id`, `completion_id`, `repair_head_sha`, `collection_receipt_ids`, `attempts`, `deadline_at`, `stage_state`, `operation_state`, `apply_command`, `reason`.
 
 ## Outcomes
 
@@ -92,8 +94,10 @@ delegate (including an archived delegate), latest passing completion and origina
 fenced close audit. It checks the current reservation, holds and pending writes.
 
 The retained Git repository is fetched, and the actual origin ref must equal the
-supplied head. The commit range must match the stage's audited repair history and
-descend from the collected aggregate, preserving every receipt tip. Apply repeats
+supplied head. The repair range must match the stage's audited history. If later
+child collection advanced that head, the entire additional range must be covered
+by current collection receipts. Every receipt tip must remain an ancestor, and a
+confirmed former parent checkout must contain no unpublished work. Apply repeats
 these proofs under the locks and requires the previewed episode, generation, stage
 and current fence. The result reports attempts, deadline and stage/operation state.
 
@@ -104,7 +108,9 @@ including its authoring identity and operator recovery reason. It advances
 `task_integration_checkpoints.checkpoint_sha` and clears current aggregate
 verification. `ParentCompletion.readiness_on` consumes this edge alongside the
 immutable receipts. Episode, generation, repair policy, attempts and deadlines
-retain their values. No Git push or writer allocation occurs. Replay rechecks the
+retain their values. Recovery of a later collected head marks the closed stage
+passed, returns the operation to active verification, and queues a fresh aggregate
+verifier handoff. No Git push or writer allocation occurs. Replay rechecks the
 proof and preserves any verification recorded after the first application.
 
 ## Failure modes and diagnostics
