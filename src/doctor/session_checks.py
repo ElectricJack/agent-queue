@@ -87,8 +87,9 @@ STOP_INTENT_CHECK_ID = "sessions.stop_intent_pending"
 #: on these however long the holder is idle, so they are the ones an operator
 #: has to clear.  Anything else (a stale frame, an unreadable composer) is
 #: spent as a rung once progress evidence independent of the composer says
-#: the holder is frozen -- and, where AQ can measure none at all (an
-#: ``opencode`` holder), announced as ``evidence="unverified"`` instead.
+#: the holder is frozen -- the reader-resolved transcript, or for a CLI with a
+#: store of its own (``opencode``) that store -- and announced as
+#: ``evidence="unverified"`` only where AQ can measure no progress at all.
 _LADDER_HELD_REASONS = frozenset({"draft", "terminal_busy", "recent_input"})
 
 #: The delivery cascade nudges an idle recipient on every pass, so mail this

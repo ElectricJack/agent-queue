@@ -231,9 +231,10 @@ the ladder skips them.
 `unreadable` is *not* a human, so the ladder goes looking for evidence that
 does not come from the screen:
 
-- the harness's own transcript has not been written for longer than the
-  lease — a rung is spent and the stall climbs to backoff and then restart,
-  quarantine, or — for a pool holder — termination and a requeued claim;
+- the harness's own transcript — or, for a CLI that keeps a store of its own
+  (`opencode`), that store — has not been written for longer than the lease: a
+  rung is spent and the stall climbs to backoff and then restart, quarantine,
+  or — for a pool holder — termination and a requeued claim;
 - a pane that stops changing — the wedge from 2026-10-03
   (`vivid-quest-44.3`: 116 identical refusals over 78 minutes, zero rungs,
   zero events, task held the whole time). That is *reported*, never spent,
@@ -243,9 +244,10 @@ does not come from the screen:
   but the stall is *announced*: a daemon WARNING and a `task.stalled` event
   with `evidence="unverified"` and how long the pane has shown the same
   thing, repeated at most every 15 minutes. Look for it in the digest or on
-  the dashboard. This is the case an `opencode` holder lands in, and it is a
-  person who decides: AQ will not release a claim because a screen stopped
-  moving, since one long tool looks exactly like that.
+  the dashboard. This is the case a harness with neither a transcript nor a
+  store lands in, and it is a person who decides: AQ will not release a claim
+  because a screen stopped moving, since one long tool looks exactly like
+  that.
 
 A `draft`, `terminal_busy` or `recent_input` reason still holds the ladder
 indefinitely, by design — a person is mid-thought, and their draft is their
@@ -254,6 +256,53 @@ work.
 **Fix at the source.** A plugin that logs to stderr will keep painting over
 OpenCode's screen. Make it log to a file only, or add `--pure` to the OpenCode
 harness `args` (that disables every external plugin, including ones you want).
+
+## A worker that looks busy forever and is not
+
+**Symptom.** A worker holds a task and its pane shows OpenCode's in-turn
+spinner (`esc interrupt`) that never resolves. `aq session peek` twice a minute
+apart gives byte-identical text, no line of `agent-queue.log` mentions a stall,
+nudge or restart for that session, and the task's `stall_nudges` metadata is
+absent. On 2026-10-03 `crisp-horizon-90.10` looked exactly like this for 42
+minutes: 16 compactions, then nothing, with `ollama /api/ps` reporting no model
+loaded the whole time.
+
+**Cause.** tmux's `window_activity` advances on *any* output, and an OpenCode
+pane repaints its spinner forever. So the stall ladder's gate — no pane output
+for longer than the lease — never opened, and AQ read a dead TUI as a busy
+agent. It is not a nudge problem: the ladder never got as far as a nudge.
+
+**Diagnose.** AQ now asks two clocks it does not control before believing the
+pane (design spec §4.3.1). Both are yours to read as well:
+
+```bash
+# The harness's own store, scoped to that session's worktree and claim time.
+sqlite3 "file:$XDG_DATA_HOME/opencode/opencode.db?mode=ro" \
+  "SELECT id, time_updated/1000 AS last_row FROM session WHERE directory = '<work_dir>';"
+
+# Whether the model server is holding anything for anyone.
+curl -s "${OPENAI_BASE_URL%/v1}/api/ps"
+```
+
+A `task.stalled` event carrying `evidence="store_stalled"` is the proof: it is
+emitted only when the store has written nothing for longer than the lease, no
+tool call in it is still running, and the endpoint reports nothing resident.
+From there the ordinary ladder runs — nudge (if the composer allows it),
+backoff, restart with resume, quarantine.
+
+**What still holds the ladder.** Anything AQ cannot resolve: no store for that
+harness, a session that never wrote a row, an unreadable store, a provider on a
+gateway with no local endpoint to ask, an endpoint that is down or is not
+Ollama, and any model resident at all — including one merely kept warm. If your
+workers point OpenCode at a *different* Ollama than the one on the box (an
+`OLLAMA_HOST` in the harness environment), AQ cannot name that endpoint, so the
+provider half stays unknown and only the store half is available; the stall is
+then announced rather than restarted, which is the intended conservative
+answer.
+
+**Fix at the source.** A wedged turn is usually a lost model server. Check the
+provider's log and the pane's own error output; `aq doctor --check
+sessions.stall_unreachable` still reports the composer side.
 
 ## A session that quarantines at startup
 
@@ -709,11 +758,14 @@ reason above is resolved by the subsystem that owns it.
 
 Implementation: [`src/sessions/reconciler.py`](../../src/sessions/reconciler.py),
 [`src/sessions/exit_classifier.py`](../../src/sessions/exit_classifier.py),
+[`src/sessions/opencode_store.py`](../../src/sessions/opencode_store.py),
+[`src/sessions/provider_liveness.py`](../../src/sessions/provider_liveness.py),
 [`src/doctor/session_checks.py`](../../src/doctor/session_checks.py),
 [`src/orchestrator/task_checkpoint.py`](../../src/orchestrator/task_checkpoint.py);
 the composer guard is in [`src/sessions/tmux.py`](../../src/sessions/tmux.py).
 
 ```bash
 aq test tests/test_session_reconciler.py tests/test_session_doctor.py tests/test_session_commands.py
+aq test tests/test_session_opencode_liveness.py tests/test_agent_question_native.py
 aq test tests/test_tmux_nudge_drafts.py tests/test_tmux_nudge_recovery.py tests/test_tmux_opencode_composer.py
 ```

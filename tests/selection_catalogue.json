@@ -1060,6 +1060,7 @@
         "tests/test_session_doctor.py",
         "tests/test_session_executable.py",
         "tests/test_session_input.py",
+        "tests/test_session_opencode_liveness.py",
         "tests/test_session_provider_conformance.py",
         "tests/test_session_queries.py",
         "tests/test_session_reconciler.py",
@@ -1388,7 +1389,7 @@
       ]
     }
   },
-  "digest": "sha256:084cc8f791e9fc4a93ca3f6fbbc7b05e5da2d3498fe89c4e2ec8ba8a0176e5b2",
+  "digest": "sha256:99bd4df8846483bc08bcd9f3ef211356d9a6469db995513bb7546246885d4550",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13628,6 +13629,23 @@
       ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
+    "tests/test_session_opencode_liveness.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.llm.providers.local_probe",
+        "src.sessions.context",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
+        "src.sessions.provider_liveness"
+      ],
+      "markers": [],
+      "summary": "OpenCode's own store as AQ's liveness clock (crisp-horizon-90.10)."
+    },
     "tests/test_session_provider_conformance.py": {
       "areas": [
         "session-runtime"
@@ -13687,6 +13705,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.opencode_store",
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
