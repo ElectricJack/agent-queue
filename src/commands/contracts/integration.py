@@ -27,8 +27,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
-from src.integration.models import BranchKey, Fence
-from src.integration.parent_completion import AWAITING_TRUSTED_VERIFICATION
+from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence
 from src.git.manager import is_valid_git_oid
 
 

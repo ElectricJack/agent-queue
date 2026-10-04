@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import statistics
 from pathlib import Path
 import site
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,6 +22,53 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """These tests prove DB isolation; never allocate a test database."""
+
+
+@pytest.mark.parametrize("module", ["src.cli.app", "src.tools.definitions"])
+def test_client_import_does_not_load_handler_or_database(module: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib
+import sys
+
+module = importlib.import_module(sys.argv[1])
+prefixes = ("src.commands.handler", "src.database", "sqlalchemy", "asyncpg")
+if sys.argv[1] == "src.cli.app":
+    assert "task" in module.cli.commands
+    prefixes += ("src.tools.definitions", "src.plugins.registry")
+for prefix in prefixes:
+    loaded = [name for name in sys.modules if name == prefix or name.startswith(prefix + ".")]
+    assert not loaded, loaded
+""", module],
+        cwd=ROOT, capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_packaged_command_catalogue_matches_live_discovery() -> None:
+    from src.tools.command_catalogue import CATALOGUE_PATH, render_command_catalogue
+
+    assert CATALOGUE_PATH.read_text(encoding="utf-8") == render_command_catalogue(), (
+        "run python scripts/generate-command-catalogue.py"
+    )
+
+
+@pytest.mark.perf
+def test_cli_help_startup_budget(perf_strict) -> None:
+    """Time fresh processes running the installed console script's entry point."""
+    elapsed = []
+    for _ in range(3):
+        start = time.perf_counter()
+        result = subprocess.run(
+            [sys.executable, "-c", "from src.cli.app import main; main()", "--help"],
+            cwd=ROOT, capture_output=True, text=True, timeout=10, check=False,
+        )
+        elapsed.append(time.perf_counter() - start)
+        assert result.returncode == 0, result.stderr
+        assert "Agent Q CLI" in result.stdout
+    median = statistics.median(elapsed)
+    print(f"aq --help startup: median={median:.3f}s, samples={elapsed}")
+    assert median < 1.0, f"aq --help median startup {median:.3f}s exceeds 1s budget"
 
 
 def _install_fixture_entry_point(path: Path) -> None:

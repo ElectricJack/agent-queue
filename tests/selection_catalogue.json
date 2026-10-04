@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:9d155e18fabbc8771172a07d9469f05a5c63bc5adf15705d8050bd941d816ac5",
+  "digest": "sha256:ad79ca67d13bac0f4470c8a26eaea860b8271d8a29a43659a4248dfa2648a03b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3481,10 +3481,12 @@
         "src.cli",
         "src.cli.app",
         "src.cli.client",
-        "src.plugins.base"
+        "src.plugins.base",
+        "src.tools.command_catalogue"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Offline and lazy-startup contracts for the ``aq`` command tree."
     },

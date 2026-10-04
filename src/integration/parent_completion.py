@@ -40,7 +40,7 @@ from src.database.tables import (
 from src.integration.parent_engine import (
     active_parent_scope, legacy_parent_allowed_on, parent_engine_guard,
 )
-from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.models import AWAITING_TRUSTED_VERIFICATION, HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 #: ``stale_verification`` (a genuinely superseded subject, which the caller
 #: answers by re-reading readiness): no worker-side test run can produce
 #: trusted CI evidence, so this one is a wait on the producer.
-AWAITING_TRUSTED_VERIFICATION = "awaiting_trusted_verification"
+# AWAITING_TRUSTED_VERIFICATION is re-exported from the shared value layer.
 
 
 def required_checks(operation: dict[str, Any]) -> dict[str, Any]:

@@ -201,6 +201,13 @@ jobs:
       - name: Refresh local packages
         run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
+      # Keep wall-clock startup budgets off the parallel default shards.
+      - name: Check CLI startup budget
+        if: matrix.suite.name == 'cli-conformance'
+        env:
+          AQ_PERF_STRICT: "1"
+        run: aq test -m perf -p no:xdist -s tests/test_cli_startup_offline.py
+
       # The SQLite half of this check is gone with the backend.  It was never
       # a proxy for production anyway: it stored booleans as integers and
       # accepted DDL Postgres rejects outright (revision 33bdb059ceff shipped

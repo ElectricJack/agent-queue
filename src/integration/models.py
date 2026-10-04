@@ -37,6 +37,10 @@ REQUEUE_INTEGRATION_OWNER_ROLES = RETRYABLE_INTEGRATION_OWNER_ROLES | {"verifier
 # outbox quarantines it as an explicit failed delivery.
 DEFAULT_INTEGRATION_MAX_WAIT_SECONDS = 3600.0
 
+# Shared refusal code for completion without a trusted CI binding. Keep this
+# in the value layer so command schemas need no database implementation imports.
+AWAITING_TRUSTED_VERIFICATION = "awaiting_trusted_verification"
+
 
 class BranchKey(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
