@@ -710,6 +710,51 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
         assert result.exit_code == 0, (leaf, result.output)
 
 
+def test_no_code_receipts_are_documented_as_an_operator_control_not_a_supervisor_one():
+    """`record-noop` carries no ``project_id`` but admits no session either.
+
+    The handler authorizes a session principal only for
+    ``_SUPERVISOR_REDRIVE_CAPABILITIES``, so the guide must not list
+    `record-noop` among the controls a project's own supervisor may run, and
+    the shipped supervisor profile must name it as an operator's action only.
+    """
+    from src.profiles.parser import parse_profile
+
+    root = Path(__file__).parents[1]
+    guide = (root / "docs/guides/hierarchical-integration-trains.md").read_text(
+        encoding="utf-8"
+    )
+    paragraph = guide.split("The controls keyed by a task, operation, batch or reservation")[1]
+    paragraph = paragraph.split("\n\n")[0]
+    controls, _, exception = paragraph.partition("take no `project_id`")
+    assert "record-noop" not in controls
+    assert "local operator records no-code receipts" in exception
+    assert "every* session is refused it" in exception
+
+    section = guide.split("### No-code child receipts")[1].split("\n## ")[0]
+    assert "a local\noperator records the exact no-code disposition" in section
+    assert "No session can invoke it" in section
+
+    profile_text = (root / "src/profiles/defaults/supervisor/profile.md").read_text(
+        encoding="utf-8"
+    )
+    supervisor = parse_profile(profile_text)
+    assert supervisor.errors == []
+    assert "integration_record_noop" not in supervisor.capabilities["aq_commands"]
+    mentions = [line for line in profile_text.splitlines() if "record-noop" in line]
+    assert mentions
+    for line in mentions:
+        assert "operator" in line, line
+
+    troubleshooting = (root / "docs/guides/integration-troubleshooting.md").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "a local operator records a no-code child's disposition with "
+        "`aq integration record-noop`" in troubleshooting
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     (

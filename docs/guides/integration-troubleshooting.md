@@ -1013,7 +1013,7 @@ aq integration redrive-child <task>        # dry run
 |---|---|---|
 | `would_advance` | Complete, head published and proven, not yet assembled. | `--apply --head <head_sha> --reason '<why>'`. |
 | `nothing_to_redrive` | Already delivered into the parent, or a promotion of this head is being written or repaired. | Nothing; `reason` says which. |
-| `blocked` | A reviewer rejected the head or is still open, the remote branch moved or is unpublished, the checkpoint is still the origin base (a no-code child), or the parent is not collecting. | Settle what `reason` names; a no-code child takes `aq integration record-noop`. Never force it. |
+| `blocked` | A reviewer rejected the head or is still open, the remote branch moved or is unpublished, the checkpoint is still the origin base (a no-code child), or the parent is not collecting. | Settle what `reason` names; a local operator records a no-code child's disposition with `aq integration record-noop` (no session may run it). Never force it. |
 | `not_eligible` | Not a hierarchy/train child, not `COMPLETED`, a nested parent, or no checkpoint. A root takes `redrive-root`. | Nothing to redrive here. |
 
 Applying needs the head the dry run printed; a head that changed since is
