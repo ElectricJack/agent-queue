@@ -99,7 +99,9 @@ async def finish(proc, directory):
 async def test_session_stop_preserves_job_and_environment_has_no_credentials(tmp_path):
     command = """import os, json, pathlib, time
 p = pathlib.Path('.')
-p.joinpath('child.json').write_text(json.dumps(dict(os.environ)))
+# The parent treats child.json's existence as the completed environment barrier.
+p.joinpath('child.json.tmp').write_text(json.dumps(dict(os.environ)))
+p.joinpath('child.json.tmp').replace(p / 'child.json')
 while not p.joinpath('release').exists(): time.sleep(.02)
 print('done')
 """
