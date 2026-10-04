@@ -1064,3 +1064,48 @@ async def test_artifact_verify_rehashes_through_the_command(command_handler_fact
         assert absent["success"] is False and "not retained" in absent["error"]
     finally:
         await handler.db.close()
+
+
+async def _refusal_for(mixin, name):
+    """Run a session-scoped handler with a non-elevated worker scope."""
+    handler = mixin()
+    handler._current_scope = {"kind": "session", "session_id": "w", "project_id": "p"}
+    handler.config = SimpleNamespace(data_dir="/nonexistent")
+    handler.db = None
+    return await getattr(handler, name)({"project_id": "p"})
+
+
+async def test_the_operator_steps_reach_the_supervisor_session_and_not_a_worker():
+    """The supervisor runs the operator steps; a worker session never does.
+
+    Pinned here rather than left to the scope layer's defaults, because the
+    start runbook depends on it: a worker that reports "out of scope" for
+    ``formula cook object`` or ``object_loop_start`` must be told to hand the
+    step to the project supervisor, not to work around it.
+    """
+    from src.api.scope import RequestScope, check_command_scope
+
+    supervisor = RequestScope(
+        kind="session", project_id="p", task_id=None, session_id="sup", elevated=True,
+    )
+    worker = RequestScope(
+        kind="session", project_id="p", task_id="t", session_id="w", elevated=False,
+    )
+    for name in ("formula_cook", "object_loop_start", "object_loop_reconcile",
+                 "object_score_record", "object_checkpoint_read", "object_loop_inputs"):
+        args = {"project_id": "p"}
+        assert check_command_scope(name, dict(args), supervisor) is None, name
+        refused = check_command_scope(name, dict(args), worker)
+        assert refused == f"out of scope: {name}" or "not available" in refused, name
+    # ...and the two refusals that live in the handlers rather than the gate.
+    # Both name the step that supersedes them, so a worker that hits one is
+    # handed to the supervisor instead of looking for a way around it.
+    from src.commands.formula_commands import FormulaCommandsMixin
+    from src.commands.object_loop_commands import ObjectLoopCommandsMixin
+
+    for mixin, name, needle in (
+        (FormulaCommandsMixin, "_cmd_formula_cook", "not available to agent sessions"),
+        (ObjectLoopCommandsMixin, "_cmd_object_loop_inputs", "project supervisor"),
+    ):
+        refused = await _refusal_for(mixin, name)
+        assert refused["success"] is False and needle in refused["error"], name
