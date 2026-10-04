@@ -17,10 +17,11 @@ module = import_module("src.doctor.stall_checks")
 NOW = 1_800_000_000.0
 
 
-def task(task_id, *, project="one", status=TaskStatus.READY, age=3600, profile="worker"):
+def task(task_id, *, project="one", status=TaskStatus.READY, age=3600, profile="worker",
+         priority=100):
     return SimpleNamespace(
         id=task_id, project_id=project, status=status, updated_at=NOW-age,
-        profile_id=profile, title=task_id, task_type=None,
+        profile_id=profile, title=task_id, task_type=None, priority=priority,
     )
 
 
@@ -222,6 +223,35 @@ async def test_disabled_provider_with_queued_task(context):
     findings = await module._provider_findings(context, [task("ready")])
     assert findings[0]["kind"] == "disabled_provider"
     assert findings[0]["provider"] == "claude"
+
+
+async def test_high_priority_task_on_a_local_model(context):
+    providers = {"opencode": "ollama", "opencode-zen": "opencode", "claude": "anthropic"}
+    context.handler.orchestrator = SimpleNamespace(harness_registry=SimpleNamespace(
+        get=lambda harness_id, project_id=None: SimpleNamespace(
+            id=harness_id, provider=providers[harness_id],
+        ),
+    ))
+    context.db.profiles = [
+        SimpleNamespace(id=f"standard-high-{harness}", harness=harness) for harness in providers
+    ]
+    rows = [
+        task("top-fix", profile="standard-high-opencode", priority=298,
+             status=TaskStatus.IN_PROGRESS),
+        task("queued-fix", project="two", profile="standard-high-opencode", priority=150),
+        task("docs", profile="standard-high-opencode", priority=100),
+        task("hosted", profile="standard-high-opencode-zen", priority=298),
+        task("claude", profile="standard-high-claude", priority=298),
+        task("done", profile="standard-high-opencode", priority=298,
+             status=TaskStatus.COMPLETED),
+    ]
+    findings = await module._local_model_findings(context, rows)
+    assert [(f["kind"], f["task_id"], f["project_id"]) for f in findings] == [
+        ("high_priority_local_model", "top-fix", "one"),
+        ("high_priority_local_model", "queued-fix", "two"),
+    ]
+    assert "stop it, then aq task route --task-id top-fix" in findings[0]["detail"]
+    assert findings[1]["detail"].endswith("< 150); aq task route --task-id queued-fix")
 
 
 def test_high_cost_non_design_route_across_projects():
