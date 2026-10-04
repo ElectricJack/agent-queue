@@ -46,6 +46,7 @@ class ObjectLoopStartRequest:
         variants (list[Any]):
         incumbent_artifact (None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset):
         reference_kind (str | Unset):  Default: 'calibrated'.
+        max_rounds (int | Unset):  Default: 8.
         max_repair_rounds (int | Unset):  Default: 2.
         max_plateau_rounds (int | Unset):  Default: 3.
     """
@@ -72,6 +73,7 @@ class ObjectLoopStartRequest:
     variants: list[Any]
     incumbent_artifact: None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset = UNSET
     reference_kind: str | Unset = "calibrated"
+    max_rounds: int | Unset = 8
     max_repair_rounds: int | Unset = 2
     max_plateau_rounds: int | Unset = 3
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -131,6 +133,8 @@ class ObjectLoopStartRequest:
 
         reference_kind = self.reference_kind
 
+        max_rounds = self.max_rounds
+
         max_repair_rounds = self.max_repair_rounds
 
         max_plateau_rounds = self.max_plateau_rounds
@@ -165,6 +169,8 @@ class ObjectLoopStartRequest:
             field_dict["incumbent_artifact"] = incumbent_artifact
         if reference_kind is not UNSET:
             field_dict["reference_kind"] = reference_kind
+        if max_rounds is not UNSET:
+            field_dict["max_rounds"] = max_rounds
         if max_repair_rounds is not UNSET:
             field_dict["max_repair_rounds"] = max_repair_rounds
         if max_plateau_rounds is not UNSET:
@@ -241,6 +247,8 @@ class ObjectLoopStartRequest:
 
         reference_kind = d.pop("reference_kind", UNSET)
 
+        max_rounds = d.pop("max_rounds", UNSET)
+
         max_repair_rounds = d.pop("max_repair_rounds", UNSET)
 
         max_plateau_rounds = d.pop("max_plateau_rounds", UNSET)
@@ -268,6 +276,7 @@ class ObjectLoopStartRequest:
             variants=variants,
             incumbent_artifact=incumbent_artifact,
             reference_kind=reference_kind,
+            max_rounds=max_rounds,
             max_repair_rounds=max_repair_rounds,
             max_plateau_rounds=max_plateau_rounds,
         )

@@ -148,6 +148,26 @@ def start_args():
     }
 
 
+def test_the_round_cap_is_bounded_start_input_and_a_legacy_row_keeps_its_ceiling():
+    """`max_rounds` is data, not a constant; the ceiling still bounds it."""
+    assert ObjectLoopStartArgs.model_validate(start_args()).max_rounds == 8
+    for ceiling in (0, 9):
+        with pytest.raises(ValidationError):
+            ObjectLoopStartArgs.model_validate({**start_args(), "max_rounds": ceiling})
+    legacy = {
+        **loop_state(),
+        "limits": {"usd": 80, "calls": 80, "bakes": 80, "active_seconds": 800},
+    }
+    assert "max_rounds" not in legacy
+    for _ in range(8):
+        _charge(legacy, None)
+        _reserve(legacy, [variant("a")])
+        legacy["round_id"] += 1
+    _charge(legacy, None)
+    with pytest.raises(ValueError, match="round cap"):
+        _reserve(legacy, [variant("a")])
+
+
 async def approved_brief(db):
     gate_id, _ = await db.create_gate("p", "review", "Object brief", await_id="brief-review")
     await db.resolve_gate(gate_id, resolved_by="Jack", resolution="approved")
@@ -382,6 +402,93 @@ async def test_score_promotes_only_valid_completed_evidence_and_reserves_next_wa
     assert repeated["outcome"] == "reused"
     next_wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
     assert next_wave["state"]["wave"][0]["task_id"]
+    await db.close()
+
+
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+async def test_three_rounds_of_two_variants_costs_rounds_not_calls(
+    command_handler_factory, reference_kind,
+):
+    """What a 3-round hard cap could not say before: rounds are not a call budget.
+
+    `calls=3` bought one variant per wave for three rounds.  `max_rounds=3`
+    keeps the cap at three rounds while every wave still reserves two
+    candidates against the aggregate budget.
+    """
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    pair = [variant("a").model_dump(), variant("b").model_dump()]
+    request = {
+        **start_args(), "reference_kind": reference_kind, "max_rounds": 3, "variants": pair,
+        "limits": {"usd": 20, "calls": 20, "bakes": 20, "active_seconds": 200},
+    }
+    started = await handler._cmd_object_loop_start(request)
+    assert started["success"], started
+    assert started["state"]["max_rounds"] == 3
+    assert started["state"]["reference_kind"] == reference_kind
+    assert started["state"]["incumbent_capture_sha256"] == H
+    # The cap is fixed input, so a replay must not restate it as the default.
+    widened = await handler._cmd_object_loop_start({**request, "max_rounds": 8})
+    assert not widened["success"] and "different fixed inputs" in widened["error"]
+
+    async def complete(ids):
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id.in_(ids)).values(status="COMPLETED"))
+
+    def packet(fan_in, *, loss, action, **changes):
+        return {
+            "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+            "score_task_id": fan_in["state"]["score_task_id"],
+            "receipts": [
+                receipt(task_id=member["task_id"], round_id=fan_in["state"]["round_id"],
+                        variant_id=member["variant_id"],
+                        base_candidate_sha256=fan_in["state"]["incumbent_sha256"],
+                        per_view={"front": {"loss": loss, "quality_pass": True}})
+                for member in fan_in["state"]["wave"]
+            ],
+            "action": action, "next_variants": pair, **changes,
+        }
+
+    for round_id, loss in enumerate((0.3, 0.2)):
+        wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        assert [m["variant_id"] for m in wave["state"]["wave"]] == ["a", "b"]
+        assert wave["state"]["reserved"]["calls"] == 2
+        await complete([m["task_id"] for m in wave["state"]["wave"]])
+        fan_in = await handler._cmd_object_loop_reconcile(
+            {"project_id": "p", "object_id": "rock"}
+        )
+        assert fan_in["state"]["round_id"] == round_id
+        await complete([fan_in["state"]["score_task_id"]])
+        scored = await handler._cmd_object_score_record(
+            packet(fan_in, loss=loss, action="continue")
+        )
+        assert scored["success"] and scored["state"]["round_id"] == round_id + 1, scored
+    third = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert [m["variant_id"] for m in third["state"]["wave"]] == ["a", "b"]
+    await complete([m["task_id"] for m in third["state"]["wave"]])
+    fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert fan_in["state"]["round_id"] == 2
+    await complete([fan_in["state"]["score_task_id"]])
+    capped = await handler._cmd_object_score_record(packet(fan_in, loss=0.1, action="continue"))
+    assert not capped["success"] and capped["error"] == "round cap reached", capped
+    # Six candidate calls were admitted across three rounds; the cap is not the
+    # budget, and the refused continuation charged nothing.
+    held = await handler._cmd_object_checkpoint_read({"project_id": "p", "object_id": "rock"})
+    assert held["state"]["round_id"] == 2 and held["state"]["status"] == "active"
+    assert held["state"]["spent"]["calls"] == 4
+    assert held["state"]["reserved"]["calls"] == 2
+    # A refused continuation is a cap, not a dead loop: the loop still stops.
+    stopped = await handler._cmd_object_score_record(
+        packet(fan_in, loss=0.1, action="stop", next_variants=[],
+               stop_reason="three-round cap reached; retained verified incumbent")
+    )
+    assert stopped["success"] and stopped["outcome"] == "stop", stopped
+    assert stopped["state"]["stop_reason"] == "three-round cap reached; retained verified incumbent"
+    assert stopped["state"]["incumbent_sha256"] == B
     await db.close()
 
 

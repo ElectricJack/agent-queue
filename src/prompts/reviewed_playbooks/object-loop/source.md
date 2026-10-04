@@ -86,7 +86,7 @@ On timer.5m, perform the sweep below, including after restart.
    Call object_score_record with those fields. It validates all receipts, ranks
    eligible captures, keeps the incumbent on a tie, counts invalid-capture repair
    rounds and reserves a finite next wave atomically. If a continue request is
-   refused (including plateau, repair, eight-round or aggregate budget limits),
+   refused (including plateau, repair, round-cap or aggregate budget limits),
    retry the same score once with action stop and stop_reason
    `continuation refused by score or budget contract; retained verified result`.
    This fallback still validates the evidence, so invalid scores fail closed.
@@ -107,8 +107,8 @@ The read uses `project_id` and `limit`. Start forwards `epic_task_id`,
 `reference_kind`, `reference_sha256`, `rig_sha256`, `scorer_sha256`, `render_profile_sha256`,
 `policy_sha256`, `brief_review_id`, `brief_review_revision`,
 `brief_review_sha256`, `mandatory_views`, `limits`, `final_reserve`,
-`score_reservation`, `noise_band`, `max_repair_rounds`, `max_plateau_rounds`
-and `variants`. Score forwards `expected_version`, `score_task_id`,
+`score_reservation`, `noise_band`, `max_rounds`, `max_repair_rounds`,
+`max_plateau_rounds` and `variants`. Score forwards `expected_version`, `score_task_id`,
 `receipts`, `spent`, `action`, `next_variants`, `stop_reason`, `review_id`,
 `review_revision` and `review_sha256` plus project/object identity.
 All commands route `completed`, `rejected` and `runtime_error` explicitly;

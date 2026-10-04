@@ -1,9 +1,9 @@
 {
-  "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+  "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
   "method": "Real command contract adapters and disposable PostgreSQL; exact argument/result replay through write-free V2 previews. Synthetic capture receipts, no renderer or model calls. Repeated identical sweeps deduplicated.",
   "traces": [
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -76,7 +76,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -149,7 +149,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -222,7 +222,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -295,7 +295,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -359,7 +359,7 @@
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -442,7 +442,7 @@
       "test": "tests/test_object_loop_playbook.py::test_two_objects_recover_in_one_sweep"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -501,7 +501,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -560,7 +560,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -619,7 +619,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -678,7 +678,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -737,7 +737,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -796,7 +796,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -855,7 +855,7 @@
       "test": "tests/test_object_loop_playbook.py::test_inputs_refuse_foreign_score_scope_and_missing_capability"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -914,7 +914,7 @@
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -973,7 +973,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1032,7 +1032,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1091,7 +1091,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1150,7 +1150,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1209,7 +1209,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1268,7 +1268,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1327,7 +1327,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1386,7 +1386,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1445,7 +1445,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1504,7 +1504,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1563,7 +1563,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1622,7 +1622,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1681,7 +1681,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-repair]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1740,7 +1740,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1799,7 +1799,7 @@
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1858,7 +1858,7 @@
       "test": "tests/test_object_loop_playbook.py::test_bootstrap_restart_and_formula_discovery"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1917,7 +1917,7 @@
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1976,7 +1976,7 @@
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2035,7 +2035,7 @@
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2094,7 +2094,7 @@
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2185,7 +2185,7 @@
       "test": "tests/test_object_loop_playbook.py::test_two_objects_recover_in_one_sweep"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2248,7 +2248,7 @@
       "test": "tests/test_object_loop_playbook.py::test_bootstrap_restart_and_formula_discovery"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2311,7 +2311,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2374,7 +2374,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2437,7 +2437,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2500,7 +2500,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2563,7 +2563,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2626,7 +2626,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2689,7 +2689,7 @@
       "test": "tests/test_object_loop_playbook.py::test_inputs_refuse_foreign_score_scope_and_missing_capability"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2752,7 +2752,7 @@
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2815,7 +2815,7 @@
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2878,7 +2878,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2941,7 +2941,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3004,7 +3004,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3067,7 +3067,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3130,7 +3130,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3193,7 +3193,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3256,7 +3256,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3319,7 +3319,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3382,7 +3382,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3445,7 +3445,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3508,7 +3508,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3571,7 +3571,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3634,7 +3634,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-repair]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3697,7 +3697,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3760,7 +3760,7 @@
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3828,7 +3828,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3896,7 +3896,7 @@
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3964,7 +3964,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4032,7 +4032,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4100,7 +4100,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4168,7 +4168,7 @@
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4236,7 +4236,7 @@
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4304,7 +4304,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4372,7 +4372,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4440,7 +4440,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4508,7 +4508,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4576,7 +4576,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4644,7 +4644,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4712,7 +4712,7 @@
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4794,7 +4794,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4876,7 +4876,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -4958,7 +4958,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -5040,7 +5040,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -5122,7 +5122,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -5204,7 +5204,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -5286,7 +5286,7 @@
       "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
     },
     {
-      "artifact_sha256": "sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73",
+      "artifact_sha256": "sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e",
       "commands": [
         {
           "name": "object_loop_inputs",

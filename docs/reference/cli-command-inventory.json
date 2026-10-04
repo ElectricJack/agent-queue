@@ -16918,6 +16918,7 @@
         "optional": [
           "--incumbent-artifact",
           "--reference-kind",
+          "--max-rounds",
           "--max-repair-rounds",
           "--max-plateau-rounds",
           "--json",

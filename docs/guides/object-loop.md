@@ -6,7 +6,7 @@ readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
 The recorded artifact is
-`sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73`.
+`sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e`.
 Its source, canonical artifact, contract/grant manifest, compiler diagnostics
 and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
@@ -109,7 +109,7 @@ Both kinds require `incumbent_capture_sha256`, taken from the retained baseline
 same hash; mismatches fail before creating a loop or finalization task.
 `incumbent_sha256` continues to identify the candidate manifest. A calibrated
 start binds `reference_sha256` independently to its reference artifact.
-Repair and plateau caps, the eight-round ceiling, the whole-attempt budget,
+Repair and plateau caps, the configured round ceiling, the whole-attempt budget,
 the final-suite reserve and experiment publication refusals still apply.
 
 Only after those checks and an explicit operator decision, activate with
@@ -125,6 +125,15 @@ Cook `object` at the project root with `object_id`, the approved proposal's
 without `project_id` or `epic_task_id`. AQ derives those identities. The graph
 transaction holds the bootstrap behind an event gate until the loop's finalizer
 hold commits. A timer recovers missing formula/completion/review events.
+
+`start.max_rounds` (1–8, default 8) is the round ceiling, so the pilot's
+three-round cap is `max_rounds: 3` and each wave still reserves its own
+variants — `calls: 3` only ever bought one variant per wave. Like the repair
+and plateau caps it is fixed input: a repeated start that restates it as the
+default is refused as different fixed inputs. When the third round's score asks
+to continue, the reservation is refused with `round cap reached`; the loop
+records that as a stop through the policy's score fallback, keeping the
+verified incumbent.
 
 Candidate tasks use immutable artifacts and cannot publish their source.
 The independent scorer receives the current loop version and wave manifest.
@@ -161,6 +170,10 @@ tamper refusal, URI resolution), the render profile's stability under per-run
 jitter and its sensitivity to every preset input, and the acceptance path end to
 end: one retention run yielding both a valid `ObjectLoopStartArgs` and a
 `ScoreReceipt` that passes `validate_score_receipt`.
+It also pins the round cap: `max_rounds` is bounded start input, three rounds of
+two variants each is admitted and refused on the fourth, the refused
+continuation charges nothing, and a loop row written before the field existed
+keeps the eight-round ceiling.
 `tests/test_jobs_matter.py` asserts the profile is recorded on a real completed
 render's immutable result, that the admitted frame budget reaches the contract,
 and that a result with no retained capture records none.
