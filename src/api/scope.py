@@ -8,6 +8,8 @@ happens.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from src.api.auth import RequestScope
 
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
@@ -781,6 +783,39 @@ async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
     )
 
 
+def _canonicalise_reroute_args(
+    command: str, args: dict, scope: RequestScope,
+) -> str | None:
+    """Replace a re-route command's *args* with the ids its handler will read.
+
+    ``provider_reroute`` and ``provider_reroute_undo`` take task ids no
+    contract declares, and their handlers split and strip them.  Validating
+    here, before any rule reads the arguments, means the target-scope check
+    resolves exactly the ids the handler acts on, and an undeclared alias such
+    as ``task_ids`` is refused instead of passing unchecked
+    (:mod:`src.providers.reroute_args`).  The trusted local caller has no
+    scope to protect, so its invalid arguments reach the handler, which
+    refuses them with the same message.
+    """
+    from src.providers.reroute_args import (
+        REROUTE_ARGUMENT_MODELS,
+        canonical_reroute_args,
+        validation_error_text,
+    )
+
+    if command not in REROUTE_ARGUMENT_MODELS:
+        return None
+    try:
+        canonical = canonical_reroute_args(command, args)
+    except ValidationError as exc:
+        if scope.kind != "session":
+            return None
+        return f"out of scope: invalid {command} arguments ({validation_error_text(exc)})"
+    args.clear()
+    args.update(canonical)
+    return None
+
+
 async def check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
@@ -790,6 +825,8 @@ async def check_request_scope(
     task/session identity; granting queue access never grants operator commands
     or loosens the ownership checks for task mutations such as task_close.
     """
+    if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
+        return error
     if (scope.kind == "session" and not scope.elevated and command in {
         "integration_resolve_conflict", "integration_push_conflict_resolution",
     }):
