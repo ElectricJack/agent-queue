@@ -1,8 +1,8 @@
 """Two-child aggregate admission survives an advanced canonical PR head."""
 
 import asyncio
-from types import SimpleNamespace
 from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
