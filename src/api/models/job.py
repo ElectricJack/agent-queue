@@ -9,10 +9,12 @@ from src.commands.contracts.job import (
     JobListArgs,
     JobResultArgs,
     JobLogsArgs,
+    JobRetainArgs,
     JobValue,
     JobListValue,
     JobResultValue,
     JobLogsValue,
+    JobRetainValue,
 )
 
 
@@ -32,6 +34,10 @@ class JobLogsResponse(JobLogsValue):
     success: bool = True
 
 
+class JobRetainResponse(JobRetainValue):
+    success: bool = True
+
+
 class JobErrorResponse(BaseModel):
     success: bool = False
     error: str
@@ -46,6 +52,7 @@ REQUEST_MODELS = {
     "job_cancel": JobGetArgs,
     "job_result": JobResultArgs,
     "job_logs": JobLogsArgs,
+    "job_retain": JobRetainArgs,
 }
 RESPONSE_MODELS = {
     "job_submit": JobResponse,
@@ -54,4 +61,5 @@ RESPONSE_MODELS = {
     "job_cancel": JobResponse,
     "job_result": JobResultResponse,
     "job_logs": JobLogsResponse,
+    "job_retain": JobRetainResponse,
 }

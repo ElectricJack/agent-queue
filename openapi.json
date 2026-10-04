@@ -3420,6 +3420,53 @@
         }
       }
     },
+    "/api/artifact/verify": {
+      "post": {
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Resolve a durable artifact URI and re-hash the bytes it names.",
+        "description": "Resolve a durable artifact URI and re-hash the bytes it names.",
+        "operationId": "artifact_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactVerifyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/collaboration/accept": {
       "post": {
         "tags": [
@@ -6470,6 +6517,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JobResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/retain": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Retain a completed capture as durable artifact identities, with its candidate artifact and render profile.",
+        "description": "Retain a completed capture as durable artifact identities, with its candidate artifact and render profile.",
+        "operationId": "job_retain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobRetainArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobRetainResponse"
                 }
               }
             }
@@ -21626,6 +21715,81 @@
         ],
         "title": "ArtifactRefDTO",
         "description": "Roadmap \u00a74 ``ArtifactRef``, projected.  Identifies exactly one\nimmutable artifact; every graph, diff and overlay response carries one."
+      },
+      "ArtifactVerifyRequest": {
+        "properties": {
+          "uri": {
+            "type": "string",
+            "title": "Uri",
+            "description": ""
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "title": "ArtifactVerifyRequest"
+      },
+      "ArtifactVerifyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "uri": {
+            "type": "string",
+            "title": "Uri"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "verified": {
+            "type": "boolean",
+            "title": "Verified"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uri",
+          "sha256",
+          "bytes",
+          "verified",
+          "path"
+        ],
+        "title": "ArtifactVerifyResponse"
       },
       "AssignmentRouteDetail": {
         "properties": {
@@ -37379,6 +37543,165 @@
         ],
         "title": "JobResultResponse"
       },
+      "JobRetainArgs": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Job Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "views": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "title": "Views"
+          },
+          "include_channels": {
+            "type": "boolean",
+            "title": "Include Channels",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "JobRetainArgs",
+        "description": "Retain a completed capture under durable artifact identities.\n\nBounded on purpose: the capture's per-view PNGs and its receipt are what a\n``ScoreReceipt`` names, while the identity planes and the adapter's own\ntranscript stay behind ``aq job logs`` unless they are asked for."
+      },
+      "JobRetainResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "candidate_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Sha256"
+          },
+          "candidate_artifact": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Candidate Artifact"
+          },
+          "rig_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rig Sha256"
+          },
+          "render_profile": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Profile"
+          },
+          "render_profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Profile Sha256"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts"
+          },
+          "captures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Captures"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id",
+          "candidate_artifact"
+        ],
+        "title": "JobRetainResponse"
+      },
       "JobSubmitArgs": {
         "properties": {
           "project_id": {
@@ -45436,6 +45759,17 @@
             "title": "Incumbent Artifact",
             "description": ""
           },
+          "incumbent_capture_sha256": {
+            "type": "string",
+            "title": "Incumbent Capture Sha256",
+            "description": ""
+          },
+          "reference_kind": {
+            "type": "string",
+            "title": "Reference Kind",
+            "description": "",
+            "default": "calibrated"
+          },
           "reference_sha256": {
             "type": "string",
             "title": "Reference Sha256",
@@ -45505,6 +45839,12 @@
             "title": "Noise Band",
             "description": ""
           },
+          "max_rounds": {
+            "type": "integer",
+            "title": "Max Rounds",
+            "description": "",
+            "default": 8
+          },
           "max_repair_rounds": {
             "type": "integer",
             "title": "Max Repair Rounds",
@@ -45531,6 +45871,7 @@
           "object_id",
           "attempt_id",
           "incumbent_sha256",
+          "incumbent_capture_sha256",
           "reference_sha256",
           "rig_sha256",
           "scorer_sha256",

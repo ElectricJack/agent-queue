@@ -6,6 +6,7 @@ identity checks, reservations, task intents and the finalization hold.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -26,6 +27,11 @@ from src.object_loop.contracts import validate_score_receipt
 _UNITS = ("usd", "calls", "bakes", "active_seconds")
 _TERMINAL = {"COMPLETED", "BLOCKED"}
 
+#: The round ceiling a loop row written before ``max_rounds`` existed was
+#: admitted with.  The cap is start input now; a row without the field keeps
+#: the ceiling that was in force when it was admitted, never a silent raise.
+_DEFAULT_MAX_ROUNDS = 8
+
 
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
@@ -42,7 +48,7 @@ def _zero() -> dict:
 def _reserve(state: dict, variants: list[Variant]) -> None:
     if not variants or len({v.variant_id for v in variants}) != len(variants):
         raise ValueError("wave needs one to three distinct variants")
-    if state["round_id"] >= 8:
+    if state["round_id"] >= state.get("max_rounds", _DEFAULT_MAX_ROUNDS):
         raise ValueError("round cap reached")
     additional = {
         unit: (sum(getattr(v.reservation, unit) for v in variants)
@@ -81,6 +87,8 @@ def _same_start(state: dict, request: ObjectLoopStartArgs) -> bool:
     return (
         state["attempt_id"] == request.attempt_id
         and state["initial_incumbent_sha256"] == request.incumbent_sha256
+        and state.get("incumbent_capture_sha256") == request.incumbent_capture_sha256
+        and state.get("reference_kind", "calibrated") == request.reference_kind
         and all(state[key] == getattr(request, key) for key in (
             "reference_sha256", "rig_sha256", "scorer_sha256",
             "render_profile_sha256", "policy_sha256",
@@ -90,6 +98,7 @@ def _same_start(state: dict, request: ObjectLoopStartArgs) -> bool:
         and state["score_reservation"] == _budget(request.score_reservation)
         and state["mandatory_views"] == request.mandatory_views
         and state["noise_band"] == request.noise_band
+        and state.get("max_rounds", _DEFAULT_MAX_ROUNDS) == request.max_rounds
         and state["max_repair_rounds"] == request.max_repair_rounds
         and state["max_plateau_rounds"] == request.max_plateau_rounds
         and state["brief_checkpoint"]["review_id"] == request.brief_review_id
@@ -123,6 +132,25 @@ async def _review_verdict(conn, state: dict) -> bool:
 
 
 class ObjectLoopCommandsMixin:
+    async def _cmd_artifact_verify(self, args: dict) -> dict:
+        """Resolve a durable artifact URI and re-hash the bytes it names.
+
+        A ``ScoreReceipt`` names URIs and digests; something has to prove the
+        bytes behind them still exist and still hash true, or a receipt outlives
+        its evidence silently.  Read-only, and scoped to this store: an ``s3://``
+        or ``https://`` URI belongs to the external artifact adapter, not here.
+        """
+        from src.commands.contracts.object_loop import ArtifactVerifyArgs
+        from src.object_loop.artifacts import ArtifactError, verify
+
+        try:
+            request = ArtifactVerifyArgs.model_validate(args)
+            return {"success": True, **await asyncio.to_thread(
+                verify, self.config.data_dir, request.uri, request.sha256
+            )}
+        except (ArtifactError, OSError, ValidationError, ValueError) as exc:
+            return _error(str(exc))
+
     async def _cmd_object_loop_inputs(self, args: dict) -> dict:
         from src.commands.principal import current_principal
         from src.object_loop.inputs import read_inputs
@@ -132,7 +160,11 @@ class ObjectLoopCommandsMixin:
             principal = current_principal()
             scope = self._current_scope or {}
             if (scope.get("kind") == "session" and not scope.get("elevated")):
-                return _error("object_loop_inputs is not available to worker sessions")
+                return _error(
+                    "object_loop_inputs is not available to worker sessions; the project "
+                    "supervisor runs it (aq object_loop inputs) and cooks the object formula, "
+                    "because formula cooking and loop mutation stay out of worker scope"
+                )
             project = (principal.project_id if principal else None) or scope.get("project_id")
             if project and project != request.project_id:
                 return _error("object loop inputs are outside the caller project")
@@ -153,7 +185,9 @@ class ObjectLoopCommandsMixin:
                 "initial_incumbent_sha256": request.incumbent_sha256,
                 "incumbent_artifact": (request.incumbent_artifact.model_dump()
                                        if request.incumbent_artifact else None),
+                "incumbent_capture_sha256": request.incumbent_capture_sha256,
                 "incumbent_loss": None,
+                "reference_kind": request.reference_kind,
                 "reference_sha256": request.reference_sha256, "rig_sha256": request.rig_sha256,
                 "scorer_sha256": request.scorer_sha256,
                 "render_profile_sha256": request.render_profile_sha256,
@@ -173,6 +207,7 @@ class ObjectLoopCommandsMixin:
                 "score_task_id": None, "checkpoint": None, "stop_reason": None,
                 "status": "active", "decision_sha256": None,
                 "repair_count": 0, "plateau_count": 0,
+                "max_rounds": request.max_rounds,
                 "max_repair_rounds": request.max_repair_rounds,
                 "max_plateau_rounds": request.max_plateau_rounds,
             }
@@ -229,7 +264,12 @@ class ObjectLoopCommandsMixin:
                 "project_id": request.project_id,
                 "parent_id": request.epic_task_id,
                 "title": f"Finalize object {request.object_id}",
-                "description": "Verify retained evaluation artifacts, checkpoints and stop reason.",
+                "description": (
+                    "Verify retained evaluation artifacts, checkpoints and stop reason. "
+                    f"reference_kind={request.reference_kind}."
+                    + (" Self-reference results are indicative, for plumbing only."
+                       if request.reference_kind == "self" else "")
+                ),
                 "task_type": "chore",
                 "dedup_key": f"object:{request.object_id}:finalize",
                 "_after_create_on": bootstrap,
@@ -374,6 +414,8 @@ class ObjectLoopCommandsMixin:
                             "hypothesis": variant["hypothesis"],
                             "base_candidate_sha256": state["incumbent_sha256"],
                             "base_artifact": state["incumbent_artifact"],
+                            "incumbent_capture_sha256": state.get("incumbent_capture_sha256"),
+                            "reference_kind": state.get("reference_kind", "calibrated"),
                             "reference_sha256": state["reference_sha256"],
                             "rig_sha256": state["rig_sha256"],
                             "scorer_sha256": state["scorer_sha256"],
@@ -382,6 +424,8 @@ class ObjectLoopCommandsMixin:
                             "mandatory_views": state["mandatory_views"],
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
+                            **({"result_interpretation": "indicative; plumbing only"}
+                               if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
                         approval_gate_id=(state.get("last_approved_checkpoint") or
                                           state["brief_checkpoint"])["gate_id"],

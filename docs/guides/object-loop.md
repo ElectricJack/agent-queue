@@ -6,7 +6,7 @@ readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
 The recorded artifact is
-`sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd`.
+`sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e`.
 Its source, canonical artifact, contract/grant manifest, compiler diagnostics
 and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
@@ -16,6 +16,53 @@ Capture measurements are synthetic fixtures, not renderer or visual-quality
 evidence. The tests cover improvement, ties, invalid captures, scorer exhaustion,
 provider pause/deadline, review rejection/withdrawal/revision, budget/round/plateau
 stops, multiple objects and restart recovery.
+
+## From a finished render to a startable loop
+
+The loop cannot be started from a `matter_render` job until two identities
+exist: durable artifact URIs for the evidence, and a `render_profile_sha256`.
+Both are produced by one command each, from a completed job id.
+
+```bash
+# 1. Retain the capture, and read the render profile off the immutable result.
+aq job retain 44a60940-aa75-4284-be56-9e28d2748056 --json
+#    -> render_profile_sha256   quote as ObjectLoopStartArgs.render_profile_sha256
+#    -> artifacts[]             becomes ScoreReceipt.artifacts
+#    -> captures[]              each image becomes Capture.image
+#    -> candidate_artifact      already carries sha256 == candidate_sha256
+#    -> artifacts[kind=capture_receipt].sha256
+#                              quote as incumbent_capture_sha256
+#    -> rig_sha256              quote as ObjectLoopStartArgs.rig_sha256
+
+# 2. Prove a URI still names the bytes it claims, any time later.
+aq artifact verify artifact://sha256/aefb3b06bc177013a45015de69066201eaafbda20c3d0ae7516ceb1a88882e9f
+```
+
+Retention is idempotent — the digest is the identity, so a second run yields the
+same URIs and rewrites nothing. Both commands are scoped to the caller's own
+job, so a worker session that submitted the render can run step 1 for its own
+receipt; anything outside that scope is refused.
+
+What step 1 does not do, deliberately: it never measures an image. `Capture.ready`
+and `decoded`, and every per-view metric, are the external scorer's to produce.
+AQ gives it the pointers and the digests.
+
+Two fields are only right if their producers are, too. `render_profile_sha256`
+covers the editor build, the capture adapter, the GPU lease, the view set and
+each view's resolution, the admitted rig frame budget and the VT readiness
+counters — so a start packet that quotes it is claiming those bytes came from
+that preset. And `candidate_artifact.sha256` equals the candidate's declared
+`candidate_sha256` because the canonical manifest is what AQ retained; if the
+bundle's declared identity stops being the canonical document, retention refuses
+it rather than minting an artifact that merely sits beside the claim.
+
+### Operator-only steps, and who runs them
+
+`aq formula cook`, `object_loop_start` and `object_loop_inputs` are refused to
+worker sessions. The refusal names the step that supersedes it: the **project
+supervisor** runs `aq object_loop inputs` and cooks the `object` formula, because
+formula cooking and loop mutation stay out of worker scope. Everything above —
+retention, verification, and assembling the start packet — is worker-safe.
 
 ## Review without activation
 
@@ -47,11 +94,23 @@ implementation task.
 
 Before recording an activation decision, verify the Matter artifact adapter
 can retain and materialize immutable URI/hash bundles after task cleanup;
-calibrated reference/view/light/rig/scorer manifests and the hash-bound brief
-are approved; workers can execute finite capture jobs under an audited resource
+the calibrated-reference precondition is discharged either by calibrated
+reference manifests or by an explicit supervisor `reference_kind=self` start
+packet; view/light/rig/scorer manifests and the hash-bound brief are approved;
+workers can execute finite capture jobs under an audited resource
 lease; and cost coverage, retries and the final suite fit the object budget.
 Keep the pilot at at most two object epics and one GPU lease. The read bridge
 has an explicit 32-object bound; it fails visibly above that bound.
+
+`reference_kind` defaults to `calibrated` and is fixed for the attempt. A `self`
+run labels candidate and finalization results as indicative, for plumbing only.
+Both kinds require `incumbent_capture_sha256`, taken from the retained baseline
+`capture_receipt` artifact. A self start must set `reference_sha256` to that
+same hash; mismatches fail before creating a loop or finalization task.
+`incumbent_sha256` continues to identify the candidate manifest. A calibrated
+start binds `reference_sha256` independently to its reference artifact.
+Repair and plateau caps, the configured round ceiling, the whole-attempt budget,
+the final-suite reserve and experiment publication refusals still apply.
 
 Only after those checks and an explicit operator decision, activate with
 `aq playbook activate --playbook-id object-loop --artifact-sha256 <approved-hash>`.
@@ -66,6 +125,15 @@ Cook `object` at the project root with `object_id`, the approved proposal's
 without `project_id` or `epic_task_id`. AQ derives those identities. The graph
 transaction holds the bootstrap behind an event gate until the loop's finalizer
 hold commits. A timer recovers missing formula/completion/review events.
+
+`start.max_rounds` (1–8, default 8) is the round ceiling, so the pilot's
+three-round cap is `max_rounds: 3` and each wave still reserves its own
+variants — `calls: 3` only ever bought one variant per wave. Like the repair
+and plateau caps it is fixed input: a repeated start that restates it as the
+default is refused as different fixed inputs. When the third round's score asks
+to continue, the reservation is refused with `round cap reached`; the loop
+records that as a stop through the policy's score fallback, keeping the
+verified incumbent.
 
 Candidate tasks use immutable artifacts and cannot publish their source.
 The independent scorer receives the current loop version and wave manifest.
@@ -96,7 +164,19 @@ contracts and then replays every command in V2 dry-run mode. Set
 `AQ_OBJECT_LOOP_TRACE_DIR` to retain each successful trace. It also tests formula
 transaction rollback, scope/capability refusal, exact review revision, reserve
 reuse prevention, finalizer holds, and approval storage without activation.
-`tests/test_object_loop.py` retains the five prerequisite regression probes.
+`tests/test_object_loop.py` retains the five prerequisite regression probes,
+and covers the durable artifact store (minting, idempotence, symlink and
+tamper refusal, URI resolution), the render profile's stability under per-run
+jitter and its sensitivity to every preset input, and the acceptance path end to
+end: one retention run yielding both a valid `ObjectLoopStartArgs` and a
+`ScoreReceipt` that passes `validate_score_receipt`.
+It also pins the round cap: `max_rounds` is bounded start input, three rounds of
+two variants each is admitted and refused on the fourth, the refused
+continuation charges nothing, and a loop row written before the field existed
+keeps the eight-round ceiling.
+`tests/test_jobs_matter.py` asserts the profile is recorded on a real completed
+render's immutable result, that the admitted frame budget reaches the contract,
+and that a result with no retained capture records none.
 
 Run these through `aq test` with a disposable `POSTGRES_TEST_DSN`. The affected
 area checks cover V2 execution, formulas, graph creation, vault seeding, reviewed
