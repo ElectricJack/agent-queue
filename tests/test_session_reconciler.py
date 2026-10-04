@@ -1149,6 +1149,79 @@ class TestIdleStopIntent:
         assert pool_reconciler.test_orch.terminations == []
         assert (await db.get_session(row.id)).state == "running"
 
+    async def test_a_retain_claim_shape_is_stopped_after_grace(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        """The ``retain_claim`` shape: the close is terminal (BLOCKED) but the
+        writer is deliberately kept over an unproven branch handoff.
+
+        Before the fix the gate ``claim_phase is not None → bail`` meant idle-
+        stop could never reach a session holding ``claim_phase="active"`` plus
+        a terminal task, no matter how long it sat.  Now the liveness gate —
+        the task is BLOCKED, not IN_PROGRESS/ASSIGNED — is what decides.
+        """
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await db.transition_task(
+            "t1", TaskStatus.BLOCKED, context="test_retain_claim", force=True
+        )
+        task = await db.get_task("t1")
+        row = await _session(
+            db, provider,
+            sid="p-retain",
+            name="p-retain",
+            lifecycle="pool",
+            agent_id="a1",
+            claim_phase="active",
+            desired_state="stopped",
+            claims=1,
+            last_claim_epoch=task.claim_epoch,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+
+        # Grace not yet expired -- session is still up.
+        await self._idle_stop(pool_reconciler, at=NOW)
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+        # Grace expired: the session is terminated.
+        await self._idle_stop(pool_reconciler, at=NOW + 61)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "stop_intent_idle")]
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("stopped", "stopped")
+        assert current.end_reason == "stop_intent_idle"
+
+    async def test_a_live_task_with_claim_phase_active_is_never_stopped(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        """A session holding a live (``IN_PROGRESS``) claim must never be
+        stopped by the idle-stop step, even when ``claim_phase="active"`` and
+        ``desired_state="stopped"``.  The old blanket ``claim_phase is not None``
+        gate hid this; the liveness gate that replaced it does the right call."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db, provider,
+            sid="p-working-active",
+            name="p-working-active",
+            lifecycle="pool",
+            agent_id="a1",
+            claim_phase="active",
+            desired_state="stopped",
+            claims=1,
+            last_claim_epoch=(await db.get_task("t1")).claim_epoch,
+            started_at=NOW - 5_000,
+            last_activity=NOW,
+        )
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+        for at in (NOW, NOW + 61, NOW + 600):
+            await self._idle_stop(pool_reconciler, at=at)
+
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
     async def test_a_spent_claim_budget_stops_a_worker_that_was_never_drained(
         self, db, provider, pool_reconciler
     ):

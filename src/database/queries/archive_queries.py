@@ -487,14 +487,15 @@ class ArchiveQueryMixin:
 
         # Copy original timestamps
         result = await conn.execute(
-            select(tasks.c.created_at, tasks.c.updated_at).where(tasks.c.id == task_id)
+            select(tasks.c.created_at, tasks.c.updated_at, tasks.c.legacy_completion_id)
+            .where(tasks.c.id == task_id)
         )
         row = result.fetchone()
         if row:
             await conn.execute(
                 update(archived_tasks)
                 .where(archived_tasks.c.id == task_id)
-                .values(created_at=row[0], updated_at=row[1])
+                .values(created_at=row[0], updated_at=row[1], legacy_completion_id=row[2])
             )
 
         # Use the same FK cleanup as permanent deletion, but keep comments

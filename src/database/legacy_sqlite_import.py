@@ -235,6 +235,14 @@ _POSTGRES_ONLY_COLUMNS = {
     "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
 }
 
+# Non-null PostgreSQL-era columns whose target default supplies missing values.
+# Omit them from both the source read and target insert when absent, rather
+# than inserting NULL. Existing source identities must travel unchanged.
+_POSTGRES_DEFAULT_COLUMNS = {
+    "tasks": frozenset({"legacy_completion_id"}),
+    "archived_tasks": frozenset({"legacy_completion_id"}),
+}
+
 
 _ORDERED_TABLES = [
     # No FK dependencies
@@ -547,7 +555,9 @@ async def _copy_tables(
         for table in _ORDERED_TABLES:
             async with src.connect() as src_conn:
                 projection = list(table.c)
-                if optional := _POSTGRES_ONLY_COLUMNS.get(table.name):
+                optional = _POSTGRES_ONLY_COLUMNS.get(table.name, frozenset())
+                defaulted = _POSTGRES_DEFAULT_COLUMNS.get(table.name, frozenset())
+                if optional or defaulted:
                     present = await src_conn.run_sync(
                         lambda conn: {column["name"] for column in inspect(conn).get_columns(table.name)}
                     )
@@ -555,6 +565,7 @@ async def _copy_tables(
                         null().label(column.name)
                         if column.name in optional and column.name not in present else column
                         for column in table.c
+                        if column.name not in defaulted or column.name in present
                     ]
                 result = await src_conn.execute(select(*projection).select_from(table))
                 rows = result.mappings().fetchall()

@@ -2416,14 +2416,19 @@ class SessionReconciler:
         """Whether *row* has nothing left to do at all.
 
         The shape is the safety proof, and it never consults a clock a
-        painting pane can keep fresh: a session that still holds an open task,
-        or is inside a claim, still has work -- and one with neither is
-        mid-turn on nothing AQ can act on.  Ordered cheapest gate first, so
-        the one lookup a *running* worker cannot avoid (``get_profile``, for
-        the claim budget) is only reached by a worker that has claimed at
-        least once and holds nothing.
+        painting pane can keep fresh.  A session halfway through a claim
+        (``claiming`` / ``preparing``) still has work -- the claim itself --
+        so it is exempt here.  A session that *holds* an active claim is
+        judged by the gates that follow: an open task or a control lock it is
+        still written under keeps it, while a spent task plus a recorded stop
+        intent (the ``retain_claim`` shape, where the close is terminal but
+        the writer is deliberately kept over an unproven branch handoff) is
+        exactly the one this path is for -- the worker left its work and only
+        the process remains.  Ordered cheapest gate first, so the one lookup
+        a *running* worker cannot avoid (``get_profile``, for the claim
+        budget) is only reached by a worker that holds no open task.
         """
-        if row.claim_phase is not None:
+        if row.claim_phase in ("claiming", "preparing"):
             return False
         if self._is_deferred(row.name):
             return False

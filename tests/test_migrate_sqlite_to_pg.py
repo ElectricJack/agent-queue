@@ -200,7 +200,7 @@ async def _empty_pg_adapter():
     return adapter
 
 
-async def _seeded_source(tmp_path) -> str:
+async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> str:
     """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
     from sqlalchemy import JSON, MetaData, insert, text
@@ -227,6 +227,10 @@ async def _seeded_source(tmp_path) -> str:
     # legacy sources lack it and the importer must leave the new column NULL.
     archived = source_metadata.tables["archived_tasks"]
     archived._columns.remove(archived.c.route)
+    # Revision 62's lifecycle identities and UUID defaults are PostgreSQL-only.
+    for name in ("tasks", "archived_tasks"):
+        table = source_metadata.tables[name]
+        table._columns.remove(table.c.legacy_completion_id)
     ledger = source_metadata.tables["token_ledger"]
     ledger.indexes = {
         index for index in ledger.indexes
@@ -308,12 +312,21 @@ async def _seeded_source(tmp_path) -> str:
                     f"VALUES ({i}, 'run', 't{i}', 'edge', 'cycle', '', 0)"
                 )
             )
+        if with_legacy_identities:
+            # Exercise importing an existing identity as well as an old schema
+            # with no identity column. Neither source needs a PostgreSQL default.
+            for name in ("tasks", "archived_tasks"):
+                await conn.execute(text(f"ALTER TABLE {name} ADD COLUMN legacy_completion_id TEXT"))
+                await conn.execute(text(f"UPDATE {name} SET legacy_completion_id = 'legacy:' || id"))
     await source.dispose()
     return path
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(tmp_path) -> None:
+@pytest.mark.parametrize("with_legacy_identities", [False, True])
+async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
+    tmp_path, with_legacy_identities,
+) -> None:
     """Rows land, and the NULLed-on-insert deferred columns are restored.
 
     ``tasks.parent_task_id`` (self-FK) and ``agents.current_task_id``
@@ -326,7 +339,7 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
     from src.database.tables import record_installation, supervisor_report_requests
     from src.records.schema import RECORD_TABLE_NAMES
 
-    path = await _seeded_source(tmp_path)
+    path = await _seeded_source(tmp_path, with_legacy_identities=with_legacy_identities)
     target = await _empty_pg_adapter()
     try:
         async with target._engine.connect() as conn:
@@ -351,6 +364,13 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
                 await conn.execute(select(metadata.tables["archived_tasks"]))
             ).mappings().one()
             assert archived["id"] == "legacy-archive" and archived["route"] is None
+            identities = set((await conn.execute(select(
+                metadata.tables["tasks"].c.legacy_completion_id,
+            ))).scalars()) | {archived["legacy_completion_id"]}
+            assert len(identities) == 3
+            assert all(identity.startswith("legacy:") for identity in identities)
+            if with_legacy_identities:
+                assert identities == {"legacy:p", "legacy:c", "legacy:legacy-archive"}
             for table_name, expected in _DURABLE_ROWS.items():
                 assert counts[table_name] == 1
                 actual = (

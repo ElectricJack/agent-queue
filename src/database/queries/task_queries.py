@@ -686,6 +686,11 @@ class TaskQueryMixin:
                         "branch_name cannot rename it"
                     )
             values["updated_at"] = time.time()
+            if previous_status is not None and previous_status != values.get("status") and (
+                previous_status == TaskStatus.COMPLETED.value
+                or values.get("status") == TaskStatus.COMPLETED.value
+            ):
+                values["legacy_completion_id"] = "legacy:" + str(uuid.uuid4())
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():
@@ -1461,6 +1466,8 @@ class TaskQueryMixin:
 
             values["status"] = new_status.value
             values["updated_at"] = time.time()
+            if current_status == TaskStatus.COMPLETED or new_status == TaskStatus.COMPLETED:
+                values["legacy_completion_id"] = "legacy:" + str(uuid.uuid4())
             matched, result.row = await _write(values)
             if not matched and expect_claim_epoch is not None:
                 raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")

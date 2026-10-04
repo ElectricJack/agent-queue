@@ -27,7 +27,6 @@ exact completion generation it settled, so a reopened task owes its new work.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -98,7 +97,8 @@ class AdoptedParentCompletion:
 class DeliveryRequest:
     """Immutable current task/completion inputs, including archived identities.
 
-    ``task_version`` fences pre-provenance tasks without a completion record.
+    ``task_version`` rechecks mutable inputs; ``legacy_generation`` identifies
+    pre-provenance tasks without a completion record across ordinary edits.
     An empty branchless identity is organizational; recorded code takes
     precedence even when its branch has subsequently been deleted.
     """
@@ -108,6 +108,7 @@ class DeliveryRequest:
     target_ref: str
     task_id: str
     task_version: float
+    legacy_generation: str
     branch_name: str | None = None
     completion_id: str | None = None
     completed_at: float | None = None
@@ -140,6 +141,7 @@ class DeliveryRequest:
         return cls(
             project_id=task["project_id"], repository_id=task.get("repo_id") or repository_id,
             target_ref=target_ref, task_id=task["id"], task_version=task["updated_at"],
+            legacy_generation=task["legacy_completion_id"],
             branch_name=task.get("branch_name"), archived=task.get("archived", False),
             completion_id=completion.id if completion else None,
             completed_at=completion.completed_at if completion else None,
@@ -657,14 +659,10 @@ async def _parent_completions_on(conn, task_ids, *, repository_id):
 def legacy_completion_id(request: DeliveryRequest) -> str:
     """Stable operator-attestable identity for a completed task without a close row.
 
-    Reopen/reclose changes the task version. The archive preserves that version
-    but drops claim epochs; metadata changes alone do not create a generation.
+    Reopen/reclose rotates the dedicated lifecycle identity. Archive preserves
+    it even after deleting task metadata; ordinary edits never change it.
     """
-    material = json.dumps([
-        request.project_id, request.repository_id, request.task_id,
-        request.task_version,
-    ], separators=(",", ":"))
-    return "legacy:" + hashlib.sha256(material.encode()).hexdigest()
+    return request.legacy_generation
 
 
 def settlement_fields(value):
