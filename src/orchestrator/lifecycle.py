@@ -224,5 +224,7 @@ class LifecycleMixin:
         """
         from src.integration.obsolete_close import ObsoleteClose, obsolete_owner_release_for
 
-        service = ObsoleteClose(self.db, release_owner=obsolete_owner_release_for(self))
+        service = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+        )
         return await service.retry_pending()

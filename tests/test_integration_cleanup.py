@@ -848,6 +848,101 @@ class CleanupForge:
         self.prs[number]["state"] = "closed"
 
 
+@pytest.mark.parametrize("route", ["abort", "retry", "sweep"])
+async def test_aborted_batch_retires_only_its_audit_pr_and_preserves_sources(release_db, route):
+    from src.integration.controls import IntegrationControlService
+
+    db, _scheduler = release_db
+    app = CleanupApp({BRANCH.removeprefix("refs/heads/"): HEAD, "aq/root": SOURCE})
+    git = CleanupGit(app)
+    forge = CleanupForge()
+    cleanup = IntegrationCleanupService(
+        db, data_dir="/daemon", git_manager=git,
+        github_client_factory=lambda _binding: app, forge_provider=forge, clock=lambda: 30.0,
+    )
+    controls = IntegrationControlService(db, cleanup_service=cleanup, clock=lambda: 30.0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(
+            lifecycle="human_blocked" if route == "abort" else "aborted",
+            human_abort_reason="retain for diagnosis", final_main_sha=None,
+        ))
+        await conn.execute(update(integration_repair_operations).values(state="human_required"))
+        await conn.execute(update(integration_repair_stages).values(state="failed"))
+    if route == "abort":
+        assert (await controls.abort("op", reason="retain for diagnosis"))["outcome"] == "aborted"
+    elif route == "retry":
+        assert (await controls.retry_cleanup("batch"))["outcome"] == "materialized"
+    else:
+        await cleanup.reconcile_aborted(30.0)
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_cleanup_items))).mappings().all()
+    assert [(row["kind"], row["target_pr_number"]) for row in rows] == [("audit_pr", 9)]
+    await cleanup.advance("batch", now=31.0)
+    assert forge.closed == [9] and forge.prs[1]["state"] == "open"
+    assert len(forge.comments) == 1
+    assert "batch" in forge.comments[0][2] and "aborted" in forge.comments[0][2]
+    assert "retain for diagnosis" in forge.comments[0][2]
+    assert git.remote_deletes == [] and git.local_refs == {BRANCH: HEAD}
+    assert app.refs["aq/root"] == SOURCE
+    assert (await db.get_integration_batch("batch"))["cleanup_state"] == "complete"
+    assert await cleanup.advance("batch", now=32.0) == []
+
+
+async def test_aborted_batch_moved_pr_head_is_retained(release_db):
+    db, _scheduler = release_db
+    forge = CleanupForge()
+
+    async def moved_comment(**kwargs):
+        await CleanupForge.comment_pull_request(forge, **kwargs)
+        forge.prs[9]["head_sha"] = "f" * 40
+
+    forge.comment_pull_request = moved_comment
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="aborted"))
+    cleanup = IntegrationCleanupService(
+        db, data_dir="/daemon", forge_provider=forge, clock=lambda: 30.0,
+    )
+    await cleanup.materialize("batch", now=30.0)
+    [result] = await cleanup.advance("batch", now=30.0)
+    assert result.outcome == "conflict" and forge.closed == []
+    assert (await db.get_integration_batch("batch"))["cleanup_state"] == "conflict"
+
+
+async def test_aborted_pr_cleanup_survives_repository_engine_transfer(release_db):
+    from src.database.tables import playbook_artifacts
+    from src.integration.subjects import (
+        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+    )
+
+    db, _scheduler = release_db
+    pin = PolicyArtifactPin(playbook_id="root-test", artifact_sha256="sha256:" + "1" * 64)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="aborted"))
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=pin.artifact_sha256, playbook_id=pin.playbook_id,
+            source_digest="sha256:" + "2" * 64, contract_fingerprint="sha256:" + "3" * 64,
+            compiler_build="test", path="/test/root.json", created_at=1.0,
+        ))
+    await db.ensure_integration_subject(Subject(
+        id="subject", project_id="p", repository_id="repo", kind=SubjectKind.ROOT_BATCH,
+        subject_key="root:request", engine="reconciler", policy=pin, batch_id="batch",
+        phase=SubjectPhase.REPAIRING, target_ref=BRANCH, head_sha=HEAD, base_sha=BASE,
+        schedule=SubjectSchedule.progress(now=10, max_wait_seconds=600),
+        created_at=1.0, updated_at=1.0,
+    ).to_row())
+    forge = CleanupForge()
+    cleanup = IntegrationCleanupService(db, data_dir="/daemon", forge_provider=forge)
+    assert (await cleanup.materialize("batch", now=30.0)).outcome == "materialized"
+    [result] = await cleanup.advance("batch", now=30.0)
+    assert result.outcome == "complete" and forge.closed == [9]
+    # The terminal audit exception grants no source or ref cleanup authority.
+    denied = await cleanup.execute("batch", "remote_ref", BRANCH, now=31.0)
+    assert denied.outcome == "wait"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="human_blocked"))
+    assert (await cleanup.materialize("batch", now=32.0)).outcome == "stale"
+
+
 async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
     db, _scheduler = release_db
     app = CleanupApp(

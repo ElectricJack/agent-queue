@@ -598,6 +598,13 @@ class IntegrationRecoveryControls:
                     )
                     .values(lifecycle="aborted", human_abort_reason=reason, updated_at=now)
                 )
+                from src.integration.cleanup import IntegrationCleanupService
+
+                batch = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == operation["batch_id"],
+                ).with_for_update())).mappings().one()
+                if batch["lifecycle"] == "aborted":
+                    await IntegrationCleanupService.materialize_aborted_on(conn, batch, now)
             # Cancelling the operation obsoletes its delegates in the same
             # breath, so settle them here rather than leaving tickets nothing
             # will ever close until the next reconciliation tick happens to
@@ -751,7 +758,7 @@ class IntegrationRecoveryControls:
                     update(integration_batches)
                     .where(
                         integration_batches.c.id == batch_id,
-                        integration_batches.c.lifecycle == "promoted",
+                        integration_batches.c.lifecycle.in_(("promoted", "aborted")),
                         integration_batches.c.cleanup_state == "conflict",
                     )
                     .values(cleanup_state="pending", updated_at=now)

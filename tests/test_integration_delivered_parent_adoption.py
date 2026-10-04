@@ -164,6 +164,38 @@ async def adopt(incident, **overrides):
     return await service.adopt(**(args | overrides))
 
 
+async def test_settling_delivered_children_retires_parent_and_child_prs(incident, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from tests.test_integration_pr_delivery import _GitHub
+
+    await reserve_children(incident)
+    db, service, _source, _remote, _repo = incident[0]
+    children, heads = incident[1:3]
+    github = _GitHub()
+    parent = await db.get_task(PARENT)
+    async with db._engine.connect() as conn:
+        checkpoint = (await conn.execute(select(t.task_integration_checkpoints).where(
+            t.task_integration_checkpoints.c.task_id == PARENT,
+        ))).mappings().one()
+    github.open(71, parent.branch_name, checkpoint["checkpoint_sha"])
+    await db.update_task(PARENT, pr_url="https://github.com/o/r/pull/71")
+    for number, child in enumerate(children, 72):
+        github.open(number, "aq/" + child, heads[child])
+        await db.update_task(child, pr_url=f"https://github.com/o/r/pull/{number}")
+    monkeypatch.setattr(service.git, "bind_github_repository", AsyncMock(
+        return_value=SimpleNamespace(repository_id=7, full_name="o/r")))
+    monkeypatch.setattr(service.git, "_github_client", lambda _binding: github)
+    preview = await adopt(incident, dry_run=True)
+    assert preview["outcome"] == "would_adopt_parent" and github.closed == []
+    result = await adopt(incident)
+    assert result["outcome"] == "adopted"
+    assert sorted(github.closed) == [71, 72, 73, 74, 75]
+    assert all(item["outcome"] == "closed" for item in result["pr_cleanup"])
+    assert "Superseded by delivered children" in github.comments[71][0]
+    assert (await db.get_task(PARENT)).status == TaskStatus.COMPLETED
+
+
 async def reserve_children(incident):
     setup, children, _heads, _main = incident
     db, _service, source, _remote, repo = setup

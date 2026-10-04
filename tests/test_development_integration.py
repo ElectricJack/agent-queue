@@ -1857,6 +1857,31 @@ async def test_adopt_requires_ancestry_or_explicit_operator_equivalence(setup):
     assert (await service.rows("p"))[-1]["evidence"]["conclusion"] == "not_ci_attested"
 
 
+async def test_adopt_to_default_branch_retires_the_task_pr(setup, monkeypatch):
+    from types import SimpleNamespace
+    from tests.test_integration_pr_delivery import _GitHub
+
+    db, service, source, remote, _repo = setup
+    head = await feature(setup, "one")
+    git(source, "push", "origin", "one:aq/one")
+    await db.update_task("one", branch_name="aq/one", pr_url="https://github.com/o/r/pull/61")
+    main = await _merge_on_main(source, "one")
+    github = _GitHub()
+    github.open(61, "aq/one", head)
+    monkeypatch.setattr(service.git, "bind_github_repository", AsyncMock(
+        return_value=SimpleNamespace(repository_id=7, full_name="o/r")))
+    monkeypatch.setattr(service.git, "_github_client", lambda _binding: github)
+    result = await service.adopt(
+        project_id="p", task_ids=["one"], target_ref="refs/heads/main", head_sha=main,
+        reason="manual delivery", operator_id="local",
+    )
+    assert result["outcome"] == "adopted"
+    assert result["pr_cleanup"][0]["outcome"] == "closed"
+    assert github.closed == [61] and "Adopted at" in github.comments[61][0]
+    assert (await db.get_task("one")).status == TaskStatus.COMPLETED
+    assert git(remote, "rev-parse", "main") == main
+
+
 async def test_adopt_rejects_stale_target_and_open_children(setup):
     db, service, _source, remote, _repo = setup
     await feature(setup, "parent")

@@ -1767,12 +1767,19 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
+        from src.integration.pr_cleanup import SWEEP_PRINCIPAL
 
         try:
             request = IntegrationCloseDeliveredPrArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("invalid", f"invalid delivered-PR close request: {exc}")
-        principal, refusal = await integration_operator(self.db, request.project_id)
+        caller = current_principal()
+        sweep = (caller is not None and caller.kind is PrincipalKind.SERVICE
+                 and caller.service_name == SWEEP_PRINCIPAL)
+        if sweep:
+            principal, refusal = SWEEP_PRINCIPAL, None
+        else:
+            principal, refusal = await integration_operator(self.db, request.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
         result = await DeliveredPullRequestClosure(
@@ -1784,6 +1791,7 @@ class IntegrationCommandsMixin:
             expected_head_sha=request.expected_head_sha,
             reason=request.reason,
             operator_id=principal,
+            aq_only=sweep,
         )
         return {
             "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},

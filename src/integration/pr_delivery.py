@@ -62,8 +62,11 @@ class DeliveredPullRequestClosure:
         expected_head_sha: str | None = None,
         reason: str | None = None,
         operator_id: str | None = None,
+        aq_only: bool = False,
     ) -> dict[str, Any]:
         observed, client = await self._observe(project_id, pr_number)
+        if aq_only and observed.get("branch") and not observed["branch"].startswith("aq/"):
+            return {**observed, "outcome": "not_eligible", "reason": "PR is outside aq/"}
         if observed["outcome"] != "would_close" or dry_run:
             return observed
         if observed["head_sha"] != expected_head_sha:
