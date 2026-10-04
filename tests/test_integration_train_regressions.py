@@ -970,9 +970,9 @@ async def _crisp_horizon_case(db, tmp_path, *, final_close_audits: int):
             id="two-close-audits-as-live",
             marks=pytest.mark.xfail(
                 reason=(
-                    "no ticket yet: live stage 6 had two delegate-close audits and "
+                    "prime-current: live stage 6 had two delegate-close audits and "
                     "recover-parent-head accepts exactly one, even with fresh-meadow-81 "
-                    "(3b9e6eea5) on main; remove when that is fixed"
+                    "(3b9e6eea5) on main; remove when prime-current lands"
                 ),
                 strict=False,
             ),
@@ -1280,10 +1280,10 @@ async def test_failed_verifier_close_releases_epic_owner_and_reopen_collects_fix
 
 @pytest.mark.xfail(
     reason=(
-        "no ticket yet: a held aggregate verifier with a red trusted conclusion keeps the "
+        "eager-apex-93: a held aggregate verifier with a red trusted conclusion keeps the "
         "epic owner attached; reopen-collection refuses ('the verifier has no settled "
         "failed completion for this exact head') and the completed fix child is never "
-        "collected; remove when a ticket for it lands"
+        "collected; remove when eager-apex-93 lands"
     ),
     strict=False,
 )
@@ -1294,7 +1294,7 @@ async def test_held_red_verifier_does_not_strand_completed_fix_child(train_epic)
     Supervisor evidence (bold-flare-79 comment): "the held aggregate verifier
     keeps an attached owner on the epic branch, so completed fix children stay
     reserved and are never collected. The only exit is the verifier closing
-    FAIL." No open ticket tracks this. bold-flare-79 (on main) stages the first
+    FAIL." Tracked as eager-apex-93. bold-flare-79 (on main) stages the first
     red but does not release the verifier. stark-ridge-78 (3399edc2d, on main)
     covers an escalated no-progress collector, not a held verifier.
 
