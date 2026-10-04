@@ -82,6 +82,8 @@ def _same_start(state: dict, request: ObjectLoopStartArgs) -> bool:
     return (
         state["attempt_id"] == request.attempt_id
         and state["initial_incumbent_sha256"] == request.incumbent_sha256
+        and state.get("incumbent_capture_sha256") == request.incumbent_capture_sha256
+        and state.get("reference_kind", "calibrated") == request.reference_kind
         and all(state[key] == getattr(request, key) for key in (
             "reference_sha256", "rig_sha256", "scorer_sha256",
             "render_profile_sha256", "policy_sha256",
@@ -177,7 +179,9 @@ class ObjectLoopCommandsMixin:
                 "initial_incumbent_sha256": request.incumbent_sha256,
                 "incumbent_artifact": (request.incumbent_artifact.model_dump()
                                        if request.incumbent_artifact else None),
+                "incumbent_capture_sha256": request.incumbent_capture_sha256,
                 "incumbent_loss": None,
+                "reference_kind": request.reference_kind,
                 "reference_sha256": request.reference_sha256, "rig_sha256": request.rig_sha256,
                 "scorer_sha256": request.scorer_sha256,
                 "render_profile_sha256": request.render_profile_sha256,
@@ -253,7 +257,12 @@ class ObjectLoopCommandsMixin:
                 "project_id": request.project_id,
                 "parent_id": request.epic_task_id,
                 "title": f"Finalize object {request.object_id}",
-                "description": "Verify retained evaluation artifacts, checkpoints and stop reason.",
+                "description": (
+                    "Verify retained evaluation artifacts, checkpoints and stop reason. "
+                    f"reference_kind={request.reference_kind}."
+                    + (" Self-reference results are indicative, for plumbing only."
+                       if request.reference_kind == "self" else "")
+                ),
                 "task_type": "chore",
                 "dedup_key": f"object:{request.object_id}:finalize",
                 "_after_create_on": bootstrap,
@@ -398,6 +407,8 @@ class ObjectLoopCommandsMixin:
                             "hypothesis": variant["hypothesis"],
                             "base_candidate_sha256": state["incumbent_sha256"],
                             "base_artifact": state["incumbent_artifact"],
+                            "incumbent_capture_sha256": state.get("incumbent_capture_sha256"),
+                            "reference_kind": state.get("reference_kind", "calibrated"),
                             "reference_sha256": state["reference_sha256"],
                             "rig_sha256": state["rig_sha256"],
                             "scorer_sha256": state["scorer_sha256"],
@@ -406,6 +417,8 @@ class ObjectLoopCommandsMixin:
                             "mandatory_views": state["mandatory_views"],
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
+                            **({"result_interpretation": "indicative; plumbing only"}
+                               if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
                         approval_gate_id=(state.get("last_approved_checkpoint") or
                                           state["brief_checkpoint"])["gate_id"],

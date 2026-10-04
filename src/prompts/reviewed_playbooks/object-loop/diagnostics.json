@@ -260,6 +260,13 @@
   },
   {
     "code": "type_unknown",
+    "message": "the type of input 'incumbent_capture_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
     "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-completion",
     "severity": "info",
@@ -317,6 +324,13 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-completion",
+    "severity": "info",
+    "step_id": "on-completion--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_kind' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-completion",
     "severity": "info",
     "step_id": "on-completion--start"
@@ -624,6 +638,13 @@
   },
   {
     "code": "type_unknown",
+    "message": "the type of input 'incumbent_capture_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
     "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-failure",
     "severity": "info",
@@ -681,6 +702,13 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-failure",
+    "severity": "info",
+    "step_id": "on-failure--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_kind' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-failure",
     "severity": "info",
     "step_id": "on-failure--start"
@@ -988,6 +1016,13 @@
   },
   {
     "code": "type_unknown",
+    "message": "the type of input 'incumbent_capture_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
     "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-formula",
     "severity": "info",
@@ -1045,6 +1080,13 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-formula",
+    "severity": "info",
+    "step_id": "on-formula--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_kind' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-formula",
     "severity": "info",
     "step_id": "on-formula--start"
@@ -1352,6 +1394,13 @@
   },
   {
     "code": "type_unknown",
+    "message": "the type of input 'incumbent_capture_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
     "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-review",
     "severity": "info",
@@ -1409,6 +1458,13 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "on-review",
+    "severity": "info",
+    "step_id": "on-review--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_kind' could not be determined statically, so the check against string was silenced",
     "rule_id": "on-review",
     "severity": "info",
     "step_id": "on-review--start"
@@ -1716,6 +1772,13 @@
   },
   {
     "code": "type_unknown",
+    "message": "the type of input 'incumbent_capture_sha256' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
     "message": "the type of input 'incumbent_sha256' could not be determined statically, so the check against string was silenced",
     "rule_id": "recover",
     "severity": "info",
@@ -1773,6 +1836,13 @@
   {
     "code": "type_unknown",
     "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "recover",
+    "severity": "info",
+    "step_id": "recover--start"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'reference_kind' could not be determined statically, so the check against string was silenced",
     "rule_id": "recover",
     "severity": "info",
     "step_id": "recover--start"

@@ -6,7 +6,7 @@ readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
 The recorded artifact is
-`sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd`.
+`sha256:347795d5facdb77db759b65a9c80fcfb40e7337a448da96c192787b7c68c2b73`.
 Its source, canonical artifact, contract/grant manifest, compiler diagnostics
 and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
@@ -30,6 +30,8 @@ aq job retain 44a60940-aa75-4284-be56-9e28d2748056 --json
 #    -> artifacts[]             becomes ScoreReceipt.artifacts
 #    -> captures[]              each image becomes Capture.image
 #    -> candidate_artifact      already carries sha256 == candidate_sha256
+#    -> artifacts[kind=capture_receipt].sha256
+#                              quote as incumbent_capture_sha256
 #    -> rig_sha256              quote as ObjectLoopStartArgs.rig_sha256
 
 # 2. Prove a URI still names the bytes it claims, any time later.
@@ -92,11 +94,23 @@ implementation task.
 
 Before recording an activation decision, verify the Matter artifact adapter
 can retain and materialize immutable URI/hash bundles after task cleanup;
-calibrated reference/view/light/rig/scorer manifests and the hash-bound brief
-are approved; workers can execute finite capture jobs under an audited resource
+the calibrated-reference precondition is discharged either by calibrated
+reference manifests or by an explicit supervisor `reference_kind=self` start
+packet; view/light/rig/scorer manifests and the hash-bound brief are approved;
+workers can execute finite capture jobs under an audited resource
 lease; and cost coverage, retries and the final suite fit the object budget.
 Keep the pilot at at most two object epics and one GPU lease. The read bridge
 has an explicit 32-object bound; it fails visibly above that bound.
+
+`reference_kind` defaults to `calibrated` and is fixed for the attempt. A `self`
+run labels candidate and finalization results as indicative, for plumbing only.
+Both kinds require `incumbent_capture_sha256`, taken from the retained baseline
+`capture_receipt` artifact. A self start must set `reference_sha256` to that
+same hash; mismatches fail before creating a loop or finalization task.
+`incumbent_sha256` continues to identify the candidate manifest. A calibrated
+start binds `reference_sha256` independently to its reference artifact.
+Repair and plateau caps, the eight-round ceiling, the whole-attempt budget,
+the final-suite reserve and experiment publication refusals still apply.
 
 Only after those checks and an explicit operator decision, activate with
 `aq playbook activate --playbook-id object-loop --artifact-sha256 <approved-hash>`.
