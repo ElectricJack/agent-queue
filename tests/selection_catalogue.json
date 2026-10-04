@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:882e9ce675a321c494e69c583046b4ab84ba0177475a45022b45436015eb972a",
+  "digest": "sha256:7001ab233cd14b48fe10153b0f4c1c64c1fe89825d4b6eb6e777e4b41b384691",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10836,6 +10836,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.delivery.message",
         "src.digest",
         "src.escalations.transport",
         "src.git.manager",
@@ -13149,6 +13150,7 @@
         "src.database.tables",
         "src.digest",
         "src.digest.aggregate",
+        "src.digest.dispatch",
         "src.digest.eligibility",
         "src.digest.facts",
         "src.escalations.transport",

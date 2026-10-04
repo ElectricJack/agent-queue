@@ -82,7 +82,7 @@ MARKER_PREFIX = "aq-dig"
 #: The marker is appended as its own line at send time, so the rendered body
 #: is built against a budget that leaves room for it and the finished message
 #: still honours §8's 1,200-character target.
-MARKER_RESERVE = 32
+MARKER_RESERVE = len(operation_marker("", prefix=MARKER_PREFIX)) + 1
 
 #: How many earlier sent windows are consulted for wording and fact keys that
 #: have already been reported.  §8 forbids reposting identical highlight text

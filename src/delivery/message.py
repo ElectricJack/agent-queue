@@ -21,18 +21,34 @@ from src.escalations.transport import (
 logger = logging.getLogger(__name__)
 
 
-_ZW_BITS = ("\u200b", "\u200c")  # zero-width space / non-joiner
+#: Base-4 zero-width alphabet: space, non-joiner, joiner, word joiner.
+_ZW_DIGITS = ("\u200b", "\u200c", "\u200d", "\u2060")
 _ZW_START = "\u2063"  # invisible separator
+#: One-digit kind tags; any other prefix shares the last tag.
+_KINDS = {"aq-out": 0, "aq-dig": 1, "aq-conv": 2}
+_HEX = "0123456789abcdef"
+
+
+def _fold(value: str) -> str:
+    if len(value) == 16 and all(ch in _HEX for ch in value):
+        return value
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def invisible(marker: str) -> str:
-    """Encode a reconciliation marker as zero-width characters.
+    """Encode a reconciliation marker as a compact run of zero-width characters.
 
+    ``prefix:payload`` becomes a start character, one kind digit and the
+    16-hex fold of the payload at two base-4 digits per hex digit (34 chars).
     Discord keeps these characters, so a marker search still matches, but a
     reader never sees the marker.
     """
-    bits = "".join(f"{ord(ch):08b}" for ch in marker)
-    return _ZW_START + "".join(_ZW_BITS[int(b)] for b in bits)
+    prefix, _, payload = marker.partition(":")
+    kind = _KINDS.get(prefix, 3)
+    body = "".join(
+        _ZW_DIGITS[n >> 2] + _ZW_DIGITS[n & 3] for n in (_HEX.index(c) for c in _fold(payload))
+    )
+    return _ZW_START + _ZW_DIGITS[kind] + body
 
 
 def operation_marker(owner_id: str, *, prefix: str) -> str:
