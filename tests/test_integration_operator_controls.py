@@ -563,10 +563,13 @@ async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypat
     run.assert_not_awaited()
 
 
-@pytest.mark.parametrize("checkpoint_state", [None, "verifying"])
-async def test_reopen_collection_runs_under_the_derived_operator_label(db, monkeypatch, checkpoint_state):
-    from src.models import Task
+@pytest.mark.parametrize("checkpoint_state", [None, "verifying", "integration_ready"])
+@pytest.mark.parametrize("has_handoff", [False, True])
+async def test_reopen_collection_runs_under_the_derived_operator_label(
+    db, monkeypatch, checkpoint_state, has_handoff
+):
     from src.database.tables import task_integration_checkpoints
+    from src.models import Task
 
     await db.create_task(Task(id="epic", project_id="p", title="epic", description=""))
     if checkpoint_state is not None:
@@ -582,8 +585,13 @@ async def test_reopen_collection_runs_under_the_derived_operator_label(db, monke
 
     class _Recovery:
         def __init__(self, database, promotion, *, dispatch=None):
-            constructed.append((database, promotion, dispatch))
+            constructed.append({"database": database, "promotion": promotion, "dispatch": dispatch})
             self.run = run
+
+    class _FailedRecovery(_Recovery):
+        def __init__(self, database, promotion, *, dispatch=None, confirm_handoff):
+            super().__init__(database, promotion, dispatch=dispatch)
+            constructed[-1]["confirm_handoff"] = confirm_handoff
 
     dispatched = []
 
@@ -597,19 +605,30 @@ async def test_reopen_collection_runs_under_the_derived_operator_label(db, monke
         if checkpoint_state is not None
         else "src.integration.cancelled_collection_recovery.CancelledCollectionRecovery"
     )
-    monkeypatch.setattr(recovery_path, _Recovery)
+    monkeypatch.setattr(
+        recovery_path, _FailedRecovery if checkpoint_state is not None else _Recovery
+    )
     handler = IntegrationCommandsMixin()
     handler.db = db
     handler.orchestrator = SimpleNamespace(promotion_service="promotion", repair_service=_Repair())
+    handoff = AsyncMock() if has_handoff else None
+    if has_handoff:
+        handler.orchestrator.aconfirm_integration_owner_handoff = handoff
 
     local = await handler._cmd_integration_reopen_collection({"task_id": "epic"})
     assert (local["success"], local["outcome"], local["dry_run"]) == (
         True, "would_reopen", True,
     )
-    [(database, promotion, dispatch)] = constructed
-    assert (database, promotion) == (db, "promotion")
+    [recovery] = constructed
+    assert (recovery["database"], recovery["promotion"]) == (db, "promotion")
+    if checkpoint_state is not None:
+        assert recovery["confirm_handoff"] is handoff
+    else:
+        assert "confirm_handoff" not in recovery
+    if handoff is not None:
+        handoff.assert_not_awaited()
     # A fresh repair stage is dispatched through the daemon's repair service.
-    assert await dispatch("op", 2) == {"outcome": "dispatched"}
+    assert await recovery["dispatch"]("op", 2) == {"outcome": "dispatched"}
     assert dispatched == [("op", 2)]
     assert run.await_args.args == ("epic",)
     assert run.await_args.kwargs["operator_id"] == "human:local-operator"
@@ -625,6 +644,9 @@ async def test_reopen_collection_runs_under_the_derived_operator_label(db, monke
         "reason": "cancelled the whole collection",
         "operator_id": "supervisor session:super-p",
     }
+    assert len(constructed) == 2
+    if checkpoint_state is not None:
+        assert constructed[-1]["confirm_handoff"] is handoff
 
     run.reset_mock()
     invalid = await handler._cmd_integration_reopen_collection(
