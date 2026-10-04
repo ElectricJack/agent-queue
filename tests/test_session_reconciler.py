@@ -39,6 +39,7 @@ from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
+from src.sessions.opencode_store import OpenCodeActivity
 from src.sessions.provider import NudgeDeferred, NudgeReason, SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     _STALL_REPORT_INTERVAL_SECONDS,
@@ -257,7 +258,7 @@ async def _session(
         id=sid,
         project_id=overrides.pop("project_id", "p1"),
         profile_id=overrides.pop("profile_id", "claude-opus"),
-        harness="claude",
+        harness=overrides.pop("harness", "claude"),
         provider="fake",
         name=name,
         lifecycle=overrides.pop("lifecycle", "task"),
@@ -1686,7 +1687,7 @@ class TestUnreadableComposerLadder:
     def _progress(source, at):
         """A stand-in for ``harness_progress`` returning a fixed reading."""
 
-        async def read(row, *, base_dir=None):
+        async def read(row, *, base_dir=None, liveness=None):
             return source, at
 
         return read
@@ -2003,6 +2004,235 @@ class TestUnreadableComposerLadder:
         assert bus.types().count("task.stalled") == 1
         assert "deferred_reason" not in bus.payload("task.stalled")
         assert bus.types().count("task.nudged") == 1
+
+
+# ---------------------------------------------------------------------------
+# Stall ladder: a pane that keeps painting while nothing is happening
+# ---------------------------------------------------------------------------
+
+
+class _StubStore:
+    """The harness store, read: what the session wrote and what is open."""
+
+    def __init__(self, activity):
+        self.activity_value = activity
+        self.reads = 0
+
+    def activity(self, work_dir, since):
+        self.reads += 1
+        return self.activity_value
+
+
+class TestWedgedMidTurn:
+    """R7: a TUI that reports itself mid-turn forever while doing nothing.
+
+    ``crisp-horizon-90.10`` (2026-10-03): an OpenCode pool session held its
+    task for 42 minutes after its last store row — a byte-identical pane
+    repainting its in-turn spinner, an Ollama holding no model at all, zero
+    nudge attempts, zero ``task.stalled``, no restart. Nothing was wrong with
+    the ladder below its gate; the gate is tmux's ``window_activity``, which a
+    spinner keeps fresh forever.
+
+    So the gate is overridden from two clocks AQ does not control — the CLI's
+    own store and the provider's residency — and then the ordinary ladder runs,
+    composer guard included.
+    """
+
+    async def _wedged(self, db, provider):
+        """A session whose pane looks busy and whose own record is frozen."""
+        await _task(db)
+        row = await _session(
+            db, provider, started_at=NOW - 5000, last_activity=NOW,
+            harness="opencode", llm_provider="ollama", model="qwen3.8:27b",
+        )
+        provider.sessions[row.name].activity = NOW
+        return row
+
+    def _store(self, reconciler, activity):
+        store = _StubStore(activity)
+        reconciler._liveness_store = lambda harness: store
+        return store
+
+    def _probe(self, monkeypatch, answer):
+        async def probe(session, config):
+            return answer
+
+        monkeypatch.setattr("src.sessions.reconciler.request_inflight", probe)
+
+    async def test_a_wedged_turn_emits_stalled_and_climbs_the_ladder(
+        self, db, provider, reconciler, bus, config, monkeypatch
+    ):
+        row = await self._wedged(db, provider)
+        self._store(
+            reconciler,
+            OpenCodeActivity(progress_at=NOW - 5000, sessions=frozenset({"ses_abc"})),
+        )
+        self._probe(monkeypatch, False)
+
+        # Nothing had happened for over an hour by its own record, and no
+        # rung had been spent: this is the whole failure being tested.
+        await reconciler.tick(now=NOW)
+        payload = bus.payload("task.stalled")
+        assert payload is not None
+        assert payload["session_id"] == row.id
+        assert payload["evidence"] == "store_stalled"
+        assert payload["idle_seconds"] == 5000
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+
+        # The climb is the ordinary one: the last rung restarts with the
+        # resume key, bounded by the same budgets as any other stall.
+        await db.set_task_meta(
+            "t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges)
+        )
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+        await reconciler.tick(now=NOW + 400)
+        session = await db.get_session("s1")
+        assert session.state == "stopped" and session.restarts == 1
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert bus.types().count("task.restarted") == 1
+
+    async def test_a_recent_store_row_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Progress on this very tick: the pane was right and AQ was wrong."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5))
+        self._probe(monkeypatch, False)
+
+        # Two ticks inside the lease: the wedge gate is the only path here, and
+        # it must not take it. (Past the lease the ordinary ladder would fire
+        # on the pane's own clock, which is a different question.)
+        for tick in (NOW, NOW + 400):
+            await reconciler.tick(now=tick)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+        assert (await db.get_session("s1")).state == "running"
+
+    async def test_an_active_generation_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """A model resident may just be held warm; either way this is not proof."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, True)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    @pytest.mark.parametrize("answer", [None])
+    async def test_an_unanswerable_provider_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch, answer
+    ):
+        """Unknown is not stalled: an endpoint AQ could not read holds the ladder."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, answer)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert (await db.get_session("s1")).state == "running"
+
+    async def test_an_open_tool_call_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Silence is also what one long ``bash`` looks like from outside."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000, open_tools=1))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    async def test_a_session_that_never_wrote_a_row_is_not_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """No row is no clock: there is nothing there that could have stopped."""
+        await self._wedged(db, provider)
+        self._store(reconciler, OpenCodeActivity())
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+
+    async def test_an_unreadable_store_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """``None`` from the store is the same unknown as no store at all."""
+        await self._wedged(db, provider)
+        self._store(reconciler, None)
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+
+    async def test_a_harness_with_no_store_is_never_flagged(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """Claude and Codex are gated on their own transcripts, as before."""
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 5000, last_activity=NOW)
+        provider.sessions[row.name].activity = NOW
+        self._store(reconciler, None)
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert bus.types() == []
+        assert provider.sent_nudges == []
+
+    async def test_a_person_at_the_composer_still_holds_a_wedged_turn(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """R1's human-draft guard is unchanged by any of this."""
+        row = await self._wedged(db, provider)
+        provider.script_composer_refusal(
+            row.name, "terminal holds a draft", "half a sentence"
+        )
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        for tick in (NOW, NOW + 400, NOW + 800, NOW + 1200):
+            await reconciler.tick(now=tick)
+            assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+            assert (await db.get_session("s1")).state == "running"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert bus.types() == []
+
+    async def test_an_unreadable_composer_escalates_on_the_store_clock(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """The R1 refusal path, now with a record to corroborate it.
+
+        ``opencode`` used to land in ``report`` here — no rung, no escalation —
+        because ``harness_progress`` had nothing to read for it (report R7).
+        It reads the store now, so the rung is spent with nothing typed.
+        """
+        row = await self._wedged(db, provider)
+        provider.script_composer_refusal(
+            row.name, "terminal input is unknown", kind=NudgeReason.STALE_FRAME
+        )
+        self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+        assert provider.sent_nudges == []
+        assert bus.payload("task.stalled")["deferred_reason"] == "stale_frame"
+        assert "task.nudged" not in bus.types()
+
+    async def test_the_store_is_read_once_per_interval_not_once_per_tick(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        """A wedged TUI repaints forever; the store is tens of gigabytes."""
+        await self._wedged(db, provider)
+        store = self._store(reconciler, OpenCodeActivity(progress_at=NOW - 5000))
+        self._probe(monkeypatch, False)
+
+        await reconciler.tick(now=NOW)
+        await reconciler.tick(now=NOW + 5)
+        await reconciler.tick(now=NOW + 10)
+        assert store.reads == 1
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,14 @@ pending dialog, including one a subagent opened. It becomes one durable
 question keyed by session instance, claim and the dialog's call id, so a
 re-read or a daemon restart finds the same row.
 
+The same store is also AQ's only *liveness* clock for a harness that keeps no
+transcript file: which OpenCode sessions an AQ session owns is scoped here and
+shared, and
+[`src/sessions/opencode_store.py`](../src/sessions/opencode_store.py) reads the
+rows' own timestamps so the stall ladder can tell a working turn from a wedged
+one that still repaints its spinner — see
+[session-troubleshooting](guides/session-troubleshooting.md#a-worker-that-looks-busy-forever-and-is-not).
+
 - **Who may answer.** A native dialog is the model choosing between options
   inside its approved task, so scope, design and "should I continue" choices
   are routed to the supervisor as answerable from that task's context. A
