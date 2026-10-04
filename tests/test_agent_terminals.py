@@ -496,7 +496,10 @@ async def test_terminal_provider_start_failure_releases_agent_reservation(handle
     assert not fake.sessions
     assert await handler.orchestrator.token_store.validate(attempted[0].env["AQ_API_TOKEN"]) is None
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    rows = await handler.db.list_sessions()
+    assert len(rows) == 1
+    assert rows[0].state == rows[0].desired_state == "stopped"
+    assert rows[0].end_reason == "launch_failed"
 
 
 async def test_cleanup_does_not_release_newer_reservation(handler):
@@ -949,7 +952,9 @@ async def test_real_provider_missing_cli_is_actionable_without_launch(
     assert "claude" in result["error"] and "PATH" in result["error"]
     assert "aqs_" not in result["error"] and str(tmp_path) not in result["error"]
     assert (await handler.db.get_agent(agent_id)).state == AgentState.IDLE
-    assert await handler.db.list_sessions() == []
+    failed = await handler.db.list_sessions()
+    assert len(failed) == 1 and failed[0].state == "stopped"
+    assert failed[0].end_reason == "launch_failed"
     assert fake.starts == []
     # Message/reconciler callers keep the existing bool-return contract.
     if agent_id == "supervisor-global":

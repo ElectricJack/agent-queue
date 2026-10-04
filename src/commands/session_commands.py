@@ -481,6 +481,43 @@ class SessionCommandsMixin:
         result["source"] = "peek"
         return result
 
+    async def _cmd_session_prune(self, args: dict) -> dict:
+        """Remove one inactive named row; never signal or forget live work."""
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (session.lifecycle != "named" or session.state not in {"sleeping", "stopped"}
+                or session.task_id or session.claim_phase):
+            return {"error": "Only sleeping/stopped named sessions without a task can be pruned"}
+        provider = self._provider_for_session(session)
+        if provider is None:
+            return {"error": "Provider unavailable; cannot confirm session is inactive"}
+        try:
+            if not await provider.confirm_stopped(self._session_handle(session)):
+                return {"error": "Session still has a live terminal; stop it before pruning"}
+            from src.sessions.proctable import scan_by_env_marker
+
+            if any(process.marker == session.instance_token
+                   for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                return {"error": "Session still has live marked processes; stop them before pruning"}
+        except Exception:
+            return {"error": "Could not verify session is inactive"}
+        changed = await self.db.update_session_instance(
+            session.id, session.instance_token, require_desired_state=session.desired_state,
+            desired_state="stopped",
+        )
+        if not changed:
+            return {"error": "Session changed during cleanup; refresh the flock"}
+        token_store = getattr(self.orchestrator, "token_store", None)
+        if token_store is not None:
+            await token_store.revoke_session(session.id)
+        if not await self.db.prune_named_session(session.id, session.instance_token):
+            return {"error": "Session changed during cleanup; refresh the flock"}
+        await self.orchestrator.bus.emit("session.pruned", {
+            "session_id": session.id, "project_id": session.project_id,
+        })
+        return {"success": True, "session_id": session.id}
+
     async def _cmd_session_kill(self, args: dict) -> dict:
         """Fenced kill.  The task then goes through the exit classifier.
 

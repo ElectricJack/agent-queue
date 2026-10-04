@@ -387,8 +387,19 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     now = time.time()
     projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
     active = {project.id for project in projects}
+    from src.doctor.session_checks import _check_flock
+
+    flock = await _check_flock(ctx)
+    flock_findings = [
+        _finding("flock_untracked", entry.get("project_id"), entry["detail"], evidence=entry)
+        for entry in flock.data.get("findings", [])
+    ]
     if not active:
-        return CheckResult(CHECK_ID, Severity.OK, "no active projects", data={"findings": []})
+        return CheckResult(
+            CHECK_ID, Severity.ERROR if flock_findings else Severity.OK,
+            "no active projects" + "".join(f"\n{item['detail']}" for item in flock_findings),
+            data={"findings": flock_findings},
+        )
     tasks_by_project = await asyncio.gather(
         *(ctx.db.list_tasks(project_id=pid) for pid in sorted(active))
     )
@@ -409,7 +420,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
     )
-    findings = [item for group in groups for item in group] + _route_findings(tasks)
+    findings = [item for group in groups for item in group] + _route_findings(tasks) + flock_findings
     summary = (
         f"{len(findings)} stall finding(s) across {len(active)} active project(s)" if findings
         else f"no stalls across {len(active)} active project(s)"
@@ -419,7 +430,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         for item in findings
     )
     return CheckResult(
-        CHECK_ID, Severity.WARN if findings else Severity.OK,
+        CHECK_ID, Severity.ERROR if flock_findings else Severity.WARN if findings else Severity.OK,
         detail,
         data={"findings": findings, "count": len(findings),
               "vault_root": str(Path(ctx.config.vault_root).expanduser())},

@@ -281,6 +281,62 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     )
 
 
+async def test_session_roster_preserves_unlinked_and_multiple_executions(handler):
+    from src.models import SessionRecord
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_agent(Agent(id="a", name="Agent", profile_id="coder"))
+    common = dict(harness="codex", provider="tmux", work_dir="/tmp", epoch="e",
+                  started_at=1, last_activity=2, llm_provider="openai", model="launch-model",
+                  intelligence_class="standard-high")
+    samples = [
+        ("global", "supervisor", None, None, "running", "named"),
+        ("project", "supervisor", "p", None, "starting", "named"),
+        ("worker", "coder", "p", "a", "running", "pool"),
+        ("draining", "reviewer", "p", "a", "draining", "task"),
+        ("sleeping", "supervisor", "p", None, "sleeping", "named"),
+        ("stopped", "supervisor", "p", None, "stopped", "named"),
+    ]
+    for sid, profile, project, agent_id, state, lifecycle in samples:
+        await handler.db.create_session(SessionRecord(
+            id=sid, name=sid, profile_id=profile, project_id=project, agent_id=agent_id,
+            state=state, lifecycle=lifecycle, instance_token=sid, **common,
+        ))
+    result = await handler._cmd_list_agents({})
+    sessions = {row["session_id"]: row for row in result["sessions"]}
+    assert set(sessions) == {"global", "project", "worker", "draining", "sleeping"}
+    assert result["session_count"] == 5
+    assert sessions["global"]["role"] == sessions["project"]["role"] == "supervisor"
+    assert sessions["global"]["scope"] == "global" and sessions["project"]["scope"] == "p"
+    assert sessions["draining"]["role"] == "reviewer"
+    assert sessions["worker"]["model"] == "launch-model"
+    assert sessions["worker"]["last_activity"] == 2 and sessions["worker"]["uptime_seconds"] > 0
+    project = await handler._cmd_list_agents({"project_id": "p", "include_stopped": True})
+    assert {row["session_id"] for row in project["sessions"]} == set(sessions) - {"global"} | {"stopped"}
+
+
+@pytest.mark.parametrize(("title", "role"), [
+    ("Repair development integration: task", "repair"),
+    ("Verifier for integration subject task", "verifier"),
+    ("Adversarial review: design", "reviewer"),
+])
+async def test_session_roles_include_finished_delegates_without_hydrating_backlog(handler, title, role):
+    from src.models import SessionRecord, Task, TaskStatus
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_task(Task(id="finished", project_id="p", title=title, description="",
+                                     status=TaskStatus.COMPLETED))
+    await handler.db.create_task(Task(id="backlog", project_id="p", title="Work", description=""))
+    await handler.db.create_session(SessionRecord(
+        id="delegate", project_id="p", profile_id="coder", harness="codex", provider="fake",
+        name="delegate", lifecycle="task", work_dir="/tmp", epoch="e", instance_token="token",
+        started_at=1, task_id="finished", state="stopped", ended_at=2,
+    ))
+    result = await handler._cmd_list_agents({"include_stopped": True})
+    assert result["sessions"][0]["role"] == role
+    assert result["sessions"][0]["uptime_seconds"] == 1
+
+
 def _flock_api(handler, scope=None):
     from fastapi import FastAPI
     from src.api.auth import LOCAL_SCOPE
