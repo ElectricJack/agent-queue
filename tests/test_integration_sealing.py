@@ -2200,11 +2200,13 @@ async def test_reconciler_seal_explains_exclusions_and_rechecks_fresh_identity(
 
 @pytest.mark.parametrize('condition, expected', [
     ('green', None), ('closed', 'pr_closed'), ('moved', 'pr_identity_changed'),
-    ('foreign', 'source_ci_pending'), ('red', 'source_ci_red'),
-    ('rerun', 'source_ci_pending'), ('delivered', 'already_delivered'),
-    ('unknown', 'ancestry_unknown'), ('outage', 'source_observation_unavailable'),
+    # PR CI is never consulted before admission: red, pending, foreign and
+    # check-run outages all admit; batch candidate CI is the only gate.
+    ('foreign', None), ('red', None), ('rerun', None),
+    ('delivered', 'already_delivered'),
+    ('unknown', 'ancestry_unknown'), ('outage', None),
 ])
-async def test_live_root_admission_reads_exact_trusted_checks_and_git(condition, expected):
+async def test_live_root_admission_ignores_pr_ci_and_reads_git(condition, expected):
     from contextlib import asynccontextmanager
     from src.git.manager import RemoteRefState
     from src.integration.source_ci import RootAdmissionReader
@@ -2248,8 +2250,8 @@ async def test_live_root_admission_reads_exact_trusted_checks_and_git(condition,
     assert result['reason'] == expected
     if expected is None:
         assert result['tree'] == '3' * 40
-        assert result['checks']['head_sha'] == '1' * 40
-    elif expected.startswith(('pr_', 'source_ci_', 'source_observation_')):
+        client.commit_check_runs.assert_not_awaited()
+    elif expected.startswith('pr_'):
         git.ais_ancestor.assert_not_awaited()
 
 
