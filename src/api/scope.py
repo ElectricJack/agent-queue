@@ -248,8 +248,14 @@ def _forbids_project_id(command: str) -> bool:
 
     An unregistered command (``delete_project``, ``edit_project``, the project
     and agent controls — none of them carry a contract) forbids nothing, so the
-    gate keeps injecting for them: their handlers read the injected
-    ``project_id`` and there is no model to reject it.
+    gate keeps injecting for them: there is no model to reject the key, and the
+    project row itself is what such a command acts on.  A contractless command
+    that acts on *another* project's row has to fence it in its handler, because
+    neither branch below can: ``session_kill`` names a session by id, unique id
+    prefix, name or task and reads no ``project_id``
+    (``SessionCommandsMixin._session_project_scope_error``).
+    ``tests/test_command_scope_matrix.py`` derives the set of supervisor-granted
+    contractless commands in that position.
 
     Only the elevated per-project branch consults this.  The agent branch below
     still injects the whole ID triple unconditionally, because handlers there

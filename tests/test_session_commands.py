@@ -619,6 +619,211 @@ class TestDrainAckCommand:
         assert await provider.get_meta(handler._session_handle(row), DRAIN_ACK_KEY) == "1"
 
 
+class TestPerProjectSessionFence:
+    """A per-project elevated token may only act on its own project's sessions.
+
+    ``check_command_scope`` pins ``args["project_id"]`` for a per-project
+    supervisor, but the session commands address a row by id, unique id
+    prefix, name or task and never read that field — so the pin was vacuous
+    and ``aq session kill <prefix>`` (the prefix ``aq session list`` prints)
+    was enough to stop another project's worker.  The fence is
+    ``SessionCommandsMixin._session_project_scope_error``, shared with
+    ``session_token``.
+
+    Handlers are called directly with ``_current_scope`` set rather than
+    through ``execute``: ``execute``'s capability gate resolves the principal
+    from the session row, and a scope naming a session that does not exist
+    fails closed to ``DENY_ALL`` before any of this is reached.  What is under
+    test is the fence, and it reads nothing but ``self._current_scope``.
+    """
+
+    async def _foreign_session(self, db, provider, *, lifecycle="task", task_id="t2"):
+        """A live session in project p2, with a task of its own there."""
+        await db.create_project(Project(id="p2", name="P2"))
+        await db.create_task(Task(id="t2", project_id="p2", title="T2", description="d"))
+        await db.transition_task("t2", TaskStatus.IN_PROGRESS)
+        row = await _make_session(
+            db, provider, sid="sess-p2", task_id=task_id, lifecycle=lifecycle, name="s-t2"
+        )
+        # ``_make_session`` writes the fixture's project; the row under test is
+        # project B's.
+        await db.update_session(row.id, project_id="p2")
+        return row
+
+    @staticmethod
+    def _elevated_scope(supervisor_of: str | None) -> dict:
+        """The scope of a supervisor token pinned to *supervisor_of*.
+
+        ``project_id=None`` with ``elevated`` is the global supervisor.
+        """
+        return {
+            "kind": "session",
+            "session_id": f"supervisor-{supervisor_of or 'global'}",
+            "task_id": None,
+            "project_id": supervisor_of,
+            "elevated": True,
+        }
+
+    @pytest.mark.parametrize("address", [
+        {"session_id": "sess-p2"},
+        {"session_id": "sess-p"},
+        {"name": "s-t2"},
+        {"task_id": "t2"},
+    ])
+    async def test_a_project_supervisor_cannot_kill_another_projects_session(
+        self, handler, db, provider, orch, address
+    ):
+        """The kill must be refused, and nothing about the row may change."""
+        await _make_task(db)
+        await self._foreign_session(db, provider)
+
+        handler._current_scope = self._elevated_scope("p1")
+        try:
+            result = await handler._cmd_session_kill(address)
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is False
+        assert "another project" in result["error"]
+        # No intent, no signal, no event: the process is still running and the
+        # reconciler still owns classifying it.
+        row = await db.get_session("sess-p2")
+        assert (row.state, row.desired_state) == ("running", "running")
+        assert [h.name for h in await provider.list_running("s-")] == ["s-t2"]
+        assert "session.killed" not in orch.bus.types()
+
+    async def test_a_project_supervisor_can_kill_inside_its_own_project(
+        self, handler, db, provider
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+
+        handler._current_scope = self._elevated_scope("p1")
+        try:
+            result = await handler._cmd_session_kill({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is True
+        assert (await db.get_session("sess-1")).desired_state == "stopped"
+        assert await provider.list_running("s-t1") == []
+
+    async def test_the_global_supervisor_may_kill_any_projects_session(
+        self, handler, db, provider
+    ):
+        """``project_id is None`` is the global supervisor: no project pin."""
+        await self._foreign_session(db, provider)
+
+        handler._current_scope = self._elevated_scope(None)
+        try:
+            result = await handler._cmd_session_kill({"session_id": "sess-p2"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is True
+        assert (await db.get_session("sess-p2")).desired_state == "stopped"
+
+    async def test_a_local_caller_may_kill_any_projects_session(self, handler, db, provider):
+        """The loopback CLI carries no scope at all, so there is no fence."""
+        await self._foreign_session(db, provider)
+
+        result = await handler.execute("session_kill", {"session_id": "sess-p2"})
+
+        assert result["success"] is True
+        assert (await db.get_session("sess-p2")).desired_state == "stopped"
+
+    async def test_a_project_supervisor_cannot_peek_at_another_projects_session(
+        self, handler, db, provider
+    ):
+        """A cross-project peek is a cross-project read, not a kill."""
+        await _make_task(db)
+        await self._foreign_session(db, provider)
+        provider.feed_output("s-t2", "project B only")
+
+        handler._current_scope = self._elevated_scope("p1")
+        try:
+            result = await handler._cmd_session_peek({"session_id": "sess-p2"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is False
+        assert "output" not in result
+
+    async def test_a_project_supervisor_can_peek_inside_its_own_project(
+        self, handler, db, provider
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        provider.feed_output("s-t1", "line one")
+
+        handler._current_scope = self._elevated_scope("p1")
+        try:
+            result = await handler._cmd_session_peek({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is True and "line one" in result["output"]
+
+    async def test_a_worker_scope_may_reach_its_own_projects_session(
+        self, handler, db, provider
+    ):
+        """The fence compares projects; it is not a blanket session refusal."""
+        await _make_task(db)
+        await _make_session(db, provider)
+        provider.feed_output("s-t1", "line one")
+
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "sess-1",
+            "task_id": "t1",
+            "project_id": "p1",
+            "elevated": False,
+        }
+        try:
+            assert (await handler._cmd_session_peek({"session_id": "sess-1"}))["success"]
+        finally:
+            handler._current_scope = None
+
+    async def test_a_project_supervisor_cannot_drain_ack_another_projects_pool_session(
+        self, handler, db, provider
+    ):
+        """An ack is a teardown request, so it is fenced like the kill."""
+        await _make_task(db)
+        row = await self._foreign_session(db, provider, lifecycle="pool", task_id=None)
+        handle = handler._session_handle(row)
+
+        handler._current_scope = self._elevated_scope("p1")
+        try:
+            result = await handler._cmd_session_drain_ack({"session_id": "sess-p2"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is False
+        fresh = await db.get_session("sess-p2")
+        assert (fresh.state, fresh.desired_state) == ("running", "running")
+        assert await provider.get_meta(handle, DRAIN_ACK_KEY) is None
+
+    async def test_a_worker_can_drain_ack_its_own_projects_session(self, handler, db, provider):
+        """The completion protocol's own half of the fence."""
+        await _make_task(db)
+        await _make_session(db, provider, lifecycle="pool", task_id=None)
+
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "sess-1",
+            "task_id": None,
+            "project_id": "p1",
+            "elevated": False,
+        }
+        try:
+            result = await handler._cmd_session_drain_ack({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+
+        assert result["success"] is True
+        assert (await db.get_session("sess-1")).state == "draining"
+
+
 class TestSessionToken:
     """``session_token`` — the dev/e2e credential minter.
 

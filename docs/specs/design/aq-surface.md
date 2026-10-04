@@ -504,8 +504,8 @@ aq --json integration reserve-owner --task-id verify-04199964
 
 So the gate writes the key only where the contract declares it (`_forbids_project_id`, derived
 from the registry, never a hand list; an unregistered command forbids nothing and keeps the
-injection its handlers read), and **for a contract that forbids the key the project's
-isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
+injection, because it has no model to reject it), and **for a contract that forbids the key the
+project's isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
 call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
 and requires each to equal the token's. A task is read live-or-archived, an operation through
 the row its `target_kind` names, a branch owner row through its repository, check evidence
@@ -513,6 +513,18 @@ through its operation. Resolution retains whether the named row exists: a presen
 with no project is distinct from a missing row. A promotion intent whose `project_id` is
 NULL resolves through its persisted repository; if that repository cannot supply a project,
 the intent remains a present row with no resolved owner.
+
+A command with no contract gets neither branch: the gate injects `project_id`, and no target
+is resolved. If it acts on the project row itself that is sound. If it acts on *another*
+project's row — `session_kill`, `session_peek`, `session_drain_ack` and `provider_reroute_undo`
+all name a session or a batch by id, prefix, name or task and read no `project_id` — then the
+isolation is that handler's own, and a supervisor grant is what makes it reachable from a token
+trusted for one project only. The session family shares one fence,
+`SessionCommandsMixin._session_project_scope_error`, which compares the resolved session's
+project with the caller's; the loopback CLI and the global supervisor carry no project pin and
+stay unrestricted. `tests/test_command_scope_matrix.py` derives the set of supervisor-granted
+contractless commands that name a project-owned target and dispatches each session-addressing
+member against another project's session.
 
 The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.
