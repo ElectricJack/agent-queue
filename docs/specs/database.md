@@ -2182,7 +2182,11 @@ guarantee: a `done` subject has a `closed_reason` and no due time, wait or gate;
 any other subject has a `gate_id`, or a `next_due_at` no later than
 `due_set_at + max_wait_seconds`. Partial unique index
 `uq_integration_subjects_admitting_root` allows one admitting root subject per
-`(project_id, repository_id)`; `idx_integration_subjects_due` serves the due
+`(project_id, repository_id)`. Seeding the subject for a newly outstanding sweep
+request first closes an unbound admitting one keyed to an earlier request
+(`closed_reason` `superseded: …`), which sealing would refuse anyway; a bound
+subject is never closed this way, and a remaining one defers the seed rather than
+raising. `idx_integration_subjects_due` serves the due
 scan. Trigger `integration_subject_identity_pinned` refuses a change of id,
 project, repository, kind, key, task, pinned policy or a bound batch, a
 decreasing version or generation, and reopening a `done` subject.

@@ -174,3 +174,44 @@ filter project integration mode before the keyset limit: root visits `train` and
 `hierarchy`, and development visits `development`. Development writer projection
 and resolved-gate scans follow the same ownership boundary. A train artifact must
 never be interpreted as a development policy.
+
+## Git-first root admission (2026-10-04)
+
+Active reconciler seals admit completed, unheld root tasks with an exact current
+PR head, absent from the default branch, whose configured required checks are
+successful on GitHub from the configured producer. The sealer reads Git and
+GitHub before its hierarchy transaction and reselects the task/checkpoint and
+policy generation under the lock. Legacy review and source-CI polling rows are
+not prerequisites for this path. Explicit rejected reviews, holds, gates,
+active membership, dependency ordering and migration collision checks still bind.
+The frozen admission evidence identifies `git_source_ci` as its decision path;
+it is not a human review. Existing candidate validation and publication proofs
+remain required. Missing checks, changed PR identities and failed remote reads
+exclude the member with a reason, never with cached green evidence.
+
+Seal results and the reconciler action journal include each excluded candidate's
+identity and reason; an atomic audit event preserves them across seal replay.
+Admitting observations omit incomplete roots, retired or delivered sources and
+closed PRs. Missing local source objects defer to the fetching admission reader
+without blocking other sources. Sealed manifests remain immutable.
+
+## Reconciler repair close handoff
+
+A root repair delegate closes through its owning reconciler, including a failed
+or blocked work outcome. The close verifies the exact session, claim, workspace
+and writer fence, preserves the clean pushed head, and detaches the checkout.
+One transaction accepts the task close, releases its branch/workspace holds and
+records an `accepted_handoff` stop proof on the subject. An accepted candidate
+resolution may already have transferred the branch; closing its original writer
+must not release a successor's fence. Stale claims and changed fences refuse.
+The proof describes relinquished write authority, so a pool process may still be
+alive. It cannot apply to a later claim or writer. CI and promotion remain the
+reconciler's decisions on the new exact head; candidate submission never invokes
+a legacy construction continuation for a reconciler-owned repository.
+
+A failed handoff is an explicit exhausted-writer fact for the pinned successor
+rule. The adapter retains the original stage deadline; it does not start a new
+writer early. Once dispatch advances the authoritative stage, observation drops
+the predecessor's cached writer identity before projecting the new delegate.
+Task sessions release their resources normally; pool sessions retain the agent's
+slot reservation while releasing the completed task's workspace hold.

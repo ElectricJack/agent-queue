@@ -149,3 +149,91 @@ def repair_description(observation):
         "bounded repair if needed; only its fully checked candidate can reach main. "
         "Do not rewrite the source branch or publish main."
     )
+
+
+class RootAdmissionReader:
+    """Fresh exact-source Git/GitHub facts, without review-poller prerequisites."""
+
+    def __init__(self, promotion):
+        self.promotion = promotion
+
+    async def observe_many(self, members, policy):
+        """One open-PR listing per repository prunes stale branches before Git I/O."""
+        repositories = {}
+        observations = []
+        for member in members:
+            repository_id = member["repository_id"]
+            if repository_id not in repositories:
+                try:
+                    resolved = await self.promotion._resolve_repository(repository_id)
+                    binding = await self.promotion.git.bind_github_repository(resolved.origin_url)
+                    client = self.promotion.git._github_client(binding)
+                    pulls = await client.paged_list(
+                        f"/repositories/{binding.repository_id}/pulls?state=open&per_page=100"
+                    )
+                    if any(pull.get("state") != "open" or not pull.get("html_url") for pull in pulls):
+                        raise ValueError("open PR listing is malformed")
+                    repositories[repository_id] = {
+                        pull["html_url"]: pull for pull in pulls if pull.get("state") == "open"
+                    }
+                except Exception as exc:
+                    repositories[repository_id] = exc
+            pulls = repositories[repository_id]
+            if isinstance(pulls, Exception):
+                result = {"reason": "source_observation_unavailable", "error": str(pulls)}
+            elif member["pr_url"] not in pulls:
+                result = {"reason": "pr_closed"}
+            else:
+                result = await self(member, policy, pull=pulls[member["pr_url"]])
+            observations.append(result)
+        return observations
+
+    async def __call__(self, member, policy, *, pull=None):
+        import time
+
+        from src.git.manager import RemoteRefState
+
+        try:
+            resolved = await self.promotion._resolve_repository(member["repository_id"])
+            git = self.promotion.git
+            binding = await git.bind_github_repository(resolved.origin_url)
+            client = git._github_client(binding)
+            if pull is None:
+                pull = await client.pull_request(member["pr_url"])
+            if pull.get("state") != "open":
+                return {"reason": "pr_closed"}
+            head, base = pull.get("head") or {}, pull.get("base") or {}
+            if (head.get("sha") != member["source_head"]
+                    or head.get("ref") != member["source_branch"].removeprefix("refs/heads/")
+                    or (head.get("repo") or {}).get("id") != binding.repository_id
+                    or (base.get("repo") or {}).get("id") != binding.repository_id
+                    or base.get("ref") != member["default_branch"].removeprefix("refs/heads/")):
+                return {"reason": "pr_identity_changed"}
+            state, evidence = classify_source_checks(
+                await client.commit_check_runs(member["source_head"]),
+                head=member["source_head"], required=policy.root.required_checks,
+            )
+            if state != "green":
+                return {"reason": "source_ci_" + state, "checks": evidence}
+            await self.promotion._ensure_retained_repository(resolved)
+            store = str(resolved.retained_git_dir)
+            async with git.arepository_transaction(store):
+                await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                remote = await git.als_remote_ref(store, member["source_branch"])
+                target = await git.als_remote_ref(store, member["default_branch"])
+                if remote.state is not RemoteRefState.PRESENT or remote.oid != member["source_head"]:
+                    return {"reason": "source_ref_changed"}
+                if target.state is not RemoteRefState.PRESENT:
+                    return {"reason": "target_unavailable"}
+                contained = await git.ais_ancestor(
+                    store, member["source_head"], target.oid, strict=True,
+                )
+                if contained is True:
+                    return {"reason": "already_delivered"}
+                if contained is not False:
+                    return {"reason": "ancestry_unknown"}
+                tree = await self.promotion._tree_oid(resolved.retained_git_dir, member["source_head"])
+            return {"reason": None, "tree": tree, "checks": evidence,
+                    "target_sha": target.oid, "observed_at": time.time()}
+        except Exception as exc:
+            return {"reason": "source_observation_unavailable", "error": str(exc)}

@@ -416,7 +416,7 @@ async def _request(db, *, now: float = 10.0) -> dict:
     return await IntegrationScheduler(db).mark_due("p", now, "manual")
 
 
-async def _seed_leaf(db, task_id: str, head: str, *, source_base=BASE_SHA, **task_overrides) -> dict:
+async def _seed_leaf(db, task_id: str, head: str, *, source_base=BASE_SHA, with_review=True, **task_overrides) -> dict:
     review = _review_row(task_id, head, evidence_id=f"review-{task_id}", source_base=source_base)
     async with db.immediate() as conn:
         await conn.execute(insert(tasks).values(**_task_row(task_id, **task_overrides)))
@@ -426,7 +426,8 @@ async def _seed_leaf(db, task_id: str, head: str, *, source_base=BASE_SHA, **tas
         await conn.execute(
             insert(task_integration_checkpoints).values(**_checkpoint_row(task_id, head))
         )
-        await conn.execute(insert(integration_review_evidence).values(**review))
+        if with_review:
+            await conn.execute(insert(integration_review_evidence).values(**review))
     return review
 
 
@@ -2114,3 +2115,186 @@ async def test_disabled_schedule_maintains_existing_batch_without_new_sweep(db, 
     assert schedule["outstanding_request_id"] == request["request_id"]
     assert schedule["request_sequence"] == request["request_sequence"]
     assert len(events) == 1
+
+
+async def test_reconciler_seals_live_green_without_review_or_source_ci_rows(db, monkeypatch):
+    from src.integration.engine import root_admission
+    from src.integration.scheduler import TrainService
+    from src.integration.subjects import AdmissionPredicate
+
+    policy = await _enable_train(db)
+    policy['root']['repair']['source_ci'] = True
+    await db.update_project('p', hierarchical_integration_policy=policy)
+    await _seed_leaf(db, 'green', '1' * 40, with_review=False)
+    await _seed_leaf(db, 'closed', '2' * 40, with_review=False)
+    await _seed_leaf(db, 'pending', '3' * 40, with_review=False)
+    request = await _request(db)
+
+    async def observe(member, policy):
+        if member['task_id'] == 'closed':
+            return {'reason': 'pr_closed'}
+        if member['task_id'] == 'pending':
+            return {'reason': 'source_ci_pending'}
+        return {'reason': None, 'tree': '4' * 40, 'checks': {'head_sha': member['source_head']},
+                'target_sha': BASE_SHA, 'observed_at': 15.0}
+
+    monkeypatch.setattr("src.integration.engine.current_admission",
+                        lambda: AdmissionPredicate(require_source_ci=True))
+    with root_admission(AdmissionPredicate(require_source_ci=True)):
+        service = TrainService(db, admission_reader=observe)
+        result = await service.seal('p', request['request_id'], 20)
+        assert await service.seal('p', request['request_id'], 21) == result
+    assert result['outcome'] == 'sealed'
+    assert {row['task_id']: row['reason'] for row in result['exclusions']} == {
+        'closed': 'pr_closed', 'pending': 'source_ci_pending',
+    }
+    async with db._engine.connect() as conn:
+        member = (await conn.execute(select(integration_batch_members))).mappings().one()
+        review = (await conn.execute(select(integration_review_evidence))).mappings().one()
+    assert member['task_id'] == 'green'
+    assert member['review_evidence'] == dict(review)
+    assert review['evidence']['decision_path'] == 'git_source_ci'
+    assert review['reviewer_identity'] == 'service:root-reconciler'
+
+
+@pytest.mark.parametrize('mutation, reason', [
+    ('head', 'source_identity_changed'), ('policy', 'policy_changed'),
+    ('rejection', 'review_rejected'), ('unavailable', 'source_observation_unavailable'),
+    ('delivered', 'already_delivered'), ('hold', 'source_no_longer_eligible'),
+])
+async def test_reconciler_seal_explains_exclusions_and_rechecks_fresh_identity(
+    db, mutation, reason, monkeypatch,
+):
+    from src.integration.engine import root_admission
+    from src.integration.scheduler import TrainService
+    from src.integration.subjects import AdmissionPredicate
+
+    await _enable_train(db)
+    await _seed_leaf(db, 'first', '1' * 40)
+    request = await _request(db)
+
+    async def observe(member, policy):
+        async with db.immediate() as conn:
+            if mutation == 'head':
+                await conn.execute(update(task_integration_checkpoints).values(checkpoint_sha='2' * 40))
+            elif mutation == 'policy':
+                await conn.execute(update(projects).values(hierarchical_integration_generation=999))
+            elif mutation == 'hold':
+                await conn.execute(insert(task_labels).values(task_id='first', label='hold:human'))
+            elif mutation == 'rejection':
+                await conn.execute(insert(integration_review_evidence).values(**_review_row(
+                    'first', '1' * 40, evidence_id='rejected', verdict='rejected', created_at=99,
+                )))
+        return {'reason': 'already_delivered' if mutation == 'delivered' else None,
+                'tree': '4' * 40, 'checks': {}, 'observed_at': 15.0}
+
+    monkeypatch.setattr("src.integration.engine.current_admission", lambda: AdmissionPredicate())
+    with root_admission(AdmissionPredicate()):
+        result = await TrainService(db, admission_reader=None if mutation == 'unavailable' else observe
+                                    ).seal('p', request['request_id'], 20)
+    assert result['outcome'] == 'empty'
+    assert result['exclusions'] == [{'task_id': 'first',
+                                     'head_sha': ('2' if mutation == 'head' else '1') * 40,
+                                     'reason': reason}]
+
+
+@pytest.mark.parametrize('condition, expected', [
+    ('green', None), ('closed', 'pr_closed'), ('moved', 'pr_identity_changed'),
+    ('foreign', 'source_ci_pending'), ('red', 'source_ci_red'),
+    ('rerun', 'source_ci_pending'), ('delivered', 'already_delivered'),
+    ('unknown', 'ancestry_unknown'), ('outage', 'source_observation_unavailable'),
+])
+async def test_live_root_admission_reads_exact_trusted_checks_and_git(condition, expected):
+    from contextlib import asynccontextmanager
+    from src.git.manager import RemoteRefState
+    from src.integration.source_ci import RootAdmissionReader
+
+    @asynccontextmanager
+    async def transaction(store):
+        yield
+
+    member = {'repository_id': 'repo', 'pr_url': 'https://github.com/example/repo/pull/1',
+              'source_head': '1' * 40, 'source_branch': 'aq/source', 'default_branch': 'main'}
+    pull = {'state': 'closed' if condition == 'closed' else 'open',
+            'head': {'sha': ('2' if condition == 'moved' else '1') * 40,
+                     'ref': 'aq/source', 'repo': {'id': 9}},
+            'base': {'ref': 'main', 'repo': {'id': 9}}}
+    check = {'id': 1, 'name': 'unit', 'head_sha': '1' * 40, 'status': 'completed',
+             'conclusion': 'failure' if condition == 'red' else 'success',
+             'app': {'id': 'other' if condition == 'foreign' else 'forge'}}
+    checks = [check]
+    if condition == 'rerun':
+        checks.append({**check, 'id': 2, 'status': 'in_progress', 'conclusion': None})
+    client = SimpleNamespace(pull_request=AsyncMock(return_value=pull),
+                             commit_check_runs=AsyncMock(return_value=checks))
+    if condition == 'outage':
+        client.commit_check_runs.side_effect = RuntimeError('network unavailable')
+    git = SimpleNamespace(
+        bind_github_repository=AsyncMock(return_value=SimpleNamespace(repository_id=9)),
+        _github_client=lambda binding: client, arepository_transaction=transaction,
+        als_remote_ref=AsyncMock(side_effect=[
+            SimpleNamespace(state=RemoteRefState.PRESENT, oid='1' * 40),
+            SimpleNamespace(state=RemoteRefState.PRESENT, oid=BASE_SHA),
+        ]),
+        ais_ancestor=AsyncMock(return_value=None if condition == 'unknown' else condition == 'delivered'),
+    )
+    promotion = SimpleNamespace(
+        git=git, _resolve_repository=AsyncMock(return_value=SimpleNamespace(
+            origin_url='https://github.com/example/repo', retained_git_dir='/retained',
+        )), _ensure_retained_repository=AsyncMock(), _fetch_all_heads=AsyncMock(),
+        _tree_oid=AsyncMock(return_value='3' * 40),
+    )
+    result = await RootAdmissionReader(promotion)(member, HierarchicalIntegrationPolicy.model_validate(_policy()))
+    assert result['reason'] == expected
+    if expected is None:
+        assert result['tree'] == '3' * 40
+        assert result['checks']['head_sha'] == '1' * 40
+    elif expected.startswith(('pr_', 'source_ci_', 'source_observation_')):
+        git.ais_ancestor.assert_not_awaited()
+
+
+async def test_root_frontier_prunes_incomplete_delivered_and_closed_sources(db):
+    from src.integration.observe import ObservationRows
+    from src.integration.root_runtime import _RootObservationReader
+    from src.integration.subjects import PolicyArtifactPin, Subject, SubjectKind, SubjectSchedule
+
+    await _enable_train(db)
+    for index, name in enumerate(('open', 'closed', 'incomplete', 'delivered'), start=1):
+        await _seed_leaf(db, name, str(index) * 40)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'incomplete').values(status='READY'))
+        await conn.execute(insert(task_delivery_receipts).values(
+            id='delivered', domain_key='delivered', source_task_id='delivered',
+            repository_id='repo', target_branch='main', disposition='code', created_at=1,
+        ))
+    subject = Subject(
+        id='subject', project_id='p', repository_id='repo', kind=SubjectKind.ROOT_BATCH,
+        subject_key='root_batch:repo:request', target_ref='refs/heads/main', phase='admitting',
+        schedule=SubjectSchedule.progress(now=1, max_wait_seconds=60),
+        policy=PolicyArtifactPin(playbook_id='test', artifact_sha256='sha256:' + '1' * 64),
+        created_at=1, updated_at=1,
+    )
+    snapshot = ObservationRows(subject=subject, project={}, repository={}, rows={
+        'tasks': tuple(_task_row(name) for name in ('open', 'closed', 'incomplete', 'delivered')),
+    })
+    reader = _RootObservationReader(db, open_prs=AsyncMock(return_value={_task_row('open')['pr_url']}))
+    reader.reader = SimpleNamespace(read=AsyncMock(return_value=snapshot))
+    result = await reader.read('subject')
+    assert [row['id'] for row in result.all('tasks')] == ['open']
+
+
+async def test_root_admission_batches_closed_pr_pruning_without_reading_each_head():
+    from src.integration.source_ci import RootAdmissionReader
+
+    client = SimpleNamespace(paged_list=AsyncMock(return_value=[]))
+    git = SimpleNamespace(bind_github_repository=AsyncMock(return_value=SimpleNamespace(repository_id=9)),
+                          _github_client=lambda binding: client)
+    promotion = SimpleNamespace(git=git, _resolve_repository=AsyncMock(return_value=SimpleNamespace(
+        origin_url='https://github.com/example/repo',
+    )))
+    members = [{'repository_id': 'repo', 'pr_url': f'https://github.com/example/repo/pull/{i}'}
+               for i in range(352)]
+    result = await RootAdmissionReader(promotion).observe_many(members, None)
+    assert result == [{'reason': 'pr_closed'}] * 352
+    client.paged_list.assert_awaited_once()
+    git.bind_github_repository.assert_awaited_once()

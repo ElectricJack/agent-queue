@@ -15,6 +15,8 @@ def render(text, base_url=BASE):
 
 def test_short_reply_render_is_unchanged_except_marker():
     assert render("Hello supervisor") == f"Hello supervisor{MARKER}"
+    assert set(MARKER) <= {"\u2063", "\u200b", "\u200c", "\u200d", "\u2060"}
+    assert len(MARKER) == 34
     assert "aq-conv:" not in render("Hello supervisor")
 
 
