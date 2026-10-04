@@ -1390,7 +1390,7 @@
       ]
     }
   },
-  "digest": "sha256:ab4758edc6400933e1606037a52ffc4eb1e944fd053c3bc0c0f909213010b2b3",
+  "digest": "sha256:be8b2a60ce194cece5cb25a21e134fc836705b3fbd4a6a26ac04c34498efc100",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7357,6 +7357,7 @@
         "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
+        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -7992,8 +7993,11 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
         "src.integration.promotion",
         "src.models"
