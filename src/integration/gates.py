@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import gates, integration_subjects, task_metadata, tasks
@@ -36,6 +36,7 @@ from src.integration.subjects import (
     PrimitiveOutcome,
     PrimitivePorts,
     Subject,
+    SubjectKind,
     SubjectPhase,
     SubjectSchedule,
     WaitArgs,
@@ -367,6 +368,70 @@ class GatePrimitives:
             .values(next_due_at=now, wake_requested_at=now)
         )
         return PrimitiveOutcome(primitive=primitive, outcome="answered", detail=payload)
+
+    async def release_hold(
+        self, subject: Subject, gate_id: str, *, reason: str, operator_id: str,
+        verified_human: bool, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Explicit operator release; never rewrite or consume the old answer.
+
+        Parent mutations share this exclusion across remote actions. Take the
+        exclusive lock before the subject row, just as an engine transfer does.
+        This control is deliberately absent from the policy primitive ports.
+        """
+        from src.integration.engine import EngineRefused
+        from src.integration.parent_engine import parent_lock_key
+
+        if not verified_human or not operator_id.strip():
+            raise EngineRefused("verified_human_required")
+        if subject.kind is not SubjectKind.PARENT_EPISODE or not subject.is_live:
+            raise EngineRefused("live_parent_subject_required")
+        if not dry_run and not reason.strip():
+            raise EngineRefused("release_reason_required")
+        async with self.db.immediate() as conn:
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": parent_lock_key(subject.task_id)},
+            )
+            current = await lock_current_on(self.db, conn, subject)
+            if current is None:
+                raise EngineRefused("stale_subject")
+            if current.schedule.gate_id != gate_id:
+                raise EngineRefused("gate_not_current")
+            definition = await journal_entry_on(conn, current.id, f"gate:{gate_id}")
+            answer = await journal_entry_on(conn, current.id, f"gate-answer:{gate_id}")
+            if (definition is None or answer is None
+                    or not self._same_identity(definition, current)
+                    or not self._same_identity(answer, current)):
+                raise EngineRefused("held_gate_identity_mismatch")
+            if answer["payload"].get("choice") != "hold":
+                raise EngineRefused("gate_not_held")
+            detail = {
+                "subject_id": current.id, "gate_id": gate_id,
+                "expected_version": current.version, "engine": current.engine.value,
+            }
+            if dry_run:
+                return {"outcome": "preview", **detail}
+            now = self.clock()
+            await append_record_on(
+                self.db, conn, current, key=f"gate-release:{gate_id}",
+                primitive=Primitive.RECORD_DECISION, entry_kind="action", outcome="released",
+                now=now, payload={
+                    **detail, "head": self._head(current), "previous_answer": answer["payload"],
+                    "reason": reason, "operator_id": operator_id,
+                    "command": "integration_release_held_gate",
+                },
+            )
+            row = await self._update_on(
+                conn, current, schedule_values(SubjectSchedule.progress(
+                    now=now, max_wait_seconds=current.schedule.max_wait_seconds,
+                )), now,
+            )
+            await conn.execute(
+                update(integration_subjects).where(integration_subjects.c.id == current.id)
+                .values(wake_requested_at=now),
+            )
+            return {"outcome": "released", **detail, "subject_version": row["version"]}
 
     async def eject(self, subject: Subject, args: EjectArgs) -> PrimitiveOutcome:
         async with self.db._engine.begin() as conn:

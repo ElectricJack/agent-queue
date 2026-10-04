@@ -240,6 +240,23 @@ The report renders both command sets verbatim in its `## Rollback` section, and
 lists every subject the window covers. `aq restart --no-dashboard` — never plain
 `aq stop` then `aq start`, which kills every agent tmux session.
 
+Parent rollback uses `engine-transfer --parent-task-id PARENT_TASK_ID`. It keeps
+any human gate binding, so a gate answered `hold` still blocks legacy parent
+operations after rollback. When the human is ready to lift that hold, preview
+and apply its explicit release using the subject's current version:
+
+```sh
+aq integration release-held-gate SUBJECT_ID GATE_ID
+aq integration release-held-gate SUBJECT_ID GATE_ID \
+  --expected-version VERSION --reason "ready to resume collection" --apply
+```
+
+The release requires a local human operator, preserves the immutable answer and
+records the reason and operator in the subject journal. It works with either
+engine and does not clear a project pause or manual task pause. An unanswered
+gate or a rejection cannot be released this way. If the reconciler still sees
+the failure after release, it opens a new gate for a fresh decision.
+
 ## What this comparison does not prove
 
 The report carries these in its own `coverage_limits`, in every artifact:

@@ -33,6 +33,25 @@ def integration() -> None:
     """Inspect and control hierarchical integration trains."""
 
 
+@integration.command("release-held-gate")
+@click.argument("subject_id")
+@click.argument("gate_id")
+@click.option("--expected-version", type=click.IntRange(min=0), default=None,
+              help="Exact subject version returned by the preview.")
+@click.option("--reason", default="", help="Required explanation when releasing the hold.")
+@click.option("--apply", is_flag=True, help="Release the hold; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_release_held_gate(ctx, subject_id, gate_id, expected_version, reason, apply):
+    """Preview or release a human hold on a parent SUBJECT_ID and GATE_ID."""
+    if apply and (expected_version is None or not reason.strip()):
+        raise click.UsageError("--apply needs --expected-version and a nonblank --reason")
+    _execute(ctx, "integration_release_held_gate", {
+        "subject_id": subject_id, "gate_id": gate_id, "expected_version": expected_version,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 def _expected_versions(items: tuple[str, ...]) -> dict[str, int]:
     """Parse repeated ``SUBJECT_ID:VERSION`` fences into exact subject versions."""
     versions: dict[str, int] = {}
