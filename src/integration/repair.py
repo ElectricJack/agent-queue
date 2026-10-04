@@ -1118,6 +1118,8 @@ class RepairService:
                 )
                 if previous["result_outcome"] == "escalate":
                     value["stage"] = int(previous["ordinal"]) + 1
+                elif previous["result_action"] == "stage_opened":
+                    value["stage"] = int(previous["ordinal"])
                 return value
             stage = (
                 await conn.execute(
@@ -1141,7 +1143,7 @@ class RepairService:
                 return self._result_value(
                     "budget_exhausted", "supervisor_recovery", int(stage["attempts"])
                 )
-            if stage is None:
+            if stage is None or stage["state"] in {"passed", "cancelled"}:
                 # A parent's first aggregate verification has no stage yet:
                 # batches open stage 0 when the candidate is built, parents
                 # only on a merge conflict. A trusted red on the current
@@ -1149,15 +1151,22 @@ class RepairService:
                 # green, leaving the held verifier waiting on a subject that
                 # could never verify. Open the stage instead; the dispatch
                 # drain source finds a writerless active stage on its own.
+                # A stage that settled on its recorded resolution, or one a
+                # reopened collection left cancelled, has no writer either,
+                # and the settle is what started this CI: its red opens the
+                # next ordinal the same way.
                 opened = await self._open_red_parent_stage_on(
                     conn,
                     operation=dict(operation),
                     evidence_id=evidence_id,
                     now=recorded_at,
+                    settled=None if stage is None else dict(stage),
                 )
                 if opened is not None:
                     return opened
-                return self._result_value("continue", "stale", 0)
+                return self._result_value(
+                    "continue", "stale", 0 if stage is None else int(stage["attempts"])
+                )
             if stage["state"] not in {"active", "awaiting_completion"}:
                 return self._result_value("continue", "stale", int(stage["attempts"]))
             evidence = (
@@ -1289,19 +1298,39 @@ class RepairService:
         return result
 
     async def _open_red_parent_stage_on(
-        self, conn, *, operation: dict[str, Any], evidence_id: str, now: float
+        self,
+        conn,
+        *,
+        operation: dict[str, Any],
+        evidence_id: str,
+        now: float,
+        settled: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Stage a trusted red on a parent's current generation and head.
+
+        Without *settled* the red opens stage zero. *settled* is an active
+        stage that already ended with no writer left: one passed on its
+        recorded conflict resolution (the settle that hands the parent to its
+        verifier) or one cancelled before ``aq integration reopen-collection``
+        revived the operation. The red then opens the next ordinal on the
+        debug budget, as an escalation would.
 
         ``None`` means the evidence is about a generation or head the parent
         has already moved past: that, and only that, is what ``stale`` reports.
         A red on the live subject that cannot be staged blocks for a human
         rather than reporting a no-op the playbook would complete green.
         """
-        if (
-            operation["target_kind"] != "parent"
-            or operation["state"] != "active"
-            or int(operation["active_stage"]) != 0
+        if operation["target_kind"] != "parent":
+            return None
+        if settled is None:
+            if operation["state"] != "active" or int(operation["active_stage"]) != 0:
+                return None
+        elif operation["state"] not in {"active", "escalated"} or not (
+            settled["state"] == "cancelled"
+            or (
+                settled["state"] == "passed"
+                and (settled["dossier"] or {}).get("resolution_verification")
+            )
         ):
             return None
         evidence = (
@@ -1349,12 +1378,58 @@ class RepairService:
             )
             return self._result_value("human_required", "no_stage_blocked", 0)
         _policy, boundary, subject = context
-        deadline_at = now + boundary.repair.primary_seconds
+        repair = boundary.repair
+        ordinal = 0
+        intelligence_class = boundary.primary_intelligence_class
+        deadline_at = now + repair.primary_seconds
+        if settled is not None:
+            ordinal = int(
+                (
+                    await conn.execute(
+                        select(func.max(integration_repair_stages.c.ordinal)).where(
+                            integration_repair_stages.c.operation_id == operation["id"]
+                        )
+                    )
+                ).scalar_one()
+            ) + 1
+            intelligence_class = repair.debug_intelligence_class
+            deadline_at = now + repair.debug_seconds
+        dossier = await self._initial_dossier_on(
+            conn,
+            operation=operation,
+            subject=subject,
+            starting_sha=head,
+            trigger_id=evidence_id,
+            boundary=boundary,
+            started_at=now,
+            deadline_at=deadline_at,
+        )
+        if settled is not None:
+            dossier["budget"] = {
+                "ordinal": ordinal,
+                "started_at": now,
+                "deadline_at": deadline_at,
+                "attempt_limit": repair.debug_attempts,
+                "attempts": 0,
+            }
+            dossier["allocation"] = {
+                "subject_sha": head, "ordinal": ordinal, "allocated_at": now,
+            }
+            previous_stage = {
+                "ordinal": int(settled["ordinal"]),
+                "state": settled["state"],
+                "trigger_id": settled["trigger_id"],
+                "starting_sha": settled["starting_sha"],
+            }
+            verification = (settled["dossier"] or {}).get("resolution_verification")
+            if verification:
+                previous_stage["resolution_verification"] = verification
+            dossier["previous_stage"] = previous_stage
         row = {
             "operation_id": operation["id"],
-            "ordinal": 0,
-            "policy": boundary.repair.model_dump(mode="json"),
-            "intelligence_class": boundary.primary_intelligence_class,
+            "ordinal": ordinal,
+            "policy": repair.model_dump(mode="json"),
+            "intelligence_class": intelligence_class,
             # Deprecated column: routes come from the router, never the policy.
             "profile_id": None,
             "repair_task_id": None,
@@ -1362,30 +1437,33 @@ class RepairService:
             "starting_sha": head,
             "trigger_id": evidence_id,
             "current_subject": subject,
-            "deadline_event_id": f"repair-deadline-{operation['id']}-0",
+            "deadline_event_id": f"repair-deadline-{operation['id']}-{ordinal}",
             "started_at": now,
             "deadline_at": deadline_at,
             "attempts": 0,
-            "dossier": await self._initial_dossier_on(
-                conn,
-                operation=operation,
-                subject=subject,
-                starting_sha=head,
-                trigger_id=evidence_id,
-                boundary=boundary,
-                started_at=now,
-                deadline_at=deadline_at,
-            ),
+            "dossier": dossier,
             "state": "active",
         }
         await conn.execute(insert(integration_repair_stages).values(**row))
+        if settled is not None:
+            advanced = await conn.execute(
+                update(integration_repair_operations)
+                .where(
+                    integration_repair_operations.c.id == operation["id"],
+                    integration_repair_operations.c.state == operation["state"],
+                    integration_repair_operations.c.active_stage == settled["ordinal"],
+                )
+                .values(active_stage=ordinal, state="escalated", updated_at=now)
+            )
+            if advanced.rowcount != 1:
+                raise _RepairInvariant("repair operation changed while opening a red stage")
         # The triggering red opens the stage exactly as a merge conflict does,
         # so it spends no attempt. Recording it keeps a redelivery idempotent
         # through ``record_result``'s duplicate branch.
         await conn.execute(
             insert(integration_repair_stage_evidence).values(
                 operation_id=operation["id"],
-                ordinal=0,
+                ordinal=ordinal,
                 evidence_id=evidence_id,
                 counted_attempt=False,
                 result_outcome="started",
@@ -1396,7 +1474,7 @@ class RepairService:
         await self._notify_verifier_of_red_on(
             conn, operation=operation, evidence=dict(evidence), now=now
         )
-        return self._result_value("started", "stage_opened", 0) | {"stage": 0}
+        return self._result_value("started", "stage_opened", 0) | {"stage": ordinal}
 
     @staticmethod
     async def _notify_verifier_of_red_on(
