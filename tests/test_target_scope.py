@@ -27,7 +27,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import insert
 
-from src.api.auth import RequestScope
+from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.scope import _forbids_project_id, check_command_scope, check_request_scope
 from src.api.target_scope import (
     TARGET_REFERENCE_NAMES,
@@ -700,10 +700,28 @@ async def test_a_missing_database_refuses_rather_than_admits():
     assert "without a database" in error
 
 
-async def test_a_target_row_that_is_gone_is_left_to_the_handler(db):
-    """No row means no cross-project read; the handler answers ``not_found``."""
+async def test_a_target_row_that_is_gone_names_no_target(db):
+    """An id that matches no row is never a pass: the call names no target.
+
+    Admitting it trusted the handler to read the id exactly as this check did;
+    one that strips or splits ``"foreign,"`` acted on a row nobody looked up.
+    """
+    error = await target_scope_error(
+        "integration_reserve_owner", {"task_id": "gone"}, "p", db=db
+    )
+
+    assert error == (
+        "out of scope: integration_reserve_owner names no project-owned target "
+        "(task_id 'gone' match no row), so a token scoped to project p may not run it"
+    )
+
+
+async def test_a_gone_row_beside_this_projects_target_is_left_to_the_handler(db):
+    """An unmatched id next to a resolving one adds no project claim."""
     assert (
-        await target_scope_error("integration_reserve_owner", {"task_id": "gone"}, "p", db=db)
+        await target_scope_error(
+            "add_dependency", {"task_id": "own", "depends_on": ["gone"]}, "p", db=db
+        )
         is None
     )
 
@@ -743,14 +761,17 @@ async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
 
 
 @pytest.mark.parametrize("argument", sorted(TARGET_RESOLVERS))
-async def test_missing_targets_remain_admitted_for_every_resolver(db, argument):
+async def test_a_missing_target_names_no_target_for_every_resolver(db, argument):
     if argument == "receive_new_work.project_id":
         command = "provider_allocation_preview"
         args = {"receive_new_work": {"project_id": "gone", "mode": "prefer"}}
     else:
         command = "missing_target"
         args = {argument: "gone"}
-    assert await target_scope_error(command, args, "p", db=db) is None
+    error = await target_scope_error(command, args, "p", db=db)
+
+    assert error is not None
+    assert f"{argument} 'gone' match no row" in error
 
 
 @pytest.mark.parametrize(
@@ -782,6 +803,96 @@ async def test_a_missing_task_reaches_the_handler_and_returns_not_found(
     assert result["success"] is False
     assert result["outcome"] == "not_found"
     assert result["error"] == "task does not exist"
+
+
+# --- provider_reroute / provider_reroute_undo (quick-crest-28) -------------------
+#
+# Neither command's contract declares the task ids its handler reads, and the
+# handler splits and strips them.  The gate validates against the handler's own
+# model first, so the ids the target check resolves are the ids that move.
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "foreign,",
+        " foreign",
+        "foreign ",
+        "own foreign",
+        "own,foreign",
+        ["foreign,"],
+        ["own", " foreign"],
+    ],
+)
+async def test_provider_reroute_refuses_a_foreign_task_however_it_is_spelled(db, task_id):
+    args = {"task_id": task_id}
+
+    error = await check_request_scope("provider_reroute", args, _scope("p"), db=db)
+
+    assert error == (
+        "out of scope: provider_reroute targets another project (task_id belongs to other)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "refused"),
+    [
+        ("provider_reroute", {"task_ids": ["foreign"]}, "task_ids"),
+        ("provider_reroute", {"task_ids": ["foreign"], "job_id": "made-up"}, "task_ids"),
+        ("provider_reroute", {"task_id": "own", "project_id": "p"}, "project_id"),
+        ("provider_reroute", {"task_id": 5}, "task_id"),
+        ("provider_reroute_undo", {"task_ids": ["foreign"]}, "task_ids"),
+        ("provider_reroute_undo", {"batch": "b-1"}, "batch"),
+    ],
+)
+async def test_reroute_arguments_no_model_declares_are_refused_before_the_target_check(
+    db, command, args, refused
+):
+    error = await check_request_scope(command, dict(args), _scope("p"), db=db)
+
+    assert error is not None
+    assert error.startswith(f"out of scope: invalid {command} arguments (")
+    assert f"{refused}:" in error
+
+
+@pytest.mark.parametrize("task_id", ["own,", " own", ["own, "]])
+async def test_provider_reroute_forwards_the_ids_the_target_check_resolved(db, task_id):
+    args = {"task_id": task_id, "dry_run": True, "provider": None}
+
+    assert await check_request_scope("provider_reroute", args, _scope("p"), db=db) is None
+    assert args == {"task_id": ["own"], "dry_run": True}
+
+
+@pytest.mark.parametrize("task_id", ["gone", "gone,", ["gone", "also-gone"]])
+async def test_provider_reroute_naming_only_unknown_tasks_is_refused(db, task_id):
+    error = await check_request_scope(
+        "provider_reroute", {"task_id": task_id}, _scope("p"), db=db
+    )
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
+async def test_a_per_project_provider_reroute_sweep_names_no_target(db):
+    error = await check_request_scope("provider_reroute", {}, _scope("p"), db=db)
+
+    assert error is not None
+    assert "names no project-owned target" in error
+
+
+async def test_provider_reroute_undo_forwards_canonical_ids_to_its_handler(db):
+    """No contract, so the gate injects ``project_id``; the handler confines."""
+    args = {"task_id": "foreign,"}
+
+    assert await check_request_scope("provider_reroute_undo", args, _scope("p"), db=db) is None
+    assert args == {"task_id": ["foreign"], "project_id": "p"}
+
+
+async def test_the_local_operator_sees_invalid_reroute_arguments_from_the_handler():
+    args = {"task_ids": ["anything"]}
+
+    assert await check_request_scope("provider_reroute", args, LOCAL_SCOPE) is None
+    assert args == {"task_ids": ["anything"]}
 
 
 async def test_every_target_named_is_checked_not_just_the_first(db):

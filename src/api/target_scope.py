@@ -27,9 +27,13 @@ mean "allowed":
   ignored — a command whose real target this module cannot resolve is granted
   to nobody until its owner can be read;
 * a command that names no target at all is refused;
-* a target whose row is gone resolves to *no* project claim, and the handler
-  reports ``not_found`` itself — the pre-existing answer for a missing row, not
-  a cross-project read;
+* an id that matches no row names no target, so a command whose every named
+  id matches no row is refused like one that names none.  Admitting it would
+  trust the handler to read the id exactly as this module did, and one that
+  normalises ``"B-1,"`` to ``B-1`` would act on a row nobody checked.  An
+  unmatched id beside a target that does resolve (a released workspace next to
+  its live operation) adds no project claim, and the handler answers
+  ``not_found`` for it;
 * a target whose row exists but whose project cannot be resolved is refused,
   including a row whose indirect owner is gone;
 * a database the scope layer cannot query refuses the call rather than
@@ -290,8 +294,8 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
     """Confine a per-project elevated *command* to *project_id*'s own targets.
 
     The returned string is the scope error.  ``None`` means every target the
-    command names either belongs to *project_id* or names a row that is gone,
-    which the handler answers for itself.
+    command names that has a row belongs to *project_id*, and at least one
+    does; an unmatched id beside it is the handler's ``not_found``.
     """
     if db is None:
         return (
@@ -310,10 +314,12 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
             f"out of scope: {command} names a target whose owning project cannot be "
             f"resolved ({', '.join(unknown)})"
         )
+    unmatched: list[str] = []
     for name, ids in references.items():
         for value in ids:
             found, owning = await _target_project(db, name, value)
             if not found:
+                unmatched.append(f"{name} {value!r}")
                 continue
             if owning is None:
                 return f"out of scope: {command} targets a row owned by no project"
@@ -323,6 +329,16 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
                 f"out of scope: {command} targets another project "
                 f"({name} belongs to {owning})"
             )
+    if len(unmatched) == sum(len(ids) for ids in references.values()):
+        # Every id matched no row, so the call names no target this check has
+        # seen.  Admitting it would trust the handler to read the same id the
+        # same way; one that strips or splits it (``"B-1,"``) would then act
+        # on a row this check never looked up.
+        return (
+            f"out of scope: {command} names no project-owned target "
+            f"({', '.join(unmatched)} match no row), so a token scoped to "
+            f"project {project_id} may not run it"
+        )
     return None
 
 

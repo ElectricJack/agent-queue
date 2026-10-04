@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:9d155e18fabbc8771172a07d9469f05a5c63bc5adf15705d8050bd941d816ac5",
+  "digest": "sha256:178a8d804e69d2cc0261e5be6ebb4dff40e18f8b2f3246a405fbcabdf25023d1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12401,7 +12401,9 @@
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
