@@ -384,14 +384,17 @@ class GitHubReviewPoller:
         reviews = await client.paged_list(
             f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100"
         )
+        verdicts = []
+        for review in reviews:
+            user, review_id = review.get("user"), review.get("id")
+            if (review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+                    and isinstance(review_id, int) and not isinstance(review_id, bool)
+                    and isinstance(user, dict) and user.get("type") == "User"
+                    and isinstance(user.get("login"), str) and user["login"].strip()):
+                verdicts.append(review)
         latest: dict[str, dict[str, Any]] = {}
-        for review in sorted(reviews, key=lambda item: item.get("id", -1)):
-            user = review.get("user")
-            if (review.get("state") not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
-                    or not isinstance(user, dict) or user.get("type") != "User"
-                    or not isinstance(user.get("login"), str) or not user["login"].strip()):
-                continue
-            latest[user["login"]] = review
+        for review in sorted(verdicts, key=lambda item: item["id"]):
+            latest[review["user"]["login"]] = review
         approvals = [
             review for review in latest.values()
             if review["state"] == "APPROVED" and review.get("commit_id") == moved
