@@ -1059,6 +1059,9 @@ source and checkpoint SHAs, repository-qualified target, expected old SHA, prepa
 ownership fence, and preparation/push/reconciliation state. Persist the intent before any push.
 Keep prepared commits reachable through a durable recovery ref until reconciliation completes;
 conflict resolutions must be recoverable without rerunning the agent.
+If a crash pins the recovery ref before recording the prepared SHA, preparation reuses that
+commit after verifying its exact ordered parents are the expected target and reviewed source
+head. It must not regenerate an already pinned result; a mismatched ref is an invariant error.
 
 After a push, atomically finalize the receipt and enqueue the delivery event in a transactional
 outbox. A crash before pushing leaves a retryable intent. A crash after pushing is reconciled by
