@@ -1297,6 +1297,22 @@
       }
     },
     {
+      "name": "session_prune",
+      "description": "Remove a sleeping or stopped named session after confirming its terminal and marked processes are inactive. Refuses sessions with a task or claim.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Inactive named session to forget"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      }
+    },
+    {
       "name": "session_input",
       "description": "Type directly into a live terminal. Send exactly one literal text chunk or named key; text is not automatically submitted. Requires global admin.",
       "input_schema": {
@@ -14736,22 +14752,6 @@
             "description": "Alias for lines"
           }
         }
-      }
-    },
-    "session_prune": {
-      "name": "session_prune",
-      "description": "Remove one inactive named row; never signal or forget live work.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "description": "Inactive named session to forget"
-          }
-        },
-        "required": [
-          "session_id"
-        ]
       }
     },
     "session_show": {

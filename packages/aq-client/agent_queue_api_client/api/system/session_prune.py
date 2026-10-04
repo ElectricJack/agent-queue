@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: SessionPruneRequest,
 ) -> Response[SessionKillResponse | SessionPruneResponse422]:
-    """Remove one inactive named row; never signal or forget live work.
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     Remove one inactive named row; never signal or forget live work.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
         body (SessionPruneRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: SessionPruneRequest,
 ) -> SessionKillResponse | SessionPruneResponse422 | None:
-    """Remove one inactive named row; never signal or forget live work.
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     Remove one inactive named row; never signal or forget live work.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
         body (SessionPruneRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: SessionPruneRequest,
 ) -> Response[SessionKillResponse | SessionPruneResponse422]:
-    """Remove one inactive named row; never signal or forget live work.
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     Remove one inactive named row; never signal or forget live work.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
         body (SessionPruneRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: SessionPruneRequest,
 ) -> SessionKillResponse | SessionPruneResponse422 | None:
-    """Remove one inactive named row; never signal or forget live work.
+    """Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
-     Remove one inactive named row; never signal or forget live work.
+     Remove a sleeping or stopped named session after confirming its terminal and marked processes are
+    inactive. Refuses sessions with a task or claim.
 
     Args:
         body (SessionPruneRequest):

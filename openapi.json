@@ -16035,8 +16035,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Remove one inactive named row; never signal or forget live work.",
-        "description": "Remove one inactive named row; never signal or forget live work.",
+        "summary": "Remove a sleeping or stopped named session after confirming its terminal and marked processes are inactive. Refuses sessions with a task or claim.",
+        "description": "Remove a sleeping or stopped named session after confirming its terminal and marked processes are inactive. Refuses sessions with a task or claim.",
         "operationId": "session_prune",
         "requestBody": {
           "content": {

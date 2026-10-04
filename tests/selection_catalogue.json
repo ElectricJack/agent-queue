@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:07727e4481a48ad22011e64e4d22af48d33511425e5fa2fc8dd2e9ec1d49d236",
+  "digest": "sha256:5a875bd69f0f8464749fab237b780a923bb4624eb402eced2bac85ac6057215c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4838,6 +4838,7 @@
         "src.orchestrator",
         "src.runtimes.base",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider",
         "src.sessions.spec"
       ],
@@ -12629,6 +12630,7 @@
         "src.providers.intent",
         "src.scheduler",
         "src.sessions.harness_parser",
+        "src.sessions.launch",
         "src.sessions.provider"
       ],
       "markers": [],

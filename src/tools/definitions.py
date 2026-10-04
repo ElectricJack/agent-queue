@@ -606,13 +606,6 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string", "description": "Resolve session from this task id"},
         },
     },
-    "session_prune": {
-        "type": "object",
-        "properties": {
-            "session_id": {"type": "string", "description": "Inactive named session to forget"},
-        },
-        "required": ["session_id"],
-    },
     "session_kill": {
         "type": "object",
         "properties": {
@@ -2170,6 +2163,20 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {"agent_id": {"type": "string"}},
             "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "session_prune",
+        "description": (
+            "Remove a sleeping or stopped named session after confirming its terminal and "
+            "marked processes are inactive. Refuses sessions with a task or claim."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Inactive named session to forget"},
+            },
+            "required": ["session_id"],
         },
     },
     {

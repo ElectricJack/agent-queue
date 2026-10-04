@@ -454,6 +454,34 @@ def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(mo
     assert env["AQ_DB_SCOPE"] == "worker"
 
 
+@pytest.mark.parametrize("as_worker", [False, True])
+def test_cli_subprocesses_do_not_inherit_the_callers_task_or_claim(monkeypatch, as_worker):
+    smoke = _load_smoke()
+    caller = {
+        "AQ_API_TOKEN": "outer-token",
+        "AQ_SESSION_ID": "outer-session",
+        "AQ_TASK_ID": "outer-task",
+        "AQ_CLAIM_EPOCH": "73",
+    }
+    for name, value in caller.items():
+        monkeypatch.setenv(name, value)
+
+    env = smoke._cli_env(
+        token="fixture-token" if as_worker else None,
+        session_id="fixture-session" if as_worker else None,
+    )
+
+    assert "AQ_TASK_ID" not in env
+    assert "AQ_CLAIM_EPOCH" not in env
+    if as_worker:
+        assert env["AQ_API_TOKEN"] == "fixture-token"
+        assert env["AQ_SESSION_ID"] == "fixture-session"
+    else:
+        assert "AQ_API_TOKEN" not in env
+        assert "AQ_SESSION_ID" not in env
+    assert {name: os.environ[name] for name in caller} == caller
+
+
 def test_collection_rows_accepts_versioned_envelope_data_and_legacy_wrappers():
     smoke = _load_smoke()
     rows = [{"id": "one"}, {"id": "two"}]
