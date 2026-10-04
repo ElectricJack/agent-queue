@@ -290,7 +290,7 @@ class ProvenanceMigration:
                 alias = None
                 if row.get("missing_completion_row"):
                     # Archiving drops current-generation metadata, but retains
-                    # the task version. Keep exactly the same attestation under
+                    # the legacy lifecycle identity. Keep the same attestation under
                     # that immutable locator, without inventing a close row.
                     alias_id = CompletionIdentity(project_id, repository_id, source_task,
                                                   legacy_completion_id(row["attestation_request"]))
