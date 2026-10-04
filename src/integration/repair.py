@@ -4154,13 +4154,27 @@ class RepairService:
                 if scope is not None and scope["active"] and pending_receipt is None:
                     if scope["operation_id"] != operation_id or scope["stage"] != stage["ordinal"]:
                         raise ValueError("repair head authoring fence belongs to another stage")
-                    edge = extension(operation, checkpoint, stage, commit_proof, {
-                        "task_id": owner["owner_id"], "session_id": scope["session_id"],
-                        "instance_token": scope["instance_token"],
-                        "workspace_id": scope["workspace_id"], "fence_token": scope["fence_token"],
-                    })
-                    dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
-                    await advance_checkpoint_on(conn, checkpoint, head_sha, observed_at)
+                    covered = await self._committed_resolution_receipt_on(
+                        conn, operation, checkpoint, previous_sha, head_sha
+                    )
+                    if covered is not None:
+                        # The resolution's own code receipt already audits this exact
+                        # aggregate movement, and the stage subject still holds the
+                        # pre-conflict tip because the close outlived the reconcile.
+                        # Readiness consumes one proof per range, so a second edge
+                        # would strand the walk on repair_head_chain forever. The
+                        # receipt owns this head; its verifier handoff advances the
+                        # checkpoint exactly as an ordinary delivery does.
+                        dossier["receipt_covered_head"] = covered
+                    else:
+                        edge = extension(operation, checkpoint, stage, commit_proof, {
+                            "task_id": owner["owner_id"], "session_id": scope["session_id"],
+                            "instance_token": scope["instance_token"],
+                            "workspace_id": scope["workspace_id"],
+                            "fence_token": scope["fence_token"],
+                        })
+                        dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
+                        await advance_checkpoint_on(conn, checkpoint, head_sha, observed_at)
             dossier["receipts"] = await self._current_receipts_on(conn, operation)
             await conn.execute(
                 update(integration_repair_stages)
@@ -4182,6 +4196,94 @@ class RepairService:
             "subject": subject,
             "deadline_due": observed_at >= float(stage["deadline_at"]),
             "changed": changed,
+        }
+
+    async def _committed_resolution_receipt_on(
+        self,
+        conn,
+        operation: dict[str, Any],
+        checkpoint: dict[str, Any],
+        previous_sha: str,
+        head_sha: str,
+    ) -> dict[str, Any] | None:
+        """Read the committed resolution receipt that already proves a subject move.
+
+        A parent conflict resolution pushes its own aggregate tip and finalizes
+        an immutable code receipt for it. That receipt is the child delivery
+        proof for the same range, so the close-time subject binding must not
+        record a second, duplicate repair-head edge beside it. Anything short of
+        exactly one trusted receipt bound to this operation, episode, parent and
+        branch proves nothing, and the ordinary extension edge is recorded.
+        """
+        from src.integration.parent_completion import ParentCompletion
+
+        intents = (
+            (
+                await conn.execute(
+                    select(
+                        integration_promotion_intents.c.id,
+                        integration_promotion_intents.c.receipt_id,
+                        integration_promotion_intents.c.source_task_id,
+                        integration_promotion_intents.c.committed_at,
+                    ).where(
+                        integration_promotion_intents.c.operation_key == operation["id"],
+                        integration_promotion_intents.c.resolution_operation_id
+                        == operation["id"],
+                        integration_promotion_intents.c.expected_target == previous_sha,
+                        integration_promotion_intents.c.resolution_head_sha == head_sha,
+                        integration_promotion_intents.c.state == "committed",
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        # One recorded resolution is one immutable fact; an ambiguous set is an
+        # operator question, never an inferred duplicate.
+        if len(intents) != 1:
+            return None
+        intent = dict(intents[0])
+        receipt = (
+            (
+                await conn.execute(
+                    select(task_delivery_receipts).where(
+                        task_delivery_receipts.c.id == intent["receipt_id"],
+                        task_delivery_receipts.c.parent_operation_id == operation["id"],
+                        task_delivery_receipts.c.parent_episode_id
+                        == checkpoint["episode_id"],
+                        task_delivery_receipts.c.target_task_id == operation["parent_task_id"],
+                        task_delivery_receipts.c.repository_id
+                        == checkpoint["repository_id"],
+                        task_delivery_receipts.c.target_branch == checkpoint["branch"],
+                        task_delivery_receipts.c.source_task_id == intent["source_task_id"],
+                        task_delivery_receipts.c.disposition == "code",
+                        task_delivery_receipts.c.before_sha == previous_sha,
+                        task_delivery_receipts.c.after_sha == head_sha,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if receipt is None or not ParentCompletion._trusted_code_receipt(dict(receipt)):
+            return None
+        child = await conn.scalar(
+            select(tasks.c.id).where(
+                tasks.c.id == intent["source_task_id"],
+                tasks.c.parent_task_id == operation["parent_task_id"],
+            )
+        )
+        if child is None:
+            # Only a receipt this parent folds into its own chain can stand in
+            # for the edge; a delivery to another target proves nothing here.
+            return None
+        return {
+            "intent_id": intent["id"],
+            "receipt_id": intent["receipt_id"],
+            "source_task_id": intent["source_task_id"],
+            "before_sha": previous_sha,
+            "after_sha": head_sha,
+            "committed_at": intent["committed_at"],
         }
 
     async def _root_success_is_current_on(self, conn, operation, stage) -> bool:
