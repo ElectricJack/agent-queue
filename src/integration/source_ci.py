@@ -209,12 +209,8 @@ class RootAdmissionReader:
                     or (base.get("repo") or {}).get("id") != binding.repository_id
                     or base.get("ref") != member["default_branch"].removeprefix("refs/heads/")):
                 return {"reason": "pr_identity_changed"}
-            state, evidence = classify_source_checks(
-                await client.commit_check_runs(member["source_head"]),
-                head=member["source_head"], required=policy.root.required_checks,
-            )
-            if state != "green":
-                return {"reason": "source_ci_" + state, "checks": evidence}
+            # No CI before admission: batch candidate CI is the only gate.
+            evidence = {}
             await self.promotion._ensure_retained_repository(resolved)
             store = str(resolved.retained_git_dir)
             async with git.arepository_transaction(store):
