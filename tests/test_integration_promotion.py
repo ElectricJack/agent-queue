@@ -4133,6 +4133,49 @@ async def test_parent_intent_pass_supersedes_diverged_attempt_and_collects_again
     assert successor["expected_target"] == competing
 
 
+async def test_parent_intent_pass_supersedes_reserved_intent_after_source_moves(
+    db, promotion_case
+):
+    """A continuation re-requests the frozen head, so a moved child must retire it."""
+    from src.integration.parent_intents import GRACE_SECONDS, ParentIntentReconciler
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    crashing = PromotionService(
+        db, data_dir=case["data_dir"], git_manager=GitManager(),
+        crash_hook=CrashOnce("after_object"),
+    )
+    with pytest.raises(InjectedCrash):
+        await crashing.prepare(case["request"])
+    async with db._engine.connect() as conn:
+        intent = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
+    assert intent["state"] == "reserved"
+    work = case["work"]
+    _git(["switch", "aq/child"], work)
+    (work / "child.txt").write_text("one\ntwo\nthree\n")
+    _git(["commit", "-am", "rework"], work)
+    moved = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "aq/child"], work)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    handler = _intent_commands(db, service)
+    await _bump_collector_fence(db)
+
+    reconciler = ParentIntentReconciler(db, commands=lambda: handler)
+    result = await reconciler.reconcile(intent, now=intent["updated_at"] + GRACE_SECONDS)
+
+    assert result["outcome"] == "superseded"
+    retired = await db.get_integration_promotion_intent(intent["id"])
+    assert retired["state"] == "superseded"
+    assert retired["remote_evidence"]["kind"] == "source_moved"
+    assert retired["remote_evidence"]["source_sha"] == moved
+    assert retired["remote_evidence"]["remote_sha"] == case["base"]
+    async with db._engine.connect() as conn:
+        continuations = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "delivery.ready",
+        ))).all()
+    assert continuations == []
+
+
 async def test_parent_intent_pass_declines_root_intents():
     from src.integration.parent_intents import ParentIntentReconciler
 
