@@ -2364,7 +2364,13 @@ that will be built into a candidate and promoted to `main` together.
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 
 Partial unique index `uq_integration_batches_active_project` allows one
-non-terminal batch per project.
+non-terminal batch per project over `target_ref IS NULL` rows only. A row with a
+`target_ref` is the Git-first train's additive input/intent shape, advanced
+solely by that train: it is never mutually exclusive with a legacy batch, never
+reads as busy to the legacy scheduler, and never holds its members out of the
+legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
+inert rather than blocking. See
+[the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
 
 ### Table: `integration_batch_members`
 
