@@ -408,6 +408,14 @@ def _make_origin(tmp_path: Path):
     return origin, work, base, members
 
 
+def _parse_trailers(cwd: Path, message: str) -> list[str]:
+    """The trailer block Git itself reads out of *message*."""
+    return subprocess.run(
+        ["git", "interpret-trailers", "--parse"], input=message, text=True,
+        check=True, capture_output=True, cwd=cwd, env=_scrubbed_env(),
+    ).stdout.splitlines()
+
+
 def _migration_text(revision, parent, table="attachments"):
     return (
         f'"""Create {table}.\n\nRevision ID: {revision}\nRevises: {parent}\n"""\n'
@@ -699,6 +707,69 @@ async def test_many_members_build_in_ordinal_order_without_moving_sources(db, tm
         == git.pushes[0]
     )
     assert len(forge.calls) == 1
+
+
+async def test_candidate_merges_record_one_exact_source_trailer_each(db, tmp_path):
+    """Every applied member's whole reviewed head, exactly once, nothing dropped."""
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+
+    assert result.outcome == "built"
+    async with db._engine.connect() as conn:
+        applied = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).order_by(
+                        integration_candidate_member_results.c.member_ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["result"] for row in applied] == ["applied"] * len(members)
+    merged = [row["generated_squash_sha"] for row in applied]
+    for sha, ordinal in zip(merged, range(len(members)), strict=True):
+        message = _git(origin, "show", "-s", "--format=%B", sha)
+        task_id = f"root-{ordinal}"
+        assert parse_source_trailers(message) == {SourceIdentity(task_id, members[ordinal][1])}
+        assert [line for line in message.splitlines() if line.startswith("AQ-Source:")] == [
+            f"AQ-Source: {task_id}@{members[ordinal][1]}"
+        ]
+        # The trailers whose readers have not retired survive verbatim.
+        assert f"Reviewed-head: {members[ordinal][1]}" in message
+        assert f"Review-evidence: review-{ordinal}" in message
+        assert "Batch: batch" in message
+        # Git's own trailer parser reads it, so a ``git log --grep`` or
+        # ``%(trailers)`` reader sees the identity, not a malformed line, and
+        # the co-author attribution stays in the same trailer block.
+        parsed = _parse_trailers(origin, message)
+        assert f"AQ-Source: {task_id}@{members[ordinal][1]}" in parsed
+        if ordinal == 1:
+            assert "Co-authored-by: Pair Author <pair@example.test>" in parsed
+    # A member's trailer names one whole generation and appears on its own
+    # merge only: no member's identity rides along with another's.
+    recorded = {
+        identity
+        for sha in merged
+        for identity in parse_source_trailers(_git(origin, "show", "-s", "--format=%B", sha))
+    }
+    assert recorded == {SourceIdentity(f"root-{o}", members[o][1]) for o in range(len(members))}
 
 
 async def test_one_member_build_and_local_replay_are_deterministic(db, tmp_path):
