@@ -12,8 +12,17 @@ vi.mock("../../api/hooks", () => ({
     status: "open",
     title: "Architecture review",
     project_id: "agent-queue",
+  }, {
+    id: "internal-gate", gate_type: "review", await_id: "internal-review",
+    status: "open", title: "Half-depth chip-scar probe", project_id: "agent-queue",
   }], isLoading: false }),
   useResolveGate: () => ({ mutate: vi.fn() }),
+}));
+vi.mock("../../api/reviews", () => ({
+  useReviews: () => ({ data: { reviews: [
+    { id: "review-1", decider: "user" },
+    { id: "internal-review", decider: "supervisor" },
+  ] }, isLoading: false }),
 }));
 vi.mock("../../ws/useEventStream", () => ({ useEventStream: () => {} }));
 vi.mock("../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn() }) }));
@@ -37,5 +46,6 @@ describe("ActivityDrawer review gates", () => {
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/reviews/review-1");
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Half-depth chip-scar probe")).not.toBeInTheDocument();
   });
 });

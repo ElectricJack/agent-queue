@@ -17,6 +17,11 @@ final suite. `proposal_sha256` binds approved rev-amber-zenith revision 2.
 No paid work is admitted by cooking: the bootstrap is transactionally gated
 until the playbook commits the finalization hold. Never close it around a
 missing loop, run a generator here, or activate a policy from this task.
+The approved brief explains the object, maximum rounds and budget in plain
+English. Internal bootstrap, probe, capture and score evidence goes to the
+supervisor through task notes; any review is supervisor-only. Only the
+finalizer submits one human result with before/after images and an ordinary
+explanation of improvement and what would help next time.
 
 ```aq-graph
 version: 1
@@ -37,6 +42,9 @@ nodes:
       Candidate and scorer workers hand off immutable URI/hash evidence,
       never another worker's directory. Worker task retries must fit the
       original reservation, including unknown costs.
+      This is internal evidence with no implicit human-review deliverable.
+      Send technical blockers to the project supervisor; Jack needs a single
+      plain-English sentence only if he must act.
     acceptance:
       - "The loop finalization hold exists before this bootstrap can run."
       - "Reference, rig, scorer, policy and candidate hashes are fixed."

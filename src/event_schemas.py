@@ -929,31 +929,32 @@ _TEST_SELECTION_SCHEMAS: dict[str, EventSchema] = {
 _REVIEW_SCHEMAS: dict[str, EventSchema] = {
     "review.submitted": {
         "required": ["project_id", "review_id"],
-        "optional": ["title", "kind", "revision", "author_task_id", "vault_path", "seq"],
+        "optional": ["title", "kind", "revision", "author_task_id", "vault_path", "seq", "decider"],
     },
     "review.revised": {
         "required": ["project_id", "review_id"],
         "optional": [
-            "title", "kind", "revision", "author_task_id", "changes_note", "vault_path", "seq"
+            "title", "kind", "revision", "author_task_id", "changes_note", "vault_path", "seq",
+            "decider",
         ],
     },
     "review.decided": {
         "required": ["project_id", "review_id"],
         "optional": [
             "title", "kind", "revision", "decision", "decided_by", "author_task_id",
-            "note", "unblocked_task_ids", "seq",
+            "note", "unblocked_task_ids", "seq", "decider",
         ],
     },
     "review.withdrawn": {
         "required": ["project_id", "review_id"],
         "optional": [
             "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
-            "flagged_task_ids", "seq",
+            "flagged_task_ids", "seq", "decider",
         ],
     },
     "review.commented": {
         "required": ["project_id", "review_id"],
-        "optional": ["title", "kind", "revision", "author_task_id", "comment_id", "seq"],
+        "optional": ["title", "kind", "revision", "author_task_id", "comment_id", "seq", "decider"],
     },
 }
 

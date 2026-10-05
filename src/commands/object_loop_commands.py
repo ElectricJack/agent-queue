@@ -56,6 +56,29 @@ ROUND_HANDOFF_INSTRUCTIONS = (
     "artifact store, never to the product branch."
 )
 
+_INTERNAL_HANDOFF = (
+    "This is an internal object experiment, with no implicit human-review deliverable. "
+    "Record evidence in the held task's notes and retained artifacts. "
+    "Any necessary score, probe, capture or continuation review goes only to the "
+    "project supervisor. Send blockers and technical detail to that supervisor. "
+    "Jack needs a single plain-English sentence only if he must act."
+)
+
+_RESULT_HANDOFF = (
+    "Verify retained evaluation artifacts and the stop reason, then submit exactly one "
+    "other review as the final result for Jack using your held task as author. "
+    "Use a plain-English title naming the object, with no attempt or round IDs. "
+    "Show before and after images side by side for every required view; attach the "
+    "verified images to the result review with ordinary view names and Before/After captions. "
+    "Use candidate_id Before and After so each view displays as a comparison pair. "
+    "Explain whether the object improved and by how much in plain words, and what "
+    "would make the next run better. If a capture or measured comparison is missing, "
+    "say so plainly; never invent images or improvement percentages. "
+    "Keep internal IDs, receipts, incumbent, plateau, hashes and logs out of the "
+    "title and prose. Put technical blockers in task notes for the supervisor. "
+    "Reuse the same review on retry; revise it if the result needs correction."
+)
+
 
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
@@ -358,12 +381,13 @@ class ObjectLoopCommandsMixin:
                 "parent_id": request.epic_task_id,
                 "title": f"Finalize object {request.object_id}",
                 "description": (
-                    "Verify retained evaluation artifacts, checkpoints and stop reason. "
+                    _RESULT_HANDOFF + "\nInternal inputs: "
                     f"reference_kind={request.reference_kind}."
                     + (" Self-reference results are indicative, for plumbing only."
                        if request.reference_kind == "self" else "")
                 ),
                 "task_type": "chore",
+                "deliverables": [{"id": "result", "kind": "review", "target": "other"}],
                 "dedup_key": f"object:{request.object_id}:finalize",
                 "_after_create_on": bootstrap,
                 "_created_by_kind": "object_loop",
@@ -486,6 +510,23 @@ class ObjectLoopCommandsMixin:
                     tasks.c.id != row.finalization_task_id,
                 ))).mappings().all()
                 if all(_task_settled(child) for child in children):
+                    # The finalizer can read only its own task. Give it the
+                    # retained baseline and best captures before releasing it,
+                    # including after restart; never require sibling authority.
+                    evidence = {
+                        "baseline_capture_uri": ("artifact://sha256/" +
+                                                 state["incumbent_capture_sha256"]
+                                                 if state.get("incumbent_capture_sha256") else None),
+                        "mandatory_views": state["mandatory_views"],
+                        "reference_kind": state.get("reference_kind", "calibrated"),
+                        "best_receipt": state.get("best_receipt"),
+                        "stop_reason": state["stop_reason"],
+                        "spent": state["spent"],
+                    }
+                    await conn.execute(update(tasks).where(
+                        tasks.c.id == row.finalization_task_id,
+                    ).values(description=_RESULT_HANDOFF + "\nInternal evidence (for the worker):\n"
+                             + json.dumps(evidence, sort_keys=True)))
                     gate_to_release = row.terminal_gate_id
                 else:
                     stopped_outcome = "waiting_for_settlement"
@@ -518,6 +559,7 @@ class ObjectLoopCommandsMixin:
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
                             "round_handoff": _round_handoff(state),
+                            "review_guidance": _INTERNAL_HANDOFF,
                             **({"result_interpretation": "indicative; plumbing only"}
                                if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
@@ -555,8 +597,12 @@ class ObjectLoopCommandsMixin:
                                     "by a newline and a complete JSON ObjectScoreRecordArgs "
                                     "packet. Use this expected_version and your held task as "
                                     "score_task_id. Do not call loop mutators or publish assets."
+                                    " Choose continue or stop within the approved brief's limits. "
+                                    "Use checkpoint only for a supervisor decision; never request "
+                                    "a human decision for a score or a capture check."
                                 ),
                                 "mandatory_views": state["mandatory_views"],
+                                "review_guidance": _INTERNAL_HANDOFF,
                                 "publication": "artifact_only"}, sort_keys=True), "score",
                     approval_gate_id=(state.get("last_approved_checkpoint") or
                                       state["brief_checkpoint"])["gate_id"],
@@ -752,6 +798,7 @@ class ObjectLoopCommandsMixin:
                     if artifact.sha256 == winner.candidate_sha256
                 )
                 state["incumbent_loss"] = winner_loss
+                state["best_receipt"] = winner.model_dump()
                 state["selected_variant_id"] = winner.variant_id
                 state["plateau_count"] = 0
             else:
@@ -800,6 +847,8 @@ class ObjectLoopCommandsMixin:
                             or review.current_revision != request.review_revision
                             or revision.content_sha256 != request.review_sha256):
                         raise ValueError("checkpoint review revision is missing or foreign")
+                    if review.decider != "supervisor":
+                        raise ValueError("internal checkpoint review must have supervisor decider")
                     state["checkpoint"] = {"review_id": request.review_id,
                                            "revision": request.review_revision,
                                            "sha256": request.review_sha256,

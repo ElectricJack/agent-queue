@@ -24,6 +24,26 @@ afterEach(() => {
 afterAll(() => vi.unstubAllGlobals());
 
 describe("ReviewToasts", () => {
+  it.each(["review.submitted", "review.revised"])("hides supervisor-only %s", (eventType) => {
+    render(<MemoryRouter><ReviewToasts /></MemoryRouter>);
+    act(() => __dispatchEventForTests({
+      _event_type: eventType, event_type: eventType,
+      review_id: "internal-score", title: "rock · r0 score", kind: "other",
+      revision: 1, decider: "supervisor",
+    } as NotifyEvent));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("announces a result in ordinary words", () => {
+    render(<MemoryRouter><ReviewToasts /></MemoryRouter>);
+    act(() => __dispatchEventForTests({
+      _event_type: "review.submitted", event_type: "review.submitted",
+      review_id: "result", title: "Rock result", kind: "other",
+      revision: 1, decider: "user",
+    } as NotifyEvent));
+    expect(screen.getByRole("status")).toHaveTextContent(/^Rock resultOpen$/);
+  });
+
   it("opens a submitted review and dismisses it after eight seconds", () => {
     render(<MemoryRouter><ReviewToasts /></MemoryRouter>);
 

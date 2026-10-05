@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:348b6d2ff08b6c108de2a5367acb1f89da9ec8e27fc254400886d741a769880e",
+  "digest": "sha256:7982ac9ad5eb4157d068ed8d6da0eae905d1aaa6ef262ee0bf3f85b2904c349a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10533,6 +10533,7 @@
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.database.tables",
+        "src.deliverables",
         "src.event_bus",
         "src.integration.development",
         "src.models",
@@ -10542,6 +10543,7 @@
         "src.playbooks.executors.base",
         "src.playbooks.required",
         "src.profiles.capabilities",
+        "src.reviews.notifier",
         "src.task_graph.formulas",
         "src.vault"
       ],
@@ -12932,13 +12934,16 @@
         "src.cli",
         "src.cli.app",
         "src.cli.reviews",
+        "src.deliverables",
         "src.event_bus",
         "src.integration.hierarchy",
         "src.intelligence_classes",
         "src.models",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Command-layer authorization and wiring for document reviews."
     },
     "tests/test_review_diff.py": {
@@ -13065,6 +13070,7 @@
         "src.tools.definitions"
       ],
       "markers": [
+        "migration",
         "parametrize"
       ],
       "summary": "Document review: schema, migration ``a00000000014`` and the query layer."

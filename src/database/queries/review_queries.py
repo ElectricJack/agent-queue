@@ -402,7 +402,10 @@ class ReviewQueriesMixin:
         """Reviews whose current revision has not been announced yet, oldest first."""
         stmt = (
             select(doc_reviews)
-            .where(doc_reviews.c.notified_revision < doc_reviews.c.current_revision)
+            .where(
+                doc_reviews.c.notified_revision < doc_reviews.c.current_revision,
+                doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
+            )
             .order_by(doc_reviews.c.updated_at.asc(), doc_reviews.c.id.asc())
         )
         async with self._engine.begin() as conn:

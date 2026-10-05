@@ -70,9 +70,17 @@ def effective_deliverables(
 
 
 async def resolve_task_deliverables(db: Any, task: Any) -> list[dict[str, str]]:
-    """:func:`effective_deliverables` for a stored task (one lookup at most)."""
+    """:func:`effective_deliverables` with stored review and experiment context."""
     task_type = getattr(task, "task_type", None)
     task_type = getattr(task_type, "value", task_type)
+    if task_type in DOCUMENT_TASK_TYPES:
+        from src.object_loop.reviews import experiment_context
+
+        experiment = await experiment_context(db, task.id)
+        if experiment and not experiment["final_result"]:
+            # Internal experiments hand back artifacts/score packets. Preserve
+            # explicitly requested documents without inventing a human gate.
+            return [dict(item) for item in getattr(task, "deliverables", None) or []]
     dispatched = (
         task_type in DOCUMENT_TASK_TYPES
         and await db.get_review_dispatch_for_task(task.id) is not None
