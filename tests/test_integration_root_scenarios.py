@@ -57,6 +57,7 @@ from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from
 from src.profiles.capabilities import CapabilityPolicy
 from tests.db_fixtures import lease_dsn
 from tests.test_integration_candidates import _AppClient, _LocalPushGit
+from tests.test_integration_git_truth import repository as git_first_repository  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = json.loads((ROOT / "docs/config/agent-queue-train-policy.json").read_text())
@@ -84,6 +85,132 @@ ADAPTER_COMMANDS = frozenset(
     }
 )
 COLLIDING = "revision='a00000000002'\ndown_revision='a00000000001'\n"
+
+
+@pytest.fixture
+async def git_first_case(git_first_repository):  # noqa: F811 - imported pytest fixture
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.integration.observe import ObservationRows
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.parent_subjects import ParentChildFacts
+    from src.integration.shadow import GitFirstDiagnostics
+    from src.integration.subjects import (
+        CIEvidence, CIState, MemberFacts, PolicyArtifactPin, SubjectEngine, SubjectKind,
+        SubjectSchedule, WriterLease,
+    )
+
+    repo = git_first_repository
+    head = await repo.commit("child")
+    request = await repo.retain(head)
+    await repo.publish()
+    subject = Subject(
+        id="diagnostic", project_id="p", repository_id="r", task_id="epic",
+        kind=SubjectKind.PARENT_EPISODE, subject_key="parent_episode:r:epic:0",
+        parent_episode_id="episode", engine=SubjectEngine.RECONCILER,
+        phase=SubjectPhase.TESTING,
+        policy=PolicyArtifactPin(playbook_id="fixture", artifact_sha256="sha256:" + "1" * 64),
+        target_ref="refs/heads/main", head_sha=head,
+        schedule=SubjectSchedule.progress(now=10, max_wait_seconds=60),
+        created_at=10, updated_at=10,
+    )
+    facts = ParentPolicyFacts(
+        subject_id=subject.id, subject_version=0, kind=subject.kind, phase=subject.phase,
+        observed_at=10, head=subject.head, readiness="waiting", no_progress=True,
+        children=(ParentChildFacts(task_id="task", status="COMPLETED"),),
+        members=(MemberFacts(task_id="task", head_sha=head, base_sha=repo.base),),
+        writer=WriterLease(status=WriterStatus.WORKING, task_id="repair"),
+        ci=(CIEvidence(head_sha=head, state=CIState.GREEN),),
+    )
+    rows = {
+        "tasks": ({"id": "task", "project_id": "p", "repo_id": "r", "updated_at": 1,
+                   "legacy_completion_id": "legacy-1", "status": "COMPLETED"},),
+        "integration_repair_operations": ({"id": "op", "episode_id": "episode",
+            "policy_snapshot": {"parent": {"admission": "authorized"}}},),
+        "integration_repair_stages": ({"ordinal": 0, "created_at": 1,
+            "repair_task_id": "repair", "starting_sha": head},),
+        "integration_branch_owners": ({"repository_id": "r", "ref": "main",
+            "owner_id": "dead-writer", "fence_token": 1, "expires_at": 9,
+            "handoff_state": "attached"},),
+    }
+    snapshot = ObservationRows(subject, {}, {
+        "default_branch": "main", "checkout_base_path": str(repo.path), "url": str(repo.remote),
+    }, rows)
+    reader = SimpleNamespace(read=AsyncMock(return_value=snapshot))
+    db = SimpleNamespace(get_task_completion=AsyncMock(return_value=SimpleNamespace(
+        id=request.completion_id, completed_at=1, commits=[head],
+    )))
+    return SimpleNamespace(repo=repo, subject=subject, facts=facts, snapshot=snapshot,
+                           reader=reader, diagnostics=GitFirstDiagnostics(db, repo.git, reader))
+
+
+@pytest.mark.parametrize("agreement", [False, True])
+async def test_git_first_shadow_four_families_use_fetched_inputs(git_first_case, caplog, agreement):
+    from unittest.mock import AsyncMock
+    from src.integration.parent_subjects import ParentChildFacts, ParentVerificationFacts
+
+    case = git_first_case
+    facts = case.facts
+    if agreement:
+        facts = facts.model_copy(update={
+            "readiness": "ready", "no_progress": False,
+            "children": (ParentChildFacts(task_id="task", status="COMPLETED",
+                                          selected_receipt_id="receipt"),),
+            "verification": ParentVerificationFacts(episode_id="episode", operation_id="op",
+                                                     generation=0, head_sha=case.subject.head_sha,
+                                                     status="passed"),
+        })
+        case.snapshot.rows["integration_branch_owners"][0]["handoff_state"] = "released"
+    before = facts.model_dump()
+    before_refs = await case.repo.git._arun(["show-ref"], cwd=str(case.repo.remote))
+    case.repo.git.afetch_origin = AsyncMock(wraps=case.repo.git.afetch_origin)
+    caplog.set_level("INFO", logger="src.integration.shadow")
+    await case.diagnostics(case.subject, facts)
+    evidence = {record.git_first["family"]: record.git_first for record in caplog.records
+                if hasattr(record, "git_first")}
+    assert set(evidence) == {"child_delivery", "epic_readiness", "repair_progress", "lease_eligibility"}
+    expected = "agreement" if agreement else "disagreement"
+    assert {row["classification"] for row in evidence.values()} == {expected}
+    assert {row["proposed"] for row in evidence.values()} == {True}
+    assert evidence["repair_progress"]["start_oid"] == evidence["repair_progress"]["head_oid"]
+    assert evidence["repair_progress"]["green"]  # green ends an unchanged-head repair
+    assert evidence["lease_eligibility"]["input_kind"] == "non_git"
+    assert facts.model_dump() == before
+    assert case.repo.git.afetch_origin.await_count == 1
+    assert await case.repo.git._arun(["show-ref"], cwd=str(case.repo.remote)) == before_refs
+
+
+async def test_git_first_shadow_unavailable_fetch_is_unknown_but_lease_is_non_git(git_first_case, caplog):
+    from unittest.mock import AsyncMock
+    from src.git.manager import GitError
+
+    case = git_first_case
+    case.repo.git.afetch_origin = AsyncMock(side_effect=GitError("origin unavailable"))
+    await case.diagnostics(case.subject, case.facts)
+    evidence = {record.git_first["family"]: record.git_first for record in caplog.records
+                if hasattr(record, "git_first")}
+    for family in ("child_delivery", "epic_readiness", "repair_progress"):
+        assert evidence[family]["classification"] == "unknown"
+        assert evidence[family]["proposed"] is None
+    assert evidence["lease_eligibility"]["classification"] == "disagreement"
+
+
+async def test_git_first_shadow_missing_expiry_and_legacy_scope(git_first_case, caplog):
+    from src.config import IntegrationConfig
+    from src.integration.shadow import diagnostics_for
+    from src.integration.subjects import SubjectEngine
+
+    case = git_first_case
+    case.snapshot.rows["integration_branch_owners"][0]["expires_at"] = None
+    await case.diagnostics(case.subject, case.facts)
+    lease = next(record.git_first for record in caplog.records
+                 if getattr(record, "git_first", {}).get("family") == "lease_eligibility")
+    assert lease["classification"] == "unknown" and lease["proposed"] is None
+    case.reader.read.reset_mock()
+    await case.diagnostics(case.subject.model_copy(update={"engine": SubjectEngine.LEGACY}), case.facts)
+    case.reader.read.assert_not_awaited()
+    assert diagnostics_for(IntegrationConfig(git_first="active"), None, case.repo.git) is None
 
 
 def _git(cwd, *args: str) -> str:

@@ -49,6 +49,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_branch_origins,
+    task_context,
     task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
@@ -315,6 +316,8 @@ class ProjectIntegrationMode:
 
     hierarchical: bool
     integration_repository_id: str | None
+    # None preserves legacy admission; a supplied set is one revalidated Git view.
+    delivered_prerequisite_ids: frozenset[str] | None = None
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -360,6 +363,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 task_branch_origins.c.materialized.is_(True),
             )),
             _reserved_repair_branch(mode.integration_repository_id),
+            _ordinary_repair_branch(mode.integration_repository_id),
             _reserved_verifier_branch(mode.integration_repository_id),
         )
     return or_(~exists(
@@ -385,7 +389,34 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 )
             ),
         )
-    ), _reserved_repair_branch(), _reserved_verifier_branch())
+    ), _reserved_repair_branch(), _ordinary_repair_branch(), _reserved_verifier_branch())
+
+
+def _ordinary_repair_branch(repository_id: str | None = None):
+    """Ordinary repairs use the leased batch ref, without a legacy origin/stage."""
+    owner = integration_branch_owners
+    source = task_context.join(owner, owner.c.holder == task_context.c.task_id).join(
+        integration_batches, integration_batches.c.id == tasks.c.created_by_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(select(literal(1)).select_from(source).correlate(tasks).where(
+        tasks.c.created_by_kind == "system",
+        tasks.c.dedup_key == (
+            "repair:" + integration_batches.c.id + ":"
+            + func.cast(integration_batches.c.repair_attempt_count, Text)
+        ),
+        task_context.c.id == tasks.c.id,
+        task_context.c.task_id == tasks.c.id,
+        task_context.c.label == "Repair input",
+        owner.c.fence.is_not(None),
+        owner.c.repository_id == tasks.c.repo_id,
+        or_(owner.c.ref == tasks.c.branch_name,
+            owner.c.ref == ("refs/heads/" + tasks.c.branch_name)),
+        owner.c.repository_id == (
+            repository_id if repository_id is not None else projects.c.integration_repository_id
+        ),
+    ))
 
 
 def _reserved_repair_branch(repository_id: str | None = None):
@@ -494,8 +525,9 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
     predecessor completes.  In a hierarchy project that is too early: the
-    predecessor's reviewed head still belongs to its feature branch until a
-    receipt proves it was incorporated into their common parent branch.
+    predecessor's source still belongs to its feature branch until delivery
+    is proven on their common parent branch. A revalidated Git view replaces
+    the legacy receipt predicate when supplied in *mode*.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -529,6 +561,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
             ),
         )
     )
+    if mode is not None and mode.delivered_prerequisite_ids is not None:
+        delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(

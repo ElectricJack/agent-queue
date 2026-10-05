@@ -523,6 +523,7 @@
         "tests/test_canonical_reservation.py",
         "tests/test_integration_eject.py",
         "tests/test_integration_finished_owners.py",
+        "tests/test_integration_lock.py",
         "tests/test_integration_owner_recovery.py",
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
@@ -562,12 +563,14 @@
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
+        "tests/test_integration_batches.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
@@ -1400,7 +1403,7 @@
       ]
     }
   },
-  "digest": "sha256:348b6d2ff08b6c108de2a5367acb1f89da9ec8e27fc254400886d741a769880e",
+  "digest": "sha256:64421a0e201cc010df022f07713bc78076d9d6d72152a6376ddc83ad9fce1f72",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4796,8 +4799,10 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.source_trailer",
         "src.integration.status",
         "src.models"
       ],
@@ -6615,6 +6620,8 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.parent_adapters",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7243,6 +7250,24 @@
       ],
       "summary": ""
     },
+    "tests/test_integration_batches.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git retries of the shared root/child batch path; disposable PostgreSQL."
+    },
     "tests/test_integration_cancelled_collection.py": {
       "areas": [
         "integration-promotion"
@@ -7285,6 +7310,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"
@@ -7482,6 +7508,22 @@
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
     },
+    "tests/test_integration_git_truth.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Remote Git delivery proofs with real histories and retained completion identities."
+    },
     "tests/test_integration_gitops.py": {
       "areas": [
         "integration-trains"
@@ -7497,6 +7539,7 @@
         "src.integration.gitops",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.source_trailer",
         "src.integration.subjects"
       ],
       "markers": [
@@ -7537,6 +7580,26 @@
         "usefixtures"
       ],
       "summary": "Flag-enabled isolated child origins and hierarchy mutation guards."
+    },
+    "tests/test_integration_lock.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
     },
     "tests/test_integration_main_promotion.py": {
       "areas": [
@@ -7607,8 +7670,10 @@
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
       ],
       "markers": [
         "parametrize"
@@ -7870,6 +7935,7 @@
         "src.integration.promotion",
         "src.integration.records",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"
@@ -7929,6 +7995,7 @@
         "src.database.tables",
         "src.event_bus",
         "src.integration.reconciler",
+        "src.integration.shadow",
         "src.integration.subjects"
       ],
       "markers": [
@@ -7968,8 +8035,11 @@
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.owner_recovery",
@@ -7978,6 +8048,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.plugins.internal.git",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler",
@@ -8132,7 +8203,10 @@
         "src.integration.engine",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.ownership",
+        "src.integration.parent_adapters",
+        "src.integration.parent_subjects",
         "src.integration.promotion",
         "src.integration.release",
         "src.integration.repair",
@@ -8141,6 +8215,7 @@
         "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.service",
+        "src.integration.shadow",
         "src.integration.subjects",
         "src.models",
         "src.orchestrator",
@@ -8426,6 +8501,7 @@
       "imports": [
         "src.database.tables",
         "src.git.manager",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
@@ -13153,11 +13229,14 @@
         "src.git.github_app",
         "src.integration.candidates",
         "src.integration.main_promotion",
+        "src.integration.models",
         "src.integration.release",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [],
@@ -14965,7 +15044,11 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership"
+      ],
       "markers": [],
       "summary": "Pool launch/exit metadata using fake providers and disposable workspaces."
     },

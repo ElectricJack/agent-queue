@@ -379,13 +379,19 @@ class TaskSessionQueryMixin:
         return [(row[0], row[1], row[2]) for row in rows]
 
     async def list_authorized_source_heads(self, task_id: str) -> list[str]:
-        """Exact source heads the daemon filed *task_id* to merge (source CI repair).
+        """Exact published history inherited by a daemon-filed repair task.
 
         Read from the daemon's own record, never from worker-writable refs:
         the publishing check excludes their already-published history
         (git identity spec §5).
         """
-        return await self.list_source_ci_inherited_oids(task_id)
+        from src.integration.repair import OrdinaryRepairService
+
+        heads = await self.list_source_ci_inherited_oids(task_id)
+        original = await OrdinaryRepairService(self).input(task_id)
+        if original is not None:
+            heads.append(original["starting_sha"])
+        return list(dict.fromkeys(heads))
 
     async def list_publish_prerequisite_branches(self, task_id: str) -> list[str]:
         """Direct stacked prerequisites in the held task's project/repository.
