@@ -575,6 +575,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
@@ -1400,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:59156a18f607bcf4fac082c7b97068168c59844285eef861a4393f8e7bf24ddc",
+  "digest": "sha256:41ded66c779dd98d3f11766bde044ce614149c6dcbc5b8b1e6d4c7c5c520f0ee",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7526,6 +7527,22 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_git_truth.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Remote Git delivery proofs with real histories and retained completion identities."
     },
     "tests/test_integration_gitops.py": {
       "areas": [
