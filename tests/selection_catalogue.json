@@ -573,6 +573,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_cutover.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -583,6 +584,7 @@
         "tests/test_integration_parent_subjects.py",
         "tests/test_integration_reconciler.py",
         "tests/test_integration_records_and_gates.py",
+        "tests/test_integration_replay.py",
         "tests/test_integration_root_adapters.py",
         "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
@@ -594,7 +596,9 @@
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
-        "tests/test_integration_subjects.py"
+        "tests/test_integration_subjects.py",
+        "tests/test_integration_train.py",
+        "tests/test_integration_train_sources.py"
       ]
     },
     "intelligence-classes": {
@@ -705,6 +709,7 @@
     "managed-jobs": {
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
+        "tests/test_jobs.py",
         "tests/test_jobs_attachments.py",
         "tests/test_jobs_matter.py",
         "tests/test_jobs_output.py",
@@ -1407,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:87a2d54848487c3d163bf8fa7ac2e3650f6d21a39c58198d3d234016648932cd",
+  "digest": "sha256:46095201351707b40abe252ed31ec56e2feabc7edf4bd1f86702d33ff52916de",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3034,7 +3039,9 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.integration.batches"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -7479,6 +7486,22 @@
       ],
       "summary": "Registration, explanation, and event contracts for integration trains."
     },
+    "tests/test_integration_cutover.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.outbox",
+        "src.integration.service",
+        "src.integration.shadow"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Cutover invariants for ``integration.git_first: active``."
+    },
     "tests/test_integration_delivered_parent_adoption.py": {
       "areas": [
         "integration-promotion"
@@ -8132,6 +8155,24 @@
       ],
       "summary": "Natural deadline/drain/restart handoff with real PostgreSQL and Git origins."
     },
+    "tests/test_integration_replay.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.source_trailer"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded replay and deterministic crash checks before the git-first cutover."
+    },
     "tests/test_integration_review_evidence.py": {
       "areas": [
         "integration-promotion"
@@ -8485,6 +8526,59 @@
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
     },
+    "tests/test_integration_train.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.codegen",
+        "src.cli.auto_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.repair",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The reduced train: per-target level-triggered visits over Git, checks and intent."
+    },
+    "tests/test_integration_train_sources.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The train's durable sources over a real origin; disposable PostgreSQL."
+    },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
         "integration-ownership"
@@ -8665,6 +8759,32 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_jobs.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.gitops",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.models",
+        "src.playbooks.artifact_store"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The train's local jobs provider: development checks of exact candidates."
     },
     "tests/test_jobs_attachments.py": {
       "areas": [
