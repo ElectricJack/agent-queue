@@ -1401,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:0d85f3c56659ed36b4f96c3e5dc404dc7c2db751dab7f3dc12336d507cd53386",
+  "digest": "sha256:23bf50ee7209ce4b6aca6f9d99b3deb458e6dcb90ae851724da7e9914ac9c18e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4754,6 +4754,7 @@
         "src.integration.development",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.source_trailer",
         "src.integration.status",
         "src.models"
       ],
@@ -4862,6 +4863,7 @@
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.integration.publishable_artifact",
+        "src.integration.source_trailer",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -7276,6 +7278,7 @@
         "src.integration.ownership",
         "src.integration.recovery_controls",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"
@@ -7559,6 +7562,7 @@
         "src.integration.gitops",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.source_trailer",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8068,6 +8072,7 @@
         "src.integration.preserved_repair",
         "src.integration.promotion",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"

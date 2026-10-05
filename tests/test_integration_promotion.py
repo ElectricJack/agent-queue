@@ -845,6 +845,33 @@ def _resolution_request(case: dict, **updates):
     return ConflictResolutionInput(**values)
 
 
+async def test_promotion_message_records_the_exact_source_trailer(db, promotion_case):
+    """The prepared merge names the reviewed source, and keeps its own trailers."""
+    from src.integration.promotion import PromotionService
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    case = promotion_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    prepared = await service.prepare(case["request"])
+    assert prepared.prepared_sha
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    message = _git(["show", "-s", "--format=%B", prepared.prepared_sha], retained)
+    task_id = case["request"].source_task_id
+    source_head = case["request"].source_head
+    assert parse_source_trailers(message) == {SourceIdentity(task_id, source_head)}
+    assert [line for line in message.splitlines() if line.startswith("AQ-Source:")] == [
+        f"AQ-Source: {task_id}@{source_head}"
+    ]
+    # The child had two commits: only its whole reviewed head is the identity,
+    # so one commit of the multi-commit task is not it.
+    first = _git(["rev-parse", f"{source_head}~1"], case["work"])
+    assert first != source_head
+    assert SourceIdentity(task_id, first) not in parse_source_trailers(message)
+    assert f"Integrate task {task_id}" in message
+    assert f"AQ-Receipt: {prepared.receipt_id}" in message
+    assert "Co-authored-by: Bob Builder <bob@example.test>" in message
+
+
 async def test_clean_promotion_is_retained_attributed_pushed_and_reconciled(db, promotion_case):
     from src.integration.promotion import PromotionService
 

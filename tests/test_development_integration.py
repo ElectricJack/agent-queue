@@ -235,6 +235,30 @@ async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     assert (await service.sweep("p"))["outcome"] == "idle"
 
 
+async def test_each_merged_member_records_one_exact_source_trailer(setup):
+    """The publisher's own merge commits name the exact source they applied."""
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    _db, service, _source, remote, _repo = setup
+    one = await feature(setup, "one")
+    two = await feature(setup, "two")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered", result
+    head = result["head_sha"]
+    assert head == git(remote, "rev-parse", "main")
+    # The batch merge is a real merge commit, so it can carry the identity.
+    assert git(remote, "rev-list", "--parents", "-n", "1", head).split()[1:] == [one, two]
+    message = git(remote, "show", "-s", "--format=%B", head)
+    assert parse_source_trailers(message) == {SourceIdentity("two", two)}
+    assert [line for line in message.splitlines() if line.startswith("AQ-Source:")] == [
+        f"AQ-Source: two@{two}"
+    ]
+    # The fast-forwarded member's commit is never rewritten: no merge commit
+    # was made for it, so its message stays exactly the worker's own.
+    assert git(remote, "show", "-s", "--format=%B", one).strip() == "one"
+    assert parse_source_trailers(git(remote, "show", "-s", "--format=%B", one)) == frozenset()
+
+
 async def test_idle_sweep_does_not_open_git_transport(setup):
     _db, service, _source, _remote, _repo = setup
     with patch.object(service, "store", new_callable=AsyncMock) as store:
@@ -5434,6 +5458,26 @@ async def test_branches_that_both_add_commands_merge_with_regenerated_artifacts(
     # The rebuilt files are folded into the member's merge commit.
     merge = git(remote, "log", "-1", "--format=%P", "main").split()
     assert len(merge) == 2
+
+
+async def test_a_regenerated_merge_keeps_the_exact_source_trailer(setup):
+    """The rebuild folds into the merge commit; its identity must survive it."""
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    _db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    one = await command_feature(setup, "one")
+    two = await command_feature(setup, "two")
+    await _policy(service, commands=[CHECK_GENERATED], regenerate="./regenerate.sh")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered", result
+    head = result["head_sha"]
+    assert git(remote, "rev-list", "--parents", "-n", "1", head).split()[1:] == [one, two]
+    message = git(remote, "show", "-s", "--format=%B", head)
+    assert parse_source_trailers(message) == {SourceIdentity("two", two)}
+    # The regenerated files are still the ones the merge committed.
+    assert git(remote, "show", "main:inventory.txt") + "\n" == _rendered("base", "one", "two")
+    assert list(_batch_evidence(await service.rows("p"))["regenerated"]) == ["two"]
 
 
 async def test_a_clean_but_stale_generated_merge_is_regenerated(setup):
