@@ -30,6 +30,7 @@ from src.integration.ci import (
     IntegrationCITrust,
     IntegrationTrustManifest,
     TrustedCIObservation,
+    failed_run_verdict,
     is_numeric_producer_id,
 )
 from src.integration.subjects import CIEvidence, CIState, HeadIdentity, Subject
@@ -214,15 +215,13 @@ class HostedCIProducer:
                 "workflow_runs": list(observed.workflow_runs),
             }
             identity = "hosted:" + digest(details)
-            classification, state = (
-                ("cancelled", CIState.INFRA)
-                if observed.conclusion == "cancelled"
-                else ("conclusive", CIState.RED)
-                if "failure" in checks.values()
-                or "missing" in checks.values()
-                or any(run["conclusion"] == "failure" for run in observed.workflow_runs)
-                else ("infra", CIState.INFRA)
-            )
+            # The same precedence the observer used, so a run cannot be red at
+            # one layer and infrastructure at the next.
+            classification, state = {
+                "red": ("conclusive", CIState.RED),
+                "cancelled": ("cancelled", CIState.INFRA),
+                "infra": ("infra", CIState.INFRA),
+            }[failed_run_verdict(observed.checks, observed.workflow_runs)]
         return ProducerObservation(
             **common,
             state=state,

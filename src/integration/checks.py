@@ -236,12 +236,20 @@ class HostedChecks:
             )
         details = observed.details.get("receipt") or observed.details
         runs = {run["check_suite_id"]: run for run in details["workflow_runs"]}
+        # A cancelled sibling is the job's own account of what happened: the run
+        # conclusion GitHub derives from it says nothing about this check.
+        cancelled = any(check["conclusion"] == "cancelled" for check in details["checks"])
         rows = []
         for check in details["checks"]:
             run = runs.get(check["check_suite_id"])
             conclusion = check["conclusion"]
             # A required check passes only within a successful workflow attempt.
-            if conclusion == "success" and run is not None and run["conclusion"] != "success":
+            if (
+                conclusion == "success"
+                and not cancelled
+                and run is not None
+                and run["conclusion"] != "success"
+            ):
                 conclusion = run["conclusion"]
             rows.append(
                 _check(

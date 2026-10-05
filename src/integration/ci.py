@@ -26,7 +26,7 @@ from src.integration.outbox import enqueue_integration_event
 import hashlib
 import json
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Literal
 from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
@@ -444,6 +444,27 @@ class FailedCIObservation:
     workflow_runs: tuple[dict[str, Any], ...]
     workflow_ids: dict[int, int]
     conclusion: Literal["failure", "cancelled", "inconclusive"]
+
+
+def failed_run_verdict(
+    checks: Iterable[Mapping[str, Any]], workflow_runs: Iterable[Mapping[str, Any]]
+) -> Literal["red", "cancelled", "infra"]:
+    """The one precedence every consumer of a red run shares, decided by the checks.
+
+    A failing or never-produced required check is conclusive whatever else the
+    run reports, so a real failure is never masked by the cancellation of its
+    siblings. GitHub concludes a workflow run ``failure`` when its jobs are
+    cancelled for want of a runner, so a cancellation decides the verdict only
+    when no selected check carries one. Anything else (a skipped or neutral
+    attempt) stays infrastructure, as it always was.
+    """
+    conclusions = {check["conclusion"] for check in checks}
+    runs = {workflow["conclusion"] for workflow in workflow_runs}
+    if conclusions & {"failure", "missing"}:
+        return "red"
+    if "cancelled" in conclusions or "cancelled" in runs:
+        return "cancelled"
+    return "red" if "failure" in runs else "infra"
 
 
 class ParentCISubject(BaseModel):
@@ -1238,15 +1259,12 @@ class AuthenticatedGitHubObserver:
         if any(check["conclusion"] != "success" for check in selected) or any(
             workflow["conclusion"] != "success" for workflow in workflow_rows
         ):
-            conclusions = {check["conclusion"] for check in selected} | {
-                workflow["conclusion"] for workflow in workflow_rows
-            }
-            overall = "cancelled" if "cancelled" in conclusions else "failure"
+            verdict = failed_run_verdict(selected, workflow_rows)
             return FailedCIObservation(
                 checks=tuple(selected),
                 workflow_runs=tuple(workflow_rows),
                 workflow_ids=workflow_ids,
-                conclusion=overall,
+                conclusion="cancelled" if verdict == "cancelled" else "failure",
             )
         common = {
             "canonical_repository_id": trust.canonical_repository_id,

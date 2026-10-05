@@ -143,12 +143,25 @@ def local(client, **plan):
     )
 
 
-def github(*, conclusion="success", status="completed", app=True, manifest=False):
+def github(
+    *,
+    conclusion="success",
+    status="completed",
+    app=True,
+    manifest=False,
+    names=("unit",),
+    job_conclusions=None,
+    run_conclusion=None,
+):
+    """One hosted attempt: every required name is a job, and the run concludes
+    on its own. ``job_conclusions`` and ``run_conclusion`` model a run whose
+    jobs disagree with the conclusion GitHub derives from them."""
+    jobs = list(job_conclusions or (conclusion,) * len(names))
     trust = dict(
         canonical_repository_id="repo",
         repository_id=123,
         full_name="acme/widgets",
-        required_checks={"version": "v1", "names": ("unit",)},
+        required_checks={"version": "v1", "names": tuple(names)},
     )
     trusted = (
         IntegrationTrustManifest(
@@ -167,14 +180,15 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
         else GitHubCredentialIdentity.existing_login(),
         checks=[
             {
-                "id": 11,
-                "name": "unit",
+                "id": 11 + index,
+                "name": name,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
+                "conclusion": job,
                 "app": {"id": 15368},
                 "check_suite": {"id": 21},
             }
+            for index, (name, job) in enumerate(zip(names, jobs))
         ],
         workflows=[
             {
@@ -184,7 +198,7 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
                 "check_suite_id": 21,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
+                "conclusion": conclusion if run_conclusion is None else run_conclusion,
                 "event": "push",
                 "repository": {"id": 123, "full_name": "acme/widgets"},
                 "head_repository": {"id": 123, "full_name": "acme/widgets"},
@@ -192,15 +206,18 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
         ],
         jobs=[
             {
-                "id": 51,
-                "name": "unit",
+                "id": 51 + index,
+                "name": name,
                 "run_id": 31,
                 "run_attempt": 1,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
-                "check_run_url": "https://api.github.com/repos/acme/widgets/check-runs/11",
+                "conclusion": job,
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
             }
+            for index, (name, job) in enumerate(zip(names, jobs))
         ],
     )
 
@@ -239,6 +256,36 @@ async def test_hosted_normalizes_authenticated_exact_head(
     assert (result.state, result.classification) == (state, classification)
     assert result.is_attempt == (classification == "conclusive")
     assert result.head_sha == HEAD and result.required_check_version == "v1"
+
+
+@pytest.mark.parametrize(
+    ("job_conclusions", "run_conclusion", "state", "classification"),
+    [
+        # A real failure is conclusive whatever its cancelled siblings say.
+        (("failure", "cancelled"), "failure", "red", "conclusive"),
+        (("cancelled", "failure"), "failure", "red", "conclusive"),
+        (("success", "failure"), "failure", "red", "conclusive"),
+        # GitHub concludes a run 'failure' when no runner was acquired for its
+        # jobs, so an outage retries instead of opening a repair.
+        (("success", "cancelled"), "failure", "infra", "cancelled"),
+        (("cancelled", "success"), "failure", "infra", "cancelled"),
+        (("cancelled", "cancelled"), "failure", "infra", "cancelled"),
+    ],
+)
+async def test_hosted_classifies_the_jobs_before_the_run_conclusion(
+    job_conclusions, run_conclusion, state, classification
+):
+    client, trust = github(
+        app=False, names=("unit", "lint"), job_conclusions=job_conclusions,
+        run_conclusion=run_conclusion,
+    )
+    s = subject()
+
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+
+    assert (result.state, result.classification) == (state, classification)
+    assert result.is_attempt is (classification == "conclusive")
+    assert dict(zip(("unit", "lint"), job_conclusions)) == result.checks
 
 
 async def test_app_credentials_cannot_replace_subject_manifest_with_policy_only_trust():
