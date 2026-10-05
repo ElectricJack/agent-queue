@@ -25,7 +25,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from src.integration.batches import (
@@ -107,7 +107,7 @@ class TargetSource(Protocol):
 class BatchSource(Protocol):
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
-    ) -> tuple[Batch, tuple[BatchMember, ...]] | None:
+    ) -> BatchSelection:
         """The target's open batch with its frozen members, freezing one when due.
 
         A new batch freezes through ``service.freeze``, which retains every
@@ -213,6 +213,15 @@ class TrainLane:
     checks: CandidateChecks
 
 
+@dataclass(frozen=True)
+class BatchSelection:
+    """An open batch and any completions whose evidence prevents admission."""
+
+    batch: Batch | None = None
+    members: tuple[BatchMember, ...] = ()
+    blockers: tuple[dict[str, Any], ...] = ()
+
+
 @dataclass
 class _Lane:
     task: asyncio.Task | None = None
@@ -314,9 +323,21 @@ class IntegrationTrain:
         lane = await self.lane_for(target)
         snapshot = await lane.snapshot()
         opened = await self.batches.open_batch(target, snapshot, lane.service)
-        if opened is None:
-            return self._visit(target, "idle", snapshot=snapshot)
-        batch, members = opened
+        if opened.batch is None:
+            state = "blocked" if opened.blockers else "idle"
+            visit = self._visit(target, state, snapshot=snapshot)
+        else:
+            visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
+        if opened.blockers:
+            visit = replace(visit, detail={
+                **(visit.detail or {}), "blockers": list(opened.blockers),
+            })
+        return visit
+
+    async def _visit_batch(
+        self, target: TrainTarget, lane: TrainLane, snapshot: GitTruthSnapshot,
+        batch: Batch, members: tuple[BatchMember, ...],
+    ) -> TrainVisit:
         observation = await lane.service.visit(batch, members, snapshot)
         if observation.state == "delivered":
             await self.batches.settle(batch, observation)

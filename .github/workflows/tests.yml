@@ -279,7 +279,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S20.
         group: [claims, cli, graphs, failover]
 
     services:

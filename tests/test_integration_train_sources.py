@@ -339,12 +339,73 @@ async def test_active_status_projects_the_train_not_subjects(world):
     assert [b["code"] for b in fresh["blockers"]] == ["awaiting_visit"]
 
 
+async def test_missing_completion_provenance_reports_blocked_target_and_task(world):
+    db, origin = world.db, world.origin
+    heads = {}
+    for tid in ("missing-a", "missing-b"):
+        heads[tid] = await completed(world, tid, done=False)
+        # A legacy close without retained Git evidence must never borrow its
+        # published branch, even when its exact source is reported in the DB.
+        await close(db, tid, [heads[tid]])
+    await completed(world, "landed", land=True)
+    train, _, _ = lane(world, LocalGit(Path(origin.url)))
+    await train.tick()
+    await train.drain()
+    status = IntegrationStatusService(db, git_first="active", train=train)
+    project = await status.control_status("p")
+    assert project["batches"] == []
+    assert project["targets"][0]["state"] == "blocked"
+    assert {(b["code"], b["task_id"], b["target_ref"]) for b in project["blockers"]} == {
+        ("missing_git_provenance", tid, MAIN.target_ref) for tid in heads
+    }
+    own = await status.task_blockers("missing-a")
+    assert [(b["code"], b["ref"]) for b in own["blockers"]] == [
+        ("missing_git_provenance", "missing-a"),
+    ]
+    assert (await status.task_blockers("landed"))["blockers"] == []
+
+    # A later visit reads repaired evidence and replaces the blocked projection.
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    provenance = GitProvenance(GitManager(), str(origin.clone), repository_url=origin.url)
+    for tid, head in heads.items():
+        completion = await db.get_task_completion(tid)
+        await provenance.write_completion(CompletedSource(
+            CompletionIdentity("p", "r", tid, completion.id), head,
+        ))
+    await train.tick()
+    await train.drain()
+    project = await status.control_status("p")
+    assert [b["code"] for b in project["blockers"]] == ["checks_pending"]
+    assert {m["task_id"] for m in project["batches"][0]["members"]} == set(heads)
+
+
 async def test_shadow_status_keeps_the_subject_projection(world):
     await completed(world, "a")
     project = await IntegrationStatusService(world.db).control_status("p")
     assert project.get("projection_kind") != "train"
     assert await IntegrationStatusService(world.db, git_first="active").control_status(
         "missing") is None
+
+
+async def test_unknown_source_is_visible_while_an_independent_batch_waits_for_checks(world):
+    await completed(world, "missing", done=False)
+    await close(world.db, "missing", [])
+    await completed(world, "healthy")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    for _ in range(2):
+        # Keep reporting unadmitted sources when revisiting an existing batch.
+        await train.tick()
+        await train.drain()
+        project = await status.control_status("p")
+        assert {b["code"] for b in project["blockers"]} == {
+            "checks_pending", "missing_git_provenance",
+        }
+        assert [m["task_id"] for m in project["batches"][0]["members"]] == ["healthy"]
+        assert [b["code"] for b in (await status.task_blockers("missing"))["blockers"]] == [
+            "missing_git_provenance",
+        ]
 
 
 class HostedGitHub:
