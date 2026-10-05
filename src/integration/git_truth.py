@@ -273,7 +273,13 @@ async def _whole_patch(
         for start in candidates:
             if start == head or not await provenance.ancestor(start, head):
                 continue
-            if await snapshot.git.apatch_id(snapshot.store, start, head) == patch:
+            try:
+                candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
+            except (GitError, OSError):
+                # An optional historical probe cannot invalidate the retained
+                # source or prevent a later patch/tree from proving delivery.
+                continue
+            if candidate == patch:
                 return True
         if after_base:
             for parent in parents:

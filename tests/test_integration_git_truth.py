@@ -509,3 +509,71 @@ async def test_repair_green_precedes_movement_and_rev_list_includes_merged_commi
         await commits_added(repo.git, str(repo.path), "0" * 40, head)
     with pytest.raises(GitError):
         await repo.git.atree_sha(str(repo.path), "0" * 40)
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_oversized_historical_patch_does_not_block_delivery(repository, delivered):
+    repo = repository
+    await repo.run("checkout", "main")
+    await repo.commit("seed", "historical line\n" * 80000)
+    repo.base = await repo.commit("seed", "seed\n")
+    await repo.run("checkout", "-B", "source")
+    head = await repo.commit("seed", "small intended change\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    if delivered:
+        await repo.run("merge", "--squash", "source")
+        await repo.run("commit", "-m", "squashed source")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.state == (DeliveryState.CONTAINED if delivered else DeliveryState.PENDING)
+    assert proof.reason == ("whole_source_patch" if delivered else "source_not_delivered")
+    assert await snapshot.contains_source("task", head, repo.base) is delivered
+
+
+@pytest.mark.parametrize("proof_kind", ["pending", "tree", "trailer"])
+async def test_oversized_source_patch_uses_other_proofs(repository, proof_kind):
+    repo = repository
+    head = await repo.commit("large", "large source line\n" * 80000)
+    request = await repo.retain(head)
+    assert await repo.git.apatch_id(str(repo.path), repo.base, head) is None
+    await repo.run("checkout", "main")
+    if proof_kind == "tree":
+        await repo.run("merge", "--squash", "source")
+        await repo.run("commit", "-m", "same tree, different history")
+    elif proof_kind == "trailer":
+        await repo.commit("unrelated", message=f"delivered\n\nAQ-Source: task@{head}")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.reason == {
+        "pending": "source_not_delivered", "tree": "full_tree", "trailer": "source_trailer",
+    }[proof_kind]
+    assert await snapshot.contains_source("task", head, repo.base) is (proof_kind != "pending")
+
+
+async def test_failed_historical_probe_does_not_hide_later_match(repository, monkeypatch):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    failed_head = await repo.commit("one", "historical content\n")
+    await repo.run("revert", "--no-edit", failed_head)
+    await repo.run("merge", "--squash", "source")
+    await repo.run("commit", "-m", "whole source")
+    await repo.commit("unrelated")
+    await repo.publish()
+    patch_id = repo.git.apatch_id
+    failures = []
+
+    async def probe(path, base, candidate):
+        if candidate == failed_head:
+            failures.append(candidate)
+            raise GitError("historical probe failed")
+        return await patch_id(path, base, candidate)
+
+    monkeypatch.setattr(repo.git, "apatch_id", probe)
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert failures
+    assert proof.reason == "whole_source_patch"
