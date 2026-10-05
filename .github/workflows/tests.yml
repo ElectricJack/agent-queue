@@ -382,3 +382,46 @@ jobs:
           path: |
             e2e-results.xml
             ${{ runner.temp }}/e2e-timings/*.jsonl
+
+  dashboard:
+    name: Dashboard (typecheck/build)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # The root lockfile installs dashboard and the TS client workspace.
+      # Both dashboard commands generate the client from committed openapi.json.
+      - name: Install dependencies
+        timeout-minutes: 8
+        run: npm ci
+
+      - name: Typecheck dashboard
+        timeout-minutes: 2
+        working-directory: dashboard
+        run: npm run typecheck
+
+      - name: Build dashboard
+        timeout-minutes: 3
+        working-directory: dashboard
+        run: npm run build
