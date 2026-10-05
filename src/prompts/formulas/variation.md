@@ -22,7 +22,11 @@ final-suite reserve, never a new object allowance. Install before the terminal
 stop. Reconciliation waits for all its children, including exhausted failures.
 Use an admitted finite Matter job/GPU lease and atomic submit-and-wait when
 AQ-4 is operational; otherwise retain an audited bounded native invocation.
-Human review uses a closed evidence task and review gates, never a worker wait.
+Variation decisions use supervisor-only reviews and closed evidence tasks,
+never a human review or worker wait. Record captures, probes and failures in
+task notes for the supervisor. There is no implicit human-review deliverable.
+Jack receives the object's one final result with before/after images and a
+plain-English explanation; contact him during the run only if he must act.
 
 ```aq-graph
 version: 1

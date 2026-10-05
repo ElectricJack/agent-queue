@@ -202,7 +202,7 @@ async def complete(db, task_id, *, at=None, summary="shipped the thing", project
     )
 
 
-async def open_review(db, review_id="rev-1", *, project_id="p", created=None):
+async def open_review(db, review_id="rev-1", *, project_id="p", created=None, decider="user"):
     created = live_anchor() + 30 if created is None else created
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -211,6 +211,7 @@ async def open_review(db, review_id="rev-1", *, project_id="p", created=None):
                 project_id=project_id,
                 title="Discord as chat",
                 kind="spec",
+                decider=decider,
                 state="in_review",
                 current_revision=1,
                 vault_path=f"reviews/{review_id}.md",
@@ -452,6 +453,18 @@ async def test_windows_sit_on_the_two_hour_grid_and_one_post_reaches_the_channel
 
 
 # ------------------------------------------------------------ quiet hours
+
+
+async def test_needs_you_excludes_internal_object_reviews(db):
+    await open_review(db, "rev-internal", decider="supervisor")
+    await open_review(db, "rev-result", decider="user")
+    await open_review(db, "rev-delegated", decider="user_or_supervisor")
+    transport = SinkTransport()
+    await make_service(db, transport).tick()
+    request = await digest_request(db, await only_window(db))
+    reviews = request["brief"]["needs_you"]["reviews"]["items"]
+    assert {row["id"] for row in reviews} == {"rev-result", "rev-delegated"}
+    assert request["brief"]["counts"]["needs_you"] == 2
 
 
 async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db):

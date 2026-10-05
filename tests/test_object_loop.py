@@ -505,7 +505,7 @@ async def test_checkpoint_reads_only_same_approved_revision(command_handler_fact
         await conn.execute(insert(doc_reviews).values(
             id="review-1", project_id="p", author_task_id=None, kind="other",
             title="Rock", vault_path="projects/p/review-rock.md", current_revision=1,
-            state="approved", gate_id=gate_id, decider="user", decided_by="Jack",
+            state="approved", gate_id=gate_id, decider="supervisor", decided_by="supervisor",
             decided_at=1.0, created_at=1.0, updated_at=1.0,
         ))
         await conn.execute(insert(doc_review_revisions).values(
@@ -590,7 +590,7 @@ async def test_unapproved_promoted_checkpoint_can_record_defect_stop(
         await conn.execute(insert(doc_reviews).values(
             id="review-1", project_id="p", kind="other", title="Rock",
             vault_path="projects/p/review-rock.md", current_revision=1,
-            state="approved", gate_id=gate_id, decider="user", decided_by="Jack",
+            state="approved", gate_id=gate_id, decider="supervisor", decided_by="supervisor",
             decided_at=1, created_at=1, updated_at=1,
         ))
         await conn.execute(insert(doc_review_revisions).values(

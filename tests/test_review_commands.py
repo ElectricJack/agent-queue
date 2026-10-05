@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
+import json
 import time
 from pathlib import Path
 
@@ -1181,3 +1183,111 @@ async def test_author_withdrawing_its_own_review_is_not_told_about_it(env):
     )
     assert (await db.list_task_comments("author"))["comments"] == []
     assert await db.get_pending_messages("task", "author") == []
+
+
+@pytest.mark.parametrize("purpose", ["candidate", "score", "probe", "capture", "plateau",
+                                      "variation", "bootstrap", "finalize"])
+@pytest.mark.parametrize("delegated", [False, True])
+async def test_object_experiment_review_routes_from_task_identity(env, purpose, delegated):
+    handler, db = env
+    if delegated:
+        await db.update_project("p", review_delegate_to="supervisor")
+    await db.set_task_meta("author", "object_experiment", {
+        "object_id": "rock", "purpose": purpose, "publish_source": False,
+    })
+    submitted = await _scoped(handler, "review_submit", {
+        "task_id": "author", "kind": "other", "title": "Rock result",
+        "content": "The rock is rounder. Next time, improve its cracks.",
+    }, session_id="worker")
+    assert submitted["success"], submitted
+    review = await db.get_review(submitted["review_id"])
+    assert review["decider"] == ("user" if purpose == "finalize" else "supervisor")
+    events = await db.get_recent_events(project_id="p", limit=50)
+    event = next(e for e in events if e["event_type"] == "review.submitted")
+    assert json.loads(event["payload"])["decider"] == review["decider"]
+    redirect = await handler.execute("review_delegate", {
+        "review_id": review["id"], "to": "user",
+    })
+    assert redirect["error_code"] == "object_review_audience"
+    decided = await _scoped(handler, "review_decide", {
+        "review_id": review["id"], "revision": 1, "decision": "approve",
+    }, session_id="supervisor")
+    if purpose == "finalize":
+        assert decided["error_code"] == "not_decider"
+    else:
+        assert decided["success"], decided
+        assert (await db.get_review(review["id"]))["decided_by"].startswith("supervisor")
+
+
+async def test_unmarked_probe_inherits_internal_audience_and_deliverables(env):
+    from src.deliverables import resolve_task_deliverables
+
+    handler, db = env
+    await db.set_task_meta("author", "object_experiment", {
+        "object_id": "rock", "purpose": "bootstrap", "publish_source": False,
+    })
+    await db.update_task("peer", parent_task_id="author", task_type="research")
+    submitted = await _scoped(handler, "review_submit", {
+        "task_id": "peer", "kind": "other", "title": "Capture probe",
+        "content": "Internal capture failure detail.",
+    }, session_id="peer-worker", task_id="peer")
+    assert submitted["success"], submitted
+    assert (await db.get_review(submitted["review_id"]))["decider"] == "supervisor"
+    task = await db.get_task("peer")
+    assert await resolve_task_deliverables(db, task) == []
+    task.deliverables = [{"id": "check", "kind": "review", "target": "other"}]
+    assert await resolve_task_deliverables(db, task) == task.deliverables
+
+
+async def test_final_object_result_submission_is_one_document_under_concurrent_retry(env):
+    handler, db = env
+    await db.set_task_meta("author", "object_experiment", {
+        "object_id": "rock", "purpose": "finalize", "publish_source": False,
+    })
+    args = {"task_id": "author", "kind": "other", "title": "Rock result",
+            "content": "The rock is rounder. Next time, improve its cracks."}
+    # The service's task lock is the concurrency fence; avoid sharing a
+    # mutable CommandHandler request scope between concurrent requests.
+    service = handler._review_service()
+    one, two = await asyncio.gather(*[service.submit(
+        project_id="p", author_task_id="author", kind="other", title=args["title"],
+        content=args["content"], submitted_by="worker", decider="user", single_author=True,
+    ) for _ in range(2)])
+    assert one["review_id"] == two["review_id"]
+    document = service.vault_root / one["vault_path"]
+    document.unlink()
+    replay = await _scoped(handler, "review_submit", args, session_id="worker")
+    assert replay["review_id"] == one["review_id"]
+    assert document.exists()
+    assert len(await db.list_reviews_submitted_by_task("author")) == 1
+    changed = await _scoped(handler, "review_submit", {
+        **args, "content": "A different result.",
+    }, session_id="worker")
+    assert changed["error_code"] == "result_exists"
+    revised = await _scoped(handler, "review_submit", {
+        "review_id": one["review_id"], "content": "The rock is rounder.",
+        "changes": "Updated incumbent receipts",
+    }, session_id="worker")
+    assert revised["error_code"] == "object_result_language"
+    assert (await db.get_review(one["review_id"]))["current_revision"] == 1
+    revised = await _scoped(handler, "review_submit", {
+        "review_id": one["review_id"], "content": "The rock is rounder.",
+        "changes": "Clarified the result.",
+    }, session_id="worker")
+    assert revised["success"], revised
+    assert revised["revision"] == 2
+    assert len(await db.list_reviews_submitted_by_task("author")) == 1
+
+
+@pytest.mark.parametrize("text", ["rock-me3-a1 result", "r0 result", "Retained incumbent",
+                                  "Plateau reached", "See receipts", "a" * 64])
+async def test_final_object_result_refuses_internal_language(env, text):
+    handler, db = env
+    await db.set_task_meta("author", "object_experiment", {
+        "object_id": "rock-me3-a1", "purpose": "finalize", "publish_source": False,
+    })
+    submitted = await _scoped(handler, "review_submit", {
+        "task_id": "author", "kind": "other", "title": "Rock result", "content": text,
+    }, session_id="worker")
+    assert submitted["error_code"] == "object_result_language"
+    assert await db.list_reviews_submitted_by_task("author") == []

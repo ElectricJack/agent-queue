@@ -171,6 +171,38 @@ references are soft so normal archive cleanup does not erase the loop record.
 
 ## Reviewed policy and formulas (AQ-3)
 
+### Audience and decisions
+
+Each attempt has two documents for Jack: a brief before admission and one
+final result after settlement. The brief names the object in ordinary words,
+the maximum number of rounds and the total budget. The result pairs before
+and after images for every view, explains whether the object improved and by
+how much (or why a measured comparison is unavailable), and says what would
+help the next run. Neither document exposes attempt/round IDs or terms such
+as receipts, incumbent or plateau. The finalization task must submit this
+result as an `other` review; retries reuse that review rather than adding one.
+
+Scoring, probes, capture checks, variations and continuation checkpoints are
+internal. The loop decides within its fixed limits; any review authored by an
+internal `object_experiment` task, including a descendant probe, has decider
+`supervisor`, independently of the project's review delegation setting. Such
+tasks have no implicit human-review deliverable. Explicit review deliverables
+still apply and route to the supervisor. Only the finalization task routes a
+result to `user`. Checkpoint packets must name a supervisor review. The brief
+remains the exact, approved document required for admission.
+Experiment review audiences cannot be changed by generic review delegation.
+The schema migration also reroutes existing reviews with these experiment
+markers, preserving their documents and decisions.
+
+Supervisor reviews stay out of the human Reviews inbox, Discord review
+notifications, dashboard toasts and activity gates, and the digest's requests
+for human decisions. Review lifecycle events carry their decider for this
+filtering. Result screenshots labeled Before/After are paired by view in two
+columns with plain captions, without candidate IDs or hashes. A blocked loop
+retains its detailed evidence for the project supervisor, who handles recovery.
+Jack receives a single plain-English sentence only if he needs to do something;
+ordinary capture failures or exhausted limits require no human decision.
+
 The opt-in `object-loop` V2 bundle is shipped inactive. Its command grants do
 not include review decisions, provider routing, source publication or activation.
 The approved proposal is `rev-amber-zenith`, revision 2; object admission also

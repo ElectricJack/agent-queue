@@ -792,7 +792,7 @@ object_loops = Table(
 
 DOC_REVIEW_KINDS = ("spec", "plan", "other")
 DOC_REVIEW_STATES = ("in_review", "changes_requested", "rejected", "approved", "withdrawn")
-DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
+DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor", "supervisor")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:

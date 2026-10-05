@@ -702,7 +702,10 @@ class DigestSupervisorQueriesMixin:
                     doc_reviews.c.state,
                     doc_reviews.c.title,
                     doc_reviews.c.updated_at,
-                ).where(doc_reviews.c.state.in_(_NEEDS_YOU_REVIEW_STATES)),
+                ).where(
+                    doc_reviews.c.state.in_(_NEEDS_YOU_REVIEW_STATES),
+                    doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
+                ),
                 doc_reviews.c.updated_at.desc(),
             )
             if wanted is not None:

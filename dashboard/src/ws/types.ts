@@ -397,6 +397,7 @@ export interface ReviewSubmittedEvent extends BaseEvent {
   revision?: number;
   author_task_id?: string;
   changes_note?: string;
+  decider?: string;
 }
 
 export interface ReviewRevisedEvent extends BaseEvent {
@@ -407,6 +408,7 @@ export interface ReviewRevisedEvent extends BaseEvent {
   revision?: number;
   author_task_id?: string;
   changes_note?: string;
+  decider?: string;
 }
 
 export interface ReviewDecidedEvent extends BaseEvent {

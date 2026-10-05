@@ -6,7 +6,7 @@ readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
 The recorded artifact is
-`sha256:e688fdb38627e982c8ba3ae04763c21c03895677e867b17e9862bded1c71244e`.
+`sha256:8903a28f45c81dd45b3333dc35306846c20018c3e3cf4272eee37902862a7cf4`.
 Its source, canonical artifact, contract/grant manifest, compiler diagnostics
 and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
