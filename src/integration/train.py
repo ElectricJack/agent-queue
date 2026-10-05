@@ -56,6 +56,8 @@ class TrainTarget:
     def __post_init__(self) -> None:
         if not (self.project_id and self.repository_id and self.target_ref):
             raise ValueError("train target needs project, repository and ref")
+        if not self.target_ref.startswith("refs/heads/"):
+            raise ValueError("train target must be a fully qualified branch ref")
         if self.kind not in TRAIN_KINDS:
             raise ValueError(f"unknown train target kind: {self.kind}")
 
