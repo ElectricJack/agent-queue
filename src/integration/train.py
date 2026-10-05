@@ -115,9 +115,13 @@ class BatchSource(Protocol):
 class RepairAllocator(Protocol):
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
-        green_sha: str | None = None, held: bool = False,
+        green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
     ) -> dict:
-        """File (or find) the ordinary repair task for a batch on its target."""
+        """File (or find) the ordinary repair task for a batch's candidate ref.
+
+        :class:`~src.integration.repair.OrdinaryRepairService` is the production
+        allocator.
+        """
 
 
 def candidate_head(batch: Batch, candidate_sha: str) -> HeadIdentity:
@@ -328,10 +332,12 @@ class IntegrationTrain:
         self, target: TrainTarget, batch: Batch, observation: BatchObservation,
         result: ChecksResult | None,
     ) -> TrainVisit:
+        # The repair works on the batch's candidate ref, never the target: the
+        # train alone fast-forwards the target once the repaired head is green.
         head = observation.candidate_sha or observation.target_sha
         if not head:
             return self._visit(target, "unknown", batch, observation, result)
-        repair = await self.repair.allocate(batch.id, target_ref=target.target_ref,
+        repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open")
         return self._visit(target, "repair", batch, observation, result, repair=repair)
 

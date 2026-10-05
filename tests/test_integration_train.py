@@ -172,8 +172,8 @@ async def test_red_candidate_allocates_one_repair_for_the_exact_head():
     visit = await t.visit(ROOT)
     assert visit.state == "repair"
     assert visit.repair["task_id"] == "repair-batch-1"
-    assert repair.calls == [("batch-1", {"target_ref": "refs/heads/main", "head_sha": CANDIDATE,
-                                         "held": False})]
+    assert repair.calls == [("batch-1", {"target_ref": candidate_ref("batch-1"),
+                                         "head_sha": CANDIDATE, "held": False})]
 
 
 async def test_green_on_refresh_ends_repair_without_an_attempt():
@@ -193,6 +193,38 @@ async def test_merge_conflict_files_repair_against_the_target_head():
     visit = await t.visit(ROOT)
     assert visit.state == "repair"
     assert repair.calls[0][1]["head_sha"] == TARGET_SHA
+    assert repair.calls[0][1]["target_ref"] == candidate_ref("batch-1")
+
+
+@pytest.fixture
+async def db(reuse_database):
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    database = await reuse_database("train.db")
+    await database.create_project(Project(id="p", name="Project"))
+    await database.create_repo(RepoConfig(id="r", project_id="p",
+                                          source_type=RepoSourceType.LINK))
+    yield database
+
+
+async def test_red_candidate_files_one_ordinary_repair_on_the_candidate_ref(db):
+    """Repeated red visits file one ordinary task; it works on the candidate ref."""
+    from src.integration.batches import BatchStore
+    from src.integration.repair import OrdinaryRepairService
+
+    store = BatchStore(db)
+    frozen = await store.freeze(batch("batch-db"), MEMBERS, trees={"t-1": "d" * 40})
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service("testing", "testing"),
+                              Checks(ChecksState.RED, ChecksState.RED, ChecksState.RED))},
+              OrdinaryRepairService(db))
+    first, second = await t.visit(ROOT), await t.visit(ROOT)
+    assert (first.repair["outcome"], second.repair["outcome"]) == ("filed", "exists")
+    assert second.repair["task_id"] == first.repair["task_id"]
+    task = await db.get_task(first.repair["task_id"])
+    assert task.branch_name == candidate_ref("batch-db").removeprefix("refs/heads/")
+    assert task.branch_name != "main"
+    assert (await store.get("batch-db")).repair_attempt_count == 1
 
 
 @pytest.mark.parametrize("state", ["held", "moved", "source_moved", "unknown"])
