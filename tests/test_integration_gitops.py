@@ -189,7 +189,9 @@ async def setup(tmp_path):
     repo = RetainedRepository("r", store, GitHubRepositoryBinding(123, "test/repo"), "main")
 
     async def resolver(subject):
-        assert subject.repository_id == "r"
+        # GitOperations resolves a subject for the subject runtimes and a bare
+        # repository id for batch construction; both must name this clone.
+        assert getattr(subject, "repository_id", subject) == "r"
         return repo
 
     green = {head}

@@ -733,6 +733,31 @@ Assertions must go through a public surface — `aq …` with `--json`, or
 while the surface an agent actually uses is broken, which is the whole thing
 it exists to prevent.
 
+## Running the kit with the git-first protocol active
+
+The cutover smoke runs the same kit with `integration.git_first: active`, so the
+reduced train — not the subject runtime — is the delivery path the daemon
+builds. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment verbatim, so
+no script needs to know about the selector:
+
+```bash
+printf 'integration:\n  git_first: active\n' > /tmp/aq-e2e-git-first.yaml
+AQ_E2E_EXTRA_CONFIG=/tmp/aq-e2e-git-first.yaml scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+```
+
+`--reset` drops the database, so it cannot be combined with `--register`;
+`scripts/e2e-daemon.sh start` registers the projects for you. The daemon must
+report `projection_kind: train` from `aq integration status`; if it does not,
+the selector did not take effect and the run proves nothing about the cutover.
+
+This run is a prerequisite of the operator canary in
+[the git-first cutover runbook](git-first-cutover-runbook.md), together with
+`aq test tests/test_integration*.py tests/test_config.py`. Both must be green
+before `active` is selected on a real install. A development-mode delivery here
+does not prove hosted-train operation, and vice versa: the project's actual
+configured mode is proven only by the live canary.
+
 ## The App-mode train proof
 
 `scripts/e2e-app-train.sh` builds on this kit's isolation to run the App-mode

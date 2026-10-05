@@ -331,3 +331,19 @@ async def test_shadow_status_keeps_the_subject_projection(world):
     assert project.get("projection_kind") != "train"
     assert await IntegrationStatusService(world.db, git_first="active").control_status(
         "missing") is None
+
+
+async def test_train_status_still_publishes_the_configuration_generation(world):
+    """``edit_project`` reads this as its compare-and-set token.
+
+    The train projection replaces the subject rows, not ordinary project
+    configuration: without the generation an operator cannot reconfigure a
+    project's integration mode while the protocol is active.
+    """
+    await completed(world, "a")
+    active = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    shadow = await IntegrationStatusService(world.db).control_status("p")
+    assert active["projection_kind"] == "train"
+    assert active["generation"] == shadow["generation"]
+    assert active["effective_mode"] == shadow["effective_mode"]
+    assert active["desired_mode"] == shadow["desired_mode"]

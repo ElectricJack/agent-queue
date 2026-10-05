@@ -624,6 +624,10 @@ class IntegrationStatusService:
             "project_id": project_id,
             "effective_mode": project["hierarchical_integration_mode"],
             "desired_mode": project["hierarchical_integration_desired_mode"],
+            # The train replaces the *subject* projection; the project's
+            # integration generation is ordinary configuration and is the
+            # compare-and-set token `edit_project` requires, so it stays.
+            "generation": project["hierarchical_integration_generation"],
             "repository_id": project["integration_repository_id"],
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,

@@ -22,7 +22,9 @@ def test_git_first_selector_loads_without_activating_ownership(config_dir, value
     }))
     config = load_config(str(config_file))
     assert config.integration.git_first == value
-    assert not config.integration.reconciler_active
+    # The selector changes neither reconciler switch: loading it installs no
+    # loop and transfers no root ownership.
+    assert config.integration.reconciler_active is IntegrationConfig().reconciler_active
     assert not config.integration.reconciler_shadow
     assert config.integration.validate() == []
 
