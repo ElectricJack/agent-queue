@@ -787,11 +787,18 @@ async def test_the_stale_container_claim_release_refuses_everything_it_cannot_pr
                 .values(episode_id=None)
             )
         else:
+            # Neither reason the frontier keeps a row off it: not the §7
+            # container flag, and no children either.
             await conn.execute(
                 delete(t.task_metadata).where(
                     t.task_metadata.c.task_id == "parent",
                     t.task_metadata.c.key == "container",
                 )
+            )
+            await conn.execute(
+                update(t.tasks)
+                .where(t.tasks.c.id.in_([child, children[1]]))
+                .values(parent_task_id=None)
             )
     assert damage not in await db.stale_container_claim_candidates()
     assert not (await db.release_stale_container_claim("parent")).released

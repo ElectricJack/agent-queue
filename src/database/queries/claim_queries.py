@@ -36,6 +36,7 @@ from src.database.queries.hierarchy_queries import (
     container_flag_exists,
     delivered_same_parent_prerequisites_when_hierarchical,
     materialized_origin_when_hierarchical,
+    never_leaseable_container,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
@@ -224,7 +225,8 @@ def stale_container_claim_clauses() -> list:
     scheduler, and it may only move work that is already finished with
     everything except the claim itself:
 
-    * the §7 container flag (the one thing that says settle-only work);
+    * ``never_leaseable_container()`` — the composed frontier rule, so this
+      predicate cannot be narrower than the one that made the row unleasable;
     * ``IN_PROGRESS`` with no agent, which is the shape a container is created
       in and the only one §7 ever completes;
     * the exact stopped pool holder above;
@@ -240,7 +242,7 @@ def stale_container_claim_clauses() -> list:
     return [
         tasks.c.status == TaskStatus.IN_PROGRESS.value,
         tasks.c.assigned_agent_id.is_(None),
-        container_flag_exists(),
+        never_leaseable_container(),
         _not_manually_paused(),
         exists(select(literal(1)).where(_exact_stopped_pool_holder())),
         exists(

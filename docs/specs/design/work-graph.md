@@ -418,15 +418,22 @@ children afterwards used to sit on the frontier in between, and pool workers lea
   *current* `claim_epoch` (a requeued or re-leased pointer carries a newer one), with no
   operator hold, no agent on other work, no workspace locked to the task or that agent,
   no child outside COMPLETED, and a checkpoint carrying both a collection episode and a
-  head of its own — the aggregate the parent runtime is there to verify. The release
+  head of its own — the aggregate the parent runtime is there to verify. It qualifies on
+  `never_leaseable_container()` — the container flag *or* any child — so the line it draws
+  is exactly the frontier's own: a writer that hands a task's lifecycle back must not draw
+  it narrower than the one that took it away. The release
   itself is `release_historical_pool_claim`, so only the exact task and the exact session
   change: a stopped worker's slot, agent state, claim file and workspace lock are left as
   the successor found them. `task delete` runs it for the parent in its own transaction
   (`_delete_task_body`, before `settle_containers`), which is what deleting a container's
   last child needs — §7 cannot complete the parent, and the parent-episode readiness
-  projection refuses anything that is not PAUSED — and
+  projection refuses anything that is not PAUSED — as does `task archive`, whose archived
+  child leaves `tasks` just as a deleted one does, and
   `release_stale_container_claims` in the container sweep, and once on daemon start,
-  repairs rows that already predate it.
+  repairs rows that already predate it. It is also what reaches a parent the
+  `reevaluate-repair` no-op recovery cannot: that proof refuses a parent still IN_PROGRESS
+  under a `repair` fence (`calm-quest-88`), and returning it to unassigned PAUSED
+  short-circuits the check rather than widening it.
 
 ## 13b. Phases
 

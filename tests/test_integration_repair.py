@@ -2009,7 +2009,15 @@ async def test_noop_recovery_preserves_holds_on_previous_delegates(db, hold):
     assert (await service.reevaluate("operation"))["outcome"] == "blocked"
 
 
-async def _stale_parent_noop(db):
+async def _stale_parent_noop(db, *, collector_fence=True):
+    """A closed green no-op parent whose stopped worker still holds its claim.
+
+    *collector_fence* is the one difference between the two live shapes.  True is
+    ``sharp-glacier-30``: the branch fence is the operation's own collector
+    reservation, which ``stale_parent_claim_on`` accepts.  False is
+    ``calm-quest-88``: the fence is the closed delegate's reserved **repair**
+    row, so that proof refuses the parent at its collector-role check.
+    """
     service, delegate, subject = await _closed_green_parent(db, escalated=True)
     await db.create_task(Task(id="terminal-child", project_id="p", title="Completed no-op", description="",
                              parent_task_id="parent", status=TaskStatus.COMPLETED))
@@ -2025,9 +2033,14 @@ async def _stale_parent_noop(db):
         await conn.execute(update(tasks).where(tasks.c.id == "parent").values(
             status="IN_PROGRESS", claim_epoch=1,
         ))
-        await conn.execute(update(integration_branch_owners).values(
-            owner_id="operation", owner_role="collector",
-        ))
+        if collector_fence:
+            await conn.execute(update(integration_branch_owners).values(
+                owner_id="operation", owner_role="collector",
+            ))
+        else:
+            await conn.execute(update(integration_branch_owners).values(
+                owner_id=delegate, owner_role="repair", handoff_state="reserved",
+            ))
         await conn.execute(insert(task_branch_origins).values(
             id="child-origin", task_id="terminal-child", repository_id="repo",
             parent_task_id="parent", parent_repository_id="repo", parent_ref="aq/parent",
@@ -2136,6 +2149,42 @@ async def test_noop_recovery_preserves_old_verifier_and_files_a_fresh_one(db):
     assert (await db.get_task("verify-operation")).status is TaskStatus.FAILED
     assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation-g3"
     assert (await _apply_noop_preview(service, preview))["outcome"] == "already_settled"
+
+
+async def test_a_repair_fenced_stale_parent_needs_no_widened_collector_check(db):
+    """calm-quest-88: the no-op recovery must not be widened to reach this parent.
+
+    The same parent as
+    ``test_noop_recovery_releases_exact_stopped_parent_claim_before_fresh_verifier``,
+    but its branch fence is the closed delegate's reserved ``repair`` row rather
+    than the operation's own ``collector`` reservation.  ``reevaluate-repair``
+    refuses that parent at ``stale_parent_claim_on``'s collector-role check
+    ("parent is not an unassigned aggregate under this operation's collector
+    fence"), so this state is unreachable from that control on its own.
+
+    It is reachable from the shipped stale-claim release instead, and the check
+    is *not* widened to meet it: the release returns the parent to unassigned
+    PAUSED on the exact-holder proof alone, and ``stale_parent_claim_on``
+    short-circuits on that state before it ever looks at the fence.  The check
+    keeps refusing a parent that is still IN_PROGRESS under a repair fence.
+    """
+    service, _delegate, _subject = await _stale_parent_noop(db, collector_fence=False)
+    blocked = await service.reevaluate("operation")
+    assert blocked["outcome"] == "blocked"
+    assert "collector fence" in blocked["reason"]
+
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+    assert "parent" in await db.stale_container_claim_candidates()
+
+    assert (await db.release_stale_container_claim("parent")).released
+
+    parent = await db.get_task("parent")
+    assert (parent.status, parent.assigned_agent_id) == (TaskStatus.PAUSED, None)
+    assert (await db.get_session("stale-parent-holder")).task_id is None
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    assert (await _apply_noop_preview(service, preview))["outcome"] == "reevaluated"
+    assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation"
 
 
 async def _claimed_writer(db, task_id: str, *, epoch: int, live: bool, sid: str) -> None:
