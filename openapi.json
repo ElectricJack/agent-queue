@@ -3943,7 +3943,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
               }
             }
           },
@@ -3988,7 +3990,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionRecordResponse"
+                }
               }
             }
           },
@@ -27057,6 +27061,28 @@
         ],
         "title": "DecisionListRequest"
       },
+      "DecisionListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "operator_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/OperatorDecisionRecord"
+            },
+            "type": "array",
+            "title": "Operator Decisions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operator_decisions"
+        ],
+        "title": "DecisionListResponse"
+      },
       "DecisionRecordRequest": {
         "properties": {
           "object_kind": {
@@ -27124,6 +27150,24 @@
           "idempotency_key"
         ],
         "title": "DecisionRecordRequest"
+      },
+      "DecisionRecordResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "decision": {
+            "$ref": "#/components/schemas/OperatorDecisionRecord"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "title": "DecisionRecordResponse"
       },
       "DelegationPolicyDTO": {
         "properties": {
@@ -47406,6 +47450,108 @@
         ],
         "title": "OperatorDecisionDTO",
         "description": "A run paused with ``operator_decision_required`` after an ambiguous\ninterruption of a non-retry-safe command (design spec, run-state \u00a7)."
+      },
+      "OperatorDecisionRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "object_kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "batch",
+              "operation"
+            ],
+            "title": "Object Kind"
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "note",
+              "hold",
+              "release"
+            ],
+            "title": "Effect"
+          },
+          "operator": {
+            "type": "string",
+            "title": "Operator"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "source_ref": {
+            "type": "string",
+            "title": "Source Ref"
+          },
+          "recorded_by": {
+            "type": "string",
+            "title": "Recorded By"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "releases": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Releases"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "object_kind",
+          "object_id",
+          "effect",
+          "operator",
+          "decision",
+          "source",
+          "source_ref",
+          "recorded_by",
+          "created_at",
+          "idempotency_key"
+        ],
+        "title": "OperatorDecisionRecord",
+        "description": "One ``operator_decisions`` row; ``active`` is present on history reads."
       },
       "OrchestratorControlRequest": {
         "properties": {
