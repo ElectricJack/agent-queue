@@ -1,6 +1,6 @@
 """Let ``integration_check_evidence`` hold the exact-commit check cache.
 
-Revision ID: a00000000072
+Revision ID: a00000000074
 Revises: a00000000071
 
 Git-first integration spec, "Kept in the database" item 2: CI results are one
@@ -26,12 +26,15 @@ and never moved to an older observation.
 Every step is guarded because the squashed baseline builds this table from
 the live ``src.database.tables.metadata``: a database created after this
 revision already carries the reshaped table.
+
+``a00000000072`` and ``a00000000073`` are taken by sibling git-first branches
+(batch inputs, ref leases); whichever lands later re-chains its ``down_revision``.
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000072"
+revision = "a00000000074"
 down_revision = "a00000000071"
 branch_labels = None
 depends_on = None
