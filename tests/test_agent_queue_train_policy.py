@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.ci import ci_trust_from_policy
+from src.integration.models import HierarchicalIntegrationPolicy
 from src.playbooks.definition import artifact_sha256, canonical_bytes, load_definition_json
 from src.playbooks.proposal import source_digest
 from src.playbooks.validation import (
@@ -33,8 +34,14 @@ def test_required_checks_match_workflow_matrix() -> None:
     e2e = workflow["jobs"]["e2e-cli"]
     assert e2e["name"] == "E2E CLI (${{ matrix.group }})"
     expected += tuple(f"E2E CLI ({group})" for group in e2e["strategy"]["matrix"]["group"])
+    dashboard = workflow["jobs"]["dashboard"]
+    assert dashboard["name"] == "Dashboard (typecheck/build)"
+    expected += (dashboard["name"],)
     assert policy.parent.required_checks.names == expected
     assert policy.root.required_checks.names == expected
+    expected_version = "ci-" + hashlib.sha256("\n".join(expected).encode()).hexdigest()[:12]
+    assert policy.parent.required_checks.version == expected_version
+    assert policy.root.required_checks.version == expected_version
     # GitHub Actions by its numeric App id: canonical in both credential modes.
     assert policy.parent.required_checks.producer_id == "15368"
     assert policy.root.required_checks.producer_id == "15368"
@@ -76,6 +83,13 @@ def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
     # Preflight compares the route to that stored reference, not the JSON body.
     assert snapshot.compiled_at is None
     assert artifact.contract_fingerprint() == snapshot.contract_fingerprint
+    if boundary == "root":
+        # The command adapter compares the table's requested version with the
+        # frozen project policy; a stale literal blocks both red and green CI.
+        table = artifact.integration_policy.tables["root_batch"]
+        assert table.required_checks == policy.root.required_checks
+        requested_version = table.actions["observe-ci"].inputs["required_check_version"]
+        assert requested_version.value == policy.root.required_checks.version
     assert source_digest((folder / "source.md").read_text()) == snapshot.source_digest
     assert artifact.source_hash == snapshot.source_digest
     assert manifest["artifact_sha256"] == snapshot.artifact_sha256

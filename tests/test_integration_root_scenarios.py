@@ -13,6 +13,8 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, insert, select, update
@@ -1544,3 +1546,159 @@ async def test_main_moved_after_build_rebuilds_once_then_red_ci_routes_to_repair
     await train.run_until(
         lambda: train.phase(subject.id, SubjectPhase.REPAIRING), label="red routes to repair"
     )
+
+
+async def delegate_after_its_own_promotion(train, lifecycle="pool"):
+    """A delegate whose batch reached main while it still holds its claim."""
+    await train.open()
+    for name in ("alpha", "bravo"):
+        train.source(name, {"base.txt": f"{name}\n"})
+    for number, name in enumerate(("alpha", "bravo"), start=1):
+        await train.add_source(name, number=number)
+    subject = await train.cutover()
+
+    async def conflict_filed():
+        current = await train.subject(subject.id)
+        return current.phase is SubjectPhase.REPAIRING and current.writer.status is WriterStatus.FILED
+
+    await train.run_until(conflict_filed, label="batch conflict writer filed")
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    writer = await train.claim(stage["repair_task_id"], batch)
+    await train.db.update_session(writer.session_id, lifecycle=lifecycle)
+    partial = writer.checkout(batch["integration_branch"])
+    merged = _git_status(writer.path, "merge", "--no-ff", "--no-edit", train.heads["bravo"])
+    assert merged.returncode == 1, merged.stdout
+    resolved = writer.commit("resolve batch member bravo", {"base.txt": "alpha and bravo\n"})
+    _git(writer.path, "push", str(train.origin), "HEAD:" + batch["integration_branch"])
+    _, accepted = await writer.publish_resolution(
+        batch, member_ordinal=1, operation_id=operation["id"], partial=partial
+    )
+    assert accepted["outcome"] == "accepted"
+
+    # Acceptance already returned the branch to the collector, so the reconciler
+    # rebuilds, goes green and promotes with the delegate still holding its claim.
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="rebuilt")
+    rebuilt = await train.subject(subject.id)
+    train.ci.finish(rebuilt.head_sha, "success", run=51)
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="promoted")
+    assert train.remote("refs/heads/main") == rebuilt.head_sha
+    assert train.contains(resolved, rebuilt.head_sha)
+    assert (await train.db.get_task(writer.task_id)).status.value == "IN_PROGRESS"
+    return SimpleNamespace(
+        subject=subject, batch=batch, operation=operation, writer=writer,
+        resolved=resolved, promoted=rebuilt,
+    )
+
+
+async def close_delegate(train, world, outcome="pass"):
+    with principal_context(world.writer.principal()):
+        return await train.handler._cmd_task_close({
+            "task_id": world.writer.task_id, "session_id": world.writer.session_id,
+            "claim_epoch": 1, "commit": world.resolved, "outcome": outcome,
+            "work_outcome": "shipped" if outcome == "pass" else "blocked",
+            "summary": "Accepted candidate repair",
+        })
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+@pytest.mark.parametrize("outcome", ["pass", "fail"])
+async def test_delegate_close_after_its_own_batch_promotes_is_delivered(
+    train, lifecycle, outcome
+):
+    """Batch 6718770a: the reconciler promoted before its delegate ever closed."""
+    world = await delegate_after_its_own_promotion(train, lifecycle)
+    writer = world.writer
+
+    closed = await close_delegate(train, world, outcome)
+
+    assert closed["success"], closed.get("feedback") or closed.get("issues") or closed
+    assert closed["completion_source"] == world.resolved
+    assert (await train.db.get_task(writer.task_id)).status.value == (
+        "COMPLETED" if outcome == "pass" else "BLOCKED"
+    )
+    assert await train.db.get_workspace_for_task(writer.task_id) is None
+    session = await train.db.get_session(writer.session_id)
+    if lifecycle == "pool":
+        # The claim goes with the close; the pool keeps its slot reservation.
+        assert session.task_id is None and session.claim_phase is None
+        held = await train.db.get_workspace(f"ws-{writer.task_id}")
+        assert held.locked_by_task_id is None
+        assert held.locked_by_agent_id == f"agent-{writer.task_id}"
+    completions = await train.db.get_task_completions(writer.task_id)
+    assert len(completions) == 1 and completions[0].commits == [world.resolved]
+    assert _git_status(writer.path, "symbolic-ref", "-q", "HEAD").returncode != 0
+    # A done subject refuses writer writes, so the stop record is the stage's.
+    receipt = (await train.stage(world.operation["id"], 0))["dossier"][
+        "reconciler_delivered_completion"
+    ]
+    assert receipt["kind"] == "promoted_delivery"
+    assert receipt["head_sha"] == world.resolved
+    assert receipt["promoted_head_sha"] == world.promoted.head_sha
+    assert receipt["promotion_intent_id"]
+    assert receipt["claim_epoch"] == 1 and receipt["outcome"] == outcome
+    await assert_reconciler_only(train)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["lifecycle", "final_main", "revision", "resolution", "local_commit", "workspace", "ancestry"],
+)
+async def test_delegate_close_after_promotion_needs_its_whole_delivery_proof(
+    train, broken, monkeypatch
+):
+    """A delivery claim with one missing link still gets today's refusal."""
+    world = await delegate_after_its_own_promotion(train)
+    writer = world.writer
+    if broken == "ancestry":
+        # Git cannot answer reachability: an unproved head is not a delivered one.
+        monkeypatch.setattr(train.git, "ais_ancestor", AsyncMock(return_value=None))
+    async with train.db.immediate() as conn:
+        if broken == "lifecycle":
+            await conn.execute(
+                update(t.integration_batches).values(lifecycle="cleanup_pending")
+            )
+        elif broken == "final_main":
+            await conn.execute(update(t.integration_batches).values(final_main_sha="f" * 40))
+        elif broken == "revision":
+            await conn.execute(update(t.integration_candidate_revisions).values(state="green"))
+        elif broken == "resolution":
+            await conn.execute(
+                update(t.integration_candidate_resolutions).values(
+                    state="rejected",
+                    rejection_evidence={"reason": "test", "observed_at": 1.0},
+                )
+            )
+        elif broken == "local_commit":
+            # Work the reconciler never published: it is not the delivered head.
+            writer.commit("post-acceptance work", {"stray.txt": "stray\n"})
+        elif broken == "workspace":
+            await conn.execute(
+                update(t.workspaces).values(locked_by_task_id=None, locked_by_agent_id=None)
+            )
+
+    closed = await close_delegate(train, world)
+
+    assert not closed.get("success"), closed
+    assert closed.get("feedback"), closed
+    assert (await train.db.get_task(writer.task_id)).status.value == "IN_PROGRESS"
+    session = await train.db.get_session(writer.session_id)
+    assert session.task_id == writer.task_id and session.claim_phase == "active"
+    assert await train.db.get_task_completions(writer.task_id) == []
+    held = await train.db.get_workspace(f"ws-{writer.task_id}")
+    assert held.locked_by_task_id == (None if broken == "workspace" else writer.task_id)
+    assert "reconciler_delivered_completion" not in (
+        await train.stage(world.operation["id"], 0)
+    )["dossier"]
+    if broken == "local_commit":
+        assert closed["feedback"] == "Repair workspace differs from its delivered head"
+    elif broken == "workspace":
+        assert closed["feedback"] == (
+            "Repair close requires the original live claim and workspace"
+        )
+    else:
+        # An unproved delivery keeps the ordinary repair-close refusal.
+        assert closed.get("retired") or closed["feedback"] == (
+            "Repair stage is no longer active; close is stale."
+        )

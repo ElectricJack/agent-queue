@@ -161,7 +161,7 @@ gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .ap
 Run from agent-queue itself, the planner reproduces
 [agent-queue-train-policy.json](agent-queue-train-policy.json) byte for byte
 in either credential mode, with no `--check-version`: its check-set version is
-the derived `ci-4c6e0c2a989c`.
+the derived `ci-4f7c710bba01`, including `Dashboard (typecheck/build)`.
 
 ## 3. App credential mode
 

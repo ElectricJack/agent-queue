@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
+from src.jobs.editor_pin import pin_editor, prune_pins, validate_attempt_id
 from src.jobs.identity import processes, verified
 from src.jobs.policy import (
     NODE_PRESETS,
@@ -63,6 +64,7 @@ class JobService:
         queue_seconds=None,
         run_seconds=None,
         adapter_request_hash=None,
+        attempt_id=None,
     ):
         cfg = self.settings
         if not cfg.enabled:
@@ -77,6 +79,12 @@ class JobService:
             accepted = presets(self.root).get(preset)
         if not accepted or owner_kind not in {"task", "integration"}:
             raise JobError("jobs.preset_denied")
+        attempt_id = validate_attempt_id(attempt_id)
+        if attempt_id is not None and preset != "matter_render":
+            # An attempt pins an editor build; a preset that launches no editor
+            # has no attempt to pin, and silently ignoring the flag would let a
+            # caller believe it had one.
+            raise JobError("jobs.attempt_invalid")
         if input_mode not in {"live", "snapshot"}:
             raise JobError("jobs.cwd_invalid")
         ws = await self.db.get_workspace(workspace_id)
@@ -103,9 +111,14 @@ class JobService:
                 raise JobError("jobs.preset_denied")
             bundle, capture_expected = await asyncio.to_thread(capture_inputs, args, cwd)
             adapter_hash = await asyncio.to_thread(file_hash, cfg.matter_capture_script)
-            editor_hash = await asyncio.to_thread(file_hash, cfg.matter_editor)
-            capture_expected["editor_sha256"] = editor_hash
-            argv = [*accepted.argv, str(cwd), cfg.matter_editor, bundle]
+            # The attempt's pinned copy, never the shared build: a rebuild of
+            # that build between two captures of one attempt would otherwise
+            # give the attempt two render profiles and no comparable score.
+            editor_pin = await asyncio.to_thread(
+                pin_editor, cfg.matter_editor, self.config.data_dir, attempt_id
+            )
+            capture_expected["editor_sha256"] = editor_pin["sha256"]
+            argv = [*accepted.argv, str(cwd), editor_pin["path"], bundle]
         else:
             argv = validate_args(
                 accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
@@ -145,6 +158,7 @@ class JobService:
             "queue_seconds": queue_seconds,
             "run_seconds": run_seconds,
             "adapter_request_hash": adapter_request_hash,
+            "attempt_id": attempt_id,
         }
         if preset == "matter_render":
             canonical["capture_expected"] = capture_expected
@@ -221,6 +235,7 @@ class JobService:
                 artifact_bytes=cfg.matter_artifact_bytes,
                 capture_expected=capture_expected,
                 adapter_sha256=adapter_hash,
+                editor_pin=editor_pin,
             )
             env.pop("AQ_TEST_RUN_ID", None)
             if cfg.matter_python.lower().endswith(".exe"):
@@ -552,6 +567,12 @@ class JobService:
     async def sweep(self, *, reserve=False):
         """Bounded retention: terminal logs first, results independently at 90d."""
         cfg, now = self.settings, time.time()
+        # Pinned editor builds are retention too: a build an attempt pinned long
+        # enough ago is gone, and the store is otherwise one copy per rebuild.
+        try:
+            await asyncio.to_thread(prune_pins, self.config.data_dir)
+        except OSError:
+            pass
         rows = await self.db.retained_terminal_jobs(
             limit=100, result_cutoff=now - cfg.result_days * 86400
         )

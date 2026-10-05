@@ -14,7 +14,10 @@ interactive offer to launch the Vite dev server instead.
 
 from __future__ import annotations
 
+import gzip
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -54,6 +57,8 @@ CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+MAX_LOG_SIZE_BYTES: int = 256 * 1024 * 1024
+MAX_ROTATED_GENS: int = 3
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
@@ -744,6 +749,10 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
+
+        # Rotate daemon.log if it exceeds MAX_LOG_SIZE_BYTES before starting
+        _rotate_if_needed(LOG_PATH)
+
         with open(LOG_PATH, "a") as log_file:
             proc = subprocess.Popen(
                 [bin_path, CONFIG_PATH],
@@ -1217,6 +1226,56 @@ def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bo
     # After the daemon is down: nothing is left to notice the sessions
     # disappearing and try to reconcile them mid-shutdown.
     stop_agent_sessions()
+
+
+# ---------------------------------------------------------------------------
+# Rotation helpers
+# ---------------------------------------------------------------------------
+
+
+def _rotate_if_needed(log_path: str) -> None:
+    """Rotate the log file if it exceeds MAX_LOG_SIZE_BYTES."""
+    try:
+        if not os.path.exists(log_path):
+            return
+
+        stat = os.stat(log_path)
+        if stat.st_size <= MAX_LOG_SIZE_BYTES:
+            return
+
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        rotated_path = f"{log_path}.{timestamp}.gz"
+
+        # Stream bytes so a large log needs bounded memory and preserves any
+        # non-UTF-8 subprocess output. Never replace an existing archive or
+        # truncate the active log until compression has finished successfully.
+        with open(log_path, "rb") as source, gzip.open(rotated_path, "xb") as backup:
+            shutil.copyfileobj(source, backup)
+        with open(log_path, "wb"):
+            pass
+
+        _cleanup_old_rotations(log_path)
+    except OSError as e:
+        console.print(f"[dim]Failed to rotate log:[/] {e}")
+
+
+def _cleanup_old_rotations(current_log: str) -> None:
+    """Retain the newest MAX_ROTATED_GENS timestamped archives for this log."""
+    path = Path(current_log)
+    match = re.compile(rf"^{re.escape(path.name)}\.\d{{14}}\.gz$")
+    try:
+        archives = sorted(
+            (entry for entry in path.parent.iterdir() if match.fullmatch(entry.name)),
+            key=lambda entry: entry.name,
+            reverse=True,
+        )
+        for archive in archives[MAX_ROTATED_GENS:]:
+            try:
+                archive.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 @cli.command("restart")

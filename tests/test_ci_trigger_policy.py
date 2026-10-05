@@ -197,12 +197,13 @@ def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
     assert tests['on']['push']['branches'] == ['aq/parent/**', 'aq/integration/**']
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
-    assert list(tests['jobs']) == ['test', 'e2e-cli']
+    assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
     assert tests['jobs']['test']['name'] == 'Tests (${{ matrix.suite.name }})'
     assert tests['jobs']['e2e-cli']['name'] == 'E2E CLI (${{ matrix.group }})'
+    assert tests['jobs']['dashboard']['name'] == 'Dashboard (typecheck/build)'
 
 
-@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+@pytest.mark.parametrize('job', ['test', 'e2e-cli', 'dashboard'])
 def test_called_suite_runs_every_job_for_the_callers_push(job):
     # A called workflow sees the caller's context: main-attestation.yml runs on `push`.
     assert _runs('push', job=job) is True
@@ -273,6 +274,7 @@ def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, at
     assert _evaluate(expression, needs={'attestation': {'outputs': outputs}}) is runs
 
 
+@pytest.mark.parametrize('job', ['test', 'e2e-cli', 'dashboard'])
 @pytest.mark.parametrize(('event_name', 'pull_request', 'expected'), [
     ('push', None, True),
     ('workflow_dispatch', None, True),
@@ -285,8 +287,8 @@ def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, at
     # A draft runs once it is marked ready_for_review.
     ('pull_request', _pull_request('aq/crisp-forge', draft=True), False),
 ])
-def test_test_job_runs_once_per_head(event_name, pull_request, expected):
-    assert _runs(event_name, pull_request) is expected
+def test_test_job_runs_once_per_head(job, event_name, pull_request, expected):
+    assert _runs(event_name, pull_request, job=job) is expected
 
 
 def test_skipped_integration_pr_heads_are_covered_by_the_push_trigger():
@@ -309,7 +311,35 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'ref: ${{ github.sha }}' in text
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
     assert workflow()['permissions'] == {'contents': 'read'}
-    assert list(workflow()['jobs']) == ['test', 'e2e-cli']
+    assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
+
+
+def test_dashboard_checks_the_candidate_with_locked_workspace_dependencies():
+    job = workflow()['jobs']['dashboard']
+    assert job['if'] == workflow()['jobs']['test']['if']
+    assert job['runs-on'] == 'ubuntu-latest'
+    assert 'needs' not in job
+    assert 'continue-on-error' not in job
+    steps = job['steps']
+    checkout, verify, node, install, typecheck, build = steps
+    assert checkout == workflow()['jobs']['test']['steps'][0]
+    assert verify == workflow()['jobs']['test']['steps'][1]
+    assert re.fullmatch(r'actions/setup-node@[0-9a-f]{40}', node['uses'])
+    assert node['with']['node-version'] == '24'
+    assert node['with']['cache'] == 'npm'
+    assert node['with']['cache-dependency-path'] == 'package-lock.json'
+    assert install['run'] == 'npm ci'
+    assert install.get('working-directory', '.') == '.'
+    for step, command in ((typecheck, 'npm run typecheck'), (build, 'npm run build')):
+        assert step['working-directory'] == 'dashboard'
+        assert step['run'] == command
+    for step in steps:
+        assert 'if' not in step
+        assert 'continue-on-error' not in step
+    # Install time has its own limit; leave setup/cache cleanup headroom too.
+    assert int(job['timeout-minutes']) >= sum(
+        int(step['timeout-minutes']) for step in (install, typecheck, build)
+    ) + 2
 
 
 def test_default_shards_cover_each_group_once_with_four_workers():

@@ -639,6 +639,7 @@ from .job_retain_response import JobRetainResponse
 from .job_retain_response_artifacts_item import JobRetainResponseArtifactsItem
 from .job_retain_response_candidate_artifact import JobRetainResponseCandidateArtifact
 from .job_retain_response_captures_item import JobRetainResponseCapturesItem
+from .job_retain_response_editor_pin_type_0 import JobRetainResponseEditorPinType0
 from .job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 from .job_submit_args import JobSubmitArgs
 from .knowledge_authority_grant_request import KnowledgeAuthorityGrantRequest
@@ -2410,6 +2411,7 @@ __all__ = (
     "JobRetainResponseArtifactsItem",
     "JobRetainResponseCandidateArtifact",
     "JobRetainResponseCapturesItem",
+    "JobRetainResponseEditorPinType0",
     "JobRetainResponseRenderProfileType0",
     "JobSubmitArgs",
     "KnowledgeAuthorityGrantRequest",

@@ -21,7 +21,10 @@ subject loops on `IntegrationService`:
 
 - `DevelopmentFrontierReader` builds the frontier from rows the old engine
   already wrote. A member is a checkpointed source task in the project whose
-  recorded head is what its recorded branch actually holds; its dependencies
+  recorded head is what its recorded branch actually holds — read through
+  `RetainedGitReads` over the publisher's own retained clone, because a
+  repository the integration engine created carries no base checkout and a
+  checkout-bound port would answer `unknown` for every branch; its dependencies
   are the `task_dependencies` release edges (`blocks`), never provenance edges;
   `satisfied` is delivery receipts, retired `abandoned` proofs, and landed
   operations whose exact revision the target still contains; `parked` is the
