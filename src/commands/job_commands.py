@@ -236,6 +236,7 @@ class JobCommandsMixin:
                 idempotency_key=args["idempotency_key"],
                 trusted_band=1 if scope.get("elevated") else 2,
                 wait_identity=identity,
+                attempt_id=args.get("attempt_id"),
             )
             wait = result.pop("wait", None)
             response = {"success": True, "job": result}
@@ -411,12 +412,15 @@ class JobCommandsMixin:
             "candidate_artifact": candidate,
             "render_profile": profile or None,
             "render_profile_sha256": profile.get("sha256"),
+            "editor_pin": (job.get("contract") or {}).get("editor_pin"),
             "artifacts": sorted(artifacts.values(), key=lambda a: a["uri"]),
             "captures": captures,
             "next_step": (
                 "Quote render_profile_sha256 as ObjectLoopStartArgs.render_profile_sha256, "
                 "the candidate artifact as ScoreReceipt.artifacts, and each capture image as "
-                "Capture.image; the scorer supplies ready/decoded and the view metrics."
+                "Capture.image; the scorer supplies ready/decoded and the view metrics. "
+                "Submit every later capture of this attempt with the same --attempt-id, so "
+                "every capture of the attempt renders the same pinned editor build."
             ),
         }
 

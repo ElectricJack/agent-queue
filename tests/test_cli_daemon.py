@@ -8,6 +8,7 @@ are patched — nothing here touches Docker or a real process.
 
 from __future__ import annotations
 
+import gzip
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -1287,3 +1288,60 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+@pytest.mark.parametrize("content", [None, b"1234"])
+def test_log_rotation_leaves_missing_and_at_limit_logs_alone(tmp_path, monkeypatch, content):
+    log = tmp_path / "daemon.log"
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 4)
+    if content is not None:
+        log.write_bytes(content)
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert list(tmp_path.glob("*.gz")) == []
+    assert log.read_bytes() == content if content is not None else not log.exists()
+
+
+def test_log_rotation_preserves_bytes_and_keeps_three_newest_archives(tmp_path, monkeypatch):
+    log = tmp_path / "daemon.log"
+    content = b"daemon output\n\xff\xfe\n" * 100
+    log.write_bytes(content)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 4)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004050000")
+    old = [tmp_path / f"daemon.log.202610040{index}0000.gz" for index in range(1, 5)]
+    for archive in old:
+        archive.write_bytes(b"old archive")
+    unrelated = tmp_path / "other.log.20261004000000.gz"
+    unrelated.write_bytes(b"unrelated")
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == b""
+    newest = tmp_path / "daemon.log.20261004050000.gz"
+    with gzip.open(newest, "rb") as archive:
+        assert archive.read() == content
+    assert sorted(tmp_path.glob("daemon.log.*.gz")) == [*old[2:], newest]
+    assert unrelated.read_bytes() == b"unrelated"
+
+
+def test_failed_log_compression_preserves_the_source_and_existing_archive(tmp_path, monkeypatch):
+    log = tmp_path / "daemon.log"
+    content = b"all daemon output must survive\n"
+    log.write_bytes(content)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 4)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004050000")
+    existing = tmp_path / "daemon.log.20261004050000.gz"
+    existing.write_bytes(b"previous archive")
+
+    def failed_copy(source, archive, **kwargs):
+        archive.write(b"incomplete")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(daemon_mod, "copyfileobj", failed_copy)
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == content
+    assert existing.read_bytes() == b"previous archive"
+    assert sorted(path.name for path in tmp_path.iterdir()) == [log.name, existing.name]

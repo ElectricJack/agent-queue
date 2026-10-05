@@ -6,6 +6,7 @@ import copy
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from src.database.tables import doc_review_revisions, doc_reviews, object_loops,
 from src.integration.development import _publishable_object_task
 from src.integration.child_delivery import _child_refusal
 from src.integration.promotion import PromotionService, PromotionSourceMoved
-from src.models import Project, Task, TaskStatus
+from src.models import Project, Task, TaskCompletion, TaskStatus
 from src.jobs.artifacts import atomic_json
 from src.jobs.matter import candidate_document
 from src.object_loop.artifacts import (
@@ -32,7 +33,8 @@ from src.object_loop.artifacts import (
 )
 from src.object_loop.contracts import Artifact, ScoreReceipt, validate_score_receipt
 from src.object_loop.render_profile import (
-    RenderProfileError, render_profile, render_profile_sha256, with_digest,
+    RENDER_PROFILE_VERSION, RenderProfileError, capture_observations, render_profile,
+    render_profile_sha256, with_digest,
 )
 
 H = "a" * 64
@@ -402,6 +404,110 @@ async def test_score_promotes_only_valid_completed_evidence_and_reserves_next_wa
     assert repeated["outcome"] == "reused"
     next_wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
     assert next_wave["state"]["wave"][0]["task_id"]
+    await db.close()
+
+
+async def test_round_two_is_handed_round_ones_changes_and_the_frozen_inputs(
+    command_handler_factory,
+):
+    """The pilot's round-2 worker closed blocked twice with zero captures.
+
+    It had a hypothesis, a base hash and a rig, and nothing about what round 1
+    actually changed: no branch, no commit, no retained bundle, no frozen
+    comparison inputs. So every round's packet now carries them, read from the
+    round's own close rather than from a worktree the slot has already released.
+    """
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    artifact = {"uri": f"artifact://sha256/{H}", "sha256": H}
+    started = await handler._cmd_object_loop_start({
+        **start_args(), "incumbent_artifact": artifact,
+    })
+    assert started["success"], started
+    first = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    round_one = first["state"]["wave"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == round_one).values(status="COMPLETED"))
+    await db.save_task_completion(TaskCompletion(
+        id="close-round-one", task_id=round_one, outcome="pass", completed_at=time.time(),
+        branch="aq/rock-me3-a1.1", commits=["555d20990" + "0" * 31], summary="rounder silhouette",
+    ))
+    fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    score_id = fan_in["state"]["score_task_id"]
+    scorer_packet = json.loads((await db.get_task(score_id)).description)
+    assert scorer_packet["frozen_inputs"] == {
+        "reference_kind": "calibrated", "reference_sha256": H, "rig_sha256": H,
+        "scorer_sha256": H, "render_profile_sha256": H, "policy_sha256": H,
+        "mandatory_views": ["front"],
+    }
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == score_id).values(status="COMPLETED"))
+    scored = await handler._cmd_object_score_record({
+        "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+        "score_task_id": score_id, "receipts": [receipt(task_id=round_one)],
+        "action": "continue", "next_variants": [variant("next").model_dump()],
+    })
+    assert scored["success"], scored
+    # The candidate that beat the incumbent is the incumbent now, and round 2 is
+    # told so by name, with round 1's bundle, branch and commit.
+    assert scored["state"]["incumbent_sha256"] == B
+    assert scored["state"]["incumbent_artifact"] == {"uri": "artifact://candidate", "sha256": B}
+    second = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    round_two = second["state"]["wave"][0]["task_id"]
+    handoff = json.loads((await db.get_task(round_two)).description)["round_handoff"]
+    assert handoff["attempt_id"] == "attempt-1" and handoff["round_id"] == 1
+    assert handoff["incumbent"] == {
+        "sha256": B, "artifact": {"uri": "artifact://candidate", "sha256": B},
+        "capture_sha256": H,
+    }
+    (entry,) = handoff["prior_rounds"]
+    assert entry["round_id"] == 0 and entry["variant_id"] == "a"
+    assert entry["branch"] == "aq/rock-me3-a1.1"
+    assert entry["commit"] == "555d20990" + "0" * 31
+    assert entry["candidate_artifact"] == {"uri": "artifact://candidate", "sha256": B}
+    assert entry["patch_scope"] == ["Rock.js"] and entry["promoted"] is True
+    assert entry["mean_loss"] == 0.1 and entry["validity"] == "valid"
+    assert handoff["frozen_inputs"] == scorer_packet["frozen_inputs"]
+    assert "--attempt-id attempt-1" in handoff["instructions"]
+    assert "earlier round branches is in scope" in handoff["instructions"]
+    await db.close()
+
+
+async def test_a_round_without_a_close_record_hands_over_its_bundle_only(
+    command_handler_factory,
+):
+    """A round that settled without a close record names no branch, not a guess."""
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    assert (await handler._cmd_object_loop_start(start_args()))["success"]
+    wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    candidate_id = wave["state"]["wave"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == candidate_id).values(status="COMPLETED"))
+    fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(
+            tasks.c.id == fan_in["state"]["score_task_id"]).values(status="COMPLETED"))
+    scored = await handler._cmd_object_score_record({
+        "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+        "score_task_id": fan_in["state"]["score_task_id"],
+        "receipts": [receipt(task_id=candidate_id)], "action": "continue",
+        "next_variants": [variant("next").model_dump()],
+    })
+    assert scored["success"], scored
+    second = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    (entry,) = json.loads((await db.get_task(
+        second["state"]["wave"][0]["task_id"])).description)["round_handoff"]["prior_rounds"]
+    assert entry["branch"] is None and entry["commit"] is None
+    assert entry["candidate_artifact"] == {"uri": "artifact://candidate", "sha256": B}
     await db.close()
 
 
@@ -901,19 +1007,22 @@ async def test_defect_stop_waits_for_reopened_work_and_releases_only_terminal_ga
 # Durable artifact identities and the render profile (brisk-beacon-64)
 # ---------------------------------------------------------------------------
 
-def candidate_bundle(directory, *, views=("front",)):
+def candidate_bundle(directory, *, views=("front",), generator=None):
     """A candidate manifest in the form Matter declares its identities in.
 
     ``candidate_sha256`` is the digest of the canonical document with the
     declaration removed, so retaining those bytes mints the candidate artifact a
-    ``ScoreReceipt`` must name.
+    ``ScoreReceipt`` must name. *generator* varies the object under test while
+    leaving the rig alone, which is what a round's candidate does: a different
+    candidate_sha256 under one unchanged render preset.
     """
     rig = {
         "hold_frames": 90,
         "views": [{"name": name, "pose": [2.5, 2.0, 4.0, 0, 0.35, 0]} for name in views],
     }
     document = {
-        "manifest": {"rig": rig},
+        "manifest": {"rig": rig, **({"generator": {"seed_source": generator}}
+                                    if generator else {})},
         "rig_sha256": hashlib.sha256(canonical_bytes(rig)).hexdigest(),
         "source_sha256": {"Rock.js": D},
         "source_closure_sha256": E,
@@ -994,7 +1103,8 @@ def render_job(directory, bundle, expected, capture):
             "hold_frames": 90,
         },
     }
-    profile = with_digest(render_profile(contract, capture))
+    profile = with_digest(render_profile(contract, capture),
+                          capture_observations(contract, capture))
     return {
         "id": str(directory.name),
         "preset": "matter_render",
@@ -1139,11 +1249,29 @@ def test_render_profile_is_stable_across_runs_and_sensitive_to_its_preset(tmp_pa
     resized["receipt"]["views"]["front"]["image"].update(width=640)
     assert render_profile_sha256(contract, resized) != baseline
 
-    # A render that never converged is not the same render.
+    # What the object under test did is not part of the preset. A different
+    # candidate, and a heavier candidate whose render queued more VT work, both
+    # render under the profile the attempt pinned — which is the whole point:
+    # a candidate that is not the incumbent has to be scoreable at all.
+    other_object = copy.deepcopy(capture)
+    other_object["receipt"]["candidate_sha256"] = D
+    assert render_profile_sha256(contract, other_object) == baseline
     unconverged = copy.deepcopy(capture)
     unconverged["receipt"]["views"]["front"]["capture"]["result"]["readiness"][
         "missing_vt"] = 4
-    assert render_profile_sha256(contract, unconverged) != baseline
+    assert render_profile_sha256(contract, unconverged) == baseline
+    assert capture_observations(contract, capture)["views"]["front"]["vt_budget"]["ready"] is True
+    assert capture_observations(contract, unconverged)["views"]["front"]["vt_budget"][
+        "missing_vt"] == 4
+    # ...and neither the candidate identity nor a readiness counter is in the
+    # hashed document, so the recorded digest covers the settings alone.
+    document = render_profile(contract, capture)
+    assert "candidate_sha256" not in json.dumps(document)
+    assert "vt_budget" not in json.dumps(document)
+    assert document["version"] == RENDER_PROFILE_VERSION == 2
+    assert document["rig_sha256"] == contract["capture_expected"]["rig_sha256"]
+    assert first.job["result"]["render_profile"]["observed"]["readiness"] == (
+        capture["receipt"]["readiness"])
 
     foreign = copy.deepcopy(capture)
     foreign["receipt"]["views"]["side"] = foreign["receipt"]["views"]["front"]
@@ -1153,7 +1281,54 @@ def test_render_profile_is_stable_across_runs_and_sensitive_to_its_preset(tmp_pa
     with pytest.raises(RenderProfileError, match="admitted"):
         render_profile_sha256({}, capture)
     with pytest.raises(RenderProfileError, match="completed capture receipt"):
-        render_profile_sha256(contract, None)
+        render_profile_sha256(contract, {"receipt": {}})
+
+
+def test_a_changed_candidate_renders_under_the_incumbents_profile(tmp_path):
+    """The acceptance the pilot could not reach: the next candidate is comparable.
+
+    Round 1's candidate is a different bundle from the incumbent. Same editor,
+    same rig, same views — one preset, one profile identity — so the receipt it
+    scores with is the profile the start packet pinned, not a profile no packet
+    ever pinned. Before the fix this receipt was refused as foreign and no
+    candidate could ever beat the incumbent.
+    """
+    incumbent = retention(tmp_path / "incumbent")
+    contract = incumbent.job["contract"]
+    profile = incumbent.job["result"]["render_profile"]["sha256"]
+    bundle = tmp_path / "candidate"
+    bundle.mkdir()
+    candidate = candidate_bundle(bundle, generator="round-1")
+    assert candidate["candidate_sha256"] != incumbent.document["candidate_sha256"]
+    _, capture = rendered_capture(
+        tmp_path / "candidate-run", candidate,
+        editor=contract["capture_expected"]["editor_sha256"],
+    )
+    assert capture["receipt"]["candidate_sha256"] == candidate["candidate_sha256"]
+    assert render_profile_sha256(contract, capture) == profile
+
+    state = loop_state()
+    state.update({
+        "incumbent_sha256": incumbent.document["candidate_sha256"],
+        "render_profile_sha256": profile,
+        "wave": [{"variant_id": "a", "task_id": "epic.2"}],
+    })
+    score = ScoreReceipt.model_validate(receipt(
+        base_candidate_sha256=incumbent.document["candidate_sha256"],
+        candidate_sha256=candidate["candidate_sha256"],
+        render_profile_sha256=profile,
+        artifacts=[{"uri": f"artifact://sha256/{candidate['candidate_sha256']}",
+                    "sha256": candidate["candidate_sha256"]},
+                   {"uri": "artifact://frame-1", "sha256": B}],
+    ))
+    validate_score_receipt(score, state=state, task_id="epic.2", mandatory_views={"front"})
+    # ...while a receipt carrying any other profile is still refused: the
+    # comparison means something only because the preset is fixed.
+    with pytest.raises(ValueError, match="render_profile_sha256"):
+        validate_score_receipt(
+            score.model_copy(update={"render_profile_sha256": "1" * 64}),
+            state=state, task_id="epic.2", mandatory_views={"front"},
+        )
 
 
 @pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
