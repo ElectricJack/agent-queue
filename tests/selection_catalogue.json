@@ -575,6 +575,7 @@
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_batch_settlement.py",
+        "tests/test_integration_batches.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
@@ -1416,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:0237102f2fb939cfe59ad49f577ae406a1fdbb0c46f18ad5e77b75dec75078a1",
+  "digest": "sha256:808d1ae7e054a3d31c44539d9613b657e821afe832aab5762181f97c178e414e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4821,6 +4822,7 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
         "src.integration.source_trailer",
@@ -7418,6 +7420,24 @@
         "parametrize"
       ],
       "summary": "Externally delivered, completed repair trains can release their sweep safely."
+    },
+    "tests/test_integration_batches.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git retries of the shared root/child batch path; disposable PostgreSQL."
     },
     "tests/test_integration_cancelled_collection.py": {
       "areas": [

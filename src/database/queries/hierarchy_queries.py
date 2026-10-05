@@ -315,6 +315,8 @@ class ProjectIntegrationMode:
 
     hierarchical: bool
     integration_repository_id: str | None
+    # None preserves legacy admission; a supplied set is one revalidated Git view.
+    delivered_prerequisite_ids: frozenset[str] | None = None
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -494,8 +496,9 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
     predecessor completes.  In a hierarchy project that is too early: the
-    predecessor's reviewed head still belongs to its feature branch until a
-    receipt proves it was incorporated into their common parent branch.
+    predecessor's source still belongs to its feature branch until delivery
+    is proven on their common parent branch. A revalidated Git view replaces
+    the legacy receipt predicate when supplied in *mode*.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -529,6 +532,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
             ),
         )
     )
+    if mode is not None and mode.delivered_prerequisite_ids is not None:
+        delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(

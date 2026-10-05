@@ -303,7 +303,9 @@ class IntegrationReconciler:
                 raise ValueError("observer returned another subject or version")
             if self._diagnostics is not None and subject.engine is SubjectEngine.RECONCILER:
                 try:
-                    await self._bounded(self._diagnostics(subject, facts))
+                    # Diagnostics cannot delay the authoritative publisher.
+                    # Its build/observe operations keep main's no-cancellation semantics.
+                    await asyncio.wait_for(self._diagnostics(subject, facts), timeout=self._timeout)
                 except Exception as exc:
                     # Diagnostic failure must not change the authoritative policy.
                     evidence = {
