@@ -19,6 +19,7 @@ from src.integration.observe import (
 )
 from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler, VisitTransition
 from src.integration.root_adapters import RootPrimitiveAdapters
+from src.integration.shadow import diagnostics_for
 from src.integration.subjects import (
     JournalMode,
     PolicyArtifactPin,
@@ -385,13 +386,17 @@ class _ShadowDB:
 class RootSubjectRuntime:
     """A service-owned pair of loops; no second background remote pass."""
 
-    def __init__(self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time):
+    def __init__(
+        self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time,
+        diagnostics=None,
+    ):
         self.db, self.policy, self.clock = db, policy, clock
         self.loops = []
         if active:
             self.loops.append(
                 IntegrationReconciler(
-                    db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock
+                    db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock,
+                    diagnostics=diagnostics,
                 )
             )
         if shadow:
@@ -627,6 +632,8 @@ def root_runtime_for(orchestrator):
         ports,
         shadow=config.reconciler_shadow,
         active=config.reconciler_active,
+        diagnostics=diagnostics_for(config, orchestrator.db, orchestrator.git,
+                                    reader=observer.reader),
     )
     runtime.subscribe(orchestrator.bus)
     return runtime

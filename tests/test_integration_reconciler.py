@@ -265,6 +265,50 @@ async def test_active_never_visits_legacy_owned_subject(db):
     assert not await db.list_integration_subject_journal("s1")
 
 
+@pytest.mark.parametrize("failure", ["none", "exception", "timeout"])
+async def test_git_first_diagnostics_cannot_change_selected_policy_or_emit_actions(db, failure):
+    from src.integration.shadow import GitFirstDiagnostics
+
+    clock = Clock()
+    original = await add_subject(db, clock)
+    digests = []
+
+    async def diagnose(subject, facts):
+        digests.append(facts.digest())
+        GitFirstDiagnostics.record(subject, "repair_progress", False, True, reason="fixture")
+        if failure == "exception":
+            raise RuntimeError("unavailable Git")
+        if failure == "timeout":
+            await asyncio.Event().wait()
+
+    harness = make_loop(db, clock, policy=Policy(WaitArgs(seconds=5, reason="old-policy")),
+                        diagnostics=diagnose, call_timeout_seconds=0.5)
+    await harness.loop.tick()
+    assert harness.actions == []
+    assert digests == [harness.policy.decisions[0][1].digest()]
+    assert harness.policy.settlements == []
+    entries = await db.list_integration_subject_journal("s1")
+    assert [entry["primitive"] for entry in entries] == [Primitive.WAIT.value] * 2
+    assert not any("git_first" in entry["payload"] for entry in entries)
+    after = await read_subject(db)
+    assert after.engine is original.engine
+    assert after.schedule.wait_reason == "old-policy"
+    assert after.schedule.next_due_at == clock() + 5
+    assert after.head_sha == original.head_sha and after.writer == original.writer
+
+
+async def test_git_first_diagnostics_skip_legacy_ownership_even_in_existing_shadow_loop(db):
+    from unittest.mock import AsyncMock
+
+    clock = Clock()
+    await add_subject(db, clock, engine=SubjectEngine.LEGACY)
+    diagnose = AsyncMock()
+    harness = make_loop(db, clock, mode=JournalMode.SHADOW, diagnostics=diagnose)
+    await harness.loop.tick()
+    diagnose.assert_not_awaited()
+    assert harness.actions == []
+
+
 @pytest.mark.parametrize("stage", ["observe", "decide", "act", "settle"])
 async def test_timeout_schedules_retry_and_does_not_starve_page(db, stage):
     clock = Clock()
