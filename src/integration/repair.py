@@ -2116,13 +2116,19 @@ class RepairService:
 
             stale_parent = proof.get("stale_parent_claim")
             if stale_parent:
-                released = await self.db.release_claim(
-                    stale_parent["session"]["id"], task_status=TaskStatus.PAUSED,
-                    context="integration_green_noop_parent_claim_recovery", now=now,
-                    result="integration_collecting", expected_task_id=operation["parent_task_id"],
-                    expected_claim_epoch=stale_parent["claim_epoch"],
+                # The historical release, not ``release_claim``: the proved
+                # holder is a stopped pool session whose own task pointer a
+                # real stop already cleared, so its claim lives in the task's
+                # ``claimed_by_session`` record (fleet-delta-97).  A stopped
+                # worker's slot and agent may since have been reused, so only
+                # the exact parent and the exact session change.
+                released = await self.db.release_historical_pool_claim(
+                    conn, stale_parent["session"]["id"],
+                    task_id=operation["parent_task_id"],
+                    claim_epoch=stale_parent["claim_epoch"], now=now,
+                    context="integration_green_noop_parent_claim_recovery",
                     expected_task_status=TaskStatus.IN_PROGRESS,
-                    expected_task_claim_epoch=stale_parent["claim_epoch"], conn=conn,
+                    claim_record_holder=True,
                 )
                 if not released.released:
                     raise ValueError("stale parent claim moved before collection recovery")
