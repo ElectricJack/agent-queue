@@ -2736,9 +2736,7 @@ def s19_scoped_planner_graph(state: dict) -> str:
         profile_id=PLANNER_PROFILE,
     )
     planner = Worker.adopt(planner_session["id"])
-    claimed = planner.claim_next()
-    check(claimed.get("result") == "claimed", f"S19 planner claim: {claimed}")
-    check(planner.task_id == held_task, f"planner claimed {planner.task_id}, not {held_task}")
+    claim_fixture(planner, held_task, what=f"S19 planner to claim fixture {held_task}")
 
     home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
     graph_path = home / "s19-scoped-planner-graph.json"
@@ -2829,8 +2827,7 @@ def s19_scoped_planner_graph(state: dict) -> str:
         return row if row.get("status") == "READY" else None
 
     wait_for(child_ready, what="the scoped graph child to reach the claim frontier")
-    child_claim = worker.claim_next()
-    check(child_claim.get("result") == "claimed" and worker.task_id == child_id, f"S19 child claim: {child_claim}")
+    claim_fixture(worker, child_id, what=f"S19 worker to claim scoped graph child {child_id}")
     prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
     check(prime.returncode == 0 and "## Subtasks" in prime.stdout, f"S19 checklist prime: {prime}")
     check("- [ ] 1. Read the scoped graph" in prime.stdout, f"S19 checklist contents: {prime.stdout}")
