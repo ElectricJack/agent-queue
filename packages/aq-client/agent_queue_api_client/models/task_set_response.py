@@ -67,6 +67,8 @@ class TaskSetResponse:
         provider_hold (None | ProviderHoldDetail | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
+        prefer_target (None | str | Unset):
+        prefer_mode (None | str | Unset):
         route (None | TaskSetResponseRouteType0 | Unset):
         delivery_status (EpicDeliveryStatus | None | Unset):
         context (list[TaskSetResponseContextItem] | Unset):
@@ -113,6 +115,8 @@ class TaskSetResponse:
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
+    prefer_target: None | str | Unset = UNSET
+    prefer_mode: None | str | Unset = UNSET
     route: None | TaskSetResponseRouteType0 | Unset = UNSET
     delivery_status: EpicDeliveryStatus | None | Unset = UNSET
     context: list[TaskSetResponseContextItem] | Unset = UNSET
@@ -310,6 +314,18 @@ class TaskSetResponse:
         else:
             class_hint = self.class_hint
 
+        prefer_target: None | str | Unset
+        if isinstance(self.prefer_target, Unset):
+            prefer_target = UNSET
+        else:
+            prefer_target = self.prefer_target
+
+        prefer_mode: None | str | Unset
+        if isinstance(self.prefer_mode, Unset):
+            prefer_mode = UNSET
+        else:
+            prefer_mode = self.prefer_mode
+
         route: dict[str, Any] | None | Unset
         if isinstance(self.route, Unset):
             route = UNSET
@@ -433,6 +449,10 @@ class TaskSetResponse:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
             field_dict["class_hint"] = class_hint
+        if prefer_target is not UNSET:
+            field_dict["prefer_target"] = prefer_target
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if route is not UNSET:
             field_dict["route"] = route
         if delivery_status is not UNSET:
@@ -734,6 +754,24 @@ class TaskSetResponse:
 
         class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
 
+        def _parse_prefer_target(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_target = _parse_prefer_target(d.pop("prefer_target", UNSET))
+
+        def _parse_prefer_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_mode = _parse_prefer_mode(d.pop("prefer_mode", UNSET))
+
         def _parse_route(data: object) -> None | TaskSetResponseRouteType0 | Unset:
             if data is None:
                 return data
@@ -845,6 +883,8 @@ class TaskSetResponse:
             provider_hold=provider_hold,
             route_source=route_source,
             class_hint=class_hint,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
             route=route,
             delivery_status=delivery_status,
             context=context,

@@ -248,6 +248,23 @@ aq task create --project demo --title "Fix the flaky retry test" --type bugfix \
   --intelligence-class deep-high
 ```
 
+A filer may also state a **preference**: a harness or worker profile the router
+weighs before scoring, in `soft` mode (take it when it has headroom) or
+`strict` (only it; the task waits rather than falling back). It is an input to
+the router, not a bypass of it — the router still writes the route, still picks
+the profile, and records whether the preference decided it:
+
+```bash
+aq task create --project demo --title "Draft the ADR" --prefer claude
+aq task route --task-id demo.7 --prefer codex --prefer-mode strict
+```
+
+An unknown harness, a disabled profile and a profile that is never a worker
+route are refused at filing, and so is a mode outside `soft`/`strict`. See the
+[routing guide](../guides/routine-routing-preference.md#a-per-task-preference---prefer)
+for what each mode does when the target is busy, out of usage or pinned by a
+lane.
+
 Every filing surface — `aq task create`, `--graph` and `--from-spec`, formulas,
 `aq task edit`, batch proposals, MCP and the API — refuses a profile, a
 provider, a model, a harness, a pin or a provider intent with
@@ -369,7 +386,8 @@ legacy routes.
 
 ## Inputs and outputs
 
-**In:** a task row with its hints (`task_type`, `class_hint`) and any
+**In:** a task row with its hints (`task_type`, `class_hint`), its routing
+preference (`prefer_target`, `prefer_mode`) and any
 constraint (`exclude_providers`, which only review dispatch writes); the policy
 block of the project's bound router; the profile definitions and intelligence
 classes parsed from vault markdown; the harness registry; live pool slots and
@@ -379,7 +397,8 @@ busy sessions, the routed backlog, provider availability and provider usage.
 `provider_intent`, `route_source = router`, and `task_type` when the task had
 none and the classification supplied one), a resolved `routing` gate, a
 `task.routed` event, and the `tasks.route` record — the hints, the
-classification, the rule and lane, the candidates and their scores, the reason,
+classification, the rule and lane, the candidates and their scores, the
+preference and whether it was honoured, the reason,
 the policy digest and the playbook run — readable with `aq task show`.
 
 **Not out:** a separate routing decision table. There is deliberately none.
@@ -398,6 +417,7 @@ a claimable route has none, and the cascade keeps saying so.
 | Worker identities and their overrides | `aq agent create` / `aq agent edit`, and the agent reconciler | `agents` table |
 | A task's route | The project's router (`task_route_apply`); failover, spill and reroute-undo moves among its candidates; `aq task route-override` | `tasks.intelligence_class`, `tasks.profile_id`, `tasks.provider_intent`, `tasks.route_source`, `tasks.route` |
 | A task's hints | The filer (`aq task create --type/--intelligence-class`), `aq task edit`, `aq task route` | `tasks.task_type`, `tasks.class_hint` |
+| A task's routing preference | The filer (`aq task create --prefer/--prefer-mode`), `aq task route` | `tasks.prefer_target`, `tasks.prefer_mode` |
 | The model that actually ran | The session launcher | `task_session_attempts` — the only evidence of a model |
 | Deleted shipped profiles | `aq agent delete-profile` | `vault/agent-types/.retired-defaults` |
 

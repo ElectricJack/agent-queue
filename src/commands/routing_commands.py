@@ -26,6 +26,9 @@ from src.playbooks.invocation import current_invocation
 from src.routing.context import live_context, quota_observations, summarize_context
 from src.routing.planner import (
     LOCAL_MODEL_PROVIDERS,
+    PREFER_MODES,
+    PREFER_SOFT,
+    PREFER_STRICT,
     ROUTABLE_SOURCES,
     ROUTED_SOURCES,
     Candidate,
@@ -35,9 +38,12 @@ from src.routing.planner import (
     TaskFacts,
     is_candidate,
     plan_route,
+    prefer_target,
+    preference_record,
     reselect,
     selection_evidence,
     selection_reason,
+    serves_preference,
     worker_classes,
 )
 from src.routing.policy import Balance, PolicyError, parse_policy
@@ -120,6 +126,77 @@ def route_constraints(task) -> dict[str, Any]:
     route = getattr(task, "route", None)
     constraints = route.get("constraints") if isinstance(route, dict) else None
     return dict(constraints) if isinstance(constraints, dict) else {}
+
+
+async def validate_route_preference(
+    handler,
+    project_id: str | None,
+    target: Any,
+    mode: Any,
+    *,
+    keep_target: str | None = None,
+    keep_mode: str | None = None,
+) -> tuple[tuple[str | None, str | None], str | None]:
+    """Resolve ``--prefer``/``--prefer-mode`` into the pair the task stores.
+
+    ``(target, mode)`` is the value to store — ``(None, None)`` clears the
+    preference — and the string is the refusal, naming what exists instead.
+    A preference is an input to the router, not a route: the name must be an
+    installed harness or an enabled worker profile, and the mode must be one
+    of :data:`~src.routing.planner.PREFER_MODES`.  A profile id wins over a
+    harness name, which is the resolution the planner applies (§4).
+
+    *keep_target* and *keep_mode* are the task's current pair, carried forward
+    when the caller supplies only half of it, so ``aq task route --prefer``
+    never silently relaxes a strict preference and ``--prefer-mode`` never
+    silently drops the target.  An explicitly empty ``--prefer`` clears both.
+    Filing has no prior pair and so takes ``soft``.
+    """
+    if target is None and mode is None:
+        return (None, None), None
+    chosen_mode = str(mode or keep_mode or PREFER_SOFT).strip().lower()
+    if chosen_mode not in PREFER_MODES:
+        return (None, None), (
+            f"Invalid prefer_mode '{mode}'. Allowed: {', '.join(sorted(PREFER_MODES))}"
+        )
+    name = str(target).strip() if target is not None else ""
+    if not name:
+        # ``--prefer ""`` clears; a mode on its own keeps the stored target.
+        name = "" if target is not None else str(keep_target or "").strip()
+    if not name:
+        return (None, None), None
+    profiles = await handler.db.list_profiles()
+    profile = next((p for p in profiles if p.id == name), None)
+    if profile is not None:
+        if not bool(getattr(profile, "enabled", True)):
+            return (None, None), (
+                f"profile '{name}' is disabled; enable it with "
+                f"`aq agent profile set {name} enabled true` or prefer its harness"
+            )
+        if not _worker_profile(profile) or getattr(profile, "template", False) or getattr(
+            profile, "read_only", False
+        ):
+            return (None, None), (
+                f"profile '{name}' is not a worker route (a template, stage, named, "
+                "read-only or non-worker profile); prefer its harness instead"
+            )
+        return (name, chosen_mode), None
+    harnesses = {
+        str(getattr(p, "harness", "") or "") for p in profiles
+        if bool(getattr(p, "enabled", True)) and getattr(p, "harness", "")
+    }
+    registry = getattr(handler.orchestrator, "harness_registry", None)
+    if registry is not None:
+        harnesses |= {
+            harness.id for harness in registry.list_for_scope(project_id) if harness.id
+        }
+    if name not in harnesses:
+        known = ", ".join(sorted(harnesses)) or "none"
+        return (None, None), (
+            f"'{name}' is neither an installed harness nor an enabled worker profile "
+            f"(known: {known})"
+        )
+    return (name, chosen_mode), None
 
 
 class RoutingCommandsMixin:
@@ -366,6 +443,8 @@ class RoutingCommandsMixin:
             class_hint=class_hint,
             created_by_kind=getattr(task, "created_by_kind", None),
             exclude_providers=frozenset(str(p) for p in exclude if p),
+            prefer_target=getattr(task, "prefer_target", None) or None,
+            prefer_mode=getattr(task, "prefer_mode", None) or PREFER_SOFT,
             benchmark_arms=tuple(sorted(
                 label.removeprefix("benchmark:") for label in labels
                 if label.startswith("benchmark:")
@@ -545,14 +624,36 @@ class RoutingCommandsMixin:
                          and (not fresh_facts.preferred_provider
                               or c.provider == fresh_facts.preferred_provider)
                          and (not fresh_facts.needs_task_lifecycle or c.lifecycle == "task")]
+                # The preference is read from the fresh task, never from the
+                # plan: a strict one narrows the plan's own candidates to what
+                # serves it (so apply cannot fall back out of one), and a soft
+                # one flags them.  A preference set since the plan is applied.
+                target = prefer_target(fresh_facts)
+                if target:
+                    if fresh_facts.prefer_mode == PREFER_STRICT:
+                        valid = [c for c in valid if serves_preference(c, target)]
+                        if not valid:
+                            return {"success": True, "outcome": "stale", "task_id": task.id,
+                                    "reason": (
+                                        f"no candidate of the plan serves the strict "
+                                        f"preference '{target}'"
+                                    )}
+                    valid = [
+                        replace(c, prefer_target=serves_preference(c, target))
+                        for c in valid
+                    ]
                 selection = reselect(valid, snapshot, balance)
                 if selection is None:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": "no candidate of the plan is launchable now"}
                 chosen = selection.chosen
                 adjusted = chosen.profile_id != planned_profile_id
+                preference = preference_record(
+                    fresh_facts, valid, snapshot, selection,
+                )
                 decision = selection_evidence(
                     valid, selection, snapshot, prefer_harnesses=plan.get("prefer_harnesses") or (),
+                    preference=preference,
                 )
                 reason = f"kind {plan.get('task_type')}, rule {plan.get('rule')}; " + selection_reason(
                     decision
@@ -590,6 +691,7 @@ class RoutingCommandsMixin:
                     "scores": [s.as_dict() for s in selection.scores],
                     "reason": reason,
                     "decision": decision,
+                    "preference": preference,
                     "policy_sha256": plan.get("policy_sha256"),
                     "benchmark_arm": plan.get("benchmark_arm"),
                     "benchmark_class": plan.get("benchmark_class"),
@@ -660,6 +762,7 @@ class RoutingCommandsMixin:
             policy_sha256=plan.get("policy_sha256"),
             run_id=invocation.run_id,
             adjusted_at_apply=adjusted,
+            preference=preference,
         )
         return {
             "success": True,
@@ -671,6 +774,7 @@ class RoutingCommandsMixin:
             "provider_intent": selection.provider_intent,
             "lane": chosen.lane,
             "reason": reason,
+            "preference": preference,
             "planned_profile_id": planned_profile_id,
             "adjusted_at_apply": adjusted,
             "resolved_gate_ids": resolved,
@@ -800,10 +904,14 @@ class RoutingCommandsMixin:
         ``constraints`` and ``legacy`` audit stay), sets
         ``route_source='unrouted'`` and clears the route-needed throttle, so
         the next cascade emits ``task.route_needed`` and the project's router
-        plans the task again.  It clears an override the same way.  A
-        profile, provider or pin is refused in the dispatch path
-        (``routing.choice_forbidden``); the emergency lever is
-        ``task_route_override``.
+        plans the task again.  It clears an override the same way.  It also
+        stores the routing preference it is given (§4): ``--prefer`` names a
+        harness or profile the router weighs before scoring and
+        ``--prefer-mode`` chooses ``soft`` (the default) or ``strict``; an
+        empty ``--prefer`` clears it, and an unknown name or mode is refused
+        here, before anything is written.  A profile, provider or pin is
+        refused in the dispatch path (``routing.choice_forbidden``); the
+        emergency lever is ``task_route_override``.
 
         Callers: the local operator, a live supervisor session, and a worker
         session for a task it filed.  A playbook never re-routes.  A claimed,
@@ -839,7 +947,18 @@ class RoutingCommandsMixin:
                     ),
                 }
             hints["task_type"] = kind
-        if not await self.db.reset_task_route(task.id, **hints):
+        preference: dict[str, Any] = {}
+        if "prefer" in args or "prefer_mode" in args:
+            (target, mode), error = await validate_route_preference(
+                self, task.project_id, args.get("prefer"), args.get("prefer_mode"),
+                # Either half of the pair carries the other forward.
+                keep_target=getattr(task, "prefer_target", None),
+                keep_mode=getattr(task, "prefer_mode", None),
+            )
+            if error is not None:
+                return {"success": False, "error": error}
+            preference = {"prefer_target": target, "prefer_mode": mode}
+        if not await self.db.reset_task_route(task.id, **hints, **preference):
             return {
                 "success": False,
                 "code": NOT_ROUTABLE,
@@ -883,6 +1002,8 @@ class RoutingCommandsMixin:
             "route_source": UNROUTED,
             "class_hint": getattr(fresh, "class_hint", None),
             "task_type": str(task_type) if task_type else None,
+            "prefer_target": getattr(fresh, "prefer_target", None),
+            "prefer_mode": getattr(fresh, "prefer_mode", None),
             "cleared": cleared,
         }
 

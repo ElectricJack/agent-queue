@@ -910,3 +910,226 @@ async def test_route_needed_carries_the_bound_router_and_the_class_hint(orch):
     )
     assert payload["router"] == ROUTER_ID
     assert payload["class_hint"] == "deep-high"
+
+
+# -- the per-task routing preference (spec §4) ------------------------------------------
+
+
+def _without_provider(handler, key: str):
+    """Make one provider unlaunchable in every snapshot this handler builds."""
+    from src.routing.planner import ProviderFacts
+
+    original = handler._routing_static_facts
+
+    async def unavailable(*args, **kwargs):
+        profiles, providers = await original(*args, **kwargs)
+        providers[key] = ProviderFacts(state="exhausted", launchable=False)
+        return profiles, providers
+
+    handler._routing_static_facts = unavailable
+
+
+async def test_a_strict_preference_routes_to_its_target_and_records_the_decision(handler, orch):
+    await _workspace(orch)
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high",
+                  prefer_target="claude", prefer_mode="strict")
+    plan = await _plan(handler, "t")
+    assert plan["profile_id"] == "standard-high-claude"
+    assert {c["provider"] for c in plan["candidates"]} == {"claude"}
+    applied = await _route(handler, "t")
+    assert applied["preference"] == {
+        "target": "claude", "mode": "strict", "kind": "harness",
+        "honoured": True, "fallback_reason": None,
+    }
+    route = (await orch.db.get_task("t")).route
+    assert route["preference"] == applied["preference"]
+    assert route["decision"]["preference"] == applied["preference"]
+    assert route["decision"]["mode"] == "task_preference"
+    emitted = [c for c in orch.bus.emit.await_args_list if c.args[0] == "task.routed"]
+    assert emitted[0].args[1]["preference"] == applied["preference"]
+
+
+async def test_a_strict_preference_holds_for_an_unavailable_provider_rather_than_falling_back(
+    handler, orch,
+):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high",
+                  prefer_target="claude", prefer_mode="strict")
+    _without_provider(handler, "claude")
+    plan = await _plan(handler, "t")
+    assert plan["outcome"] == "held"
+    assert plan["preference"]["fallback_reason"] == "provider_unavailable"
+    assert {c["provider"] for c in plan["candidates"]} == {"claude"}
+    assert (await orch.db.get_task("t")).profile_id is None
+
+
+async def test_a_soft_preference_falls_back_to_another_harness_with_the_reason(handler, orch):
+    await _workspace(orch)
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high",
+                  prefer_target="claude")
+    assert (await orch.db.get_task("t")).prefer_mode is None
+    _without_provider(handler, "claude")
+    plan = await _plan(handler, "t")
+    assert plan["profile_id"] == "standard-high-codex"
+    assert plan["preference"] == {
+        "target": "claude", "mode": "soft", "kind": "harness",
+        "honoured": False, "fallback_reason": "provider_unavailable",
+    }
+    applied = await _route(handler, "t")
+    assert applied["profile_id"] == "standard-high-codex"
+    route = (await orch.db.get_task("t")).route
+    assert route["preference"]["honoured"] is False
+    assert "preferred claude (soft) not honoured" in route["reason"]
+
+
+async def test_apply_reads_the_preference_from_the_task_not_from_the_plan(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high")
+    plan = await _plan(handler, "t")
+    assert {c["provider"] for c in plan["candidates"]} == {"claude", "codex"}
+    # The filer tightens the task to Claude after the plan was made.
+    assert await orch.db.reset_task_route(
+        "t", prefer_target="claude", prefer_mode="strict"
+    )
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+    assert applied["outcome"] == "routed"
+    assert applied["profile_id"] == "standard-high-claude"
+
+
+async def test_apply_refuses_a_plan_that_cannot_serve_a_strict_preference(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high")
+    plan = await _plan(handler, "t")
+    await orch.db.reset_task_route("t", prefer_target="deep-high-claude", prefer_mode="strict")
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "t", "plan": plan})
+    assert applied["outcome"] == "stale"
+    assert "strict preference" in applied["reason"]
+    assert (await orch.db.get_task("t")).profile_id is None
+
+
+async def test_routing_is_unchanged_for_a_task_that_names_no_preference(handler, orch):
+    await _create(orch.db, "plain", task_type=TaskType.RESEARCH, class_hint="standard-high")
+    plan = await _plan(handler, "plain")
+    assert plan["preference"] is None
+    assert plan["decision"]["preference"] is None
+    assert "preferred " not in plan["reason"]
+    await _route(handler, "plain")
+    route = (await orch.db.get_task("plain")).route
+    assert route["preference"] is None
+    assert route["decision"]["preference"] is None
+    assert route["decision"]["mode"] in {"hosted_preference", "pressure_fallback"}
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ({"prefer": "gemini"}, "neither an installed harness nor an enabled worker profile"),
+        ({"prefer": "reviewer"}, "not a worker route"),
+        ({"prefer": "claude", "prefer_mode": "loud"}, "Invalid prefer_mode"),
+    ],
+)
+async def test_filing_refuses_an_unknown_or_unusable_preference(handler, orch, args, expected):
+    before = len(await orch.db.list_tasks(project_id="p"))
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Prefers", "description": "d", **args,
+    })
+    assert not result.get("success"), result
+    assert expected in result["error"]
+    assert len(await orch.db.list_tasks(project_id="p")) == before
+
+
+@pytest.mark.parametrize("flags", [{"read_only": True}, {"lifecycle": "named"}])
+async def test_filing_refuses_a_preference_on_a_profile_that_is_never_a_route(
+    handler, orch, flags,
+):
+    await orch.db.create_profile(AgentProfile(
+        id="helper-claude", name="helper-claude", harness="claude",
+        default_class="standard-high", needs_workspace=False, **flags,
+    ))
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Prefers", "description": "d",
+        "prefer": "helper-claude",
+    })
+    assert not result.get("success")
+    assert "not a worker route" in result["error"]
+    # Its harness is still a legal preference: only the profile is not.
+    harness = await handler.execute("create_task", {
+        "project_id": "p", "title": "Prefers", "description": "d", "prefer": "claude",
+    })
+    assert harness["success"] and harness["prefer_target"] == "claude"
+
+
+async def test_filing_refuses_a_preference_on_a_disabled_profile(handler, orch):
+    await orch.db.update_profile("standard-high-codex", enabled=False)
+    before = len(await orch.db.list_tasks(project_id="p"))
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Prefers", "description": "d",
+        "prefer": "standard-high-codex",
+    })
+    assert not result.get("success")
+    assert "is disabled" in result["error"]
+    assert len(await orch.db.list_tasks(project_id="p")) == before
+
+
+async def test_filing_stores_a_valid_preference_and_names_its_harness_kind(handler, orch):
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Prefers", "description": "d", "prefer": "codex",
+    })
+    assert result["success"]
+    assert (result["prefer_target"], result["prefer_mode"]) == ("codex", "soft")
+    task = await orch.db.get_task(result["task_id"])
+    assert (task.prefer_target, task.prefer_mode, task.route_source) == ("codex", "soft", "unrouted")
+    facts = await handler._routing_task_facts(task, await orch.db.get_project("p"))
+    assert (facts.prefer_target, facts.prefer_mode) == ("codex", "soft")
+    strict = await handler.execute("create_task", {
+        "project_id": "p", "title": "Strict", "description": "d",
+        "prefer": "standard-high-claude", "prefer_mode": "strict",
+    })
+    assert (strict["prefer_target"], strict["prefer_mode"]) == (
+        "standard-high-claude", "strict",
+    )
+
+
+async def test_task_route_stores_changes_and_clears_the_preference(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high",
+                  prefer_target="claude")
+    stored = await handler.execute("task_route", {
+        "task_id": "t", "prefer": "codex", "prefer_mode": "strict",
+    })
+    assert stored["success"]
+    assert (stored["prefer_target"], stored["prefer_mode"]) == ("codex", "strict")
+    assert (await orch.db.get_task("t")).route_source == UNROUTED
+    # A named target alone keeps the mode: re-routing never relaxes a pin.
+    kept = await handler.execute("task_route", {"task_id": "t", "prefer": "claude"})
+    assert (kept["prefer_target"], kept["prefer_mode"]) == ("claude", "strict")
+    relaxed = await handler.execute("task_route", {"task_id": "t", "prefer_mode": "soft"})
+    assert (relaxed["prefer_target"], relaxed["prefer_mode"]) == ("claude", "soft")
+    cleared = await handler.execute("task_route", {"task_id": "t", "prefer": ""})
+    assert cleared["prefer_target"] is None and cleared["prefer_mode"] is None
+    kept = await handler.execute("task_route", {"task_id": "t", "task_type": "research"})
+    assert (kept["prefer_target"], kept["prefer_mode"]) == (None, None)
+    refused = await handler.execute("task_route", {"task_id": "t", "prefer": "gemini"})
+    assert not refused["success"] and "neither an installed harness" in refused["error"]
+
+
+async def test_a_worker_filing_may_name_a_preference(handler, orch):
+    """The preference is an input to the router, so every filer may set it."""
+    from src.commands.principal import (
+        ExecutionPrincipal,
+        PrincipalKind,
+        principal_context,
+    )
+    from src.profiles.capabilities import CapabilityPolicy
+
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
+        session_id="worker-1", project_id="p",
+    )
+    with principal_context(principal):
+        result = await handler.execute("create_task", {
+            "project_id": "p", "title": "Worker prefers", "description": "d",
+            "prefer": "claude", "prefer_mode": "strict", "reason": "use astra",
+        })
+    assert result["success"], result
+    task = await orch.db.get_task(result["task_id"])
+    assert (task.prefer_target, task.prefer_mode) == ("claude", "strict")

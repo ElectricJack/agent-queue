@@ -979,11 +979,23 @@ def test_the_llm_tool_loop_refuses_ahead_of_the_args_model() -> None:
 #: Recorded before the refusal landed (solid-dune-67.5).  The argument models
 #: keep their legacy routing fields, refused at runtime, so these do not move
 #: and no reviewed bundle that calls them goes stale (spec §5.1).
+#:
+#: ``create_task`` moved once, for an unrelated reason: the per-task routing
+#: preference (``--prefer``/``--prefer-mode``, spec §4) is a declared argument
+#: now, which changes its args schema.  What the pin protects is that nothing
+#: reviewed compiles against the command whose digest moved, which
+#: :func:`test_no_reviewed_bundle_compiles_against_create_task` now asserts
+#: structurally rather than leaving it to the recorded digest.
 FINGERPRINTS = {
-    "create_task": "sha256:6b42134bd02d6111e6dde186aa5ffebfb2aae8ba6842a9c4024a465086359ca2",
+    "create_task": "sha256:6545a178b72152e39968fa3e86e0dde22235b981c6a33f7bcde2424d9ac491d6",
     "ensure_task": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
     "edit_task": "sha256:a5c02bc88c11931d870330d03db0b1a7237e539a51a7d65a18149b3dc63b9fb6",
 }
+
+#: The one filing command whose recorded fingerprint may move, and only while
+#: no reviewed bundle calls it.  ``ensure_task`` and ``edit_task`` are called
+#: by shipped bundles, so their digests are frozen for good.
+MOVABLE_FINGERPRINTS = frozenset({"create_task"})
 
 
 @pytest.mark.parametrize("command", sorted(FINGERPRINTS))
@@ -994,6 +1006,31 @@ def test_filing_contract_fingerprints_are_unchanged(command: str) -> None:
     contract = CONTRACTS.require(command).contract
     assert execution_fingerprint(contract.execution) == FINGERPRINTS[command]
     assert "rejected" in {spec.name for spec in contract.execution.outcomes}
+
+
+def test_no_reviewed_bundle_compiles_against_create_task() -> None:
+    """Why ``create_task``'s digest may move: nothing reviewed calls it.
+
+    A fingerprint is recorded so that changing a filing contract cannot
+    silently stale a reviewed bundle.  That only holds while the shipped
+    bundles reference none of the movable commands, so this pins the premise
+    instead of trusting the recorded digest to keep it.
+    """
+    import json
+    from pathlib import Path
+
+    shipped = Path(__file__).resolve().parent.parent / "src" / "prompts" / "reviewed_playbooks"
+    referencing: dict[str, list[str]] = {}
+    for artifact in sorted(shipped.glob("*/artifact.json")):
+        compiled = json.loads(artifact.read_text(encoding="utf-8")).get("compiled_against", {})
+        for command in set(compiled.get("commands", {})) & MOVABLE_FINGERPRINTS:
+            referencing.setdefault(command, []).append(artifact.parent.name)
+    assert not referencing, (
+        "a reviewed bundle now compiles against a filing command whose "
+        f"fingerprint may move: {referencing}. Its recorded fingerprint is stale "
+        "-- rebuild the bundle (scripts/rebuild-reviewed-playbook-artifacts.py), "
+        "re-review it, and freeze its digest above."
+    )
 
 
 @pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task", "task_route"])

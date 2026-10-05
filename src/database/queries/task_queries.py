@@ -342,6 +342,8 @@ class TaskQueryMixin:
                 rerouted_from=task.rerouted_from,
                 route_source=task.route_source,
                 class_hint=task.class_hint,
+                prefer_target=task.prefer_target,
+                prefer_mode=task.prefer_mode,
                 route=task.route,
                 # A brand-new row has no edges yet, so it starts
                 # unblocked; the edges that follow recompute it
@@ -2550,6 +2552,8 @@ class TaskQueryMixin:
             rerouted_from=row.get("rerouted_from"),
             route_source=row.get("route_source") or UNROUTED,
             class_hint=row.get("class_hint"),
+            prefer_target=row.get("prefer_target"),
+            prefer_mode=row.get("prefer_mode"),
             route=row.get("route"),
         )
 
@@ -2612,6 +2616,8 @@ class TaskQueryMixin:
         *,
         class_hint: str | None | object = _UNSET,
         task_type: str | None | object = _UNSET,
+        prefer_target: str | None | object = _UNSET,
+        prefer_mode: str | None | object = _UNSET,
         route_source: str | None = None,
         queued_only: bool = False,
     ) -> bool:
@@ -2625,11 +2631,12 @@ class TaskQueryMixin:
         ``legacy`` audit survive: they are the task's, not the route's, and
         the router re-plans under them.  *class_hint* replaces the filer's
         hint when given; ``None`` clears it.  *task_type* likewise replaces
-        the kind (``aq task route --task-type``).  *route_source* resets only a
-        task whose current route has that source, and *queued_only* only a
-        DEFINED, READY or BLOCKED one.  Guarded like
-        :meth:`update_task_routing`: a task that is claimed, running or in a
-        live session is left alone and ``False`` is returned.
+        the kind (``aq task route --task-type``).  *prefer_target* and
+        *prefer_mode* replace the task's routing preference (§4); ``None``
+        clears it.  *route_source* resets only a task whose current route has
+        that source, and *queued_only* only a DEFINED, READY or BLOCKED one.
+        Guarded like :meth:`update_task_routing`: a task that is claimed,
+        running or in a live session is left alone and ``False`` is returned.
         """
         def key(name: str):
             return literal_column(f"'{name}'")
@@ -2653,6 +2660,10 @@ class TaskQueryMixin:
             vals["class_hint"] = class_hint
         if task_type is not _UNSET:
             vals["task_type"] = task_type
+        if prefer_target is not _UNSET:
+            vals["prefer_target"] = prefer_target
+        if prefer_mode is not _UNSET:
+            vals["prefer_mode"] = prefer_mode
         active_session = select(sessions.c.id).where(
             sessions.c.task_id == tasks.c.id,
             sessions.c.state.in_(("starting", "running", "draining")),

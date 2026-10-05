@@ -409,6 +409,8 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "priority": "priority",
     "task_type": "task_type",
     "intelligence_class": "intelligence_class",
+    "prefer": "prefer",
+    "prefer_mode": "prefer_mode",
     "integration_mode": "integration_mode",
     "parent_id": "parent_id",
     "after_review": "after_review",

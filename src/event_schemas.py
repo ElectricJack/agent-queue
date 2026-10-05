@@ -172,6 +172,7 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
             "policy_sha256",
             "run_id",
             "adjusted_at_apply",
+            "preference",
         ],
     },
     # An audited emergency override (mandatory-routing §7, §10, D2): the
