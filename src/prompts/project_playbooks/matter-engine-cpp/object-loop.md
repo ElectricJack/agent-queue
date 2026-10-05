@@ -34,6 +34,14 @@ pilot with at most two object epics and one GPU lease. A loop is processed only
 when its policy hash equals this running artifact's hash. An operator must
 explicitly migrate a loop to a different reviewed policy; drift cannot adopt it.
 
+One attempt, one editor build. Render the baseline capture and every later
+capture of the attempt with `aq job submit --attempt-id ATTEMPT`, the same
+attempt id the start packet carries. AQ copies that editor build once and
+launches the pinned copy for every capture of the attempt, so rebuilding the
+shared build cannot move the preset under a running attempt; a different
+attempt id is how the build is allowed to move, and a start packet's
+render_profile_sha256 is only valid for the attempt that pinned it.
+
 ## Rule: on-formula
 
 On formula.cooked, perform the sweep below.
@@ -120,8 +128,17 @@ Cook the packaged object formula once at the root with immutable inputs and the
 approved brief. Its bootstrap has an event gate installed inside graph creation.
 Candidate workers use immutable input artifacts and write only generators,
 materials and presets in their own workspace. They publish evaluation bundles
-to the artifact store, not the product branch. Scoring workers independently
-validate complete mandatory views and record the strict score packet with
+to the artifact store, not the product branch. Every candidate and scoring
+packet carries a round_handoff block: the incumbent bundle artifact, each
+earlier round's branch and commit with the bundle it retained, and the frozen
+comparison inputs. Reading those retained artifacts and those earlier round
+branches is in scope for a round worker; a worker that starts from the
+reference instead of from the incumbent cannot be scored against it, because
+the attempt's render profile and rig are fixed. Every capture of the attempt is
+submitted under the same attempt id, so the pinned editor build is the one the
+profile names. Scoring workers independently validate complete mandatory views,
+score every wave member against that same frozen profile so candidate and
+reference are comparable, and record the strict score packet with
 `aq task set HELD_TASK --note PACKET` before closing. Include next_variants in a
 checkpoint packet only for an approved continuation; every variant reservation
 includes its allowed retries. Missing or unknown costs charge the full reserve.

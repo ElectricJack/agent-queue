@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from ..models.job_retain_response_artifacts_item import JobRetainResponseArtifactsItem
     from ..models.job_retain_response_candidate_artifact import JobRetainResponseCandidateArtifact
     from ..models.job_retain_response_captures_item import JobRetainResponseCapturesItem
+    from ..models.job_retain_response_editor_pin_type_0 import JobRetainResponseEditorPinType0
     from ..models.job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 
 
@@ -27,6 +28,7 @@ class JobRetainResponse:
         rig_sha256 (None | str | Unset):
         render_profile (JobRetainResponseRenderProfileType0 | None | Unset):
         render_profile_sha256 (None | str | Unset):
+        editor_pin (JobRetainResponseEditorPinType0 | None | Unset):
         artifacts (list[JobRetainResponseArtifactsItem] | Unset):
         captures (list[JobRetainResponseCapturesItem] | Unset):
         next_step (None | str | Unset):
@@ -39,12 +41,14 @@ class JobRetainResponse:
     rig_sha256: None | str | Unset = UNSET
     render_profile: JobRetainResponseRenderProfileType0 | None | Unset = UNSET
     render_profile_sha256: None | str | Unset = UNSET
+    editor_pin: JobRetainResponseEditorPinType0 | None | Unset = UNSET
     artifacts: list[JobRetainResponseArtifactsItem] | Unset = UNSET
     captures: list[JobRetainResponseCapturesItem] | Unset = UNSET
     next_step: None | str | Unset = UNSET
     success: bool | Unset = True
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.job_retain_response_editor_pin_type_0 import JobRetainResponseEditorPinType0
         from ..models.job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 
         job_id = self.job_id
@@ -76,6 +80,14 @@ class JobRetainResponse:
             render_profile_sha256 = UNSET
         else:
             render_profile_sha256 = self.render_profile_sha256
+
+        editor_pin: dict[str, Any] | None | Unset
+        if isinstance(self.editor_pin, Unset):
+            editor_pin = UNSET
+        elif isinstance(self.editor_pin, JobRetainResponseEditorPinType0):
+            editor_pin = self.editor_pin.to_dict()
+        else:
+            editor_pin = self.editor_pin
 
         artifacts: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.artifacts, Unset):
@@ -115,6 +127,8 @@ class JobRetainResponse:
             field_dict["render_profile"] = render_profile
         if render_profile_sha256 is not UNSET:
             field_dict["render_profile_sha256"] = render_profile_sha256
+        if editor_pin is not UNSET:
+            field_dict["editor_pin"] = editor_pin
         if artifacts is not UNSET:
             field_dict["artifacts"] = artifacts
         if captures is not UNSET:
@@ -131,6 +145,7 @@ class JobRetainResponse:
         from ..models.job_retain_response_artifacts_item import JobRetainResponseArtifactsItem
         from ..models.job_retain_response_candidate_artifact import JobRetainResponseCandidateArtifact
         from ..models.job_retain_response_captures_item import JobRetainResponseCapturesItem
+        from ..models.job_retain_response_editor_pin_type_0 import JobRetainResponseEditorPinType0
         from ..models.job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 
         d = dict(src_dict)
@@ -182,6 +197,23 @@ class JobRetainResponse:
 
         render_profile_sha256 = _parse_render_profile_sha256(d.pop("render_profile_sha256", UNSET))
 
+        def _parse_editor_pin(data: object) -> JobRetainResponseEditorPinType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                editor_pin_type_0 = JobRetainResponseEditorPinType0.from_dict(data)
+
+                return editor_pin_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(JobRetainResponseEditorPinType0 | None | Unset, data)
+
+        editor_pin = _parse_editor_pin(d.pop("editor_pin", UNSET))
+
         _artifacts = d.pop("artifacts", UNSET)
         artifacts: list[JobRetainResponseArtifactsItem] | Unset = UNSET
         if _artifacts is not UNSET:
@@ -218,6 +250,7 @@ class JobRetainResponse:
             rig_sha256=rig_sha256,
             render_profile=render_profile,
             render_profile_sha256=render_profile_sha256,
+            editor_pin=editor_pin,
             artifacts=artifacts,
             captures=captures,
             next_step=next_step,
