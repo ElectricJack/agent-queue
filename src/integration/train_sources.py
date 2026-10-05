@@ -414,10 +414,12 @@ class DaemonLanes:
         from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
         from src.jobs.adapters import PublisherJobs
 
+        if settings.validation == "none" or not settings.commands:
+            return None
         await retain_train_candidate(self.git, retained.store, batch, candidate_sha)
         plan = LocalValidationPlan(
             version=version, attempt_id=f"{batch.repair_attempt_count}:0",
-            commands=tuple(settings.commands) if settings.validation != "none" else (),
+            commands=tuple(settings.commands),
             queue_seconds=settings.slot_wait_seconds, run_seconds=settings.timeout_seconds,
         )
         producer = LocalCIProducer(

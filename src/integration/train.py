@@ -161,14 +161,15 @@ class CandidateChecks:
     the publisher's fence lock, so it reads only a candidate this lane already
     resolved, and an unresolved candidate is not green. ``advisory`` checks
     still run to a verdict, but a red one publishes instead of filing a repair.
+    ``resolve`` returns ``None`` when the target requires no checks at all.
     """
 
     def __init__(
-        self, resolve: Callable[[Batch, str], Awaitable[ExactChecks]], *, limit: int = 64,
-        advisory: bool = False,
+        self, resolve: Callable[[Batch, str], Awaitable[ExactChecks | None]], *,
+        limit: int = 64, advisory: bool = False,
     ) -> None:
         self.resolve, self.limit, self.advisory = resolve, limit, advisory
-        self._resolved: dict[tuple[str, str], ExactChecks] = {}
+        self._resolved: dict[tuple[str, str], ExactChecks | None] = {}
 
     @classmethod
     def fixed(cls, checks: ExactChecks) -> CandidateChecks:
@@ -177,7 +178,7 @@ class CandidateChecks:
 
         return cls(resolve)
 
-    async def for_candidate(self, batch: Batch, candidate_sha: str) -> ExactChecks:
+    async def for_candidate(self, batch: Batch, candidate_sha: str) -> ExactChecks | None:
         checks = await self.resolve(batch, candidate_sha)
         self._resolved.pop((batch.id, candidate_sha), None)
         self._resolved[(batch.id, candidate_sha)] = checks
@@ -190,10 +191,13 @@ class CandidateChecks:
         return result.green or (self.advisory and result.state == ChecksState.RED)
 
     async def gate(self, batch: Batch, candidate_sha: str, tree_sha: str) -> bool:
-        checks = self._resolved.get((batch.id, candidate_sha))
-        if checks is None:
+        key = (batch.id, candidate_sha)
+        if key not in self._resolved:
             return False
-        return self.passes(await checks.read(candidate_head(batch, candidate_sha)))
+        checks = self._resolved[key]
+        return checks is None or self.passes(
+            await checks.read(candidate_head(batch, candidate_sha))
+        )
 
 
 @dataclass(frozen=True)
@@ -324,8 +328,8 @@ class IntegrationTrain:
             return self._visit(target, observation.state, batch, observation)
         head = candidate_head(batch, observation.candidate_sha)
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
-        result = await self._checks(checks, head)
-        if lane.checks.passes(result):
+        result = None if checks is None else await self._checks(checks, head)
+        if result is None or lane.checks.passes(result):
             # The gate now reads this verdict; publish within this visit.
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":

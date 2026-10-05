@@ -706,6 +706,7 @@
     "managed-jobs": {
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
+        "tests/test_jobs.py",
         "tests/test_jobs_attachments.py",
         "tests/test_jobs_matter.py",
         "tests/test_jobs_output.py",
@@ -1408,7 +1409,7 @@
       ]
     }
   },
-  "digest": "sha256:4dfe8d991b2ccb33d33287b05ab01b934ac2cffae13cb640cc889ca52fd53a49",
+  "digest": "sha256:91ef1547616bd340a802b626e179eb508ff20c9129f323f258fd1b849b04539f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8689,6 +8690,30 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_jobs.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The train's local jobs provider: development checks of exact candidates."
     },
     "tests/test_jobs_attachments.py": {
       "areas": [
