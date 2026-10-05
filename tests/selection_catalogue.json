@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:ec0a08aca4d543be1f5f7c7abd4141947105e717955496961a2083cf4ab3ba10",
+  "digest": "sha256:87a2d54848487c3d163bf8fa7ac2e3650f6d21a39c58198d3d234016648932cd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8962,6 +8962,7 @@
         "src.models",
         "src.prime.models",
         "src.prime.renderer",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.prompt_builder",
         "src.records.auth",
