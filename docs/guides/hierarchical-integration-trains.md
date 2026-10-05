@@ -181,6 +181,13 @@ unpublished work and releases only a proved stopped attachment. It refuses a
 live writer, reused checkout or changed fence. Repair handoff and retry remain
 Subject decisions under the frozen policy and unchanged stage budget.
 
+`aq task restart TASK_ID` is the supported restart for a stopped repair
+delegate: it redispatches the delegate's current stage through the same fenced
+handoff, so the delegate returns to the pool claim frontier holding its exact
+reserved repair fence and resumes from any preserved repair commits. It is
+refused — the task left exactly as it was — while the branch fence is still
+held by the stopped writer; free that with `release-owner` first.
+
 To disable future admission, use the project configuration CAS:
 
 ```bash
