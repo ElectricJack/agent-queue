@@ -353,6 +353,128 @@ class TestRegistry:
         assert registry.get("bad") is None
 
 
+class TestRunsCliProjectScope:
+    """``runs_cli`` resolves the CLI in the harness file that *launches*.
+
+    A project may shadow a harness id with its own file
+    (``vault/projects/<pid>/harnesses/<name>.md``), and the launch path reads
+    it: ``orchestrator/execution.py`` and ``orchestrator/pools.py`` resolve
+    with ``task.project_id``, ``sessions/input_prompts.py`` with
+    ``session.project_id``.  When the shadow names a different executable the
+    CLI-specific behaviour must move with it, and only for that project --
+    the same id on every other project still launches the system file.
+    """
+
+    #: The hosted-pool recipe of ``noble-delta-40``: the ``opencode``
+    #: executable against the OpenCode Zen gateway.
+    _ZEN = '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}'
+
+    @staticmethod
+    def _write(root, rel, cfg, hid):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_md(cfg, frontmatter=f"id: {hid}\n"), encoding="utf-8")
+
+    @classmethod
+    def _registry(cls, tmp_path, files):
+        vault = tmp_path / "vault"
+        for rel, (cfg, hid) in files.items():
+            cls._write(vault, rel, cfg, hid)
+        registry = HarnessRegistry()
+        errors = load_from_vault(registry, str(vault))
+        assert errors == []
+        return registry
+
+    def test_a_project_override_to_another_cli_leaves_only_that_project(self, tmp_path):
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": ('{"command": "claude"}', "opencode-zen"),
+            },
+        )
+
+        # p1 launches claude, so OpenCode's question store and prime addendum
+        # do not apply there -- and the CLI it does run is found instead.
+        assert not runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert runs_cli("claude", "opencode-zen", registry, "p1")
+        # Every other scope still resolves the system file and keeps OpenCode.
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode", registry, "p1")  # unrelated harness id
+
+    def test_the_reverse_override_grants_the_cli_to_one_project_only(self, tmp_path):
+        # A hosted recipe that launches another CLI, with p1 overriding it
+        # back to opencode: OpenCode behaviour is added, not removed.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (
+                    '{"command": "/opt/bin/codex", "provider": "opencode"}',
+                    "opencode-zen",
+                ),
+                "projects/p1/harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert not runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert not runs_cli("opencode", "opencode-zen", registry)
+        # The CLI the *system* file runs is still reported in every scope that
+        # does not override it -- an override replaces, it does not append.
+        assert runs_cli("codex", "opencode-zen", registry, "p2")
+        assert not runs_cli("codex", "opencode-zen", registry, "p1")
+
+    def test_an_override_that_keeps_the_command_keeps_the_cli(self, tmp_path):
+        # The common override changes launch flags or the provider, not the
+        # executable.  CLI behaviour follows the command, so it must survive.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": (
+                    (
+                        '{"command": "C:/bin/opencode.EXE", "provider": "opencode", '
+                        '"args": ["--auto"]}'
+                    ),
+                    "opencode-zen",
+                ),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")  # .exe is ignored
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+
+    def test_a_project_only_harness_id_is_invisible_outside_its_project(self, tmp_path):
+        # No system file at all: p2 has no such harness to resolve, so no
+        # CLI-specific behaviour may be attributed to it there.
+        registry = self._registry(
+            tmp_path, {"projects/p1/harnesses/zen-local.md": (self._ZEN, "zen-local")}
+        )
+
+        assert runs_cli("opencode", "zen-local", registry, "p1")
+        assert not runs_cli("opencode", "zen-local", registry, "p2")
+        assert not runs_cli("opencode", "zen-local", registry)
+
+    def test_a_harness_named_after_the_cli_answers_before_the_registry(self, tmp_path):
+        # Pinned deliberately: the id match is the only answer available
+        # without a registry, so it is the short-circuit -- a project file
+        # that shadows the ``opencode`` id itself is not consulted.  Shadowing
+        # the CLI-named id is how an operator would have to rename to opt out.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode.md": ('{"command": "/opt/bin/opencode"}', "opencode"),
+                "projects/p1/harnesses/opencode.md": ('{"command": "claude"}', "opencode"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode", registry, "p1")
+        assert runs_cli("opencode", "opencode", registry, "p2")
+        assert runs_cli("opencode", "opencode")
+
+
 class TestRegistryWatcher:
     @staticmethod
     def _write(root, rel, cfg, hid="claude"):
