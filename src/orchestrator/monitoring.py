@@ -446,12 +446,48 @@ class MonitoringMixin:
         if now - self._last_container_sweep < interval:
             return
         self._last_container_sweep = now
+        await self.release_stale_container_claims()
         candidates = await self.db.settle_candidates()
         if candidates:
             settled = await self._settle_seeds(set(candidates))
             for cid in settled:
                 logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
         await self.reconcile_stale_containers()
+
+    async def release_stale_container_claims(self) -> list[str]:
+        """Take back a stopped pool worker's claim on a container it cannot close.
+
+        A container is never leased and ``release_container_claim`` only takes
+        a claim back from a holder that is still running, so a container whose
+        worker has since stopped keeps a claim nobody may act on.  The
+        reconciler behind that claim (``stale_container_claim_clauses``) proves
+        each one before releasing it, and it is the shipped path for strands
+        that predate the event that would have prevented them: the release
+        leaves the parent PAUSED with no agent, which §7 settlement and the
+        parent-episode readiness projection both consume.  Returns the released
+        task ids.
+        """
+        released: list[str] = []
+        try:
+            candidates = await self.db.stale_container_claim_candidates()
+        except Exception:
+            logger.exception("Could not list container claims held by stopped sessions")
+            return released
+        for task_id in candidates:
+            try:
+                out = await self.db.release_stale_container_claim(task_id)
+            except Exception:
+                logger.exception("Could not release the stale container claim on %s", task_id)
+                continue
+            if not out.released:
+                continue
+            released.append(task_id)
+            logger.warning(
+                "Released the claim on container %s: its pool worker stopped while it was "
+                "still IN_PROGRESS, and a container is never leased (sharp-ridge-57)",
+                task_id,
+            )
+        return released
 
     @property
     def delivery_observer(self):

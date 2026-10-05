@@ -1534,8 +1534,11 @@ class Orchestrator(
         await self._recover_stale_state(skip_task_ids=adopted_task_ids)
         # Restarts and updates are what strand a finished container BLOCKED or
         # PAUSED; settle every one whose children are all delivered before the
-        # first tick rather than waiting for the first backstop sweep.
+        # first tick rather than waiting for the first backstop sweep.  A
+        # container still held by a worker that stopped is stranded the same
+        # way and needs its claim back first (sharp-ridge-57).
         try:
+            await self.release_stale_container_claims()
             await self.reconcile_stale_containers()
         except Exception:
             logger.exception("Stale container reconciliation on start failed")

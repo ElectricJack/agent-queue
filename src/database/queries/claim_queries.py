@@ -31,6 +31,7 @@ from sqlalchemy import (
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.hierarchy_queries import (
+    HIERARCHY_MODES,
     ProjectIntegrationMode,
     container_flag_exists,
     delivered_same_parent_prerequisites_when_hierarchical,
@@ -47,9 +48,11 @@ from src.database.tables import (
     agents,
     integration_branch_owners,
     integration_repair_stages,
+    projects,
     sessions,
     task_completion_records,
     task_delivery_receipts,
+    task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
     task_workspace_requirements,
@@ -161,6 +164,122 @@ def _frontier_where(
 #: Transition context, session end reason and audit suffix of a claim taken
 #: back because its task turned out to be a container (bold-flare-35).
 CONTAINER_CLAIM_RELEASED = "container_claim_released"
+
+#: Transition context, session end reason and audit suffix of a stopped pool
+#: worker's claim taken back from a container it can no longer close
+#: (sharp-ridge-57).
+STALE_CONTAINER_CLAIM_RELEASED = "stale_container_claim_released"
+
+
+def _exact_stopped_pool_holder():
+    """``EXISTS`` clause: one stopped pool session pins this task's claim exactly.
+
+    The exact-holder proof :func:`src.integration.noop_repair.stale_parent_claim_on`
+    introduced (sharp-glacier-30), as a predicate: the single session pointing
+    at the correlated task is a pool worker that has fully stopped — not merely
+    un-running, but ``state`` *and* ``desired_state`` both ``stopped``, so no
+    drain or restart can resurrect it — still mid-claim (``claim_phase`` is
+    ``active``), still fenced to a concrete tmux instance, and its last claim
+    epoch is still the task's current one.  A requeued or re-leased pointer
+    carries a newer epoch and therefore does not match, which is what makes
+    releasing safe for a slot that may already have been reused.
+    """
+    holder = sessions.alias("stale_container_holder")
+    other = sessions.alias("stale_container_other")
+    return and_(
+        holder.c.task_id == tasks.c.id,
+        holder.c.lifecycle == "pool",
+        holder.c.state == "stopped",
+        holder.c.desired_state == "stopped",
+        holder.c.claim_phase == "active",
+        holder.c.instance_token.is_not(None),
+        holder.c.last_claim_epoch == tasks.c.claim_epoch,
+        # Exactly one: a second session pointing at the same task is not this
+        # shape, and which of the two holds the claim would then be a guess.
+        # The alias matters — the candidate statement already joins ``sessions``
+        # to ``tasks``, so an unaliased reference here would correlate to that
+        # join and read as "no session at all", never true.
+        ~exists(
+            select(literal(1)).where(
+                other.c.task_id == tasks.c.id,
+                other.c.id != holder.c.id,
+            )
+        ),
+    )
+
+
+def stale_container_claim_clauses() -> list:
+    """Containers a stopped pool worker still holds and nothing else can finish.
+
+    A container is never leased, so the frontier cannot offer it to anybody,
+    and :meth:`ClaimQueryMixin.release_container_claim` only ever takes a
+    claim back from a holder that is still *running*.  A container whose worker
+    has since stopped therefore keeps a claim that nothing may act on: the
+    worker can never close it, the frontier will not offer it, and in a
+    hierarchy/train project §7 settlement refuses it outright because its
+    collection episode owns the completion.  The parent is stranded
+    IN_PROGRESS forever (bold-crest-75, sharp-ridge-57).
+
+    The clause set is deliberately narrow — this is a reconciler, not a
+    scheduler, and it may only move work that is already finished with
+    everything except the claim itself:
+
+    * the §7 container flag (the one thing that says settle-only work);
+    * ``IN_PROGRESS`` with no agent, which is the shape a container is created
+      in and the only one §7 ever completes;
+    * the exact stopped pool holder above;
+    * a checkpoint carrying both a collection *episode* and a head of its own,
+      so there is an aggregate for the parent runtime to verify and the
+      ordinary (episode-free) §7 leg — which already tolerates a stopped
+      holder — is not what is being repaired here;
+    * no child outside ``COMPLETED``: a container with work still in flight has
+      a live collection to make progress, and this reconciler is not the thing
+      that should decide otherwise.
+    """
+    child = tasks.alias("stale_container_claim_child")
+    return [
+        tasks.c.status == TaskStatus.IN_PROGRESS.value,
+        tasks.c.assigned_agent_id.is_(None),
+        container_flag_exists(),
+        _not_manually_paused(),
+        exists(select(literal(1)).where(_exact_stopped_pool_holder())),
+        exists(
+            select(literal(1)).where(
+                task_integration_checkpoints.c.task_id == tasks.c.id,
+                task_integration_checkpoints.c.episode_id.is_not(None),
+                task_integration_checkpoints.c.checkpoint_sha.is_not(None),
+            )
+        ),
+        ~exists(
+            select(literal(1)).where(
+                child.c.parent_task_id == tasks.c.id,
+                child.c.status != TaskStatus.COMPLETED.value,
+            )
+        ),
+    ]
+
+
+def stale_container_claim_statement(*, task_ids: Collection[str] | None = None):
+    """The candidate read for :meth:`ClaimQueryMixin.release_stale_container_claim`."""
+    stmt = (
+        select(
+            tasks.c.id,
+            tasks.c.project_id,
+            sessions.c.id.label("session_id"),
+            sessions.c.last_claim_epoch,
+        )
+        .select_from(
+            tasks.join(sessions, sessions.c.task_id == tasks.c.id).join(
+                projects, projects.c.id == tasks.c.project_id
+            )
+        )
+        .where(*stale_container_claim_clauses())
+        .where(projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES))
+        .order_by(tasks.c.id)
+    )
+    if task_ids is not None:
+        stmt = stmt.where(tasks.c.id.in_(sorted(task_ids)))
+    return stmt
 
 # Kept in task metadata rather than a task column: this is operational
 # claim-state, not lifecycle state, and therefore needs no schema migration.
@@ -1278,6 +1397,143 @@ class ClaimQueryMixin:
             await self._after_release(settled)
         return out
 
+    async def stale_container_claim_candidates(self) -> list[str]:
+        """Containers a stopped pool worker still holds (sharp-ridge-57).
+
+        The backstop's read of :func:`stale_container_claim_clauses`, without
+        locks, so the sweep pays for one indexed statement per interval and not
+        for the release.  A row that moves on between this read and
+        :meth:`release_stale_container_claim` is simply not released.
+        """
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stale_container_claim_statement())).mappings().all()
+        return [row["id"] for row in rows]
+
+    async def release_stale_container_claim(
+        self, task_id: str, *, conn=None, now: float | None = None
+    ) -> TransitionResult:
+        """Take back a stopped pool worker's claim on a container it cannot close.
+
+        The automatic counterpart of the ``reopen-collection`` /
+        ``recover-parent-head`` supervisor controls, which all of them refuse
+        while a parent is IN_PROGRESS (they need an unassigned PAUSED one):
+        a container is never leased, so a stopped holder's claim is the last
+        thing standing between a finished aggregate and the parent runtime
+        that would verify it (bold-crest-75).
+
+        The release is proved, not assumed.  Under ``FOR UPDATE`` on the task,
+        the same :func:`stale_container_claim_clauses` the backstop read selects
+        the row — the holder, its claim epoch and the whole clause set are
+        re-checked under that lock, so the scan and this repair can never
+        disagree about what qualifies and neither can act on a stale read.  The
+        holder's agent is then checked for other work, any workspace still
+        locked to the task or to that agent refuses the release, and an operator
+        hold refuses it too: a reconciler never supersedes a human pause.
+
+        The claim is released through
+        :meth:`release_historical_pool_claim`, which changes only the exact
+        task and the exact session: a stopped worker's slot or agent may since
+        have been reused, so its workspace lock, agent state and claim file are
+        left exactly as the successor found them.  The task lands ``PAUSED``
+        with no agent, which is the shape §7 settlement and the parent-episode
+        readiness projection both consume.  When *conn* is supplied the caller
+        owns the transaction (and the post-commit notifications); otherwise
+        this method opens its own, runs the container sweep for the same
+        parent, and notifies once.
+        """
+        if conn is not None:
+            return await self._release_stale_container_claim_on(
+                conn, task_id, now=time.time() if now is None else now
+            )
+        async with self.immediate() as owned:
+            out = await self._release_stale_container_claim_on(
+                owned, task_id, now=time.time() if now is None else now
+            )
+            if out.released:
+                settled = await self.settle_containers({task_id}, conn=owned)
+                out.flipped |= settled.flipped
+                out.settled.extend(settled.settled)
+                out.ready.extend(settled.ready)
+        await self._after_release(out)
+        return out
+
+    async def _release_stale_container_claim_on(
+        self, conn, task_id: str, *, now: float
+    ) -> TransitionResult:
+        """The transactional body of :meth:`release_stale_container_claim`."""
+        out = TransitionResult()
+        if (
+            await conn.execute(
+                select(tasks.c.id).where(tasks.c.id == task_id).with_for_update()
+            )
+        ).first() is None:
+            return out
+        claimed = (
+            await conn.execute(stale_container_claim_statement(task_ids=[task_id]))
+        ).mappings().one_or_none()
+        if claimed is None:
+            return out
+        holder = (
+            (
+                await conn.execute(
+                    select(sessions)
+                    .where(sessions.c.id == claimed["session_id"])
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        agent_id = (holder or {}).get("agent_id")
+        if agent_id:
+            agent = (
+                (
+                    await conn.execute(
+                        select(agents).where(agents.c.id == agent_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if agent is not None and agent["current_task_id"] not in {None, task_id}:
+                return out
+        # A workspace still locked to the task, or to the holder's agent, means
+        # the writer may be alive after all, or that a successor has already
+        # taken the slot the release would free.
+        locks = [workspaces.c.locked_by_task_id == task_id]
+        if agent_id:
+            locks.append(workspaces.c.locked_by_agent_id == agent_id)
+        if (
+            await conn.execute(select(workspaces.c.id).where(or_(*locks)).limit(1))
+        ).first() is not None:
+            return out
+        if await self._read_manual_pause(conn, task_id) is not None:
+            return out
+        out = await self.release_historical_pool_claim(
+            conn,
+            claimed["session_id"],
+            task_id=task_id,
+            claim_epoch=claimed["last_claim_epoch"],
+            now=now,
+            context=STALE_CONTAINER_CLAIM_RELEASED,
+            expected_task_status=TaskStatus.IN_PROGRESS,
+        )
+        if out.released:
+            await self.log_event(
+                "task." + STALE_CONTAINER_CLAIM_RELEASED,
+                project_id=claimed["project_id"],
+                task_id=task_id,
+                payload=json.dumps(
+                    {
+                        "session_id": claimed["session_id"],
+                        "claim_epoch": claimed["last_claim_epoch"],
+                        "from_status": TaskStatus.IN_PROGRESS.value,
+                    }
+                ),
+                conn=conn,
+            )
+        return out
+
     async def release_displaced_pool_claim(self, session_id: str, *, now: float) -> bool:
         """Detach a draining pool session from a task it no longer owns.
 
@@ -1522,6 +1778,8 @@ class ClaimQueryMixin:
         task_id: str,
         claim_epoch: int,
         now: float,
+        context: str = "integration_handoff_recovery",
+        expected_task_status: TaskStatus = TaskStatus.BLOCKED,
     ) -> TransitionResult:
         """Release a stopped historical claim without touching its former holder.
 
@@ -1531,6 +1789,15 @@ class ClaimQueryMixin:
         slot or agent that has since been reused.  The caller proves the
         detached integration handoff separately while holding its owner row;
         this method changes only the exact old task and exact old session.
+
+        *context* and *expected_task_status* name the repair's own audit trail
+        and the one pre-state it is allowed to move off.  The task is always
+        returned to ``PAUSED`` with no agent, because a stopped session has no
+        authority left to hold anything; only the status it was proved to be in
+        is the caller's to choose (``integration_handoff_recovery`` has always
+        meant a stranded ``BLOCKED`` repair delegate, while
+        :meth:`release_stale_container_claim` proves an ``IN_PROGRESS``
+        container).
         """
         row = (
             await conn.execute(
@@ -1553,12 +1820,12 @@ class ClaimQueryMixin:
             conn,
             task_id,
             TaskStatus.PAUSED,
-            context="integration_handoff_recovery",
+            context=context,
             force=True,
             assigned_agent_id=None,
             _manual_pause_control=True,
             extra_where=and_(
-                tasks.c.status == TaskStatus.BLOCKED.value,
+                tasks.c.status == expected_task_status.value,
                 tasks.c.assigned_agent_id.is_(None),
                 tasks.c.claim_epoch == claim_epoch,
             ),
@@ -1581,7 +1848,7 @@ class ClaimQueryMixin:
                 task_id=None,
                 claim_phase=None,
                 claim_phase_at=None,
-                last_claim_result="historical_handoff_recovered",
+                last_claim_result=context,
             )
         )
         if released.rowcount != 1:
@@ -1593,7 +1860,7 @@ class ClaimQueryMixin:
             session_id,
             task_id=task_id,
             ended_at=now,
-            end_reason="integration_handoff_recovery",
+            end_reason=context,
             conn=conn,
         )
         out.released = True

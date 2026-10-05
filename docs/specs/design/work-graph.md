@@ -403,6 +403,30 @@ children afterwards used to sit on the frontier in between, and pool workers lea
   an attached integration owner (hierarchy/train) is left alone and logged once.
   `aq doctor --check claims.container_held` reports every holder, including a
   push-launched session or an agent row BUSY with no session, and `--fix` releases them.
+- **Released when the holder has stopped.** `list_container_claims` deliberately skips a
+  `stopped` holder, so a container whose worker has since stopped keeps a claim nobody
+  may act on: that worker can never close it, the frontier will not offer it, and in a
+  hierarchy/train project §7 refuses it outright because its collection episode owns the
+  completion (`bold-crest-75`, `sharp-ridge-57`). A stopped session holds no authority
+  anywhere else either — §7 already treats one as non-live — so
+  `stale_container_claim_clauses` (`src/database/queries/claim_queries.py`) names the
+  cases and `release_stale_container_claim` releases them to PAUSED with no agent. It
+  proves the same exact holder `noop_repair.stale_parent_claim_on` does for the green-noop
+  repair path (`sharp-glacier-30`): exactly one session on the task, a pool worker whose
+  `state` and `desired_state` are both `stopped` (a restart cannot revive it), still
+  `active` mid-claim, still fenced to a concrete tmux `instance_token`, at the task's
+  *current* `claim_epoch` (a requeued or re-leased pointer carries a newer one), with no
+  operator hold, no agent on other work, no workspace locked to the task or that agent,
+  no child outside COMPLETED, and a checkpoint carrying both a collection episode and a
+  head of its own — the aggregate the parent runtime is there to verify. The release
+  itself is `release_historical_pool_claim`, so only the exact task and the exact session
+  change: a stopped worker's slot, agent state, claim file and workspace lock are left as
+  the successor found them. `task delete` runs it for the parent in its own transaction
+  (`_delete_task_body`, before `settle_containers`), which is what deleting a container's
+  last child needs — §7 cannot complete the parent, and the parent-episode readiness
+  projection refuses anything that is not PAUSED — and
+  `release_stale_container_claims` in the container sweep, and once on daemon start,
+  repairs rows that already predate it.
 
 ## 13b. Phases
 
