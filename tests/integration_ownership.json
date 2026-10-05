@@ -8079,6 +8079,18 @@
     },
     "src/operator_decisions.py::related_on": {
       "reason": "Relates integration batch members and repair operations so object holds cannot be bypassed."
+    },
+    "src/commands/contracts/decisions.py::import from src.commands.contracts.records import _record_invoke": {
+      "reason": "Imports the shared typed invocation adapter for integration operator decisions."
+    },
+    "src/commands/decision_commands.py::DecisionCommandsMixin._decision_access": {
+      "reason": "Enforces project-scoped authority for decisions on integration batches and operations."
+    },
+    "src/commands/decision_commands.py::import from src.operator_decisions import OperatorDecisions, object_project_on": {
+      "reason": "Imports shared integration decision storage and its object scope resolver."
+    },
+    "src/commands/handler.py::CommandHandler.execute": {
+      "reason": "Shared dispatch boundary applies durable holds to integration commands before mutation."
     }
   },
   "exclusions": {
@@ -14950,7 +14962,12 @@
     "src/vault_manager.py::VaultManager": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/vault_watcher.py::VaultWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/workflow_stage_resume_handler.py::WorkflowStageResumeHandler": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently."
+    "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/authorization.py::authorize_command": "Generic capability policy for every command; integration command hold enforcement is charged in CommandHandler.execute.",
+    "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority.",
+    "src/commands/principal.py::_principal_var": "Generic request principal context storage; integration dispatch and object scope checks are charged independently.",
+    "src/routing/filing.py::routing_choice_refusal": "Generic task filing provider/profile choice policy; no integration delivery or Git authority.",
+    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
