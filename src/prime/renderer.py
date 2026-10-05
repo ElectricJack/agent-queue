@@ -64,6 +64,24 @@ class PrimeRenderer:
         body = baseline + ("\n\n" + bundle.to_markdown() if bundle.items else "")
         return replace(doc, sections=sections, override_markdown=body, context_bundle=bundle)
 
+    @staticmethod
+    def with_context_unavailable(doc, code):
+        """Record an access refusal in the context slot, carrying no evidence.
+
+        The mirror of :meth:`with_context` for a principal whose policy or
+        scope refused the read: the document keeps every other section and says
+        in one sentence, code only, that the enrichment is missing.
+        """
+        section = _sections.build_context_unavailable_section(code)
+        baseline = doc.to_markdown()
+        sections = tuple(
+            section if s.key == "l2_context" else s for s in doc.sections
+        )
+        if not any(s.key == "l2_context" for s in doc.sections):
+            sections = (*sections, section)
+        body = baseline.rstrip() + "\n\n" + f"## {section.title}\n\n{section.body}\n"
+        return replace(doc, sections=sections, override_markdown=body, context_bundle=None)
+
     async def render_for_task(
         self,
         task_id: str,

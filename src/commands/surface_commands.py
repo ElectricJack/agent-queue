@@ -376,10 +376,11 @@ class SurfaceCommandsMixin:
             return {"error": str(exc)}
 
         from src.commands.principal import current_principal
-        from src.knowledge.context import context_enabled
+        from src.knowledge.context import ACCESS_REFUSAL_CODES, context_enabled
         from src.records.models import RecordError
 
         bundle = None
+        context_error = None
         # Disabled context leaves prime's reads unchanged.
         task = await self.db.get_task(task_id) if context_enabled(self.config) else None
         if task is not None and task.project_id in self.config.knowledge.enabled_projects:
@@ -391,7 +392,16 @@ class SurfaceCommandsMixin:
                 )
                 doc = renderer.with_context(doc, bundle)
             except RecordError as exc:
-                return exc.result()
+                if exc.code not in ACCESS_REFUSAL_CODES:
+                    return exc.result()
+                # Context is an enrichment, so a refused or unavailable scope
+                # degrades: prime still delivers its full ordinary body, with a
+                # code-only note in place of the context section. The grant
+                # check itself is untouched — nothing is delivered to a
+                # principal that may not read the corpus.
+                bundle = None
+                context_error = exc.code
+                doc = renderer.with_context_unavailable(doc, exc.code)
         result = {
             "success": True,
             "body": doc.to_markdown(),
@@ -404,6 +414,8 @@ class SurfaceCommandsMixin:
             result.update(context_bundle=bundle.to_dict(), context_state="prepared",
                           tokens_est=bundle.budget["total_tokens"],
                           tokens_est_method=bundle.budget["method"])
+        elif context_error is not None:
+            result.update(context_state="unavailable", context_error_code=context_error)
         return result
 
     # ------------------------------------------------------------------

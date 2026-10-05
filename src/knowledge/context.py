@@ -46,6 +46,16 @@ def context_enabled(config):
                 and getattr(getattr(config, "memory", None), "enabled", False))
 
 
+#: Refusals that mean *this caller may not read this scope* rather than *this
+#: request was wrong*: the corpus is not available here, or the principal's
+#: policy lacks the read grant. A delivery surface whose knowledge context is
+#: an enrichment (prime, launch prompts) degrades on exactly these codes and
+#: still renders its ordinary body; every other ``RecordError`` — a stale
+#: claim, an over-budget prompt, an unavailable execution — is a real failure
+#: of the read and keeps surfacing.
+ACCESS_REFUSAL_CODES = frozenset({"record.forbidden", "knowledge.disabled"})
+
+
 @dataclass(frozen=True)
 class BootstrapPrincipal:
     """Daemon-only prelaunch identity; never accepted from command arguments."""
