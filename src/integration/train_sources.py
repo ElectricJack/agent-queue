@@ -27,7 +27,7 @@ from src.database.tables import (
     task_dependencies,
     tasks,
 )
-from src.git.provenance import is_valid_git_oid
+from src.git.manager import is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
 from src.integration.delivery_observer import delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
@@ -223,7 +223,7 @@ class DatabaseBatches:
             request, base = requests.get(task_id), bases.get(task_id)
             if request is None or not is_valid_git_oid(base or ""):
                 continue
-            evidence = await snapshot.is_delivered(request)
+            evidence = await snapshot.is_delivered(request, source_base=base)
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
                     or evidence.reason != "source_not_delivered"
@@ -322,9 +322,10 @@ async def retain_train_candidate(git, store, batch: Batch, candidate_sha: str) -
 class DaemonLanes:
     """Per-target lanes over the daemon's git, retained stores and checks.
 
-    The store, rebuild command and local validation plan come from the
-    project's pinned development source when it has one; hosted checks read
-    the project's required checks for the target's boundary.
+    The store is the repository's retained clone. A project with a pinned
+    development source validates its root candidates with that source's local
+    jobs and rebuilds generated files with its command; everything else reads
+    the hosted checks the project requires at the target's boundary.
     """
 
     def __init__(self, orchestrator, *, batches: DatabaseBatches,
@@ -336,20 +337,20 @@ class DaemonLanes:
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
-        project = await self.db.get_project(target.project_id)
-        settings, version = await self._settings(project)
+        from src.integration.development_runtime import development_repository
+
+        policy = await self._policy(target.project_id)
+        settings, version = await self._settings(policy)
         repo_row = await self.db.get_repo(target.repository_id)
         binding = await self.orchestrator.github_repository_binding_resolver(repo_row)
-        retained = RetainedRepository(
-            repository_id=target.repository_id,
-            store=await self.orchestrator.development_integration.store(repo_row),
-            binding=binding,
-            default_branch=repo_row.default_branch,
-            regenerate=(settings.regenerate if settings and settings.validation != "none"
-                        else None),
-            regenerate_timeout_seconds=(settings.regenerate_timeout_seconds
-                                        if settings else 600),
-        )
+        primitives = self.orchestrator.development_integration
+        if settings is not None:
+            retained = await development_repository(primitives, repo_row, binding, settings)
+        else:
+            retained = RetainedRepository(
+                repository_id=target.repository_id, store=await primitives.store(repo_row),
+                binding=binding, default_branch=repo_row.default_branch,
+            )
 
         async def repository(repository_id: str) -> RetainedRepository:
             if repository_id != target.repository_id:
@@ -361,9 +362,9 @@ class DaemonLanes:
 
         async def resolve(batch: Batch, candidate_sha: str):
             if local:
-                return await self._local(project, retained, settings, version, batch,
+                return await self._local(target, retained, settings, version, batch,
                                          candidate_sha)
-            return await self._hosted(project, binding, target, batch, candidate_sha)
+            return await self._hosted(policy, binding, target, batch, candidate_sha)
 
         checks = CandidateChecks(resolve)
         service = BatchService(self.store, gitops, publish=self.publish,
@@ -378,23 +379,31 @@ class DaemonLanes:
 
         return TrainLane(snapshot=snapshot, service=service, checks=checks)
 
-    async def _settings(self, project) -> tuple[Any, str | None]:
+    async def _policy(self, project_id: str) -> dict:
+        async with self.db._engine.connect() as conn:
+            policy = (await conn.execute(
+                select(projects.c.hierarchical_integration_policy)
+                .where(projects.c.id == project_id)
+            )).scalar_one_or_none()
+        return policy if isinstance(policy, dict) else {}
+
+    async def _settings(self, policy: dict) -> tuple[Any, str | None]:
         from src.integration.development_runtime import (
             load_pinned_development_policy,
             project_development_pin,
         )
 
-        pin = project_development_pin(project)
-        if not pin:
+        pin = project_development_pin({"hierarchical_integration_policy": policy})
+        if pin is None:
             return None, None
-        sha = pin["artifact_sha256"]
+        sha = pin.artifact_sha256
         definition = await asyncio.to_thread(self.orchestrator._load_playbook_artifact, sha)
-        policy = await asyncio.to_thread(
+        pinned = await asyncio.to_thread(
             load_pinned_development_policy, self.orchestrator.config, sha, definition
         )
-        return policy.settings, sha
+        return pinned.settings, sha
 
-    async def _local(self, project, retained, settings, version, batch, candidate_sha):
+    async def _local(self, target, retained, settings, version, batch, candidate_sha):
         from src.integration.checks import ExactChecks, LocalChecks
         from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
         from src.jobs.adapters import PublisherJobs
@@ -409,17 +418,16 @@ class DaemonLanes:
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
             store=retained.store, plan=plan, clock=self.clock,
         )
-        return ExactChecks(self.db, LocalChecks(producer, project_id=project.id))
+        return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id))
 
-    async def _hosted(self, project, binding, target, batch, candidate_sha):
+    async def _hosted(self, policy, binding, target, batch, candidate_sha):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
         boundary = "parent" if target.kind == "epic" else "root"
-        policy = getattr(project, "hierarchical_integration_policy", None) or {}
         required = dict((policy.get(boundary) or {}).get("required_checks") or {})
         state = {
-            "project_id": project.id,
+            "project_id": target.project_id,
             "canonical_repository_id": target.repository_id,
             "repository_numeric_id": binding.repository_id,
             "repository_full_name": binding.full_name,
