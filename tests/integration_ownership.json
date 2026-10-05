@@ -3481,6 +3481,9 @@
         587
       ]
     },
+    "src/database/queries/claim_queries.py::_exact_stopped_pool_holder": {
+      "reason": "Exact stopped-session and claim-epoch proof used by hierarchical container recovery; owns no git refs or replay state."
+    },
     "src/database/queries/claim_queries.py::_frontier_predicates": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3514,6 +3517,9 @@
         32
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Shared hierarchy-mode and container predicates used by claim admission and stale-container recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3525,6 +3531,9 @@
         38
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim and integration schema imports, including collection checkpoints used to prove stale-container recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, sessions, task_completion_records, task_delivery_receipts, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3535,6 +3544,12 @@
         46,
         58
       ]
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_clauses": {
+      "reason": "Hierarchical checkpoint and completed-child predicates for releasing an exact stale container claim."
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_statement": {
+      "reason": "Hierarchy-mode candidate read joining task claims, sessions and collection checkpoints."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.guard_hierarchy_bulk_write": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -3728,6 +3743,9 @@
         333,
         388
       ]
+    },
+    "src/database/queries/hierarchy_queries.py::never_leaseable_container": {
+      "reason": "Shared container frontier predicate consumed by hierarchical stale-claim recovery."
     },
     "src/database/queries/hierarchy_queries.py::stale_container_clauses": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -12607,6 +12625,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
+      "line": 1524,
+      "owner": "ClaimQueryMixin._release_stale_container_claim_on",
+      "call": "log_event",
+      "owner_fingerprint": "cd3633b55a9afb93efcbfcfa9abe0662c01681f906e88d6e23e2be889bf610bc",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
+    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 806,
       "owner": "ClaimQueryMixin.activate_claim",
@@ -14319,6 +14346,7 @@
     "src/database/queries/task_queries.py::TaskQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::TransitionResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::_OPERATOR_ADOPTION_TOKEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::_not_manually_paused": "Generic row-local manual-pause guard over task status and resume_after; contains no integration policy, ref authority or lifecycle projection. Integration-specific callers are charged independently.",
     "src/database/queries/task_queries.py::supports_returning": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_requirements_queries.py::TaskRequirementsQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
