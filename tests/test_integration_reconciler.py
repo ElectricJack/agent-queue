@@ -265,6 +265,165 @@ async def test_active_never_visits_legacy_owned_subject(db):
     assert not await db.list_integration_subject_journal("s1")
 
 
+@pytest.mark.parametrize("failure", ["none", "exception", "timeout"])
+async def test_git_first_diagnostics_cannot_change_selected_policy_or_emit_actions(db, failure):
+    from src.integration.shadow import GitFirstDiagnostics
+
+    clock = Clock()
+    original = await add_subject(db, clock)
+    digests = []
+
+    async def diagnose(subject, facts):
+        digests.append(facts.digest())
+        GitFirstDiagnostics.record(subject, "repair_progress", False, True, reason="fixture")
+        if failure == "exception":
+            raise RuntimeError("unavailable Git")
+        if failure == "timeout":
+            await asyncio.Event().wait()
+
+    harness = make_loop(db, clock, policy=Policy(WaitArgs(seconds=5, reason="old-policy")),
+                        diagnostics=diagnose, call_timeout_seconds=0.5)
+    await harness.loop.tick()
+    assert harness.actions == []
+    assert digests == [harness.policy.decisions[0][1].digest()]
+    assert harness.policy.settlements == []
+    entries = await db.list_integration_subject_journal("s1")
+    assert [entry["primitive"] for entry in entries] == [Primitive.WAIT.value] * 2
+    assert not any("git_first" in entry["payload"] for entry in entries)
+    after = await read_subject(db)
+    assert after.engine is original.engine
+    assert after.schedule.wait_reason == "old-policy"
+    assert after.schedule.next_due_at == clock() + 5
+    assert after.head_sha == original.head_sha and after.writer == original.writer
+
+
+async def test_git_first_diagnostics_skip_legacy_ownership_even_in_existing_shadow_loop(db):
+    from unittest.mock import AsyncMock
+
+    clock = Clock()
+    await add_subject(db, clock, engine=SubjectEngine.LEGACY)
+    diagnose = AsyncMock()
+    harness = make_loop(db, clock, mode=JournalMode.SHADOW, diagnostics=diagnose)
+    await harness.loop.tick()
+    diagnose.assert_not_awaited()
+    assert harness.actions == []
+
+
+@pytest.mark.parametrize("stage", ["observe", "decide", "act", "settle"])
+async def test_timeout_schedules_retry_and_does_not_starve_page(db, stage):
+    clock = Clock()
+    for subject_id in ("s1", "s2"):
+        await add_subject(db, clock, subject_id)
+
+    async def hung():
+        await asyncio.Event().wait()
+
+    async def observer(subject):
+        if stage == "observe" and subject.id == "s1":
+            await hung()
+        return SubjectFacts(
+            subject_id=subject.id,
+            subject_version=subject.version,
+            kind=subject.kind,
+            phase=subject.phase,
+            observed_at=clock(),
+        )
+
+    class TimeoutPolicy(Policy):
+        async def decide(self, subject, facts):
+            if stage == "decide" and subject.id == "s1":
+                await hung()
+            return await super().decide(subject, facts)
+
+        async def settle(self, subject, decision, outcome, *, now):
+            if stage == "settle" and subject.id == "s1":
+                await hung()
+            return await super().settle(subject, decision, outcome, now=now)
+
+    async def port(subject, args):
+        if stage == "act" and subject.id == "s1":
+            await hung()
+        return PrimitiveOutcome(primitive=Primitive.SEAL, outcome="sealed")
+
+    harness = make_loop(
+        db, clock, policy=TimeoutPolicy(), observer=observer, port=port, call_timeout_seconds=1.0
+    )
+    await harness.loop.tick()
+    first, second = await read_subject(db, "s1"), await read_subject(db, "s2")
+    assert first.state is SubjectState.WAITING
+    assert first.schedule.next_due_at == clock() + 5
+    assert "TimeoutError" in first.schedule.wait_reason
+    assert second.version == 1 and second.schedule.next_due_at == clock()
+    if stage == "settle":
+        entries = await db.list_integration_subject_journal("s1")
+        assert entries[-1]["outcome"] == "sealed"
+        assert "TimeoutError" in entries[-1]["payload"]["transition"]["schedule"]["wait_reason"]
+    clock.advance(5)
+    # The failed subject progresses on time without any event.
+    healthy = make_loop(db, clock)
+    await healthy.loop.tick()
+    assert "s1" in healthy.observations
+
+
+class SlowCommitDB:
+    """The local durable commit, made slower than the remote call budget."""
+
+    def __init__(self, db, delay):
+        self.db = db
+        self.delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    async def update_integration_subject_on(self, *args, **kwargs):
+        await asyncio.sleep(self.delay)
+        return await self.db.update_integration_subject_on(*args, **kwargs)
+
+
+@pytest.mark.parametrize("stage", ["observe", "act"])
+async def test_a_slow_local_commit_is_not_cancelled_by_the_call_budget(db, stage):
+    # CI shard 3 of run 37139685719: the 1.0s remote budget also governed the
+    # local commit, so a slow write rolled back the retry schedule and left the
+    # subject PROGRESSING instead of the WAITING this test asserts elsewhere.
+    clock = Clock()
+    await add_subject(db, clock, "s1")
+    await add_subject(db, clock, "s2")
+
+    async def hung():
+        await asyncio.Event().wait()
+
+    async def observer(subject):
+        if stage == "observe" and subject.id == "s1":
+            await hung()
+        return SubjectFacts(
+            subject_id=subject.id,
+            subject_version=subject.version,
+            kind=subject.kind,
+            phase=subject.phase,
+            observed_at=clock(),
+        )
+
+    async def port(subject, args):
+        if stage == "act" and subject.id == "s1":
+            await hung()
+        return PrimitiveOutcome(primitive=Primitive.SEAL, outcome="sealed")
+
+    harness = make_loop(
+        SlowCommitDB(db, 1.5),
+        clock,
+        observer=observer,
+        port=port,
+        call_timeout_seconds=1.0,
+        bookkeeping_timeout_seconds=10.0,
+    )
+    await harness.loop.tick()
+    first, second = await read_subject(db, "s1"), await read_subject(db, "s2")
+    assert first.state is SubjectState.WAITING
+    assert first.schedule.next_due_at == clock() + 5
+    assert "TimeoutError" in first.schedule.wait_reason
+    assert second.version == 1 and second.schedule.next_due_at == clock()
+
+
 async def test_unknown_refusal_has_bounded_exponential_backoff(db):
     clock = Clock()
     await add_subject(db, clock)

@@ -581,6 +581,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
@@ -1415,7 +1416,7 @@
       ]
     }
   },
-  "digest": "sha256:0591aa66d819e0a2d55f25dd9f339a70d274a00037a5e1ebd82afd82648920db",
+  "digest": "sha256:faf911da58850aa7f8c4daffc8637e31366e6943b157316e2356c8ad74b1370c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7716,6 +7717,22 @@
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
     },
+    "tests/test_integration_git_truth.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Remote Git delivery proofs with real histories and retained completion identities."
+    },
     "tests/test_integration_gitops.py": {
       "areas": [
         "integration-trains"
@@ -8305,6 +8322,7 @@
         "src.database.tables",
         "src.event_bus",
         "src.integration.reconciler",
+        "src.integration.shadow",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8522,7 +8540,10 @@
         "src.integration.engine",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.ownership",
+        "src.integration.parent_adapters",
+        "src.integration.parent_subjects",
         "src.integration.promotion",
         "src.integration.release",
         "src.integration.repair",
@@ -8531,6 +8552,7 @@
         "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.service",
+        "src.integration.shadow",
         "src.integration.subjects",
         "src.models",
         "src.orchestrator",

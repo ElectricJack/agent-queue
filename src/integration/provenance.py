@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 from src.git.identity import LEDGER_IDENTITY
@@ -177,11 +178,20 @@ class GitProvenance:
             raise ValueError("provenance record exceeds bounded size")
         return await self._validate(json.loads(raw), oid)
 
-    async def read_completion(self, identity: CompletionIdentity) -> dict | None:
+    async def read_completion(
+        self, identity: CompletionIdentity, *, refs: Mapping[str, str] | None = None
+    ) -> dict | None:
         # A fetched snapshot may be a clone (remote-tracking ref) or a bare
         # publisher store (local ref). Never scan historical AQ-Task trailers.
         for prefix in ("refs/remotes/origin/", "refs/heads/"):
-            record = await self._read(prefix + identity.branch)
+            ref = prefix + identity.branch
+            if refs is not None:
+                # A visit pins refs after its fetch. Never reread a mutable ref
+                # or fall back to a local marker absent from that observation.
+                ref = refs.get(ref)
+                if ref is None:
+                    continue
+            record = await self._read(ref)
             if record is not None:
                 if record["kind"] != "completion" or record["identity"] != asdict(identity):
                     raise ValueError("completion ref has a different immutable identity")

@@ -728,6 +728,7 @@
       "additionalProperties": false,
       "default": {
         "default_mode": "pull_request",
+        "git_first": "shadow",
         "github_app": null,
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
@@ -744,6 +745,10 @@
       "properties": {
         "default_mode": {
           "default": "pull_request",
+          "type": "string"
+        },
+        "git_first": {
+          "default": "shadow",
           "type": "string"
         },
         "github_app": {
