@@ -38357,6 +38357,18 @@
             ],
             "title": "Render Profile Sha256"
           },
+          "editor_pin": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Editor Pin"
+          },
           "artifacts": {
             "items": {
               "additionalProperties": true,
@@ -38462,6 +38474,20 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
           },
           "wait": {
             "type": "boolean",

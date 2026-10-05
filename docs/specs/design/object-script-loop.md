@@ -99,12 +99,56 @@ rechecked when a score is recorded.
 ## Evidence and publication
 
 Candidate workers receive exact hashes, a base artifact pointer, mandatory
-views and their reservation in their task description. They publish immutable
-candidate and capture bundles outside their worktree. The receipt names
-durable URIs and SHA-256 digests; the object command validates the schema,
-cross-references and completeness. The external artifact adapter remains
-responsible for serving bytes by those URIs and verifying their digest during
-materialization. Arbitrary local paths are not accepted as durable URIs.
+views, their reservation and a `round_handoff` block in their task
+description. They publish immutable candidate and capture bundles outside their
+worktree. The receipt names durable URIs and SHA-256 digests; the object
+command validates the schema, cross-references and completeness. The external
+artifact adapter remains responsible for serving bytes by those URIs and
+verifying their digest during materialization. Arbitrary local paths are not
+accepted as durable URIs.
+
+### The round handoff
+
+A candidate worker can only build on the rounds before it if it is told what
+they changed. Every recorded score appends its wave's variants to the loop
+row's `round_history`, each entry carrying the round and variant, the task,
+the candidate identity and its retained bundle artifact, the branch and commit
+that produced it — read from the task's own close record, because the worktree
+slot a round used is released when it settles — the validity, the hypothesis,
+the patch scope, the predicted and observed effect and the mean loss. Round 0
+has no such history; that is what the incumbent bundle artifact is for.
+
+The next candidate packet carries that history as `round_handoff`, together
+with the incumbent bundle and capture identity, the frozen comparison inputs
+(`reference_kind`, `reference_sha256`, `rig_sha256`, `scorer_sha256`,
+`render_profile_sha256`, `policy_sha256`, `mandatory_views`) and explicit
+instructions: materialize the incumbent bundle and verify its digest, read the
+earlier rounds' retained artifacts and branches in scope, capture only under
+the attempt's frozen inputs, and submit every capture of the attempt under the
+same `--attempt-id`. Scorer packets carry the same block, because a score is
+only meaningful when candidate and reference were compared under one preset.
+The history is bounded by the round ceiling and the three-variant wave.
+
+### The editor pin
+
+One attempt, one editor build. `matter_render` launches the editor named by
+`resources.jobs.matter_editor`, which is a shared build that can be rebuilt
+while an attempt is running — and then the attempt's pinned render profile
+names bytes no later capture will produce, and every later capture's score is
+refused as foreign. So `job_submit --attempt-id ATTEMPT` copies that build once
+into `{data_dir}/editor-pins/binaries/<sha256>/<name>`, records the attempt's
+pin, and every later submission of the same attempt launches that copy. The
+copy is written through a temporary file and renamed, and verified against the
+source digest, so a rebuild *during* the copy is refused rather than pinned
+half-old, half-new. A new attempt id re-pins; a recorded pin whose binary went
+missing or stopped hashing true is refused as `jobs.editor_pin_lost` instead of
+being silently replaced, because a swapped build would swap the preset under a
+running attempt. Submission without an attempt id still launches a
+content-addressed copy, so one job's editor cannot move between submission and
+execution, but it has no cross-job continuity. Pins older than the retention
+window that no surviving attempt record names are swept with the other job
+retention. The attempt id is the start packet's `attempt_id`, so the baseline
+capture and every round's captures share one profile.
 
 ### Producing the two identities a receipt needs
 
@@ -139,13 +183,25 @@ are refused here rather than guessed at.
 
 `render_profile_sha256` is the digest of a canonical render-profile document:
 the preset that produced the pixels — `editor_sha256`, `adapter_sha256`,
-`gpu_id`, the admitted rig's `hold_frames`, the view set with each view's
-resolution, and the VT readiness counters that prove the frame had converged —
-plus the admitted candidate and rig identities and the capture's readiness
-state. The document is built from named fields only and hashed in AQ's single
-canonical JSON form, so run ids, request ids, timestamps and absolute paths
-cannot leak into it: one preset yields one digest, and any change to any of
-those inputs changes it.
+`gpu_id`, the admitted rig's `hold_frames` and `rig_sha256`, and the view set
+with each view's resolution and format. The document is built from named
+fields only and hashed in AQ's single canonical JSON form, so run ids, request
+ids, timestamps and absolute paths cannot leak into it: one preset yields one
+digest, and any change to any of those inputs changes it.
+
+The object under test is deliberately *not* in it. The profile is the preset, so
+two candidates rendered under the same editor, adapter, GPU lease, rig and view
+set share one digest — which is the only way a candidate that is not the
+incumbent can be scored at all: folding `candidate_sha256` into the digest gave
+every non-incumbent a profile no start packet had pinned, and its receipt was
+refused as foreign. The rig digest covers the view set and the lights the rig
+fixes, so moving either still changes the profile.
+
+What the *capture reported* is recorded beside the profile as `observed` and is
+never hashed: the per-view VT readiness counters and the capture's readiness
+state describe what this object produced, and a heavier object legitimately
+queues more VT work. Convergence is still proved, by the retained capture
+receipt and by the scorer's own `ready`/`decoded` flags.
 
 `hold_frames` is the rig's *admitted budget*, not the frames a run happened to
 settle on. A real four-view capture reports 95, 96, 95 and 106 stable frames for

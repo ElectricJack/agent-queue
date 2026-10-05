@@ -17,6 +17,7 @@ from __future__ import annotations
 import gzip
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -42,7 +43,7 @@ from src.daemon_state import (
     release_start_lock,
     start_lock_owner,
     start_lock_state,
-) from shutil import remove_old_files_and_dirs
+)
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
 from src.sessions.env import (
     AQ_MARKER_KEYS,
@@ -52,7 +53,7 @@ from src.sessions.env import (
 
 from .app import cli, console
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~/.agent-queue"), "config")
+CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
@@ -748,10 +749,10 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        
+
         # Rotate daemon.log if it exceeds MAX_LOG_SIZE_BYTES before starting
         _rotate_if_needed(LOG_PATH)
-        
+
         with open(LOG_PATH, "a") as log_file:
             proc = subprocess.Popen(
                 [bin_path, CONFIG_PATH],
@@ -1237,45 +1238,42 @@ def _rotate_if_needed(log_path: str) -> None:
     try:
         if not os.path.exists(log_path):
             return
-        
+
         stat = os.stat(log_path)
         if stat.st_size <= MAX_LOG_SIZE_BYTES:
             return
-        
+
         timestamp = time.strftime("%Y%m%d%H%M%S")
         rotated_path = f"{log_path}.{timestamp}.gz"
-        
-        # Close existing file if open in append mode
-        try:
-            with open(log_path, "r") as f:
-                content = f.read()
-        except (IOError, OSError):
-            content = ""
-        
-        # Rotate to gzipped backup
-        with gzip.open(rotated_path, "wt", encoding="utf-8") as f:
-            f.write(content)
-        
-        # Truncate for fresh log
-        with open(log_path, "w") as f:
-            pass  # Truncate
-        
-        _cleanup_old_rotations(LOG_PATH)
-    except (OSError, IOError) as e:
+
+        # Stream bytes so a large log needs bounded memory and preserves any
+        # non-UTF-8 subprocess output. Never replace an existing archive or
+        # truncate the active log until compression has finished successfully.
+        with open(log_path, "rb") as source, gzip.open(rotated_path, "xb") as backup:
+            shutil.copyfileobj(source, backup)
+        with open(log_path, "wb"):
+            pass
+
+        _cleanup_old_rotations(log_path)
+    except OSError as e:
         console.print(f"[dim]Failed to rotate log:[/] {e}")
 
 
 def _cleanup_old_rotations(current_log: str) -> None:
-    """Remove rotated files older than MAX_ROTATED_GENS."""
-    match = re.compile(rf"^{re.escape(current_log)}\\.\\d{{14}}\\.gz$")
+    """Retain the newest MAX_ROTATED_GENS timestamped archives for this log."""
+    path = Path(current_log)
+    match = re.compile(rf"^{re.escape(path.name)}\.\d{{14}}\.gz$")
     try:
-        for f in os.listdir(os.path.dirname(current_log)):
-            if match.match(f):
-                full_path = os.path.join(os.path.dirname(current_log), f)
-                try:
-                    remove_old_files_and_dirs(full_path)
-                except (OSError, IOError):
-                    continue
+        archives = sorted(
+            (entry for entry in path.parent.iterdir() if match.fullmatch(entry.name)),
+            key=lambda entry: entry.name,
+            reverse=True,
+        )
+        for archive in archives[MAX_ROTATED_GENS:]:
+            try:
+                archive.unlink()
+            except OSError:
+                continue
     except OSError:
         pass
 

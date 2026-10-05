@@ -20,7 +20,7 @@ from src.commands.contracts.object_loop import (
     ObjectLoopInputsArgs, ObjectScoreRecordArgs, Reservation, Variant,
 )
 from src.database.tables import (
-    doc_review_revisions, doc_reviews, object_loops, tasks,
+    doc_review_revisions, doc_reviews, object_loops, task_completion_records, tasks,
 )
 from src.object_loop.contracts import validate_score_receipt
 
@@ -32,9 +32,102 @@ _TERMINAL = {"COMPLETED", "BLOCKED"}
 #: the ceiling that was in force when it was admitted, never a silent raise.
 _DEFAULT_MAX_ROUNDS = 8
 
+#: What every round's candidate worker is told about the rounds before it.  The
+#: matter-engine-cpp pilot's round-2 worker closed blocked twice with zero
+#: captures because it was handed a hypothesis, a base hash and a rig, and
+#: nothing about what round 1 actually changed: it could not see the incumbent
+#: bundle, the earlier branches or the frozen comparison inputs, so it rebuilt
+#: from the reference instead of from the incumbent.  These instructions and the
+#: ``round_handoff`` block that carries them are the fix, and they are part of
+#: the worker's packet rather than of a convention.
+ROUND_HANDOFF_INSTRUCTIONS = (
+    "Start from the incumbent bundle, not from memory: materialize "
+    "round_handoff.incumbent.artifact.uri, verify its sha256 against "
+    "round_handoff.incumbent.sha256, and build on those bytes. "
+    "round_handoff.prior_rounds lists every earlier round of this attempt with "
+    "the branch and commit that produced it and the candidate bundle artifact "
+    "it retained; reading those retained artifacts and those earlier round "
+    "branches is in scope for this task. Comparison inputs are frozen for the "
+    "whole attempt: capture under render_profile_sha256 with the same reference, "
+    "rig, scorer and mandatory views, and submit every capture job of this "
+    "attempt with --attempt-id {attempt_id} so the pinned editor build cannot "
+    "move under an in-flight attempt. Write only generators, materials and "
+    "presets in your own workspace; publish the evaluation bundle to the "
+    "artifact store, never to the product branch."
+)
+
 
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
+
+
+def _frozen_inputs(state: dict) -> dict:
+    """The comparison inputs fixed for this attempt, named for a worker packet."""
+    return {
+        "reference_kind": state.get("reference_kind", "calibrated"),
+        "reference_sha256": state["reference_sha256"],
+        "rig_sha256": state["rig_sha256"],
+        "scorer_sha256": state["scorer_sha256"],
+        "render_profile_sha256": state["render_profile_sha256"],
+        "policy_sha256": state["policy_sha256"],
+        "mandatory_views": list(state["mandatory_views"]),
+    }
+
+
+def _round_handoff(state: dict) -> dict:
+    """The incumbent bundle, every earlier round's changes, and the frozen inputs."""
+    return {
+        "attempt_id": state["attempt_id"],
+        "round_id": state["round_id"],
+        "incumbent": {
+            "sha256": state["incumbent_sha256"],
+            "artifact": state.get("incumbent_artifact"),
+            "capture_sha256": state.get("incumbent_capture_sha256"),
+        },
+        "prior_rounds": list(state.get("round_history") or []),
+        "frozen_inputs": _frozen_inputs(state),
+        "instructions": ROUND_HANDOFF_INSTRUCTIONS.format(attempt_id=state["attempt_id"]),
+    }
+
+
+def _branch_and_commit(branch: str | None, commits: str | None) -> dict:
+    """The branch and head commit a close recorded, or the reason it named none."""
+    try:
+        recorded = json.loads(commits) if isinstance(commits, str) else list(commits or [])
+    except ValueError:
+        recorded = []
+    return {
+        "branch": branch,
+        "commit": recorded[-1] if recorded else None,
+    }
+
+
+async def _round_commits(conn, task_ids: list[str]) -> dict:
+    """Each candidate task's branch and commit, as its own close recorded them.
+
+    Read from the completion record rather than resolved from git here: the
+    worktree slot a round worker used is released when it settles, so the branch
+    is gone by the time the next round's packet is written, while the close that
+    named the branch and the commit is durable evidence.
+    """
+    ids = sorted(set(task_ids))
+    if not ids:
+        return {}
+    rows = await conn.execute(
+        select(
+            task_completion_records.c.task_id,
+            task_completion_records.c.branch,
+            task_completion_records.c.commits,
+        )
+        .where(task_completion_records.c.task_id.in_(ids))
+        .order_by(task_completion_records.c.completed_at.desc(), task_completion_records.c.id.desc())
+    )
+    found: dict[str, dict] = {}
+    for row in rows.mappings():
+        found.setdefault(
+            row["task_id"], _branch_and_commit(row["branch"], row["commits"])
+        )
+    return found
 
 
 def _budget(reservation: Reservation) -> dict:
@@ -424,6 +517,7 @@ class ObjectLoopCommandsMixin:
                             "mandatory_views": state["mandatory_views"],
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
+                            "round_handoff": _round_handoff(state),
                             **({"result_interpretation": "indicative; plumbing only"}
                                if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
@@ -448,9 +542,15 @@ class ObjectLoopCommandsMixin:
                                 "project_id": row.project_id,
                                 "expected_version": row.version + 1,
                                 "loop_state": state,
+                                "frozen_inputs": _frozen_inputs(state),
+                                "round_handoff": _round_handoff(state),
                                 "handoff": (
                                     "Independently validate immutable candidate/capture bundles "
-                                    "from the configured artifact adapter. Before closing, use "
+                                    "from the configured artifact adapter. Score every wave "
+                                    "member against the same frozen_inputs and the same "
+                                    "render_profile_sha256, so candidate and reference are "
+                                    "comparable; a receipt whose render profile differs is "
+                                    "refused, not compared. Before closing, use "
                                     "aq task set HELD_TASK --note with object-score:1 followed "
                                     "by a newline and a complete JSON ObjectScoreRecordArgs "
                                     "packet. Use this expected_version and your held task as "
@@ -483,6 +583,41 @@ class ObjectLoopCommandsMixin:
         ids = [member["task_id"] for member in state["wave"]]
         rows = (await conn.execute(select(tasks).where(tasks.c.id.in_(ids)))).mappings().all()
         return {row.id: row for row in rows}
+
+    async def _record_round_history(self, conn, state, receipts, promoted) -> None:
+        """Append this round's scored variants to the attempt's handoff history.
+
+        Bounded by the round ceiling and the three-variant wave, so the loop row
+        stays small. A replay of the same fingerprint returns before this runs,
+        so a round is never recorded twice.
+        """
+        commits = await _round_commits(conn, [r.task_id for r in receipts])
+        history = list(state.get("round_history") or [])
+        scored = {r.task_id for r in receipts}
+        if {entry["task_id"] for entry in history} & scored:
+            return
+        for receipt in receipts:
+            artifact = next(
+                (a for a in receipt.artifacts if a.sha256 == receipt.candidate_sha256), None
+            )
+            metrics = [m for m in receipt.per_view.values() if m is not None]
+            history.append({
+                "round_id": receipt.round_id,
+                "variant_id": receipt.variant_id,
+                "task_id": receipt.task_id,
+                "candidate_sha256": receipt.candidate_sha256,
+                "candidate_artifact": artifact.model_dump() if artifact else None,
+                "branch": commits.get(receipt.task_id, {}).get("branch"),
+                "commit": commits.get(receipt.task_id, {}).get("commit"),
+                "validity": receipt.validity,
+                "promoted": promoted is not None and receipt.variant_id == promoted,
+                "hypothesis": receipt.hypothesis,
+                "patch_scope": list(receipt.patch_scope),
+                "predicted_effect": receipt.predicted_effect,
+                "observed_delta": receipt.observed_delta,
+                "mean_loss": (sum(m.loss for m in metrics) / len(metrics)) if metrics else None,
+            })
+        state["round_history"] = history
 
     async def _ensure_object_child(
         self, conn, loop, key, title, description, purpose, *, approval_gate_id: str
@@ -622,6 +757,13 @@ class ObjectLoopCommandsMixin:
             else:
                 state["selected_variant_id"] = None
                 state["plateau_count"] += 1
+            # Every scored variant of this round becomes the next round's handoff:
+            # its bundle, the branch and commit that produced it, what it claimed
+            # and what it measured. A round worker that cannot read what the
+            # rounds before it changed cannot build on them.
+            await self._record_round_history(
+                conn, state, request.receipts, state.get("selected_variant_id")
+            )
             if not eligible:
                 state["repair_count"] += 1
             try:
