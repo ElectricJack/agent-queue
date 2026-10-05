@@ -290,6 +290,43 @@ class ObjectLoopCommandsMixin:
         return {"success": True, **inputs}
 
     async def _cmd_object_loop_start(self, args: dict) -> dict:
+        result = await self._start_object_loop(args)
+        if result.get("success"):
+            return result
+        result.setdefault("error_code", "object_loop.start_refused")
+        # Only validated, in-project roots can own durable refusal evidence.
+        try:
+            request = ObjectLoopStartArgs.model_validate(args)
+        except ValidationError:
+            return result
+        epic = await self.db.get_task(request.epic_task_id)
+        if epic is None or epic.project_id != request.project_id or epic.parent_task_id:
+            return result
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from src.database.tables import messages
+
+        refusal = {
+            "object_id": request.object_id, "attempt_id": request.attempt_id,
+            "error_code": result["error_code"], "error": result.get("error"),
+            "failed_at": time.time(),
+        }
+        # The same refusal across event/timer replays produces one durable notice.
+        identity = json.dumps([request.project_id, request.epic_task_id,
+                               request.attempt_id, result.get("error")])
+        message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
+        async with self.db.immediate() as conn:
+            await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
+            await conn.execute(pg_insert(messages).values(
+                id=message_id, project_id=request.project_id,
+                from_kind="system", from_id="object-loop",
+                to_kind="session", to_id=f"supervisor-{request.project_id}",
+                subject=f"Object loop start refused: {request.object_id}",
+                body=f"Object {request.object_id}, epic {epic.id}: {result.get('error')}",
+                created_at=time.time(),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        return result
+
+    async def _start_object_loop(self, args: dict) -> dict:
         try:
             request = ObjectLoopStartArgs.model_validate(args)
             if len(set(request.mandatory_views)) != len(request.mandatory_views):
@@ -363,7 +400,13 @@ class ObjectLoopCommandsMixin:
                 raise ValueError("brief review gate is missing")
             state["brief_checkpoint"]["gate_id"] = review.gate_id
             if not await _approval_valid(conn, request.project_id, state["brief_checkpoint"]):
-                raise ValueError("brief review is not approved at the exact revision")
+                raise ValueError(
+                    f"brief review {request.brief_review_id} is not approved at the exact "
+                    f"revision: cooked start packet pins revision {request.brief_review_revision}; "
+                    f"current revision is {review.current_revision} ({review.state}). "
+                    "The brief revision/hash must match the approved revision; "
+                    "update the start packet explicitly before retrying."
+                )
             gate_id, _created = await self.db.create_gate(
                 request.project_id, "event", f"Finalize object {request.object_id}",
                 await_id=f"object:{request.object_id}:terminal", waiter_task_ids=[task_id], conn=conn,
