@@ -51,7 +51,7 @@ dump.
 
 ```bash
 aq db current          # read-only: which revision the database is stamped at
-aq db upgrade          # to a00000000074, the merged single head
+aq db upgrade          # to a00000000075, the merged single head
 ```
 
 `aq db upgrade` is refused with `AQ_DB_SCOPE=worker`; that refusal is the guard
