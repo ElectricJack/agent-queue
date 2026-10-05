@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
+  "digest": "sha256:92de74a4c1b81456a458f96e6afa25e2b573bf8e620b0474e7b1d4c4673efa70",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3062,13 +3062,22 @@
         "src.database.tables",
         "src.doctor.pool_checks",
         "src.event_bus",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.admission",
+        "src.integration.batches",
         "src.integration.development",
+        "src.integration.git_truth",
+        "src.integration.gitops",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.repair",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -12969,6 +12978,7 @@
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.ownership",
+        "src.integration.repair",
         "src.orchestrator.workspace"
       ],
       "markers": [
