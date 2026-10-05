@@ -25,6 +25,7 @@ from src.integration.models import BranchKey, ConflictResolutionInput, Fence, Pr
 from src.integration.parent_engine import parent_engine_guard
 from src.integration.ownership import BranchOwnership
 from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
+from src.integration.source_trailer import source_identity, with_source_trailers
 from src.models import RepoConfig, RepoSourceType
 from src.playbooks.invocation import current_invocation
 
@@ -222,7 +223,9 @@ class PromotionService:
                 await self.db.get_project(context["project_id"])
             ).as_dict()
             primary = authors[0] if authors else integrator
-            message = self._message(request.source_task_id, intent_id, receipt_id, authors)
+            message = self._message(
+                request.source_task_id, request.source_head, intent_id, receipt_id, authors
+            )
             commit_metadata = {
                 "message": message,
                 "author": primary,
@@ -1250,7 +1253,7 @@ class PromotionService:
 
     @staticmethod
     def _message(
-        task_id: str, intent_id: str, receipt_id: str, authors: list[dict[str, str]]
+        task_id: str, source_head: str, intent_id: str, receipt_id: str, authors: list[dict[str, str]]
     ) -> str:
         body = f"Integrate task {task_id}\n\nAQ-Receipt: {receipt_id}\nAQ-Intent: {intent_id}"
         if len(authors) > 1:
@@ -1258,7 +1261,9 @@ class PromotionService:
                 f"Co-authored-by: {author['name']} <{author['email']}>" for author in authors[1:]
             )
             body += "\n\n" + trailers
-        return body
+        # The reviewed source this promotion applies in full, recorded exactly:
+        # its receipt and intent trailers stay until their readers retire.
+        return with_source_trailers(body, [source_identity(task_id, source_head)])
 
     async def _provenance(
         self, review: dict[str, Any], *, operation_id: str
