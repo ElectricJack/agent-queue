@@ -1429,3 +1429,34 @@ async def test_managed_competing_lease_is_observed_for_root_and_parent(kind, exp
     facts = await IntegrationObserver(Reader(data), Git(), clock=lambda: NOW,
                                       facts_type=facts_type).observe(data.subject)
     assert facts.competing_lease is competing
+
+
+@pytest.mark.parametrize("remote_sha", [None, OTHER])
+@pytest.mark.parametrize("live_reader", [False, True])
+async def test_unpublished_candidate_requests_publication_without_hosted_or_cached_ci(
+    remote_sha, live_reader
+):
+    data = with_rows(snapshot(engine="reconciler"), integration_check_evidence=[ci_row()])
+    git = Git()
+    git.heads["refs/heads/aq/batch"] = remote_sha
+    git.ancestry = {}
+    live = AsyncMock(side_effect=RuntimeError("commit missing on remote"))
+    facts = await IntegrationObserver(
+        Reader(data), git, candidate_ci=live if live_reader else None
+    ).observe(data.subject)
+    assert facts.ci_state is CIState.NONE
+    assert facts.ci[0].evidence_id is None
+    assert "ancestry_unknown:source" not in facts.unknown
+    live.assert_not_awaited()
+
+
+async def test_unreadable_candidate_ref_does_not_authorize_publication_recovery():
+    data = snapshot(engine="reconciler")
+    git = Git()
+    git.remote_head = AsyncMock(return_value=RemoteHead(ref="refs/heads/aq/batch", state="unknown"))
+    # Preserve the identity of each requested ref even when every read fails.
+    git.remote_head.side_effect = lambda repository, ref: RemoteHead(ref=ref, state="unknown")
+    live = AsyncMock(side_effect=OSError("offline"))
+    facts = await IntegrationObserver(Reader(data), git, candidate_ci=live).observe(data.subject)
+    assert "remote_unknown:refs/heads/aq/batch" in facts.unknown
+    assert facts.ci_state is CIState.INFRA

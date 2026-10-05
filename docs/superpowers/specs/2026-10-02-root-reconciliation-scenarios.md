@@ -109,3 +109,22 @@ cutover runbook cite (`--evidence root-scenarios:<pushed commit>`). The
 shadow week, its decision comparison and the explicit approval remain
 production gates. The operator commands, restart and rollback are unchanged
 from the [root adapters handoff](2026-10-02-root-integration-adapters.md#operator-cutover-and-rollback).
+
+## Accepted repair publication recovery (sound-rapids-63)
+
+When main moves after an accepted CI repair, preserve both histories and publish
+that rebuilt candidate before observing hosted CI. A completed preserved repair
+must reach publication even if its original writer budget has elapsed; do not
+file another repair merely to test a commit that exists only in the retained
+store. Unfinished construction continues to honor the existing repair deadline.
+
+The observer treats a candidate whose known remote ref does not name its SHA as
+unpublished (`none`), allowing the pinned policy to request publication again.
+It must not query hosted checks or reuse cached green/red evidence for that
+unpublished candidate. Unknown remote reads remain unknown and cannot authorize
+a push. Publication still uses the existing fenced, expected-old ref journal.
+
+An accepted or rebuilt generation must be mirrored before evaluating a moved
+base against it. The real Git/PostgreSQL regression covers main moving before
+and after that mirror, an elapsed original repair budget, interrupted publication,
+exact-head green CI, and automatic promotion without a second repair writer.

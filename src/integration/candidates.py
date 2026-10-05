@@ -894,6 +894,11 @@ class CandidateService:
             binding = await self.repair.bind_current_batch_subject_on(
                 conn, state["operation"]["id"], now=now
             )
+        # A preserved repair is already fully constructed. Publish that exact
+        # revision before CI; an elapsed writer budget must not dispatch another
+        # writer between recording this local commit and pushing it.
+        if preserved_head:
+            return await self.build(batch_id)
         if binding["deadline_due"]:
             expired = await self.repair.expire(state["operation"]["id"], binding["stage"], now=now)
             if expired["action"] == "block_for_human":

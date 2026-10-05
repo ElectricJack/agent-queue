@@ -1932,3 +1932,90 @@ async def test_delegate_close_after_promotion_needs_its_whole_delivery_proof(
         assert closed.get("retired") or closed["feedback"] == (
             "Repair stage is no longer active; close is stale."
         )
+
+
+@pytest.mark.parametrize("mirror_before_move", [False, True])
+@pytest.mark.parametrize("interrupt_publication", [False, True])
+async def test_accepted_ci_repair_rebuilt_on_moved_main_is_pushed_before_testing(
+    train, mirror_before_move, interrupt_publication, monkeypatch
+):
+    await train.open()
+    train.source("alpha", {"feature.txt": "feature\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    red = await train.subject(subject.id)
+    train.ci.finish(red.head_sha, "failure", run=91)
+
+    async def filed():
+        return (await train.subject(subject.id)).writer.status is WriterStatus.FILED
+
+    await train.run_until(filed, label="first repair filed")
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    writer = await train.claim(stage["repair_task_id"], batch)
+    writer.checkout(batch["integration_branch"])
+    repaired = writer.commit("repair candidate", {"fix.txt": "fixed\n"})
+    _git(writer.path, "push", str(train.origin), "HEAD:" + batch["integration_branch"])
+    await writer.close_accepted(repaired)
+    if mirror_before_move:
+        await train.run_until(
+            lambda: train.phase(subject.id, SubjectPhase.TESTING), label="accepted repair built"
+        )
+    # Main moves after the successful writer has spent its original budget.
+    train.clock.now += PRIMARY_SECONDS + 1
+
+    _git(train.work, "switch", "-C", "main", train.base)
+    (train.work / "unrelated.txt").write_text("moved\n")
+    _git(train.work, "add", "-A")
+    _git(train.work, "commit", "-m", "main moved after repair")
+    _git(train.work, "push", "origin", "HEAD:refs/heads/main")
+    moved = train.remote("refs/heads/main")
+
+    service = train.handler.orchestrator.integration_candidate_service
+    publish = service._publish
+    interrupted = False
+
+    async def publish_once(state, revision, store):
+        nonlocal interrupted
+        if interrupt_publication and not interrupted and revision["construction_base_sha"] == moved:
+            interrupted = True
+            return {**revision, "publication_wait": True}
+        return await publish(state, revision, store)
+
+    monkeypatch.setattr(service, "_publish", publish_once)
+    # A hosted provider would reject an absent commit. It must never be queried
+    # until the candidate has reached the remote, even after a partial build.
+    unpublished_ci_reads = []
+
+    async def live_ci(snapshot, head):
+        from src.integration.subjects import CIEvidence, CIState
+
+        if train.remote(head.ref) != head.sha:
+            unpublished_ci_reads.append(head.sha)
+            raise RuntimeError("hosted commit is unpublished")
+        return CIEvidence(head_sha=head.sha, state=CIState.NONE, observed_at=train.clock())
+
+    train.observer.candidate_ci = live_ci
+
+    async def rebuilt():
+        current = await train.subject(subject.id)
+        return (
+            current.phase is SubjectPhase.TESTING
+            and current.base_sha == moved
+            and train.remote(batch["integration_branch"]) == current.head_sha
+        )
+
+    await train.run_until(rebuilt, label="repair rebuilt on moved main")
+    assert interrupted == interrupt_publication
+    assert unpublished_ci_reads == []
+    train.observer.candidate_ci = None
+    current = await train.subject(subject.id)
+    assert train.remote(batch["integration_branch"]) == current.head_sha
+    assert train.contains(repaired, current.head_sha)
+    assert train.contains(moved, current.head_sha)
+    train.ci.finish(current.head_sha, "success", run=92)
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="promoted")
+    assert train.remote("refs/heads/main") == current.head_sha
+    assert (await train.operation(batch["id"]))["active_stage"] == 0
