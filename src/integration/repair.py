@@ -289,8 +289,8 @@ _DEFERRAL_HISTORY = 10
 #: an operator's own hold, or a row a concurrent expiry already released is
 #: not news.
 _NOTICE_DEFERRALS = frozenset({
-    "writer_unclaimed", "stale_fence", "stop_proof_unavailable", "stale_claim",
-    "checkout_in_use", "origin_unreachable",
+    "writer_unclaimed", "writer_claimed", "stale_fence", "stop_proof_unavailable",
+    "stale_claim", "checkout_in_use", "origin_unreachable",
 })
 #: Delegate statuses with no writer: the pool has not (re)claimed it yet.
 _UNCLAIMED_STATUSES = frozenset({
@@ -3003,6 +3003,12 @@ class RepairService:
                     now=completed_at,
                 )
             else:
+                # The exact fenced writer is closing now: a stage that ran out
+                # of budget while it was attached gets expire's live-writer
+                # recheck rather than a refusal that strands the claim.
+                await self.defer_lapsed_writer_close(
+                    conn, operation_id, repair_task_id, now=completed_at
+                )
                 await self.adopt_batch_repair_on(
                     conn, operation_id, head_sha=head_sha,
                     commit_proof=commit_proof, now=completed_at,
@@ -3502,6 +3508,22 @@ class RepairService:
             return None
         return dict(operation), dict(row)
 
+    @staticmethod
+    def _deferral_seconds(policy: RepairPolicy, ordinal: int, reason: str) -> float:
+        """How far one deferral reason moves a due stage's deadline.
+
+        ``writer_unclaimed`` is the pool's wait (one primary budget, the
+        existing rule).  ``writer_claimed`` is the same wait observed from the
+        other end: the claim is the start of the repair attempt, so the stage
+        gets the budget its own ordinal would have had from activation.  Every
+        other reason is a bounded recheck.
+        """
+        if reason == "writer_unclaimed":
+            return policy.primary_seconds
+        if reason == "writer_claimed":
+            return policy.primary_seconds if ordinal == 0 else policy.debug_seconds
+        return WRITER_RECHECK_SECONDS
+
     async def _defer_expiry_on(
         self,
         conn,
@@ -3516,14 +3538,14 @@ class RepairService:
         """Move a due stage's deadline forward without consuming its ordinal.
 
         An unclaimed delegate gets one primary budget (capacity is not a failed
-        repair); anything else is revisited after :data:`WRITER_RECHECK_SECONDS`.
-        Attempts, ordinal, writer and fence are untouched.
+        repair); a delegate claimed after the deadline gets the budget its own
+        ordinal would have had (the claim starts the attempt); anything else is
+        revisited after :data:`WRITER_RECHECK_SECONDS`.  Attempts, ordinal,
+        writer and fence are untouched.
         """
         ordinal = int(stage["ordinal"])
         policy = RepairPolicy.model_validate(stage["policy"])
-        seconds = (
-            policy.primary_seconds if reason == "writer_unclaimed" else WRITER_RECHECK_SECONDS
-        )
+        seconds = self._deferral_seconds(policy, ordinal, reason)
         previous = float(stage["deadline_at"])
         deadline = max(previous, now) + seconds
         entry = {
@@ -3567,6 +3589,20 @@ class RepairService:
                     "allocated. If it persists, check pool capacity for intelligence class "
                     f"{stage['intelligence_class']}."
                 )
+            elif reason == "writer_claimed":
+                subject = (
+                    f"Repair stage {ordinal} of {operation['id']} was claimed after its deadline"
+                )
+                body = (
+                    f"Repair stage {ordinal} of operation {operation['id']} reached its "
+                    f"deadline {previous} before delegate {facts['task_id']} was claimed, so "
+                    "pool capacity, not the repair, spent that budget. Queue time is not a "
+                    f"repair attempt: the stage clock now runs from this claim to {deadline} "
+                    f"(status {facts['task_status']}, claim epoch {facts['claim_epoch']}) and "
+                    "no attempt, ordinal, writer or successor stage was consumed. If this "
+                    "keeps recurring, check pool capacity for intelligence class "
+                    f"{stage['intelligence_class']}."
+                )
             else:
                 subject = f"Repair stage {ordinal} of {operation['id']} cannot refile its writer"
                 body = (
@@ -3604,6 +3640,276 @@ class RepairService:
             return await self._defer_expiry_on(
                 conn, operation, row, facts, reason=reason, now=now, detail=detail
             )
+
+    async def start_claimed_stage_budget(
+        self, repair_task_id: str, *, now: float | None = None
+    ) -> dict[str, Any]:
+        """Start a claimed delegate's stage clock at its claim, not at activation.
+
+        A stage's deadline runs from activation, so a delegate the pool cannot
+        staff in time is claimed with its budget already spent, and its close
+        is then refused for a repair attempt that never began -- which strands
+        the claim with no exit.  Queue time is not a repair attempt (the same
+        rule ``expire`` applies to a delegate nobody has claimed), so a claim
+        past the deadline re-arms the stage to the budget its own ordinal would
+        have had: one attempt, no ordinal, no successor stage, the same writer
+        and fence, and the wait recorded in the dossier.
+
+        A stage still inside its budget is left exactly as it is, so a claim
+        never extends a running attempt.  Runs in its own transaction on the
+        canonical repair lock order (project, operation, stage, task) because
+        the caller is the pool claim path, which holds no row lock of its own
+        here and must not take one ahead of the repair rows.
+        """
+        claimed_at = self.clock() if now is None else now
+        async with self.db.immediate() as conn:
+            located = (
+                (
+                    await conn.execute(
+                        select(
+                            integration_repair_operations.c.id.label("operation_id"),
+                            integration_repair_operations.c.target_kind,
+                            integration_repair_operations.c.batch_id,
+                            integration_repair_operations.c.parent_task_id,
+                            integration_repair_stages.c.ordinal,
+                        )
+                        .select_from(
+                            integration_repair_operations.join(
+                                integration_repair_stages,
+                                integration_repair_stages.c.operation_id
+                                == integration_repair_operations.c.id,
+                            )
+                        )
+                        .where(
+                            integration_repair_stages.c.repair_task_id == repair_task_id,
+                            integration_repair_stages.c.writer_kind == "repair_delegate",
+                            integration_repair_stages.c.state == "active",
+                            integration_repair_operations.c.state.in_(("active", "escalated")),
+                            integration_repair_operations.c.active_stage
+                            == integration_repair_stages.c.ordinal,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if len(located) != 1:
+                # No stage (ordinary repair, a parent-integration delegate, a
+                # refiled or already-superseded ordinal), or an ambiguous one.
+                return {"outcome": "no_stage", "task_id": repair_task_id}
+            found = dict(located[0])
+            try:
+                project_id = await self._operation_project_id_on(conn, found)
+            except ValueError:
+                # An operation with no project identity is already unusable to
+                # every other repair path; never let it fail the claim itself.
+                logger.warning(
+                    "repair claim budget: operation %s has no project identity",
+                    found["operation_id"],
+                )
+                return {
+                    "outcome": "no_project", "task_id": repair_task_id,
+                    "operation_id": found["operation_id"],
+                }
+            if project_id is not None:
+                await self.db.lock_hierarchy_project(conn, project_id)
+            operation = (
+                (
+                    await conn.execute(
+                        select(integration_repair_operations)
+                        .where(integration_repair_operations.c.id == found["operation_id"])
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            row = (
+                (
+                    await conn.execute(
+                        select(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == found["operation_id"],
+                            integration_repair_stages.c.ordinal == found["ordinal"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                operation is None
+                or row is None
+                or operation["state"] not in {"active", "escalated"}
+                or int(operation["active_stage"]) != int(found["ordinal"])
+                or row["state"] != "active"
+                or row["repair_task_id"] != repair_task_id
+                or row["writer_kind"] != "repair_delegate"
+            ):
+                return {
+                    "outcome": "stage_moved", "task_id": repair_task_id,
+                    "operation_id": found["operation_id"],
+                }
+            if row["deadline_at"] is None or claimed_at < float(row["deadline_at"]):
+                return {
+                    "outcome": "within_budget",
+                    "operation_id": operation["id"],
+                    "stage": int(row["ordinal"]),
+                    "deadline_at": None if row["deadline_at"] is None else float(row["deadline_at"]),
+                }
+            task = (
+                (
+                    await conn.execute(
+                        select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if task is None or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}:
+                # The claim did not land on this delegate: leave its clock alone
+                # so a real repair attempt still meets its own budget.
+                return {
+                    "outcome": "not_claimed", "task_id": repair_task_id,
+                    "operation_id": operation["id"], "stage": int(row["ordinal"]),
+                }
+            facts = {
+                "operation_id": operation["id"],
+                "batch_id": operation.get("batch_id"),
+                "stage": int(row["ordinal"]),
+                "task_id": repair_task_id,
+                "task_status": task["status"],
+                "claim_epoch": int(task["claim_epoch"] or 0),
+                "attempts": int(row["attempts"]),
+                "deadline_at": float(row["deadline_at"]),
+            }
+            deferred = await self._defer_expiry_on(
+                conn, dict(operation), dict(row), facts,
+                reason="writer_claimed", now=claimed_at,
+            )
+            if deferred.get("reason") != "writer_claimed":
+                # A concurrent expiry moved the clock between the read and the
+                # compare-and-set; it owns the stage's budget now.
+                return {
+                    "outcome": "stage_changed", "operation_id": operation["id"],
+                    "stage": int(row["ordinal"]),
+                }
+            return {
+                "outcome": "started", "operation_id": operation["id"],
+                "stage": int(row["ordinal"]), "reason": "writer_claimed",
+                "deadline_at": deferred["deadline_at"],
+            }
+
+    async def defer_lapsed_writer_close(
+        self, conn, operation_id: str, repair_task_id: str, *, now: float
+    ) -> dict[str, Any]:
+        """Let a live fenced writer close after its stage deadline, as ``expire`` would.
+
+        A stage's deadline bounds how long it waits for a writer, not how long
+        the writer it already holds may take: ``expire`` answers a due stage
+        whose writer is live with a bounded recheck
+        (:data:`WRITER_RECHECK_SECONDS`), never a supersession.  The guarded
+        close holds that writer's exact fence, so it gets the same recheck
+        rather than a refusal -- refusing here is what left a worker holding a
+        claim it could neither complete nor release.  The ladder that spends the
+        ordinal still belongs to ``expire``, on the next pass over the deferred
+        deadline.
+
+        Callers must already have proved the live fence; this re-reads the
+        durable minimum it relies on (this task is the stage's delegate, still
+        claimed, with a live session) so a caller that does not is a no-op.
+        """
+        from src.integration.finished_owners import _live_task_session
+
+        operation = (
+            (
+                await conn.execute(
+                    select(integration_repair_operations)
+                    .where(integration_repair_operations.c.id == operation_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            operation is None
+            or operation["target_kind"] != "batch"
+            or operation["state"] not in {"active", "escalated"}
+        ):
+            return {"deferred": False, "reason": "operation_not_current"}
+        row = (
+            (
+                await conn.execute(
+                    select(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            row is None
+            or row["state"] != "active"
+            or row["writer_kind"] != "repair_delegate"
+            or row["repair_task_id"] != repair_task_id
+        ):
+            return {"deferred": False, "reason": "stage_not_this_writer"}
+        deadline = float(row["deadline_at"]) if row["deadline_at"] is not None else None
+        if deadline is None or now < deadline:
+            return {
+                "deferred": False, "reason": "within_budget",
+                "operation_id": operation_id, "stage": int(row["ordinal"]),
+                "deadline_at": deadline,
+            }
+        task = (
+            (
+                await conn.execute(
+                    select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            task is None
+            or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+            or await _live_task_session(conn, repair_task_id) is None
+        ):
+            return {
+                "deferred": False, "reason": "writer_not_live",
+                "operation_id": operation_id, "stage": int(row["ordinal"]),
+            }
+        facts = {
+            "operation_id": operation_id,
+            "batch_id": operation["batch_id"],
+            "stage": int(row["ordinal"]),
+            "task_id": repair_task_id,
+            "task_status": task["status"],
+            "claim_epoch": int(task["claim_epoch"] or 0),
+            "attempts": int(row["attempts"]),
+            "deadline_at": deadline,
+        }
+        deferred = await self._defer_expiry_on(
+            conn, dict(operation), dict(row), facts, reason="writer_live", now=now
+        )
+        if deferred.get("deadline_at") is None:
+            # A concurrent expiry moved the clock first; it owns the stage's
+            # budget, and the adoption guard below still stands.
+            return {
+                "deferred": False, "reason": "stage_changed",
+                "operation_id": operation_id, "stage": int(row["ordinal"]),
+            }
+        return {
+            "deferred": True, "reason": "writer_live",
+            "operation_id": operation_id, "stage": int(row["ordinal"]),
+            "deadline_at": deferred["deadline_at"],
+        }
 
     async def _expire_stopped_writer(
         self, operation_id: str, stage: int, facts: dict[str, Any], now: float

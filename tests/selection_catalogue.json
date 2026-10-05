@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
+  "digest": "sha256:108fc9823edb45e82ca59703cc6ab29dd83ac776a0ef74ed9b58364c0299c2bb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3069,6 +3069,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.repair",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
