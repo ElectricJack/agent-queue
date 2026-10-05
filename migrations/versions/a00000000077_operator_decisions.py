@@ -1,13 +1,13 @@
 """Durable object-attached operator decisions.
 
-Revision ID: a00000000076
-Revises: a00000000075
+Revision ID: a00000000077
+Revises: a00000000076
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000076"
-down_revision = "a00000000075"
+revision = "a00000000077"
+down_revision = "a00000000076"
 branch_labels = None
 depends_on = None
 

@@ -154,7 +154,7 @@ async def test_migration_is_idempotent_and_history_cannot_be_rewritten(db):
     from sqlalchemy import inspect, text
     from sqlalchemy.exc import SQLAlchemyError
 
-    revision = importlib.import_module("migrations.versions.a00000000076_operator_decisions")
+    revision = importlib.import_module("migrations.versions.a00000000077_operator_decisions")
 
     def exercise(conn):
         with Operations.context(MigrationContext.configure(conn)):

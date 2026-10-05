@@ -9123,6 +9123,33 @@
     },
     "src/api/target_scope.py::TARGET_RESOLVERS['origin_id']": {
       "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/cli/envelope.py::_project_item": {
+      "reason": "Projects durable operator decisions in compact integration status and task views."
+    },
+    "src/commands/contracts/decisions.py::register_decision_contracts": {
+      "reason": "Registers typed shared operator decision commands governing integration holds and releases."
+    },
+    "src/commands/contracts/records.py::_record_invoke": {
+      "reason": "Shared typed command invocation adapter used by integration operator decision contracts."
+    },
+    "src/operator_decisions.py::READ_COMMANDS": {
+      "reason": "Names integration diagnostics that remain readable while an operator hold is active."
+    },
+    "src/operator_decisions.py::control_refusal": {
+      "reason": "Enforces project-scoped operator holds on integration mutations before command dispatch."
+    },
+    "src/operator_decisions.py::decision_control": {
+      "reason": "Identifies integration mutations carrying object or project authority for hold enforcement."
+    },
+    "src/operator_decisions.py::history_on": {
+      "reason": "Reads append-only operator instructions and exact hold releases for integration authorization."
+    },
+    "src/operator_decisions.py::object_project_on": {
+      "reason": "Resolves task, batch and repair operation project scope for durable operator instructions."
+    },
+    "src/operator_decisions.py::related_on": {
+      "reason": "Relates integration batch members and repair operations so object holds cannot be bypassed."
     }
   },
   "shared_state": {
