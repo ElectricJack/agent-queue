@@ -203,8 +203,9 @@ _HOSTED_CONCLUSIONS = {
 class HostedChecks:
     """Per-check rows from the authenticated ``HostedCIProducer`` observation.
 
-    Pushing the candidate ref under ``aq/integration/**`` triggers the
-    workflows, so there is nothing to request.
+    Pushing the candidate ref under ``aq/integration/**`` (or a git-first
+    batch candidate under ``aq/batches/**``) triggers the workflows, so there
+    is nothing to request.
     """
 
     def __init__(self, producer: HostedCIProducer) -> None:

@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
+    "integration_train_tick",  # daemon-only git-first train dispatch
     "job_reconcile",
     "job_submit_integration",
 

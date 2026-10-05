@@ -14,7 +14,7 @@ import hashlib
 import math
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -25,7 +25,7 @@ from src.database.tables import sessions, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchBusy, StaleFence
+from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFence
 
 DEFAULT_TTL_SECONDS = 480.0
 CRITICAL_SECTION_SECONDS = 30.0
@@ -37,6 +37,10 @@ class RemoteMoved(GitError):
     def __init__(self, observed_oid: str | None):
         self.observed_oid = observed_oid
         super().__init__("remote ref moved; rebuild against its current tip")
+
+
+class PublishWithdrawn(BranchOwnershipError):
+    """The caller's authorization failed under the fence; nothing was pushed."""
 
 
 def canonical_target(target: BranchKey) -> BranchKey:
@@ -180,19 +184,19 @@ class BranchLock:
         ):
             raise BranchBusy("ref has an unexpired legacy lease")
         token = max(row["fence"] or 0, row["fence_token"]) + 1 if row else 1
-        values = dict(
-            holder=holder,
-            fence=token,
-            expires_at=now + ttl_seconds,
-            owner_id=holder,
-            owner_role=role,
-            fence_token=token,
-            handoff_state="reserved",
-            session_id=None,
-            workspace_id=None,
-            confirmed_workspace_id=None,
-            updated_at=now,
-        )
+        values = {
+            "holder": holder,
+            "fence": token,
+            "expires_at": now + ttl_seconds,
+            "owner_id": holder,
+            "owner_role": role,
+            "fence_token": token,
+            "handoff_state": "reserved",
+            "session_id": None,
+            "workspace_id": None,
+            "confirmed_workspace_id": None,
+            "updated_at": now,
+        }
         if row:
             await conn.execute(update(owners).where(owners.c.id == row["id"]).values(**values))
         else:
@@ -261,14 +265,18 @@ class BranchLock:
         repository: GitHubRepositoryBinding,
         tip_oid: str,
         expected_old_oid: str,
+        authorize: Callable[[], Awaitable[bool]] | None = None,
     ) -> str:
         """Push the captured expected-old OID with authenticated ambiguous read-back.
 
         Expiry bounds the transport as well as the DB check. A lost response is
         reconciled by GitManager against the actual remote; a moved remote requires
         rebuilding. This does not refresh expected_old_oid or fence identity.
+        ``authorize`` is rechecked while the fence is held, before the push.
         """
         async with self.exclusion(fence) as row:
+            if authorize is not None and not await authorize():
+                raise PublishWithdrawn("publication is no longer authorized")
             remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
             deadline = asyncio.get_running_loop().time() + remaining
             async with asyncio.timeout(remaining):

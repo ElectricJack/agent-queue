@@ -239,7 +239,8 @@ async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_rece
     from sqlalchemy import select
 
     from src.database.queries.hierarchy_queries import (
-        ProjectIntegrationMode, delivered_same_parent_prerequisites_when_hierarchical,
+        ProjectIntegrationMode,
+        delivered_same_parent_prerequisites_when_hierarchical,
     )
     from src.database.tables import task_branch_origins, task_delivery_receipts
     from src.integration.git_truth import GitTruth
