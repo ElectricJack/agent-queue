@@ -226,6 +226,22 @@ prose instead of running `aq reply`; it is deliberately never applied to an
 `agent_question` or `task_recovery` row, because those have explicit commands
 and a fabricated answer would be treated as a decision.
 
+Three things bound the fallback, so it can only ever recover an answer that
+actually answered that message:
+
+- **The turn must be prose.** A turn with no assistant text — the transcript's
+  `[tool_use: Bash]` placeholder, say — is a tool call, not a reply. The first
+  prose turn in the window is used, so a tool call never masks the answer
+  behind it.
+- **The turn must land inside a window.** Only turns between `delivered_at` and
+  `delivered_at + messages.reply_window_multiplier × reply_timeout` qualify.
+  Without the window, a long-lived session that resumed after a restart would
+  "answer" every delivered-but-unreplied row in its backlog — including
+  messages from days earlier — with whatever it happened to say next.
+- **The sender must be someone waiting for an answer.** Rows from `system:*`
+  senders (review approvals, watchdog pings, delivery-engine notices) are never
+  swept.
+
 ## The hourly digest, in one paragraph
 
 Once per interval the daemon reserves a window row, asks the database what

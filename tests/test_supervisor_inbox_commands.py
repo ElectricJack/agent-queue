@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -755,7 +756,9 @@ async def test_reply_transcript_tail_and_message_sent_never_enqueue_delivery(env
         await conn.execute(
             update(messages)
             .where(messages.c.id == first["supervisor_message_id"])
-            .values(delivered_at=NOW)
+            # Past ``reply_timeout`` but inside the reply window: the sweep's
+            # own clock is wall time, unlike this file's fixed NOW.
+            .values(delivered_at=time.time() - handler.config.messages.reply_timeout - 1)
         )
     sessions = SimpleNamespace(tail_assistant_turn=AsyncMock(return_value="transcript answer"))
     engine = MessageDeliveryEngine(db, sessions, handler.config, bus=handler.orchestrator.bus)

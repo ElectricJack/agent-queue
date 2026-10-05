@@ -10,8 +10,9 @@ Owns the delivery policy in supervisor-agent §5/§7:
   ``idle|busy|sleeping|absent`` signal and pick nudge / skip / wake / park.
 - Sweep delivered-but-unreplied messages past
   ``messages.reply_timeout`` and, if the recipient's transcript shows a
-  completed assistant turn since delivery, materialise it as a reply
-  (``via="transcript_tail"``).
+  completed assistant **prose** turn inside
+  ``reply_window_multiplier x reply_timeout`` of ``delivered_at``,
+  materialise it as a reply (``via="transcript_tail"``).
 
 Kept intentionally small: the engine reads/writes only through the
 public :class:`~src.database.queries.message_queries.MessageQueriesMixin`
@@ -28,6 +29,7 @@ from typing import Any
 
 from src.messages.session_lens import Activity, SessionManagerProto
 from src.models import Message, TaskStatus
+from src.sessions.transcripts import is_model_prose
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ PARK_AFTER_SECONDS: float = 86_400.0
 COLLABORATION_BODY_KINDS = {"collaboration", "collaboration_invite", "collaboration_closed"}
 _TASK_NOTIFICATION_KINDS = {"wait_result", "job_result"} | COLLABORATION_BODY_KINDS
 
+#: ``from_id`` prefix of engine-authored senders (``system:review:<slug>``,
+#: ``system:supervisor-delivery-watchdog``, ``system:delivery-engine``).
+_SYSTEM_SENDER_PREFIX = "system:"
+
 
 class MessageDeliveryEngine:
     """Delivery cascade step for the ``messages`` substrate.
@@ -53,9 +59,9 @@ class MessageDeliveryEngine:
         db: Adapter exposing :class:`MessageQueriesMixin`.
         sessions: Adapter satisfying :class:`SessionManagerProto`.
         config: ``AppConfig`` or ``MessagesConfig``; the engine reads
-            ``max_inject_per_prompt``, ``reply_timeout``, and
-            ``transcript_tail_fallback`` off ``.messages`` when present,
-            otherwise off the object itself.
+            ``max_inject_per_prompt``, ``reply_timeout``,
+            ``reply_window_multiplier`` and ``transcript_tail_fallback`` off
+            ``.messages`` when present, otherwise off the object itself.
         bus: Optional event bus with ``async emit(event, payload)``.
             ``None`` disables event emission entirely.
     """
@@ -185,14 +191,22 @@ class MessageDeliveryEngine:
         """Sweep delivered-but-unreplied messages past ``reply_timeout``.
 
         For each candidate whose recipient's transcript has an assistant
-        turn newer than ``delivered_at``, materialise a reply row with
-        ``via="transcript_tail"`` (spec §6.2 fallback). Returns the
-        number of transcript-tail replies created.
+        prose turn within ``reply_window_multiplier x reply_timeout`` of
+        ``delivered_at``, materialise a reply row with
+        ``via="transcript_tail"`` (spec §6.2 fallback). Returns the number
+        of transcript-tail replies created.
+
+        The window is load-bearing, not a throttle. Without it, every
+        delivered-but-unreplied row in a long-lived session's backlog
+        qualified forever, so a supervisor resuming after a restart
+        fabricated a reply per backlog message from whatever it said next —
+        tool calls included (2026-10-05).
         """
         if not self._config.transcript_tail_fallback:
             return 0
 
-        cutoff = time.time() - self._config.reply_timeout
+        now = time.time()
+        cutoff = now - self._config.reply_timeout
         # Cast a wide net: session/task recipients whose messages could be
         # awaiting a reply. list_messages already excludes archived rows.
         candidates: list[Message] = []
@@ -216,10 +230,22 @@ class MessageDeliveryEngine:
                 | COLLABORATION_BODY_KINDS
             ):
                 continue
+            # Review approvals, watchdog pings and delivery-engine notices are
+            # engine chatter, not questions asked of a session: nobody is
+            # waiting for a reply to them, so the tail would only ever be
+            # invented.
+            if _is_system_sender(msg):
+                continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
             if msg.reply_to_id is not None:
                 # Already a reply; not the message under sweep.
+                continue
+            # Once the window has closed no answering turn can still arrive,
+            # so the backlog is never answered — and the transcript need not
+            # be read to learn that.
+            window = self._reply_window(msg.delivered_at)
+            if window <= now:
                 continue
             if await self._has_reply(msg):
                 continue
@@ -240,15 +266,16 @@ class MessageDeliveryEngine:
                 target_id=target_id,
                 project_id=project_id,
                 since=msg.delivered_at,
+                until=window,
             )
-            if not tail:
+            if not is_model_prose(tail):
                 continue
             seen_threads.add(thread_key)
             reply = await self._db.create_message(
                 project_id=msg.project_id,
                 from_kind="session",
                 from_id=msg.to_id,
-                to_kind=msg.from_kind if msg.from_kind != "system" else "user",
+                to_kind=msg.from_kind,
                 to_id=msg.from_id,
                 body=tail,
                 thread_id=msg.thread_id,
@@ -280,6 +307,13 @@ class MessageDeliveryEngine:
         return resolved
 
     # -- internals -----------------------------------------------------
+
+    def _reply_window(self, delivered_at: float) -> float:
+        """Exclusive end of the window in which a reply to *delivered_at* may
+        be recovered from the transcript."""
+        return delivered_at + (
+            self._config.reply_timeout * self._config.reply_window_multiplier
+        )
 
     async def _deliver_to_user(self, pending: list[Message]) -> int:
         delivered = 0
@@ -346,6 +380,17 @@ def _messages_config(config):
     if hasattr(config, "messages"):
         return config.messages
     return config
+
+
+def _is_system_sender(msg: Message) -> bool:
+    """True for engine-authored notices, which never await a reply.
+
+    ``from_kind`` is CHECK-constrained to ``{session, user, system}``, but a
+    ``user`` row can still be addressed ``system:review:<slug>`` — treat the
+    id prefix as authoritative too, so a review approval or watchdog ping can
+    never be answered out of a session's transcript.
+    """
+    return msg.from_kind == "system" or msg.from_id.startswith(_SYSTEM_SENDER_PREFIX)
 
 
 def _target_from_recipient(
