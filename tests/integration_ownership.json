@@ -293,6 +293,9 @@
         29
       ]
     },
+    "src/api/codegen.py::API_EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/api/codegen.py::_make_route_handler": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -820,6 +823,9 @@
         465,
         465
       ]
+    },
+    "src/cli/auto_commands.py::EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_abort']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -5917,6 +5923,9 @@
         60
       ]
     },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['observe_integration_source_ci']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7974,6 +7983,9 @@
         7864,
         7911
       ]
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     }
   },
   "exclusions": {
@@ -13509,10 +13521,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2243,
+      "line": 2250,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "45a48a62165513e81f3dd939aee37d733d9c1c95a655af7107c8a3b3c73a2617",
+      "owner_fingerprint": "23dc10638046295a15d0cb6e77d260a31b5d88870c765078827ffe1188bcaad1",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"

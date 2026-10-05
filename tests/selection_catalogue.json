@@ -594,7 +594,9 @@
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
-        "tests/test_integration_subjects.py"
+        "tests/test_integration_subjects.py",
+        "tests/test_integration_train.py",
+        "tests/test_integration_train_sources.py"
       ]
     },
     "intelligence-classes": {
@@ -705,6 +707,7 @@
     "managed-jobs": {
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
+        "tests/test_jobs.py",
         "tests/test_jobs_attachments.py",
         "tests/test_jobs_matter.py",
         "tests/test_jobs_output.py",
@@ -1407,7 +1410,7 @@
       ]
     }
   },
-  "digest": "sha256:83d9494af94ceb48d5e57e121293ee17b6617b6a65f5ecec674d16ecb915b577",
+  "digest": "sha256:002fa4b872a251ce115aad425bf7d415855af4fc94035e740a371144104851e0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3034,7 +3037,9 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.integration.batches"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -8484,6 +8489,59 @@
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
     },
+    "tests/test_integration_train.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.codegen",
+        "src.cli.auto_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.repair",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The reduced train: per-target level-triggered visits over Git, checks and intent."
+    },
+    "tests/test_integration_train_sources.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The train's durable sources over a real origin; disposable PostgreSQL."
+    },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
         "integration-ownership"
@@ -8664,6 +8722,32 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_jobs.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.gitops",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.models",
+        "src.playbooks.artifact_store"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The train's local jobs provider: development checks of exact candidates."
     },
     "tests/test_jobs_attachments.py": {
       "areas": [

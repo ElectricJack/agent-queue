@@ -59,6 +59,7 @@ class IntegrationService:
         subject_runtime=None,
         parent_subject_runtime=None,
         development_subject_runtime=None,
+        train=None,
         maintenance=None,
         interval_seconds=5.0,
         source_timeout_seconds=DEFAULT_SOURCE_TIMEOUT_SECONDS,
@@ -68,6 +69,17 @@ class IntegrationService:
     ):
         if interval_seconds <= 0:
             raise ValueError("integration interval must be positive")
+        if train is not None and any(
+            runtime is not None
+            for runtime in (
+                subject_runtime,
+                parent_subject_runtime,
+                development_subject_runtime,
+            )
+        ):
+            # git_first: active selects the train for the whole loop; it never
+            # runs beside the subject runtimes as a second engine.
+            raise ValueError("the integration train replaces the subject runtimes")
         for value in (
             source_timeout_seconds,
             item_timeout_seconds,
@@ -83,6 +95,7 @@ class IntegrationService:
         self._subject_runtime = subject_runtime
         self._parent_subject_runtime = parent_subject_runtime
         self._development_subject_runtime = development_subject_runtime
+        self._train = train
         self._maintenance = dict(maintenance or {})
         self._source_timeout_seconds = float(source_timeout_seconds)
         self._item_timeout_seconds = float(item_timeout_seconds)
@@ -106,11 +119,18 @@ class IntegrationService:
                 )
             if not background and self._reconciliation_task is not None:
                 await self._reconciliation_task
+            if self._train is not None:
+                # Pending legacy events stay undelivered: no old writer is
+                # allocated once the train owns delivery, even across a restart.
+                return
             await self._source(
                 "integration outbox", self._outbox.dispatch_due, self._clock()
             )
 
     async def _reconcile(self):
+        if self._train is not None:
+            # Starts one isolated visit per idle target and returns at once.
+            await self._source("integration train", self._train.tick, self._clock())
         for name, runtime in (
             ("root subjects", self._subject_runtime),
             ("parent subjects", self._parent_subject_runtime),
@@ -234,6 +254,8 @@ class IntegrationService:
             await self._parent_subject_runtime.stop()
         if self._development_subject_runtime is not None:
             await self._development_subject_runtime.stop()
+        if self._train is not None:
+            await self._train.stop()
         if self._reconciliation_task is not None:
             self._reconciliation_task.cancel()
             await asyncio.gather(self._reconciliation_task, return_exceptions=True)
