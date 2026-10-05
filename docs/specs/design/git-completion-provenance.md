@@ -36,6 +36,20 @@ Ordinary `aq git commit` / `aq git commit-changes` messages carry `AQ-Task`.
 commits, use `git commit --trailer 'AQ-Task: <task-id>'`. Existing hooks run as
 configured. A trailer identifies authorship, never complete delivery.
 
+Every merge an integrator makes carries one `AQ-Source: <task-id>@<full-source-sha>`
+trailer per applied member, written only after that member's complete source was
+applied (`src/integration/source_trailer.py`; the writers are
+`candidates._message`, `promotion._message`, `GitOperations.merge_members` and
+`development.merge_member`). It names the whole generation, never one commit of a
+multi-commit task, and never rewrites or duplicates a trailer, so the pre-existing
+`AQ-Task`, `Reviewed-head`, `Review-evidence`, `AQ-Receipt` and `AQ-Intent` trailers
+survive until their readers retire. A fast-forward or an already-contained source
+creates no merge commit to amend, and its source is an ancestor of the target
+instead. A reader matches the whole identity — task id *and* full OID — on a commit
+reachable from the fetched target: an abbreviated SHA, a substring, one commit of a
+multi-commit source and the previous generation of a reopened task are each a
+different identity and prove nothing.
+
 The namespace is `refs/heads/aq-provenance/completions/<subject-hash>/<generation-hash>`.
 The subject hash covers project/repository/task; the generation hash covers the
 completion ID. The metadata commit has exactly one parent (the final source),
