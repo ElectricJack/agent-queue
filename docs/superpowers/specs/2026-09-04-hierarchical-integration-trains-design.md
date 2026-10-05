@@ -501,7 +501,9 @@ moves before promotion, the expected-base update fails. The playbook input `on_m
 invalidates prior CI evidence, and requires full CI again. `wait` preserves the branch and asks a
 human to reconcile the external movement. Membership never changes automatically.
 
-Each rebuild creates a new numbered candidate revision within the same batch. Replay the sealed
+Each rebuild creates a new numbered candidate revision within the same batch. Reserving that
+revision atomically moves the batch to `building`, including when the prior revision was in
+CI or had a green/red result, so a new member conflict can move it to `repairing`. Replay the sealed
 sources and previously accepted repair changes on the new base, resolving new conflicts forward.
 Keep prior revision SHAs and evidence for audit; only the current revision can be promoted. Rebuilds
 do not reset repair stages, consumed attempts, or deadlines.
