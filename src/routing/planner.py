@@ -13,8 +13,10 @@ The steps, as the spec numbers them:
    beats the kind's default; ``max_class`` clamps.
 2. **Candidates** — worker candidates for the lane (or the class), minus
    reserved cells, excluded providers, providers other than the project's
-   ``preferred_provider`` and, for a task needing a non-pool workspace, every
-   pool profile.  A narrow lane's candidates form the preferred tier.
+   ``preferred_provider``, for a task needing a non-pool workspace every
+   pool profile and, for work the ``local_models`` gate refuses (priority at
+   or above its threshold, a train bugfix, work others wait on), every
+   self-hosted model.  A narrow lane's candidates form the preferred tier.
 3. **Availability** — an unlaunchable provider is dropped from the choice
    but stays in ``candidates``; nothing launchable is ``held``.
 4. **Classification needed?** — only when the answer could change the route.
@@ -47,6 +49,10 @@ ROUTED_SOURCES: frozenset[str] = frozenset({ROUTER, OVERRIDE, ROLE})
 UNLAUNCHABLE_STATES: frozenset[str] = frozenset(
     {"exhausted", "unauthenticated", "failing", "disabled"}
 )
+#: Harness ``provider`` values that run a self-hosted model, so the profile is
+#: subject to the policy's ``local_models`` gate.  ``ollama`` is what
+#: ``vault/harnesses/opencode.md`` declares (``provider_liveness._OLLAMA_KEYS``).
+LOCAL_MODEL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
 
 PREFERRED = "preferred"
 FALLBACK = "fallback"
@@ -80,6 +86,8 @@ class ProfileFacts:
     read_only: bool = False
     runtime: str = ""
     needs_workspace: bool = True
+    #: The harness runs a self-hosted model (:data:`LOCAL_MODEL_PROVIDERS`).
+    local: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +147,12 @@ class TaskFacts:
     needs_task_lifecycle: bool = False
     #: ``benchmark:<arm>`` task labels; multiple selectors are an error.
     benchmark_arms: tuple[str, ...] = ()
+    #: The task's priority; ``None`` (unknown) leaves the priority gate open.
+    priority: int | None = None
+    #: The task delivers through its project's integration train.
+    on_train: bool = False
+    #: An unfinished task waits on this one through a blocking edge.
+    blocks_work: bool = False
 
 
 # -- outputs -------------------------------------------------------------------
@@ -157,6 +171,7 @@ class Candidate:
     lane: str | None = None
     hold: bool = False
     preferred_hosted: bool = False
+    local: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -173,6 +188,7 @@ class Candidate:
             tier=tier if tier in {PREFERRED, FALLBACK} else FALLBACK,
             lane=(str(data["lane"]) if data.get("lane") else None),
             hold=bool(data.get("hold")),
+            local=bool(data.get("local")),
             preferred_hosted=bool(data.get("preferred_hosted")),
         )
 
@@ -431,11 +447,40 @@ def _reserved_away(policy: RoutingPolicy, candidate: Candidate) -> bool:
     )
 
 
+def local_refusal(
+    task: TaskFacts, policy: RoutingPolicy, kind: str | None = None
+) -> str | None:
+    """Why the policy keeps *task* off a local model, or ``None`` when it may run there.
+
+    *kind* is the kind step 1 applied, which a classification may have
+    supplied; without it the task's own kind is used.
+    """
+    gate = policy.local_models
+    if task.priority is not None and task.priority >= gate.below_priority:
+        return f"priority {task.priority} is not below {gate.below_priority}"
+    kind = kind or task.task_type
+    if task.on_train and kind in gate.train_kinds:
+        return f"a {kind} delivered through the integration train"
+    if task.blocks_work and not gate.allow_blocking:
+        return "other work waits on it"
+    return None
+
+
+def is_local(candidate: Candidate, policy: RoutingPolicy) -> bool:
+    """The candidate's harness runs a self-hosted model (``local_models``)."""
+    return candidate.local or candidate.harness in policy.local_models.harnesses
+
+
 def _filter(
     candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy,
-    *, respect_reserved: bool = True,
+    *, respect_reserved: bool = True, local_gate: bool = True, kind: str | None = None,
 ) -> tuple[list[Candidate], str | None]:
-    """Step 2's removals, returning the survivors and why the list emptied."""
+    """Step 2's removals, returning the survivors and why the list emptied.
+
+    ``local_gate=False`` is for an allowlisted benchmark arm, which names its
+    harness explicitly.
+    """
+    local_refused = local_gate and local_refusal(task, policy, kind) is not None
     stages = (
         ("reserved", lambda c: not respect_reserved or not _reserved_away(policy, c)),
         ("excluded_providers", lambda c: c.provider not in task.exclude_providers),
@@ -444,6 +489,7 @@ def _filter(
             lambda c: not task.preferred_provider or c.provider == task.preferred_provider,
         ),
         ("workspace_requirement", lambda c: not task.needs_task_lifecycle or c.lifecycle != "pool"),
+        ("local_model_gate", lambda c: not local_refused or not is_local(c, policy)),
     )
     reason = None if candidates else "no_worker_candidates"
     for name, keep in stages:
@@ -459,7 +505,7 @@ def _candidate(profile: ProfileFacts, class_id: str, *, tier: str, lane: str | N
     return Candidate(
         profile_id=profile.id, intelligence_class=class_id, harness=profile.harness,
         provider=profile.provider, lifecycle=profile.lifecycle, tier=tier, lane=lane, hold=hold,
-        preferred_hosted=preferred_hosted,
+        preferred_hosted=preferred_hosted, local=profile.local,
     )
 
 
@@ -494,7 +540,7 @@ def _candidates(
             )
             for profile in cells
         ]
-        found, reason = _filter(found, task, policy)
+        found, reason = _filter(found, task, policy, kind=rule.kind)
         ordered = sorted(found, key=_order_key(policy, lane))
         preferred = [c for c in ordered if c.tier == PREFERRED]
         fallback = [c for c in ordered if c.tier == FALLBACK]
@@ -507,7 +553,7 @@ def _candidates(
             snapshot, rule.class_id, None, exclude=policy.narrow_harnesses()
         )
     ]
-    general, reason = _filter(general, task, policy)
+    general, reason = _filter(general, task, policy, kind=rule.kind)
     general.sort(key=_order_key(policy, None))
 
     preferred: list[Candidate] = []
@@ -521,7 +567,7 @@ def _candidates(
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
                 for profile in _cells(snapshot, mapped, frozenset(lane.harnesses))
             ]
-            lane_cells, _reason = _filter(lane_cells, task, policy)
+            lane_cells, _reason = _filter(lane_cells, task, policy, kind=rule.kind)
             lane_cells.sort(key=_order_key(policy, lane))
             if flags is None:
                 potential.extend(lane_cells)
@@ -771,7 +817,9 @@ def plan_route(
             _candidate(profile, arm.class_, tier=PREFERRED, lane=None, hold=True)
             for profile in _cells(snapshot, arm.class_, frozenset({arm.harness}))
         ]
-        candidates, reason = _filter(candidates, task, policy, respect_reserved=False)
+        candidates, reason = _filter(
+            candidates, task, policy, respect_reserved=False, local_gate=False,
+        )
         if not candidates:
             return PlanResult("no_candidates", {
                 "task_id": task.task_id, "reason": reason or "no_worker_candidates",

@@ -162,6 +162,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_input": SessionInputResponse,
     "session_logs": SessionLogsResponse,
     "session_kill": SessionKillResponse,
+    "session_prune": SessionKillResponse,
     "session_sleep": SessionDesiredStateResponse,
     "session_wake": SessionDesiredStateResponse,
     "session_token": SessionTokenResponse,

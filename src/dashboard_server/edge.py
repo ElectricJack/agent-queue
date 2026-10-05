@@ -24,14 +24,11 @@ import ipaddress
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs
 
 from src.dashboard_server.settings import DashboardServerSettings, normalise_origin
 
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::"})
 _BEARER_PREFIX = "aq-bearer."
-_TERMINAL_PREFIX = "/ws/terminal/"
-_HOST_SHELL_PATH = "/api/host-shell"
 _TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 _TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
@@ -189,43 +186,16 @@ class EdgeGate:
             return EdgeDenial(
                 403,
                 "loopback_only",
-                "Remote terminals and access checks require an origin listed in "
-                "api_auth.trusted_dashboard_origins. Bearer-token requests require a local "
-                "connection. Use a trusted dashboard origin or forward the port over SSH.",
+                "Bearer-token requests require a local connection. Use the dashboard or "
+                "forward the port over SSH.",
             )
         return None
 
     def _needs_loopback(self, scope: dict[str, Any], origin: str | None) -> bool:
+        """Bearer-token requests stay local; browser sessions may connect from anywhere."""
         if _headers(scope, b"authorization"):
             return True
-        if any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope)):
-            return True
-        path = scope.get("path", "")
-        if path == _HOST_SHELL_PATH or path.startswith(_HOST_SHELL_PATH + "/"):
-            # Remote code execution by design: a trusted origin or loopback only.
-            return origin not in self._trusted
-        if path == _TERMINAL_PREFIX.rstrip("/") or path.startswith(_TERMINAL_PREFIX):
-            if scope.get("type") == "websocket":
-                return origin not in self._trusted
-            session_id = path.removeprefix(_TERMINAL_PREFIX)
-            if (
-                scope.get("type") == "http" and scope.get("method") == "GET"
-                and path.startswith(_TERMINAL_PREFIX) and session_id and "/" not in session_id
-            ):
-                return (origin or self._probe_origin(scope)) not in self._trusted
-            return True
-        return False
-
-    @staticmethod
-    def _probe_origin(scope: dict[str, Any]) -> str | None:
-        """Match the daemon's origin fallback for an HTTP diagnostic without Origin."""
-        query = parse_qs(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
-        origins = query.get("browser_origin")
-        if origins is not None:
-            return normalise_origin(origins[0]) if len(origins) == 1 and origins[0] else None
-        # Host syntax and multiplicity have already passed the Host gate.
-        host = _headers(scope, b"host")[0]
-        return normalise_origin(f"{scope.get('scheme', 'http')}://{host}")
+        return any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope))
 
 
 def _subprotocols(scope: dict[str, Any]) -> Iterable[str]:

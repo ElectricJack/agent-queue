@@ -1527,6 +1527,36 @@ messages = Table(
     Index("idx_messages_thread_sequence", "project_id", "thread_id", "created_seq"),
 )
 
+#: The closed reasons an incident's ``outcome`` may name: ``human`` for one a
+#: person closed, and otherwise the §5.5 rule that closed it on its own.  It is
+#: a check-constrained vocabulary rather than free text so the collapsed post's
+#: "why is this gone" line and the sweep's audit trail can both be read back
+#: without parsing prose.
+ESCALATION_OUTCOMES = (
+    "human",
+    "gate_resolved",
+    "notice_delivered",
+    "supervisor_started",
+    "task_terminal",
+    "stale_expired",
+    "sweep",
+)
+
+#: Who authored a row in an incident's thread: ``inbound`` for a verified human
+#: reply, ``outbound`` for the supervisor answering in the thread, ``system``
+#: for the daemon writing its own audit note into the history.  A check-constrained
+#: vocabulary because the three are read apart in three places -- an inbound row
+#: is what moves an incident to §5.2's ``answered`` form and triggers an ack,
+#: an outbound row is the only one relayed into the channel thread
+#: (``src/escalations/plan.py``), and a ``system`` row is neither: it records why
+#: the daemon closed something without anybody speaking (spec §5.6's sweep audit
+#: trail).
+ESCALATION_MESSAGE_DIRECTIONS = (
+    "inbound",
+    "outbound",
+    "system",
+)
+
 # Transport-neutral human escalation state.  ``task_id`` and the source
 # identifiers are deliberately soft references: an escalation is an incident
 # record and must remain usable after its source task/session is archived or
@@ -1552,6 +1582,12 @@ escalations = Table(
     Column("revision", Integer, nullable=False, server_default="0"),
     Column("terminal_outcome", Text, nullable=True),
     Column("terminal_evidence", JSON, nullable=True),
+    # Which §5.5 rule closed the incident, and when its channel post was last
+    # edited into the collapsed one-line form.  Both are additive: an incident
+    # that predates the stateful-escalations phase has NULL for each and keeps
+    # the create-only post behaviour.
+    Column("outcome", Text, nullable=True),
+    Column("collapsed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("terminal_at", Float, nullable=True),
@@ -1595,6 +1631,21 @@ escalations = Table(
         "AND terminal_at IS NOT NULL AND terminal_outcome IS NOT NULL)",
         name="ck_escalations_terminal_state",
     ),
+    CheckConstraint(
+        "outcome IS NULL OR outcome IN ("
+        + ", ".join(f"'{o}'" for o in ESCALATION_OUTCOMES)
+        + ")",
+        name="ck_escalations_outcome",
+    ),
+    # A collapsed post is a closed incident's post, so the two are the same
+    # fact.  This is what makes "already collapsed" an idempotency check rather
+    # than a guess about the channel.  It does *not* require every closed
+    # incident to be stamped: an incident closed before this phase (or one whose
+    # post never reached the channel) has NULL and reads as never collapsed.
+    CheckConstraint(
+        "collapsed_at IS NULL OR state IN ('resolved','cancelled','stale')",
+        name="ck_escalations_collapsed",
+    ),
     Index("idx_escalations_project_state", "project_id", "state", "updated_at"),
     Index("idx_escalations_task", "task_id", "created_at"),
 )
@@ -1627,7 +1678,7 @@ escalation_messages = Table(
         name="uq_escalation_messages_external",
     ),
     CheckConstraint(
-        "direction IN ('inbound','outbound')",
+        "direction IN (" + ",".join(f"'{d}'" for d in ESCALATION_MESSAGE_DIRECTIONS) + ")",
         name="ck_escalation_messages_direction",
     ),
     CheckConstraint(
@@ -1758,11 +1809,14 @@ escalation_deliveries = Table(
     Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
 )
 
-# An operator @mention of the bot opens one conversation with the global
-# supervisor (Discord mention-routing spec §4.1).  The root message and, once
-# the thread-open delivery confirms, the external thread are each unique per
-# transport; ``thread_id`` is the internal ``messages.thread_id`` both
-# directions of the conversation share.
+# An operator message opens one conversation with the supervisor (Discord
+# mention-routing spec §4.1, chat-extension spec §2.2).  The root message and,
+# once the thread-open delivery confirms, the external thread are each unique
+# per transport; ``thread_id`` is the internal ``messages.thread_id`` both
+# directions of the conversation share.  ``kind`` says which conversation this
+# is: ``thread`` is one conversation per opened thread, ``channel`` is the one
+# conversation a channel carries for the no-mention route, so a channel can
+# never accumulate two of them while one is still live.
 supervisor_conversations = Table(
     "supervisor_conversations",
     metadata,
@@ -1776,6 +1830,7 @@ supervisor_conversations = Table(
     Column("created_by", Text, nullable=False),  # human:discord:<id>
     Column("audience", JSON, nullable=False),  # allowlist snapshot at open
     Column("state", Text, nullable=False, server_default="opening"),
+    Column("kind", Text, nullable=False, server_default="thread"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("closed_at", Float, nullable=True),
@@ -1790,10 +1845,18 @@ supervisor_conversations = Table(
         unique=True,
         postgresql_where=text("external_thread_id IS NOT NULL"),
     ),
+    Index(
+        "uq_supervisor_conversations_channel",
+        "transport",
+        "channel_id",
+        unique=True,
+        postgresql_where=text("kind = 'channel' AND state <> 'closed'"),
+    ),
     CheckConstraint(
         "state IN ('opening','open','closed','delivery_blocked')",
         name="ck_supervisor_conversations_state",
     ),
+    CheckConstraint("kind IN ('thread','channel')", name="ck_supervisor_conversations_kind"),
     Index("idx_supervisor_conversations_state", "state", "updated_at"),
 )
 
@@ -1958,7 +2021,11 @@ supervisor_report_requests = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
-    CheckConstraint("kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"),
+    # ``digest`` is the supervisor-authored digest window (2026-10-03 §4, P3):
+    # one author request per digest window, same lifecycle, no new columns.
+    CheckConstraint(
+        "kind IN ('hourly','morning','digest')", name="ck_supervisor_report_requests_kind"
+    ),
     CheckConstraint(
         "state IN ('reserved','requested','submitted','fallback','cancelled')",
         name="ck_supervisor_report_requests_state",
@@ -3004,6 +3071,10 @@ integration_branch_owners = Table(
     Column("id", Text, primary_key=True),
     Column("repository_id", Text, nullable=False),
     Column("ref", Text, nullable=False),
+    # Git-first authority. NULL fence identifies an untouched shadow/legacy row.
+    # Legacy columns remain readable until the schema retirement stage.
+    Column("holder", Text, nullable=True),
+    Column("fence", BigInteger, nullable=True),
     Column("owner_id", Text, nullable=False),
     Column("owner_role", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
@@ -3016,6 +3087,11 @@ integration_branch_owners = Table(
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
     CheckConstraint("fence_token >= 0", name="ck_integration_branch_owners_fence"),
+    CheckConstraint("fence IS NULL OR fence >= 0", name="ck_integration_branch_owners_lease_fence"),
+    CheckConstraint(
+        "holder IS NULL OR (fence IS NOT NULL AND expires_at IS NOT NULL)",
+        name="ck_integration_branch_owners_lease_binding",
+    ),
     CheckConstraint(
         "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
         name="ck_integration_branch_owners_handoff_state",

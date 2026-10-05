@@ -25,6 +25,13 @@ Two layers, both derived from the real sources rather than a hand list:
    validation error the agent cannot fix by changing its arguments.  The set of
    such commands is derived from the source, so the guard survives new
    registrations.
+
+4. **The commands the gate cannot pin.** A per-project elevated token is
+   enforced two ways — a contract that declares ``project_id``, or a resolvable
+   target for :mod:`src.api.target_scope` — and a command with neither gets
+   neither.  Layer 1d derives that set from the shipped supervisor grants, the
+   contract registry and the argument schemas, and dispatches each
+   session-addressing member against another project's session.
 """
 
 from __future__ import annotations
@@ -338,6 +345,208 @@ def test_local_scope_bypasses_the_gate_entirely():
     args = {"task_id": "t2", "project_id": "p2"}
     assert check_command_scope("delete_task", args, RequestScope(kind="local")) is None
     assert args == {"task_id": "t2", "project_id": "p2"}
+
+
+# ---------------------------------------------------------------------------
+# Layer 1d — the commands the per-project gate cannot pin
+# ---------------------------------------------------------------------------
+
+#: ``check_command_scope`` enforces ``project_id`` for a per-project elevated
+#: token in one of two ways: a command whose contract declares the field is
+#: pinned by injection, and a contractless one is checked by resolving the
+#: target it names (:mod:`src.api.target_scope`).  An *unregistered* command
+#: gets neither: :func:`src.api.scope._forbids_project_id` is False for it, so
+#: the gate injects ``project_id`` on the assumption that the handler reads
+#: it.  Isolation for those commands is the handler's own job, and the
+#: supervisor grant is what makes them reachable at all from a token that is
+#: trusted for one project only.
+#:
+#: Derived from three sources rather than listed, so a new grant, a new
+#: contract or a new schema moves the set with it: the shipped supervisor
+#: profile's ``aq_commands``, the contract registry, and the argument schema
+#: every transport resolves (``_ALL_TOOL_DEFINITIONS`` plus the fallback
+#: schemas ``session_*`` lives in).
+_SESSION_TARGET = "session_id"
+
+#: In the derived set, but names no row the caller chooses: ``_cmd_prime``
+#: reads the *authenticated scope's* own ``session_id`` (``surface_commands``)
+#: and never ``args``, so there is no cross-project target to refuse.  Stated
+#: here rather than filtered silently, and the dispatch below covers the rest.
+_SCOPE_DERIVED_IDENTITY = {"prime"}
+
+
+def _supervisor_granted_commands() -> frozenset[str]:
+    """The commands the shipped supervisor profile grants."""
+    from pathlib import Path
+
+    from src.profiles.drift import shipped_profile_path
+    from src.profiles.parser import parse_profile
+
+    text = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.capabilities is not None
+    return frozenset(parsed.capabilities["aq_commands"])
+
+
+def _argument_properties() -> dict[str, set[str]]:
+    """Command -> the argument names its schema declares, every transport's view."""
+    from src.mcp_registration import _discover_all_commands, effective_tool_definitions
+
+    properties: dict[str, set[str]] = {}
+    for definition in (*effective_tool_definitions(), *_discover_all_commands().values()):
+        properties.setdefault(definition["name"], set()).update(
+            (definition.get("input_schema") or {}).get("properties", {})
+        )
+    return properties
+
+
+def _unpinnable_target_commands() -> dict[str, frozenset[str]]:
+    """The gap class: command -> the project-owned targets its schema names.
+
+    Every member is granted to the supervisor, has no contract registration,
+    and names at least one target reference — so a per-project supervisor token
+    can point it at another project's row and nothing in the scope layer reads
+    the ``project_id`` it injects.  Some of those targets
+    :mod:`src.api.target_scope` could resolve (``task_id``, ``session_id``,
+    ``batch_id``), which is exactly what makes their absence a gap rather than
+    a limitation; the rest are fenced in-handler by other means.
+    """
+    from src.api.target_scope import TARGET_REFERENCE_NAMES
+    from src.commands.contracts import CONTRACTS
+
+    properties = _argument_properties()
+    found: dict[str, frozenset[str]] = {}
+    for command in sorted(_supervisor_granted_commands()):
+        if CONTRACTS.get(command) is not None:
+            continue
+        names = properties.get(command, set())
+        targets = frozenset(
+            name
+            for name in names
+            # ``project_id`` is what the gate injects, never a caller-named row.
+            if name != "project_id"
+            and (name.endswith("_id") or name in TARGET_REFERENCE_NAMES)
+        )
+        if targets:
+            found[command] = targets
+    return found
+
+
+def _unpinnable_session_commands() -> frozenset[str]:
+    """The subset of :func:`_unpinnable_target_commands` that names a session.
+
+    Each member takes a ``session_id`` — which ``_resolve_session`` also
+    answers for a unique id prefix, a name or a task — while ``session_id``
+    *is* a registered target resolver, so nothing pins it and each handler has
+    to fence the resolved session against the caller's own project.
+    """
+    return frozenset(
+        command
+        for command, targets in _unpinnable_target_commands().items()
+        if _SESSION_TARGET in targets and command not in _SCOPE_DERIVED_IDENTITY
+    )
+
+
+def _dispatchable_session_commands() -> list[str]:
+    """The derived session subset, as a non-empty list of real commands."""
+    derived = _unpinnable_session_commands()
+    assert derived, "the unpinnable-session derivation found nothing; it cannot be trusted"
+    return sorted(derived)
+
+
+def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
+    """Guard the guard, and name the finding in one place.
+
+    ``session_kill`` and ``provider_reroute_undo`` were each reachable from a
+    supervisor of project A and acted on project B's rows.  The sibling task
+    ``quick-crest-28`` owns ``provider_reroute_undo``'s handler fence; this
+    file pins that both commands are in the derived gap class, and dispatches
+    only the session family, which is what this task owns.
+    """
+    from src.api.target_scope import TARGET_RESOLVERS
+
+    gap = _unpinnable_target_commands()
+
+    assert {"session_kill", "provider_reroute_undo"} <= set(gap)
+    # Each names a target the scope layer could have resolved, so registering a
+    # contract (declaring no ``project_id``) would hand it to
+    # ``target_scope_error`` instead of leaving it to the handler.
+    for command in ("session_kill", "provider_reroute_undo"):
+        assert gap[command] & set(TARGET_RESOLVERS), command
+    # The whole session family the derivation reaches, so a new unfenced
+    # session command cannot appear without this test noticing.
+    assert _dispatchable_session_commands() == [
+        "session_drain_ack", "session_kill", "session_logs", "session_peek",
+    ]
+
+
+@pytest.fixture
+async def matrix_foreign_session(command_handler_factory):
+    """A live project-B session for the project-A supervisor token below."""
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p1", name="One", repo_url=""))
+    await db.create_project(Project(id="p2", name="Two", repo_url=""))
+    await db.create_task(Task(id="t1", project_id="p1", title="own", description=""))
+    await db.create_task(Task(id="t2", project_id="p2", title="foreign", description=""))
+    await db.create_session(
+        SessionRecord(
+            id="s2",
+            project_id="p2",
+            profile_id="generic",
+            harness="claude",
+            provider="anthropic",
+            name="n-s2",
+            lifecycle="pool",
+            work_dir="/tmp/ws",
+            epoch="e1",
+            instance_token="tok-s2",
+            started_at=time.time(),
+            task_id="t2",
+            state="running",
+            desired_state="running",
+        )
+    )
+    return handler, "s2"
+
+
+@pytest.mark.parametrize("command", _dispatchable_session_commands())
+async def test_a_project_supervisor_cannot_reach_another_projects_session(
+    command, matrix_foreign_session
+):
+    """(d″) The per-project elevation a supervisor token carries, end to end.
+
+    ``session_kill`` stops a worker, ``session_peek`` reads its output,
+    ``session_drain_ack`` asks for its teardown and ``session_logs`` reads its
+    transcript; all four resolve their argument the same way, so each is
+    dispatched here the way the file under test resolves it, against a session
+    belonging to the *other* project.  The refusal has to arrive before
+    anything is read, written or signalled — hence the unchanged row.
+
+    Handlers are called directly with ``_current_scope`` set rather than
+    through ``execute``: its capability gate resolves the principal from the
+    session row, and a scope naming a session that does not exist fails closed
+    to ``DENY_ALL`` before the fence is reached.  The fence under test reads
+    nothing else.
+    """
+    handler, session_id = matrix_foreign_session
+
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": "supervisor-p1",
+        "task_id": None,
+        "project_id": "p1",
+        "elevated": True,
+    }
+    try:
+        result = await getattr(handler, f"_cmd_{command}")({"session_id": session_id})
+    finally:
+        handler._current_scope = None
+
+    assert result.get("success") is not True, result
+    assert "out of scope" in result.get("error", ""), result
+    row = await handler.db.get_session(session_id)
+    assert (row.state, row.desired_state) == ("running", "running")
 
 
 # ---------------------------------------------------------------------------

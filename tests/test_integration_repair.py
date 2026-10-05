@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -19,6 +20,7 @@ from src.database.tables import (
     integration_candidate_publications,
     integration_candidate_revisions,
     integration_check_evidence,
+    integration_child_dispositions,
     integration_operation_artifact_pins,
     integration_outbox,
     integration_parent_episodes,
@@ -30,6 +32,7 @@ from src.database.tables import (
     messages,
     playbook_artifacts,
     sessions,
+    task_completion_records,
     task_branch_origins,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -1689,21 +1692,483 @@ async def test_continuous_unchanged_head_stops_once_with_supervisor_dossier(db, 
         assert owner["handoff_state"] == "reserved"
 
 
-async def _continuous_parent_stage(db, *, owner_recovery=None):
+async def _continuous_parent_stage(db, *, owner_recovery=None, starting_sha=STARTING_SHA):
     """A continuing parent ladder at stage 0 with its delegate dispatched (deadline 130)."""
     from src.integration.repair import RepairService
 
     policy = _policy()
     policy["parent"]["repair"]["on_exhausted"] = "continue"
-    await _seed_parent_operation(db, policy=policy)
+    await _seed_parent_operation(db, policy=policy, starting_sha=starting_sha)
     await BranchOwnership(db).acquire(
         BranchKey(repository_id="repo", branch="aq/parent"), "operation", "collector"
     )
     service = RepairService(db, clock=lambda: 150.0, owner_recovery=owner_recovery)
-    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await service.start("operation", starting_sha, "failed-check", now=100.0)
     dispatched = await service.dispatch("operation", 0)
     assert dispatched["outcome"] == "dispatched"
     return service, dispatched["repair_task_id"]
+
+
+async def _closed_green_parent(db, *, ordinal=1, head=STARTING_SHA, escalated=False, evidence_values=None):
+    """A PASS no-op delegate with newer exact-head green over an earlier red."""
+    service, delegate = await _continuous_parent_stage(db, starting_sha=head)
+    original = await _repair_stage(db, "operation", 0)
+    subject = {"kind": "parent", "generation": 3, "head_sha": head}
+    dossier = dict(original["dossier"])
+    dossier["repair_commits"] = [head]
+    dossier["branch_sha"] = head
+    if escalated:
+        dossier["supervisor_recovery"] = {
+            "incident_id": f"repair-no-progress:operation:{ordinal}",
+            "subject": subject, "recorded_at": 135.0,
+        }
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == delegate).values(
+            status="COMPLETED", assigned_agent_id=None, claim_epoch=1,
+        ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent"
+        ).values(checkpoint_sha=head))
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation",
+            integration_repair_stages.c.ordinal == 0,
+        ).values(state="expired", repair_task_id=None, writer_kind=None,
+                 dossier=dict(original["dossier"]) | {"repair_commits": [head] if ordinal == 1 else []}))
+        if ordinal == 2:
+            await conn.execute(insert(integration_repair_stages).values(
+                **(original | {"ordinal": 1, "current_subject": subject,
+                    "deadline_event_id": "repair-deadline-operation-1", "state": "expired",
+                    "repair_task_id": None, "writer_kind": None,
+                    "dossier": dict(original["dossier"]) | {"repair_commits": [head]}})
+            ))
+        await conn.execute(insert(integration_repair_stages).values(
+            **(original | {"ordinal": ordinal, "current_subject": subject,
+                          "deadline_event_id": f"repair-deadline-operation-{ordinal}",
+                          "state": "expired" if escalated else "active", "dossier": dossier})
+        ))
+        await conn.execute(update(integration_branch_owners).values(fence_token=3))
+        await conn.execute(insert(task_completion_records).values(
+            id="noop-completion", task_id=delegate, outcome="pass", branch="aq/parent",
+            commits="[]", completed_at=124.0,
+        ))
+        await conn.execute(insert(task_metadata).values(
+            task_id=delegate, key="accepted_close", value=json.dumps({
+                "completion_id": "noop-completion", "session_id": "closing-session", "claim_epoch": 1,
+            }),
+        ))
+        await conn.execute(insert(integration_outbox).values(
+            id="noop-close-audit", dedup_key="noop-close-audit", project_id="p",
+            event_type="integration.repair_delegate_closed", created_at=123.0,
+            available_at=123.0, payload={"operation_id": "operation", "stage": ordinal,
+                "task_id": delegate, "session_id": "closing-session", "instance_token": "instance",
+                "workspace_id": "closing-workspace", "fence_token": 2},
+        ))
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.id == "operation"
+        ).values(active_stage=ordinal, state="escalated" if escalated else "active"))
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(**({
+            "id": "green-noop", "operation_id": "operation", "parent_task_id": "parent",
+            "parent_generation": 3, "parent_head_sha": head, "producer_id": "forge",
+            "workflow_id": "workflow", "run_id": "green-run", "attempt": 1,
+            "required_check_version": "checks-v1", "checks": {"unit": "success"},
+            "classification": "conclusive", "conclusion": "success", "observed_at": 125.0,
+        } | (evidence_values or {}))))
+    service._promotion = SimpleNamespace(
+        _resolve_repository=AsyncMock(return_value=SimpleNamespace(
+            retained_git_dir="/tmp/retained", origin_url="/tmp/origin", repo=SimpleNamespace(default_branch="main"))),
+        _ensure_retained_repository=AsyncMock(),
+        git=SimpleNamespace(als_remote_ref=AsyncMock(return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=head))),
+    )
+    return service, delegate, subject
+
+
+async def _apply_noop_preview(service, preview):
+    return await service.reevaluate(
+        preview["operation_id"], dry_run=False, expected_subject=preview["subject"],
+        expected_episode_id=preview["episode_id"], expected_generation=preview["generation"],
+        expected_stage=preview["stage"], expected_fence_token=preview["fence_token"],
+        expected_snapshot_digest=preview["snapshot_digest"],
+        reason="Reviewed exact no-op repair",
+    )
+
+
+@pytest.mark.parametrize("ordinal,head", [
+    (1, "37eec020a93d30149f2cecaba5dbe5772d198389"),
+    (2, "c77247f6ecc780f77672dff106f7ed47350a279b"),
+])
+@pytest.mark.parametrize("entry", ["dispatch", "expiry", "recovery"])
+async def test_completed_noop_on_exact_green_head_passes_without_no_progress(db, ordinal, head, entry):
+    service, delegate, subject = await _closed_green_parent(
+        db, ordinal=ordinal, head=head, escalated=entry == "recovery",
+    )
+    before = await _repair_stage(db, "operation", ordinal)
+    if entry == "dispatch":
+        result = await service.dispatch("operation", ordinal)
+        assert result["reason"] == "trusted_green_subject"
+    elif entry == "expiry":
+        result = await service.expire("operation", ordinal, now=150.0)
+        assert result["action"] == "none"
+    else:
+        preview = await service.reevaluate("operation")
+        assert preview["outcome"] == "would_reevaluate", preview
+        assert await _repair_stage(db, "operation", ordinal) == before
+        result = await _apply_noop_preview(service, preview)
+        assert result["outcome"] == "reevaluated"
+    stage = await _repair_stage(db, "operation", ordinal)
+    assert (stage["state"], stage["attempts"], stage["deadline_at"]) == (
+        "passed", 1, before["deadline_at"],
+    )
+    assert stage["dossier"]["green_subject_verification"]["evidence_ids"] == ["green-noop"]
+    assert stage["dossier"]["completed_delegate_attempts"] == [
+        {"task_id": delegate, "claim_epoch": 1, "recorded_at": 150.0},
+    ]
+    assert (await db.get_integration_operation("operation"))["state"] == "active"
+    assert (await db.get_integration_operation("operation"))["verifier_task_id"]
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+    assert await _ordinals(db) == list(range(ordinal + 1))
+    assert await _notices(db, "integration_repair_no_progress") == []
+    if entry == "recovery":
+        assert stage["dossier"]["supervisor_recovery"] == before["dossier"]["supervisor_recovery"]
+    assert (await service.reevaluate("operation", expected_subject=subject))["outcome"] == "already_settled"
+    assert (await _repair_stage(db, "operation", ordinal))["attempts"] == 1
+
+
+@pytest.mark.parametrize("invalid", [
+    "missing", "wrong_head", "wrong_generation", "wrong_producer", "wrong_version",
+    "partial", "infrastructure", "newer_red", "cancelled", "held", "human_gate",
+    "live_writer", "canonical_head_moved", "not_completed", "unresolved_write",
+    "incomplete_audit", "incomplete_accepted_close", "nonpass", "committed_completion",
+    "introduced_commit", "remote_moved", "locked_workspace", "live_session", "other_incident",
+])
+async def test_noop_recovery_refuses_incomplete_stale_or_blocked_green(db, invalid):
+    from src.database.tables import gates, task_gates
+
+    values = {
+        "missing": {"checks": {"unit": "missing"}},
+        "wrong_head": {"parent_head_sha": "d" * 40},
+        "wrong_generation": {"parent_generation": 2},
+        "wrong_producer": {"producer_id": "untrusted"},
+        "wrong_version": {"required_check_version": "old"},
+        "partial": {"checks": {}},
+        "infrastructure": {"classification": "infrastructure"},
+        "newer_red": {"conclusion": "failure", "checks": {"unit": "failure"}},
+        "cancelled": {"conclusion": "cancelled", "checks": {"unit": "cancelled"}},
+    }
+    service, delegate, subject = await _closed_green_parent(
+        db, escalated=True, evidence_values=values.get(invalid),
+    )
+    async with db.immediate() as conn:
+        if invalid == "held":
+            await conn.execute(insert(task_metadata).values(
+                task_id="parent", key="manual_pause", value="operator hold",
+            ))
+        if invalid == "human_gate":
+            await conn.execute(insert(gates).values(
+                id="hold", project_id="p", gate_type="human", title="Decision", created_at=1.0,
+            ))
+            await conn.execute(insert(task_gates).values(task_id="parent", gate_id="hold"))
+        if invalid == "live_writer":
+            await conn.execute(update(integration_branch_owners).values(handoff_state="handoff_pending"))
+        if invalid == "canonical_head_moved":
+            await conn.execute(update(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == "parent"
+            ).values(checkpoint_sha="e" * 40))
+        if invalid == "not_completed":
+            await conn.execute(update(tasks).where(tasks.c.id == delegate).values(status="READY"))
+        if invalid == "unresolved_write":
+            await conn.execute(insert(integration_promotion_intents).values(
+                id="pending", domain_key="pending", operation_key="operation", project_id="p",
+                receipt_id="pending-receipt", source_task_id="child", target_task_id="parent",
+                source_head="b" * 40, source_base="c" * 40, repository_id="repo",
+                target_branch="aq/parent", expected_target=STARTING_SHA,
+                fence_owner_id=delegate, fence_token=2, state="conflict", created_at=1.0, updated_at=1.0,
+            ))
+        if invalid == "incomplete_audit":
+            await conn.execute(update(integration_outbox).where(
+                integration_outbox.c.id == "noop-close-audit"
+            ).values(payload={"operation_id": "operation", "stage": 1, "task_id": delegate}))
+        if invalid == "incomplete_accepted_close":
+            await conn.execute(update(task_metadata).where(task_metadata.c.key == "accepted_close")
+                               .values(value="{}"))
+        if invalid in {"nonpass", "committed_completion"}:
+            await conn.execute(update(task_completion_records).values(
+                **({"outcome": "fail"} if invalid == "nonpass" else {"commits": json.dumps([STARTING_SHA])})
+            ))
+        if invalid in {"introduced_commit", "other_incident"}:
+            changed = dict((await _repair_stage(db, "operation", 1))["dossier"])
+            if invalid == "introduced_commit":
+                changed["repair_commits"] = [STARTING_SHA, "f" * 40]
+            else:
+                changed["supervisor_recovery"] = {"incident_id": "other-incident"}
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.ordinal == 1
+            ).values(dossier=changed))
+        if invalid == "locked_workspace":
+            await conn.execute(insert(workspaces).values(
+                id="locked", project_id="p", workspace_path="/tmp/locked", source_type="link",
+                locked_by_task_id=delegate, enabled=True, created_at=1.0,
+            ))
+    if invalid == "live_session":
+        await db.create_session(SessionRecord(
+            id="still-live", task_id=delegate, project_id="p", profile_id="repairer", harness="fake",
+            provider="fake", name="still-live", lifecycle="task", state="running", work_dir="/tmp/still-live",
+            epoch="epoch", instance_token="live", started_at=120.0,
+        ))
+    if invalid == "remote_moved":
+        service._promotion.git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid="f" * 40)
+    before = await _repair_stage(db, "operation", 1)
+    result = await service.reevaluate("operation", expected_subject=subject)
+    assert result["outcome"] == "blocked"
+    assert await _repair_stage(db, "operation", 1) == before
+    assert (await db.get_integration_operation("operation"))["state"] == "escalated"
+
+
+async def test_noop_recovery_requires_green_coverage_across_latest_workflows(db):
+    service, _delegate, subject = await _closed_green_parent(db, escalated=True)
+    operation = await db.get_integration_operation("operation")
+    policy = dict(operation["policy_snapshot"])
+    policy["parent"]["required_checks"]["names"] = ["unit", "lint"]
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(policy_snapshot=policy))
+    assert (await service.reevaluate("operation", expected_subject=subject))["outcome"] == "blocked"
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_check_evidence).values(
+            id="green-lint", operation_id="operation", parent_task_id="parent", parent_generation=3,
+            parent_head_sha=STARTING_SHA, producer_id="forge", workflow_id="lint-workflow",
+            run_id="lint-run", attempt=1, required_check_version="checks-v1",
+            checks={"lint": "success"}, conclusion="success", classification="conclusive", observed_at=126.0,
+        ))
+    preview = await service.reevaluate("operation")
+    accepted = await _apply_noop_preview(service, preview)
+    assert accepted["outcome"] == "reevaluated", accepted
+    assert accepted["evidence_ids"] == ["green-lint", "green-noop"]
+
+
+async def test_noop_recovery_accepts_the_same_full_and_short_branch_ref(db):
+    service, delegate, _subject = await _closed_green_parent(db, escalated=True)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == delegate).values(
+            branch_name="refs/heads/aq/parent",
+        ))
+        await conn.execute(update(task_completion_records).values(branch="refs/heads/aq/parent"))
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    assert (await _apply_noop_preview(service, preview))["outcome"] == "reevaluated"
+
+
+async def test_completed_delegate_is_counted_once_even_without_green_ci(db):
+    service, delegate = await _continuous_parent_stage(db)
+    await db.transition_task(delegate, TaskStatus.COMPLETED, force=True)
+    result = await service.dispatch("operation", 0)
+    assert result["stage"] == 1
+    primary = await _repair_stage(db, "operation", 0)
+    assert primary["attempts"] == 1
+    assert primary["dossier"]["budget"]["attempts"] == 1
+    await service.expire("operation", 0, now=200.0)
+    assert (await _repair_stage(db, "operation", 0))["attempts"] == 1
+
+
+@pytest.mark.parametrize("changed", ["head", "fence", "episode", "stage", "audit", "red"])
+async def test_noop_apply_reproves_preview_and_refuses_movement(db, changed):
+    service, _delegate, _subject = await _closed_green_parent(db, escalated=True)
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    async with db.immediate() as conn:
+        if changed == "head":
+            await conn.execute(update(task_integration_checkpoints).values(checkpoint_sha="f" * 40))
+        elif changed == "fence":
+            await conn.execute(update(integration_branch_owners).values(fence_token=4))
+        elif changed == "episode":
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="other-episode", parent_task_id="parent", repository_id="repo", generation=4,
+                pre_collection_checkpoint_sha=STARTING_SHA, created_at=130.0,
+            ))
+            await conn.execute(update(integration_repair_operations).values(episode_id="other-episode"))
+        elif changed == "stage":
+            current = await _repair_stage(db, "operation", 1)
+            await conn.execute(insert(integration_repair_stages).values(**(current | {
+                "ordinal": 2, "deadline_event_id": "repair-deadline-operation-2",
+            })))
+            await conn.execute(update(integration_repair_operations).values(active_stage=2))
+        elif changed == "audit":
+            await conn.execute(update(integration_outbox).where(
+                integration_outbox.c.id == "noop-close-audit",
+            ).values(created_at=123.5))
+        else:
+            await conn.execute(insert(integration_check_evidence).values(
+                id="late-red", operation_id="operation", parent_task_id="parent", parent_generation=3,
+                parent_head_sha=STARTING_SHA, producer_id="forge", workflow_id="workflow",
+                run_id="late-red", attempt=1, required_check_version="checks-v1",
+                checks={"unit": "failure"}, conclusion="failure", classification="conclusive", observed_at=140.0,
+            ))
+    before = await _repair_stage(db, "operation", 1)
+    result = await _apply_noop_preview(service, preview)
+    assert result["outcome"] in {"stale", "blocked"}, result
+    assert await _repair_stage(db, "operation", 1) == before
+
+
+@pytest.mark.parametrize("hold", ["manual", "gate", "workspace", "session"])
+async def test_noop_recovery_preserves_holds_on_previous_delegates(db, hold):
+    from src.database.tables import gates, task_gates
+
+    service, _delegate, _subject = await _closed_green_parent(db, escalated=True)
+    await db.create_task(Task(id="earlier-delegate", project_id="p", title="Earlier repair", description="",
+                              status=TaskStatus.COMPLETED))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.ordinal == 0,
+        ).values(repair_task_id="earlier-delegate", writer_kind="repair_delegate"))
+        if hold == "manual":
+            await conn.execute(insert(task_metadata).values(
+                task_id="earlier-delegate", key="manual_pause", value="hold",
+            ))
+        elif hold == "gate":
+            await conn.execute(insert(gates).values(
+                id="earlier-gate", project_id="p", gate_type="human", title="Hold", created_at=1.0,
+            ))
+            await conn.execute(insert(task_gates).values(task_id="earlier-delegate", gate_id="earlier-gate"))
+        elif hold == "workspace":
+            await conn.execute(insert(workspaces).values(
+                id="earlier-slot", project_id="p", workspace_path="/tmp/earlier", source_type="link",
+                locked_by_task_id="earlier-delegate", enabled=True, created_at=1.0,
+            ))
+    if hold == "session":
+        await db.create_session(SessionRecord(
+            id="earlier-session", task_id="earlier-delegate", project_id="p", profile_id="repairer",
+            harness="fake", provider="fake", name="earlier", lifecycle="task", state="running", work_dir="/tmp/earlier",
+            epoch="epoch", instance_token="earlier-instance", started_at=120.0,
+        ))
+    assert (await service.reevaluate("operation"))["outcome"] == "blocked"
+
+
+async def _stale_parent_noop(db):
+    service, delegate, subject = await _closed_green_parent(db, escalated=True)
+    await db.create_task(Task(id="terminal-child", project_id="p", title="Completed no-op", description="",
+                             parent_task_id="parent", status=TaskStatus.COMPLETED))
+    await db.create_session(SessionRecord(
+        id="stale-parent-holder", task_id="parent", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="drained-parent", lifecycle="pool",
+        state="stopped", desired_state="stopped", claim_phase="active", last_claim_epoch=1,
+        work_dir="/tmp/drained-parent", epoch="epoch", instance_token="drained-instance",
+        started_at=100.0, ended_at=120.0, end_reason="drained",
+    ))
+    service._owner_recovery = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "parent").values(
+            status="IN_PROGRESS", claim_epoch=1,
+        ))
+        await conn.execute(update(integration_branch_owners).values(
+            owner_id="operation", owner_role="collector",
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="child-origin", task_id="terminal-child", repository_id="repo",
+            parent_task_id="parent", parent_repository_id="repo", parent_ref="aq/parent",
+            base_sha=STARTING_SHA, creation_generation=3, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_child_dispositions).values(
+            parent_task_id="parent", child_task_id="terminal-child", revision=0,
+            disposition="noop", parent_operation_id="operation", parent_episode_id="episode",
+            updated_at=2.0,
+        ))
+        await conn.execute(insert(task_delivery_receipts).values(
+            id="child-noop", domain_key="child-noop", source_task_id="terminal-child",
+            target_task_id="parent", repository_id="repo", target_branch="aq/parent",
+            before_sha=STARTING_SHA, after_sha=STARTING_SHA, review_evidence={},
+            parent_operation_id="operation", parent_episode_id="episode", disposition="noop",
+            disposition_revision=0, resolution_evidence={"reason": "No change required"},
+            verification_evidence={"checks": "passed"}, created_at=2.0,
+        ))
+    return service, delegate, subject
+
+
+async def test_noop_recovery_releases_exact_stopped_parent_claim_before_fresh_verifier(db):
+    service, _delegate, _subject = await _stale_parent_noop(db)
+    after_release = db._after_release
+
+    async def committed_release(transition):
+        assert (await db.get_session("stale-parent-holder")).task_id is None
+        assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+        assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation"
+        await after_release(transition)
+
+    db._after_release = AsyncMock(side_effect=committed_release)
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    assert preview["planned_steps"][0] == "release_stale_parent_claim_to_paused_collection"
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+    result = await _apply_noop_preview(service, preview)
+    assert result["outcome"] == "reevaluated", result
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+    holder = await db.get_session("stale-parent-holder")
+    assert holder.task_id is None and holder.claim_phase is None
+    assert holder.state == "stopped" and holder.end_reason == "drained"
+    assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation"
+    service._owner_recovery.confirm_stopped.assert_awaited()
+    assert all(call.args[0]["instance_token"] == "drained-instance"
+               for call in service._owner_recovery.confirm_stopped.await_args_list)
+    assert (await _apply_noop_preview(service, preview))["outcome"] == "already_settled"
+    assert (await _repair_stage(db, "operation", 1))["attempts"] == 1
+    db._after_release.assert_awaited_once()
+
+
+@pytest.mark.parametrize("invalid", ["running", "epoch", "instance", "provider", "provider_error",
+                                    "workspace", "owner", "child"])
+async def test_noop_recovery_refuses_unproved_stale_parent_claim(db, invalid):
+    service, _delegate, _subject = await _stale_parent_noop(db)
+    async with db.immediate() as conn:
+        if invalid in {"running", "epoch", "instance"}:
+            values = {"running": {"state": "running"}, "epoch": {"last_claim_epoch": 2},
+                      "instance": {"instance_token": ""}}[invalid]
+            await conn.execute(update(sessions).where(sessions.c.id == "stale-parent-holder").values(**values))
+        elif invalid == "workspace":
+            await conn.execute(insert(workspaces).values(
+                id="stale-slot", project_id="p", workspace_path="/tmp/drained-parent",
+                source_type="link", enabled=True, created_at=1.0,
+            ))
+        elif invalid == "owner":
+            await conn.execute(update(integration_branch_owners).values(owner_id="different-operation"))
+        elif invalid == "child":
+            await conn.execute(update(tasks).where(tasks.c.id == "terminal-child").values(status="READY"))
+    if invalid == "provider":
+        service._owner_recovery.confirm_stopped.return_value = False
+    elif invalid == "provider_error":
+        service._owner_recovery.confirm_stopped.side_effect = RuntimeError("provider unavailable")
+    before = await _repair_stage(db, "operation", 1)
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "blocked", preview
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+    assert await _repair_stage(db, "operation", 1) == before
+
+
+async def test_noop_apply_refuses_stale_parent_instance_movement(db):
+    service, _delegate, _subject = await _stale_parent_noop(db)
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "stale-parent-holder").values(
+            instance_token="replacement-instance",
+        ))
+    result = await _apply_noop_preview(service, preview)
+    assert result["outcome"] == "stale", result
+    assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
+    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+
+
+async def test_noop_recovery_preserves_old_verifier_and_files_a_fresh_one(db):
+    service, _delegate, _subject = await _closed_green_parent(db, escalated=True)
+    await db.create_task(Task(id="verify-operation", project_id="p", title="Old verifier", description="",
+                              status=TaskStatus.FAILED))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(verifier_task_id="verify-operation"))
+    preview = await service.reevaluate("operation")
+    result = await _apply_noop_preview(service, preview)
+    assert result["outcome"] == "reevaluated", result
+    assert (await db.get_task("verify-operation")).status is TaskStatus.FAILED
+    assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation-g3"
+    assert (await _apply_noop_preview(service, preview))["outcome"] == "already_settled"
 
 
 async def _claimed_writer(db, task_id: str, *, epoch: int, live: bool, sid: str) -> None:
@@ -2776,6 +3241,56 @@ async def _record_root_green(db, service, operation_id, *, now=110.0):
         await conn.execute(update(integration_batches).values(
             tested_candidate_sha=STARTING_SHA, ci_evidence_id="root-green",
         ))
+
+
+async def test_batch_noop_green_keeps_the_normal_promotion_handoff(db):
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/integration/batch"), operation_id, "collector",
+    )
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    dispatched = await service.dispatch(operation_id, 0)
+    delegate = dispatched["repair_task_id"]
+    await db.transition_task(delegate, TaskStatus.COMPLETED, force=True)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_candidate_revisions).values(state="green", ci_evidence_id="root-green"))
+        await conn.execute(update(integration_batches).values(tested_candidate_sha=STARTING_SHA, ci_evidence_id="root-green"))
+        await conn.execute(update(integration_branch_owners).values(fence_token=3))
+        await conn.execute(insert(task_completion_records).values(
+            id="batch-noop-completion", task_id=delegate, outcome="pass", branch="aq/integration/batch",
+            commits="[]", completed_at=124.0,
+        ))
+        await conn.execute(insert(task_metadata).values(
+            task_id=delegate, key="accepted_close", value=json.dumps({
+                "completion_id": "batch-noop-completion", "session_id": "closing", "claim_epoch": 0,
+            }),
+        ))
+        await conn.execute(insert(integration_outbox).values(
+            id="batch-noop-close", dedup_key="batch-noop-close", project_id="p", created_at=123.0,
+            available_at=123.0, event_type="integration.repair_delegate_closed", payload={
+                "operation_id": operation_id, "stage": 0, "task_id": delegate,
+                "session_id": "closing", "workspace_id": "closed", "instance_token": "closed",
+                "fence_token": 2,
+            },
+        ))
+    service._promotion = SimpleNamespace(
+        _resolve_repository=AsyncMock(return_value=SimpleNamespace(
+            retained_git_dir="/tmp/retained", origin_url="/tmp/origin", repo=SimpleNamespace(default_branch="main"))),
+        _ensure_retained_repository=AsyncMock(),
+        git=SimpleNamespace(als_remote_ref=AsyncMock(return_value=RemoteRefResult(RemoteRefState.PRESENT, oid=STARTING_SHA))),
+    )
+    result = await service.expire(operation_id, 0, now=150.0)
+    assert result["action"] == "none", result
+    stage = await _repair_stage(db, operation_id, 0)
+    assert stage["state"] == "awaiting_completion"
+    assert stage["attempts"] == 1
+    assert (await db.get_integration_operation(operation_id))["state"] == "active"
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (operation_id, "collector", "reserved")
 
 
 @pytest.mark.parametrize("now", [110.0, 130.0, 131.0])
@@ -5640,6 +6155,9 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
     )
     assert closed["success"] is True, closed
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
+    completed_stage = await _repair_stage(handler.db, "operation", 0)
+    assert completed_stage["attempts"] == 1
+    assert completed_stage["dossier"]["completed_delegate_attempts"][0]["task_id"] == repair_task_id
     handler.orchestrator._run_completion_pipeline.assert_not_awaited()
     async with handler.db._engine.connect() as conn:
         close_events = (

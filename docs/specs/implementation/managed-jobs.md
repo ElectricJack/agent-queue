@@ -21,6 +21,13 @@ are inherited. This is separation on one OS account, not a sandbox.
 Publisher snapshots are standalone clones, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
+The server-owned E2E wrapper runs `scripts/e2e-env.sh --reset` followed by
+`scripts/e2e-smoke.sh` from the submitted workspace (`contract.cwd`), for both
+live trees and commit snapshots. Its own installed file location does not select
+the checkout under test. The scripts and their child processes run in the same
+checkout whose input identity the runner fingerprints and reports; a failed
+setup prevents smoke execution and either stage's exit code is preserved.
+
 Submission snapshots its validated contract, environment caps and deadlines.
 Reusing the same owner/idempotency key and request returns the original row;
 changing the request is refused. Quotas and output reservations serialize in

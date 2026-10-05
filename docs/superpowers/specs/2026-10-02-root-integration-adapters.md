@@ -152,3 +152,68 @@ CI registration seam. CLI transport is checked in `tests/test_cli_integration.py
 The affected integration area and adjacent promotion/repair checks are recorded
 on the task with their exact results. The operator's shadow week and live
 cutover scenarios remain production gates, not worker test results.
+
+## Candidate observation correction (2026-10-04)
+
+Reconciler-owned candidates read authenticated GitHub checks for the exact candidate
+SHA on every observation. The frozen batch policy supplies the required checks and
+producer; App credentials retain the existing exact-tree trust verification. Missing
+legacy evidence rows do not make these facts `none` or `pending`. Transport failures
+remain infrastructure facts and cannot reuse old green evidence. Shadow observation
+keeps the legacy snapshot path. Existing command-backed CI and promotion ports still
+own durable attestation and publication bookkeeping.
+
+Ancestry reads use the retained integration repository, where construction retains
+candidate and member objects, rather than the unrelated base checkout. Persistent
+`unknown-facts` decisions or observation failures become an error in `stall.sweep`
+after five minutes. The sweep reports the subject, batch and journal facts; it never
+changes ownership or overrides the policy's wait decision.
+
+Root and development adapters share the `root_batch` kind. Runtime due pages
+filter project integration mode before the keyset limit: root visits `train` and
+`hierarchy`, and development visits `development`. Development writer projection
+and resolved-gate scans follow the same ownership boundary. A train artifact must
+never be interpreted as a development policy.
+
+## Git-first root admission (2026-10-04)
+
+Active reconciler seals admit completed, unheld root tasks with an exact current
+PR head, absent from the default branch. Source PR CI does not gate admission:
+pending, red, cancelled, conflict, green and missing checks all remain eligible.
+The batch candidate's exact authenticated green CI is the only CI gate.
+The sealer reads Git and
+GitHub before its hierarchy transaction and reselects the task/checkpoint and
+policy generation under the lock. Legacy review and source-CI polling rows are
+not prerequisites for this path. Explicit rejected reviews, holds, gates,
+active membership, dependency ordering and migration collision checks still bind.
+The frozen admission evidence identifies `git_source_ci` as its decision path;
+it is not a human review. Existing candidate validation and publication proofs
+remain required. Changed PR identities and failed remote reads
+exclude the member with a reason, never with cached green evidence.
+
+Seal results and the reconciler action journal include each excluded candidate's
+identity and reason; an atomic audit event preserves them across seal replay.
+Admitting observations omit incomplete roots, retired or delivered sources and
+closed PRs. Missing local source objects defer to the fetching admission reader
+without blocking other sources. Sealed manifests remain immutable.
+
+## Reconciler repair close handoff
+
+A root repair delegate closes through its owning reconciler, including a failed
+or blocked work outcome. The close verifies the exact session, claim, workspace
+and writer fence, preserves the clean pushed head, and detaches the checkout.
+One transaction accepts the task close, releases its branch/workspace holds and
+records an `accepted_handoff` stop proof on the subject. An accepted candidate
+resolution may already have transferred the branch; closing its original writer
+must not release a successor's fence. Stale claims and changed fences refuse.
+The proof describes relinquished write authority, so a pool process may still be
+alive. It cannot apply to a later claim or writer. CI and promotion remain the
+reconciler's decisions on the new exact head; candidate submission never invokes
+a legacy construction continuation for a reconciler-owned repository.
+
+A failed handoff is an explicit exhausted-writer fact for the pinned successor
+rule. The adapter retains the original stage deadline; it does not start a new
+writer early. Once dispatch advances the authoritative stage, observation drops
+the predecessor's cached writer identity before projecting the new delegate.
+Task sessions release their resources normally; pool sessions retain the agent's
+slot reservation while releasing the completed task's workspace hold.

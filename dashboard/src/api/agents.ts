@@ -34,6 +34,20 @@ export function useAgentFlock() {
   return useQuery({ ...flockQuery, select: (data) => data.agents ?? [] });
 }
 
+/** Every execution, including supervisors without a durable worker definition. */
+export function useFlockSessions(includeStopped = false) {
+  return useQuery({
+    ...flockQuery,
+    queryKey: includeStopped ? ["agents", "flock", "history"] : flockQuery.queryKey,
+    queryFn: includeStopped ? async () => (await listAgents({
+      body: { include_stopped: true }, throwOnError: true,
+    })).data : flockQuery.queryFn,
+    select: (data) => data.sessions ?? [],
+    // session.registered refreshes the shared flock query before startup
+    // finishes. Keep its thirty-second reconciliation poll.
+  });
+}
+
 /** Active native + AQ sub-agents across the whole flock (and per profile). */
 export function useFlockSubagents() {
   return useQuery({ ...flockQuery, select: (data) => data.subagents ?? null });

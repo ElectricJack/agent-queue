@@ -1,0 +1,121 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 8192,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-duplicate-acknowledgment",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-duplicate-acknowledgment",
+        "final_state": "unknown",
+        "transport": "startup_prompt",
+        "transport_key": "bundle-duplicate-acknowledgment:startup_prompt"
+      },
+      {
+        "bundle_id": "bundle-duplicate-acknowledgment",
+        "final_state": "delivered",
+        "transport": "startup_prompt",
+        "transport_key": "bundle-duplicate-acknowledgment:startup_prompt"
+      }
+    ],
+    "owner_id": "attempt-duplicate-acknowledgment",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-integrated-evidence@rev-0001:evidence"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-duplicate-acknowledgment",
+          "expected_new": true,
+          "final_state": "unknown",
+          "transport": "startup_prompt",
+          "transport_key": "bundle-duplicate-acknowledgment:startup_prompt"
+        },
+        {
+          "bundle_id": "bundle-duplicate-acknowledgment",
+          "expected_new": false,
+          "final_state": "delivered",
+          "transport": "startup_prompt",
+          "transport_key": "bundle-duplicate-acknowledgment:startup_prompt"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "duplicate-acknowledgment",
+  "input_hashes": {
+    "budget": "a2accc83d846c18a7af9844f6a54a77139c6af24f5a6db4ab4e983aa6385120d",
+    "delivery_rules": "89ac79dffdc8e7ba36d2141fa0946eacdd94c24c506985a625f242d960f9f12d",
+    "expected": "e7117a74bdbcce65981ae5ee2d77e302f28ffa7ce49a808b856172bc26871f26",
+    "fixture_id": "239aad24ad58dee74ef7dc52d2ee6c520c8ca1ceb85845d655c3c3977d68bb15",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "f8f348cda5c6399dce94b51da64ca004b16564996142996c5a307feedc0a497b",
+    "records": "8683333bda181f16f9dec3d663e1752269adb6636f32a7fef851f174309e9803",
+    "scenario": "b91ac363696a72ac560f07e420e70a45c987b371284761cb2856f2b29e46567e",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [],
+    "deliveries": [],
+    "diagnostics": [],
+    "metadata": {
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-duplicate-acknowledgment",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "",
+    "rendered_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "selected": [],
+    "usage": {
+      "bytes": 0,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 0
+    }
+  },
+  "records": [
+    {
+      "authority": "none",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "lifecycle": "active",
+      "record_id": "rec-integrated-evidence",
+      "revision_id": "rev-0001",
+      "revision_sha256": "2de7cbb3a21ab62e47daa467598b457ddb302a755f7bdad70936b138dc926ab6",
+      "verification": "unverified"
+    }
+  ],
+  "scenario": "A retried acknowledgment on one transport key creates no second receipt or citation",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

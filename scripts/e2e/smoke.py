@@ -123,8 +123,10 @@ def _cli_env(
     """
     env = dict(os.environ)
     env["AQ_API_URL"] = API_URL
-    env.pop("AQ_API_TOKEN", None)
-    env.pop("AQ_SESSION_ID", None)
+    # A fixture session must resolve its own task and claim. Inheriting the
+    # caller's task makes `prime` address a task outside the disposable world.
+    for name in ("AQ_API_TOKEN", "AQ_SESSION_ID", "AQ_TASK_ID", "AQ_CLAIM_EPOCH"):
+        env.pop(name, None)
     if token:
         env["AQ_API_TOKEN"] = token
     if session_id:
@@ -1075,9 +1077,31 @@ def _close_next_child(container: str) -> None:
 def s5_fence_and_scope(state: dict) -> str:
     """A token is an identity, not a key to the daemon."""
     holder, intruder = fresh_workers(2)
-    create_task("S5 task for the holder", profile=POOL_PROFILE)
-    claimed = holder.claim_next()
-    check(claimed["result"] == "claimed", f"S5 needs a held task: {claimed}")
+    fixture = create_task("S5 task for the holder", profile=POOL_PROFILE)
+    last_claim = None
+
+    def claim_holder():
+        nonlocal last_claim
+        last_claim = holder.claim_next()
+        # READY and routed does not imply available to this single attempt:
+        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
+        # Releasing that lock emits no task.ready event, so retry explicitly.
+        if last_claim.get("result") == "no_ready_work":
+            return None
+        check(last_claim.get("result") == "claimed", f"S5 needs a held task: {last_claim}")
+        check(holder.task_id == fixture, f"S5 expected fixture {fixture}, held {holder.task_id}")
+        return last_claim
+
+    def claim_diagnostic():
+        task = task_show(fixture)
+        keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
+        fixture_state = {key: task.get(key) for key in keys}
+        return f"last_claim={last_claim}; fixture={fixture_state}"
+
+    wait_for(
+        claim_holder, what=f"S5 holder to claim fixture {fixture}",
+        timeout=CONVERGE_TIMEOUT, diagnostic=claim_diagnostic,
+    )
     held, epoch = holder.task_id, holder.claim_epoch
 
     # A second, *different* pool session's token must not touch it.
@@ -1791,18 +1815,24 @@ def s15_development_delivery(state: dict) -> str:
     head = _git_text(str(source), "rev-parse", "HEAD")
     _git_text(str(source), "push", "origin", "fixture-feature")
     # This source is completed/adopted by the scenario, never by a worker.
-    # Hold it atomically at filing: Tier 1 runs the routing playbook, and a
-    # scheduler tick between these CLI calls (including the reopen -> pause below)
-    # can otherwise prepare a workspace and replace its fixture branch.
-    task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
-        "title": "development delivery", "description": "real Git fixture",
-        "labels": ["hold:e2e-adoption"]})
-    task_id = task.get("task_id") or task.get("created")
-    check(bool(task_id), str(task))
-    aq("task", "set", task_id, "--branch", "fixture-feature")
-    aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
-    check(task_show(task_id)["branch_name"] == "fixture-feature",
-          "legacy fixture source branch changed during setup")
+    # Filing stores the row before its labels. Pause this disposable project
+    # before creation so no scheduler tick can prepare the fixture's workspace
+    # during that interval or between the subsequent setup commands.
+    api_checked("pause_project", {"project_id": "e2e-development"})
+    try:
+        task = api_checked("create_task", {
+            "project_id": "e2e-development", "repo_id": configured["repository_id"],
+            "title": "development delivery", "description": "real Git fixture",
+            "labels": ["hold:e2e-adoption"],
+        })
+        task_id = task.get("task_id") or task.get("created")
+        check(bool(task_id), str(task))
+        aq("task", "set", task_id, "--branch", "fixture-feature")
+        aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+        check(task_show(task_id)["branch_name"] == "fixture-feature",
+              "legacy fixture source branch changed during setup")
+    finally:
+        api_checked("resume_project", {"project_id": "e2e-development"})
     successor = api("create_task", {
         "project_id": "e2e-development", "title": "wait for delivered code",
         "description": "must not start before the prerequisite reaches main",
@@ -1845,12 +1875,16 @@ def s15_development_delivery(state: dict) -> str:
     if "provenance migration" not in str(refused.get("_error")):
         raise Failure(f"adoption invented legacy completion identity: {refused}; "
                       + _adoption_evidence(task_id, remote, head))
-    # Reopen outside the claim frontier, then hold the fixture before adoption.
-    # A READY interval can let workspace preparation replace its branch name.
-    aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
-    paused = api_checked("pause_task", {"task_id": task_id})
-    check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
-    aq("task", "set", task_id, "--branch", "fixture-feature")
+    # Reopening DEFINED can be promoted on the next tick. Keep project
+    # scheduling paused until the fixture's manual task pause is established.
+    api_checked("pause_project", {"project_id": "e2e-development"})
+    try:
+        aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
+        paused = api_checked("pause_task", {"task_id": task_id})
+        check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
+        aq("task", "set", task_id, "--branch", "fixture-feature")
+    finally:
+        api_checked("resume_project", {"project_id": "e2e-development"})
     for reason in ("operator creates an exact completion generation",
                    "prove repeatable operator reconciliation"):
         adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,

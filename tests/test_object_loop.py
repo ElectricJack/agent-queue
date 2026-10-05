@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import copy
 import asyncio
+import hashlib
+import json
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,18 +15,32 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import insert, select, update
 
+from src.commands.job_commands import JobCommandsMixin
 from src.commands.object_loop_commands import _charge, _reserve
-from src.commands.contracts.object_loop import Reservation, Variant
+from src.commands.contracts.job import JobRetainArgs
+from src.commands.contracts.object_loop import ObjectLoopStartArgs, Reservation, Variant
 from src.database.tables import doc_review_revisions, doc_reviews, object_loops, tasks
 from src.integration.development import _publishable_object_task
 from src.integration.child_delivery import _child_refusal
 from src.integration.promotion import PromotionService, PromotionSourceMoved
 from src.models import Project, Task, TaskStatus
-from src.object_loop.contracts import ScoreReceipt, validate_score_receipt
+from src.jobs.artifacts import atomic_json
+from src.jobs.matter import candidate_document
+from src.object_loop.artifacts import (
+    ArtifactError, canonical_bytes, metadata, retain_bytes, retain_document, retain_file,
+    verify,
+)
+from src.object_loop.contracts import Artifact, ScoreReceipt, validate_score_receipt
+from src.object_loop.render_profile import (
+    RenderProfileError, render_profile, render_profile_sha256, with_digest,
+)
 
 H = "a" * 64
 B = "b" * 64
 C = "c" * 64
+D = "d" * 64
+E = "e" * 64
+F = "f" * 64
 
 
 def variant(name="a", usd=1):
@@ -117,6 +135,7 @@ def start_args():
     return {
         "project_id": "p", "epic_task_id": "epic", "object_id": "rock",
         "attempt_id": "attempt-1", "incumbent_sha256": H,
+        "incumbent_capture_sha256": H,
         "reference_sha256": H, "rig_sha256": H, "scorer_sha256": H,
         "render_profile_sha256": H, "policy_sha256": H,
         "brief_review_id": "brief-review", "brief_review_revision": 1,
@@ -127,6 +146,26 @@ def start_args():
         "score_reservation": {"usd": 0, "calls": 0, "bakes": 0, "active_seconds": 0},
         "variants": [variant().model_dump()],
     }
+
+
+def test_the_round_cap_is_bounded_start_input_and_a_legacy_row_keeps_its_ceiling():
+    """`max_rounds` is data, not a constant; the ceiling still bounds it."""
+    assert ObjectLoopStartArgs.model_validate(start_args()).max_rounds == 8
+    for ceiling in (0, 9):
+        with pytest.raises(ValidationError):
+            ObjectLoopStartArgs.model_validate({**start_args(), "max_rounds": ceiling})
+    legacy = {
+        **loop_state(),
+        "limits": {"usd": 80, "calls": 80, "bakes": 80, "active_seconds": 800},
+    }
+    assert "max_rounds" not in legacy
+    for _ in range(8):
+        _charge(legacy, None)
+        _reserve(legacy, [variant("a")])
+        legacy["round_id"] += 1
+    _charge(legacy, None)
+    with pytest.raises(ValueError, match="round cap"):
+        _reserve(legacy, [variant("a")])
 
 
 async def approved_brief(db):
@@ -146,8 +185,9 @@ async def approved_brief(db):
     return gate_id
 
 
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
 async def test_bootstrap_hold_and_repeated_reconcile_make_one_candidate(
-    command_handler_factory,
+    command_handler_factory, reference_kind,
 ):
     handler = await command_handler_factory()
     db = handler.db
@@ -155,10 +195,23 @@ async def test_bootstrap_hold_and_repeated_reconcile_make_one_candidate(
     await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
                               status=TaskStatus.READY))
     brief_gate = await approved_brief(db)
-    started = await handler._cmd_object_loop_start(start_args())
+    request = {**start_args(), "reference_kind": reference_kind,
+               "incumbent_capture_sha256": B, "reference_sha256": B}
+    started = await handler._cmd_object_loop_start(request)
     assert started["success"], started
-    again = await handler._cmd_object_loop_start(start_args())
+    assert started["state"]["reference_kind"] == reference_kind
+    assert started["state"]["incumbent_capture_sha256"] == B
+    again = await handler._cmd_object_loop_start(request)
     assert again["success"] and not again["created"]
+    switched = await handler._cmd_object_loop_start({
+        **request, "reference_kind": "self" if reference_kind == "calibrated" else "calibrated",
+    })
+    assert not switched["success"] and "different fixed inputs" in switched["error"]
+    changed_capture = await handler._cmd_object_loop_start({
+        **request, "incumbent_capture_sha256": C,
+        "reference_sha256": C if reference_kind == "self" else B,
+    })
+    assert not changed_capture["success"] and "different fixed inputs" in changed_capture["error"]
     async with db.immediate() as conn:
         loop = (await conn.execute(select(object_loops).where(
             object_loops.c.object_id == "rock"))).mappings().one()
@@ -166,6 +219,16 @@ async def test_bootstrap_hold_and_repeated_reconcile_make_one_candidate(
     first = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
     assert first["success"], first
     candidate_id = first["state"]["wave"][0]["task_id"]
+    candidate = await db.get_task(candidate_id)
+    description = json.loads(candidate.description)
+    assert description["reference_kind"] == reference_kind
+    assert description["incumbent_capture_sha256"] == B
+    assert description["publication"] == "artifact_only"
+    finalizer = await db.get_task(loop.finalization_task_id)
+    assert f"reference_kind={reference_kind}" in finalizer.description
+    if reference_kind == "self":
+        assert description["result_interpretation"] == "indicative; plumbing only"
+        assert "indicative, for plumbing only" in finalizer.description
     assert brief_gate in {g["id"] for g in await db.get_gates_for_task(candidate_id)}
     # Recreate the interruption after task creation but before intent completion.
     crash_state = copy.deepcopy(first["state"])
@@ -190,6 +253,70 @@ async def test_bootstrap_hold_and_repeated_reconcile_make_one_candidate(
     assert len(children) == 2  # finalizer plus one candidate
     assert publishable is None
     assert finalizer_publishable is None
+    await db.close()
+
+
+async def test_legacy_loop_refuses_replay_without_baseline_capture_identity(command_handler_factory):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    started = await handler._cmd_object_loop_start(start_args())
+    assert started["success"], started
+    legacy_state = copy.deepcopy(started["state"])
+    del legacy_state["reference_kind"]
+    del legacy_state["incumbent_capture_sha256"]
+    async with db.immediate() as conn:
+        await conn.execute(update(object_loops).where(object_loops.c.object_id == "rock")
+                           .values(state=legacy_state))
+    replay = await handler._cmd_object_loop_start(start_args())
+    assert not replay["success"] and "different fixed inputs" in replay["error"]
+    switched = await handler._cmd_object_loop_start({**start_args(), "reference_kind": "self"})
+    assert not switched["success"] and "different fixed inputs" in switched["error"]
+    reconciled = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert reconciled["success"], reconciled
+    candidate = await db.get_task(reconciled["state"]["wave"][0]["task_id"])
+    assert json.loads(candidate.description)["reference_kind"] == "calibrated"
+    await db.close()
+
+
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+def test_start_packet_binds_self_reference_to_capture_not_candidate(reference_kind):
+    request = {
+        **start_args(), "reference_kind": reference_kind,
+        "incumbent_capture_sha256": B,
+        "reference_sha256": B if reference_kind == "self" else C,
+    }
+    parsed = ObjectLoopStartArgs.model_validate(request)
+    assert parsed.incumbent_sha256 == H
+    assert parsed.incumbent_capture_sha256 == B
+    assert parsed.reference_sha256 == (B if reference_kind == "self" else C)
+    with pytest.raises(ValidationError, match="incumbent_capture_sha256"):
+        ObjectLoopStartArgs.model_validate({k: v for k, v in request.items()
+                                           if k != "incumbent_capture_sha256"})
+    assert ObjectLoopStartArgs.model_validate(start_args()).reference_kind == "calibrated"
+
+
+async def test_self_reference_mismatch_creates_no_loop_or_finalizer(command_handler_factory):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    for reference in (H, C):
+        rejected = await handler._cmd_object_loop_start({
+            **start_args(), "reference_kind": "self",
+            "incumbent_capture_sha256": B, "reference_sha256": reference,
+        })
+        assert not rejected["success"] and "must match incumbent_capture_sha256" in rejected["error"]
+    async with db.immediate() as conn:
+        assert not (await conn.execute(select(object_loops))).first()
+        assert not (await conn.execute(select(tasks.c.id).where(
+            tasks.c.created_by_kind == "object_loop",
+        ))).first()
     await db.close()
 
 
@@ -275,6 +402,93 @@ async def test_score_promotes_only_valid_completed_evidence_and_reserves_next_wa
     assert repeated["outcome"] == "reused"
     next_wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
     assert next_wave["state"]["wave"][0]["task_id"]
+    await db.close()
+
+
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+async def test_three_rounds_of_two_variants_costs_rounds_not_calls(
+    command_handler_factory, reference_kind,
+):
+    """What a 3-round hard cap could not say before: rounds are not a call budget.
+
+    `calls=3` bought one variant per wave for three rounds.  `max_rounds=3`
+    keeps the cap at three rounds while every wave still reserves two
+    candidates against the aggregate budget.
+    """
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    pair = [variant("a").model_dump(), variant("b").model_dump()]
+    request = {
+        **start_args(), "reference_kind": reference_kind, "max_rounds": 3, "variants": pair,
+        "limits": {"usd": 20, "calls": 20, "bakes": 20, "active_seconds": 200},
+    }
+    started = await handler._cmd_object_loop_start(request)
+    assert started["success"], started
+    assert started["state"]["max_rounds"] == 3
+    assert started["state"]["reference_kind"] == reference_kind
+    assert started["state"]["incumbent_capture_sha256"] == H
+    # The cap is fixed input, so a replay must not restate it as the default.
+    widened = await handler._cmd_object_loop_start({**request, "max_rounds": 8})
+    assert not widened["success"] and "different fixed inputs" in widened["error"]
+
+    async def complete(ids):
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id.in_(ids)).values(status="COMPLETED"))
+
+    def packet(fan_in, *, loss, action, **changes):
+        return {
+            "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+            "score_task_id": fan_in["state"]["score_task_id"],
+            "receipts": [
+                receipt(task_id=member["task_id"], round_id=fan_in["state"]["round_id"],
+                        variant_id=member["variant_id"],
+                        base_candidate_sha256=fan_in["state"]["incumbent_sha256"],
+                        per_view={"front": {"loss": loss, "quality_pass": True}})
+                for member in fan_in["state"]["wave"]
+            ],
+            "action": action, "next_variants": pair, **changes,
+        }
+
+    for round_id, loss in enumerate((0.3, 0.2)):
+        wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        assert [m["variant_id"] for m in wave["state"]["wave"]] == ["a", "b"]
+        assert wave["state"]["reserved"]["calls"] == 2
+        await complete([m["task_id"] for m in wave["state"]["wave"]])
+        fan_in = await handler._cmd_object_loop_reconcile(
+            {"project_id": "p", "object_id": "rock"}
+        )
+        assert fan_in["state"]["round_id"] == round_id
+        await complete([fan_in["state"]["score_task_id"]])
+        scored = await handler._cmd_object_score_record(
+            packet(fan_in, loss=loss, action="continue")
+        )
+        assert scored["success"] and scored["state"]["round_id"] == round_id + 1, scored
+    third = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert [m["variant_id"] for m in third["state"]["wave"]] == ["a", "b"]
+    await complete([m["task_id"] for m in third["state"]["wave"]])
+    fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert fan_in["state"]["round_id"] == 2
+    await complete([fan_in["state"]["score_task_id"]])
+    capped = await handler._cmd_object_score_record(packet(fan_in, loss=0.1, action="continue"))
+    assert not capped["success"] and capped["error"] == "round cap reached", capped
+    # Six candidate calls were admitted across three rounds; the cap is not the
+    # budget, and the refused continuation charged nothing.
+    held = await handler._cmd_object_checkpoint_read({"project_id": "p", "object_id": "rock"})
+    assert held["state"]["round_id"] == 2 and held["state"]["status"] == "active"
+    assert held["state"]["spent"]["calls"] == 4
+    assert held["state"]["reserved"]["calls"] == 2
+    # A refused continuation is a cap, not a dead loop: the loop still stops.
+    stopped = await handler._cmd_object_score_record(
+        packet(fan_in, loss=0.1, action="stop", next_variants=[],
+               stop_reason="three-round cap reached; retained verified incumbent")
+    )
+    assert stopped["success"] and stopped["outcome"] == "stop", stopped
+    assert stopped["state"]["stop_reason"] == "three-round cap reached; retained verified incumbent"
+    assert stopped["state"]["incumbent_sha256"] == B
     await db.close()
 
 
@@ -681,3 +895,425 @@ async def test_defect_stop_waits_for_reopened_work_and_releases_only_terminal_ga
     assert (await db.get_task(loop.finalization_task_id)).is_blocked
     assert (await db.get_task(task_id)).status.value == "FAILED"
     await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Durable artifact identities and the render profile (brisk-beacon-64)
+# ---------------------------------------------------------------------------
+
+def candidate_bundle(directory, *, views=("front",)):
+    """A candidate manifest in the form Matter declares its identities in.
+
+    ``candidate_sha256`` is the digest of the canonical document with the
+    declaration removed, so retaining those bytes mints the candidate artifact a
+    ``ScoreReceipt`` must name.
+    """
+    rig = {
+        "hold_frames": 90,
+        "views": [{"name": name, "pose": [2.5, 2.0, 4.0, 0, 0.35, 0]} for name in views],
+    }
+    document = {
+        "manifest": {"rig": rig},
+        "rig_sha256": hashlib.sha256(canonical_bytes(rig)).hexdigest(),
+        "source_sha256": {"Rock.js": D},
+        "source_closure_sha256": E,
+        "version": 1,
+    }
+    document["manifest_sha256"] = hashlib.sha256(
+        canonical_bytes(document["manifest"])
+    ).hexdigest()
+    document["candidate_sha256"] = hashlib.sha256(canonical_bytes(document)).hexdigest()
+    atomic_json(directory / "candidate.json", document)
+    return document
+
+
+def rendered_capture(directory, document, *, views=("front",), editor=F):
+    """A capture directory and the ``retain_capture`` receipt it produces."""
+    capture = directory / "capture"
+    capture.mkdir(parents=True)
+    expected = {
+        "candidate_sha256": document["candidate_sha256"],
+        "rig_sha256": document["rig_sha256"],
+        "editor_sha256": editor,
+    }
+    members, receipt_views = [], {}
+    for name in views:
+        view = {}
+        for key, suffix in (("image", ".png"), ("channels", ".png.channels.bin")):
+            data = f"{name}:{key}".encode()
+            (capture / f"{name}{suffix}").write_bytes(data)
+            view[key] = {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "width": 1280 if key == "image" else None,
+                "height": 720 if key == "image" else None,
+            }
+        receipt_views[name] = view
+        view["capture"] = {"result": {
+            "presented": {"id": f"{name}-frame"},
+            "image": {"format": "png", "width": 1280, "height": 720},
+            "readiness": {
+                "available": True, "ready": True, "blockers": [], "missing_blas": 0,
+                "missing_draws": 0, "missing_vt": 0, "unmatched_tokens": 0,
+                "visible_refinement_pending": 0, "visible_sectors_pending": 0,
+                "vt_dirty_pages": 0, "vt_queue_depth": 0, "vt_rejected_variants": 0,
+                # Per-run jitter: the camera settles at a different frame count
+                # every time, which is why the profile hashes the admitted rig
+                # budget instead of this observed value.
+                "stable_camera_frames": 95,
+            },
+        }}
+        view["image"] = {"sha256": view["image"]["sha256"], "width": 1280, "height": 720,
+                         "path": str(capture / f"{name}.png")}
+    receipt = dict(expected, version=1, status="complete", views=receipt_views,
+                   readiness="captured_visible_detail_ready",
+                   run_id="f2a65d1c-503c-47e5-b17c-8ec80a210254",
+                   timing_seconds={"render": 1.25})
+    (capture / "capture.json").write_text(json.dumps(receipt))
+    for path in sorted(capture.rglob("*")):
+        if path.is_file():
+            members.append({
+                "path": str(path.relative_to(directory)),
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+    return expected, {"receipt": receipt, "artifacts": members,
+                      "bytes": sum(m["bytes"] for m in members)}
+
+
+def render_job(directory, bundle, expected, capture):
+    """The job row shape the retention step reads: a contract and a result.
+
+    The candidate bundle stays in the author's workspace, which is exactly why a
+    released workspace is the failure mode retention has to report.
+    """
+    contract = {
+        "adapter_sha256": E,
+        "gpu_id": "gpu0",
+        "capture_expected": {
+            **expected, "views": sorted(capture["receipt"]["views"]),
+            "hold_frames": 90,
+        },
+    }
+    profile = with_digest(render_profile(contract, capture))
+    return {
+        "id": str(directory.name),
+        "preset": "matter_render",
+        "argv": ["/usr/bin/python3", "matter_capture.py", "adapter.py", str(directory.parent),
+                 "/opt/editor/editor.exe", str(bundle)],
+        "contract": contract,
+        "result": {"capture": capture, "render_profile": profile},
+    }
+
+
+class _Retention(JobCommandsMixin):
+    """The retention step reads a job row and a configured data directory."""
+
+    def __init__(self, data_dir):
+        self.config = SimpleNamespace(data_dir=str(data_dir))
+
+
+def retention(tmp_path, views=("front",)):
+    """Drive the real retention step over a real candidate bundle and capture."""
+    data_dir = tmp_path / "data"
+    # The production layout: a bundle in the author's workspace and a capture
+    # under the run directory the sweeper will eventually reclaim.
+    directory = data_dir / "runs" / str(uuid.uuid4())
+    bundle = tmp_path / str(uuid.uuid4())
+    bundle.mkdir(parents=True)
+    directory.mkdir(parents=True)
+    document = candidate_bundle(bundle, views=views)
+    expected, capture = rendered_capture(directory, document, views=views)
+    job = render_job(directory, bundle, expected, capture)
+    handler = _Retention(data_dir)
+    retained = JobCommandsMixin._retain_capture(
+        handler, job, capture, JobRetainArgs(job_id=job["id"]))
+    return SimpleNamespace(job=job, document=document, capture=capture, retained=retained,
+                           directory=directory, data_dir=data_dir)
+
+
+def test_durable_artifact_identities_mint_resolve_and_verify(tmp_path):
+    data_dir = tmp_path / "data"
+    source = tmp_path / "capture.png"
+    source.write_bytes(b"png bytes")
+    minted = retain_file(source, data_dir=data_dir, kind="capture_image",
+                         origin={"member": "capture/front.png"})
+    assert minted["uri"] == f"artifact://sha256/{minted['sha256']}"
+    assert Artifact(uri=minted["uri"], sha256=minted["sha256"]).uri == minted["uri"]
+    # Retention is idempotent: the digest is the identity, so a second pass
+    # yields the same URI and never rewrites the object.
+    again = retain_file(source, data_dir=data_dir, kind="capture_image")
+    assert again["uri"] == minted["uri"] and again["path"] == minted["path"]
+    verified = verify(data_dir, minted["uri"], minted["sha256"])
+    assert verified["verified"] and verified["bytes"] == minted["bytes"]
+    assert verified["kind"] == "capture_image"
+    assert Path(verified["path"]).read_bytes() == b"png bytes"
+
+    # Bytes that no longer hash to the identity they are served under are never
+    # certified, on a fresh retention or on a check.
+    Path(minted["path"]).write_bytes(b"tampered")
+    with pytest.raises(ArtifactError, match="no longer hashes"):
+        retain_file(source, data_dir=data_dir, kind="capture_image")
+    with pytest.raises(ArtifactError, match="does not hash"):
+        verify(data_dir, minted["uri"])
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "link").symlink_to(outside)
+    with pytest.raises(ArtifactError, match="regular file"):
+        retain_file(tmp_path / "link", data_dir=data_dir, kind="capture_image")
+    with pytest.raises(ArtifactError, match="regular file"):
+        retain_file(outside, data_dir=data_dir, kind="capture_image")
+
+
+def test_artifact_uris_resolve_only_to_this_store(tmp_path):
+    data_dir = tmp_path / "data"
+    minted = retain_bytes(b"evidence", data_dir=data_dir, kind="capture_receipt")
+    assert verify(data_dir, minted["uri"])["sha256"] == minted["sha256"]
+    for uri in (
+        f"s3://bucket/{'0' * 64}",
+        f"https://example.invalid/{'0' * 64}",
+        f"artifact://sha256/{'A' * 64}",
+        f"artifact://sha256/{'0' * 63}",
+        f"artifact://sha256/{'0' * 64}/extra",
+        "artifact://sha256/../../etc/passwd",
+        "artifact://sha256",
+        f"artifact://other/{'0' * 64}",
+    ):
+        with pytest.raises(ArtifactError):
+            verify(data_dir, uri)
+    with pytest.raises(ArtifactError, match="does not match the URI"):
+        verify(data_dir, minted["uri"], "0" * 64)
+    with pytest.raises(ArtifactError, match="not retained"):
+        verify(data_dir, f"artifact://sha256/{'0' * 64}")
+    assert metadata(data_dir, minted["uri"])["bytes"] == len(b"evidence")
+
+
+def test_a_retained_document_is_named_by_the_identity_it_declares(tmp_path):
+    data_dir = tmp_path / "data"
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    document = candidate_bundle(bundle)
+    parsed, declared = candidate_document(bundle / "candidate.json")
+    assert parsed == {k: v for k, v in document.items() if k != "candidate_sha256"}
+    minted = retain_document(parsed, data_dir=data_dir, kind="candidate",
+                             expect_sha256=declared)
+    # The minted artifact's digest *is* the candidate identity the receipt quotes.
+    assert minted["sha256"] == document["candidate_sha256"] == declared
+    with pytest.raises(ArtifactError, match="does not hash to the identity"):
+        retain_document(parsed, data_dir=data_dir, kind="candidate", expect_sha256=D)
+    with pytest.raises(ValueError, match="not a readable file"):
+        candidate_document(bundle / "absent.json")
+
+
+def test_render_profile_is_stable_across_runs_and_sensitive_to_its_preset(tmp_path):
+    """One preset, one digest: run jitter must not mint a new profile identity."""
+    first = retention(tmp_path / "a")
+    contract, capture = first.job["contract"], first.job["result"]["capture"]
+    baseline = first.job["result"]["render_profile"]["sha256"]
+    assert contract["capture_expected"]["hold_frames"] == 90
+    assert baseline == render_profile_sha256(contract, capture)
+
+    rerun = copy.deepcopy(capture)
+    for view in rerun["receipt"]["views"].values():
+        readiness = view["capture"]["result"]["readiness"]
+        readiness["stable_camera_frames"] = 7
+        view["capture"]["result"]["presented"]["id"] = "another-frame"
+        view["image"]["path"] = "C:\\elsewhere\\capture\\front.png"
+    rerun["receipt"]["run_id"] = "00000000-0000-0000-0000-000000000000"
+    rerun["receipt"]["timing_seconds"] = {"render": 99.5}
+    assert render_profile_sha256(contract, rerun) == baseline
+
+    for changed in (
+        {"editor_sha256": "1" * 64},
+        {"rig_sha256": "1" * 64},
+        {"hold_frames": 91},
+    ):
+        moved = copy.deepcopy(contract)
+        moved["capture_expected"].update(changed)
+        assert render_profile_sha256(moved, capture) != baseline
+    for changed in ({"adapter_sha256": "1" * 64}, {"gpu_id": "gpu1"}):
+        moved = copy.deepcopy(contract)
+        moved.update(changed)
+        assert render_profile_sha256(moved, capture) != baseline
+    resized = copy.deepcopy(capture)
+    resized["receipt"]["views"]["front"]["image"].update(width=640)
+    assert render_profile_sha256(contract, resized) != baseline
+
+    # A render that never converged is not the same render.
+    unconverged = copy.deepcopy(capture)
+    unconverged["receipt"]["views"]["front"]["capture"]["result"]["readiness"][
+        "missing_vt"] = 4
+    assert render_profile_sha256(contract, unconverged) != baseline
+
+    foreign = copy.deepcopy(capture)
+    foreign["receipt"]["views"]["side"] = foreign["receipt"]["views"]["front"]
+    del foreign["receipt"]["views"]["front"]
+    with pytest.raises(RenderProfileError, match="different view set"):
+        render_profile_sha256(contract, foreign)
+    with pytest.raises(RenderProfileError, match="admitted"):
+        render_profile_sha256({}, capture)
+    with pytest.raises(RenderProfileError, match="completed capture receipt"):
+        render_profile_sha256(contract, None)
+
+
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+def test_a_retained_capture_yields_a_valid_start_packet_and_receipt(tmp_path, reference_kind):
+    """The acceptance path: a render job becomes start args and a ScoreReceipt."""
+    ready = retention(tmp_path, views=("front", "side"))
+    retained = ready.retained
+    profile = retained["render_profile_sha256"]
+    assert retained["candidate_artifact"]["sha256"] == ready.document["candidate_sha256"]
+    assert {capture["view_id"] for capture in retained["captures"]} == {"front", "side"}
+    # ``artifacts`` is exactly what becomes ScoreReceipt.artifacts.
+    assert sorted({artifact["kind"] for artifact in retained["artifacts"]}) == [
+        "candidate", "capture_image", "capture_receipt",
+    ]
+    assert len(retained["artifacts"]) == 1 + len(retained["captures"]) + 1
+    capture_identity = next(artifact["sha256"] for artifact in retained["artifacts"]
+                            if artifact["kind"] == "capture_receipt")
+
+    # Every reported URI resolves and re-hashes, before it is quoted anywhere.
+    for artifact in retained["artifacts"]:
+        assert verify(ready.data_dir, artifact["uri"], artifact["sha256"])["verified"]
+    for capture in retained["captures"]:
+        assert verify(ready.data_dir, capture["image"]["uri"],
+                      capture["image"]["sha256"])["verified"]
+
+    start = ObjectLoopStartArgs.model_validate({
+        **start_args(),
+        "incumbent_sha256": ready.document["candidate_sha256"],
+        "incumbent_capture_sha256": capture_identity,
+        "reference_kind": reference_kind,
+        "reference_sha256": capture_identity if reference_kind == "self" else H,
+        "incumbent_artifact": {
+            "uri": retained["candidate_artifact"]["uri"],
+            "sha256": retained["candidate_artifact"]["sha256"],
+        },
+        "render_profile_sha256": profile,
+        "rig_sha256": ready.job["contract"]["capture_expected"]["rig_sha256"],
+        "mandatory_views": ["front", "side"],
+        "limits": {"usd": 30, "calls": 3, "bakes": 3, "active_seconds": 300},
+    })
+    assert start.render_profile_sha256 == profile
+    assert start.incumbent_capture_sha256 == capture_identity
+    if reference_kind == "self":
+        assert start.reference_sha256 == capture_identity != start.incumbent_sha256
+    assert start.incumbent_artifact.uri.startswith("artifact://sha256/")
+
+    scored = receipt(
+        base_candidate_sha256=ready.document["candidate_sha256"],
+        candidate_sha256=ready.document["candidate_sha256"],
+        reference_sha256=start.reference_sha256,
+        rig_sha256=ready.job["contract"]["capture_expected"]["rig_sha256"],
+        render_profile_sha256=profile,
+        capture_receipts=[
+            {**capture, "ready": True, "decoded": True} for capture in retained["captures"]
+        ],
+        artifacts=[{"uri": artifact["uri"], "sha256": artifact["sha256"]}
+                   for artifact in retained["artifacts"]],
+        per_view={"front": {"loss": 0.2, "quality_pass": True},
+                  "side": {"loss": 0.1, "quality_pass": True}},
+        worst_view="front",
+    )
+    state = loop_state()
+    state.update({
+        "incumbent_sha256": ready.document["candidate_sha256"],
+        "reference_sha256": start.reference_sha256,
+        "render_profile_sha256": profile,
+        "rig_sha256": ready.job["contract"]["capture_expected"]["rig_sha256"],
+        "mandatory_views": ["front", "side"],
+        "wave": [{"variant_id": "a", "task_id": "epic.2"}],
+    })
+    validate_score_receipt(ScoreReceipt.model_validate(scored), state=state,
+                           task_id="epic.2", mandatory_views={"front", "side"})
+    # The same receipt with a local path instead of a durable URI is refused.
+    with pytest.raises(ValidationError, match="durable artifact"):
+        ScoreReceipt.model_validate(receipt(artifacts=[{"uri": "/tmp/front.png",
+                                                         "sha256": B}]))
+
+
+def test_retention_refuses_capture_bytes_that_moved(tmp_path):
+    ready = retention(tmp_path)
+    (ready.directory / "capture/front.png").write_bytes(b"edited after the job")
+    with pytest.raises(ArtifactError, match="changed since the job retained it"):
+        _Retention(ready.data_dir)._retain_capture(
+            ready.job, ready.capture, JobRetainArgs(job_id=ready.job["id"]),
+        )
+    with pytest.raises(ValueError, match="unknown capture views"):
+        _Retention(ready.data_dir)._retain_capture(
+            ready.job, ready.capture, JobRetainArgs(job_id=ready.job["id"], views=["nope"]),
+        )
+
+
+async def test_retain_is_scoped_and_refuses_work_it_cannot_evidence(command_handler_factory):
+    handler = await command_handler_factory()
+    db = handler.db
+    try:
+        assert (await handler._cmd_job_retain({"job_id": str(uuid.uuid4())}))["error"] == "not_found"
+        assert (await handler._cmd_artifact_verify({"uri": "artifact://sha256/" + "0" * 64}))[
+            "success"] is False
+        handler._current_scope = {"kind": "session", "session_id": "s"}
+        refused = await handler._cmd_object_loop_inputs({"project_id": "p"})
+        assert "project supervisor" in refused["error"] and "aq object_loop inputs" in refused["error"]
+    finally:
+        await db.close()
+
+
+async def test_artifact_verify_rehashes_through_the_command(command_handler_factory, tmp_path):
+    handler = await command_handler_factory()
+    handler.config.data_dir = str(tmp_path / "store")
+    minted = retain_bytes(b"receipt evidence", data_dir=handler.config.data_dir, kind="candidate")
+    try:
+        verified = await handler._cmd_artifact_verify({"uri": minted["uri"]})
+        assert verified["success"] and verified["verified"] and verified["bytes"] == 16
+        mismatch = await handler._cmd_artifact_verify({"uri": minted["uri"], "sha256": D})
+        assert mismatch["success"] is False and "does not match the URI" in mismatch["error"]
+        absent = await handler._cmd_artifact_verify({"uri": f"artifact://sha256/{'0' * 64}"})
+        assert absent["success"] is False and "not retained" in absent["error"]
+    finally:
+        await handler.db.close()
+
+
+async def _refusal_for(mixin, name):
+    """Run a session-scoped handler with a non-elevated worker scope."""
+    handler = mixin()
+    handler._current_scope = {"kind": "session", "session_id": "w", "project_id": "p"}
+    handler.config = SimpleNamespace(data_dir="/nonexistent")
+    handler.db = None
+    return await getattr(handler, name)({"project_id": "p"})
+
+
+async def test_the_operator_steps_reach_the_supervisor_session_and_not_a_worker():
+    """The supervisor runs the operator steps; a worker session never does.
+
+    Pinned here rather than left to the scope layer's defaults, because the
+    start runbook depends on it: a worker that reports "out of scope" for
+    ``formula cook object`` or ``object_loop_start`` must be told to hand the
+    step to the project supervisor, not to work around it.
+    """
+    from src.api.scope import RequestScope, check_command_scope
+
+    supervisor = RequestScope(
+        kind="session", project_id="p", task_id=None, session_id="sup", elevated=True,
+    )
+    worker = RequestScope(
+        kind="session", project_id="p", task_id="t", session_id="w", elevated=False,
+    )
+    for name in ("formula_cook", "object_loop_start", "object_loop_reconcile",
+                 "object_score_record", "object_checkpoint_read", "object_loop_inputs"):
+        args = {"project_id": "p"}
+        assert check_command_scope(name, dict(args), supervisor) is None, name
+        refused = check_command_scope(name, dict(args), worker)
+        assert refused == f"out of scope: {name}" or "not available" in refused, name
+    # ...and the two refusals that live in the handlers rather than the gate.
+    # Both name the step that supersedes them, so a worker that hits one is
+    # handed to the supervisor instead of looking for a way around it.
+    from src.commands.formula_commands import FormulaCommandsMixin
+    from src.commands.object_loop_commands import ObjectLoopCommandsMixin
+
+    for mixin, name, needle in (
+        (FormulaCommandsMixin, "_cmd_formula_cook", "not available to agent sessions"),
+        (ObjectLoopCommandsMixin, "_cmd_object_loop_inputs", "project supervisor"),
+    ):
+        refused = await _refusal_for(mixin, name)
+        assert refused["success"] is False and needle in refused["error"], name

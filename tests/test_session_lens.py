@@ -503,7 +503,8 @@ class TestEnsureStarted:
         # The minted token was revoked for exactly the session we tried.
         assert store.minted and store.revoked == store.minted
         # No running row was left behind.
-        assert await db.get_session_by_name(runtime_name) is None
+        failed = await db.get_session_by_name(runtime_name)
+        assert failed.state == "stopped" and failed.end_reason == "launch_failed"
 
     async def test_supervisor_address_project_takes_precedence_over_caller_project(
         self, db, providers, lens

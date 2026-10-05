@@ -66,6 +66,11 @@ For a cross-project stall sweep, run `aq doctor --check stall.sweep` (or `aq --j
 
 ## State ownership
 
+Every agent execution belongs to the flock, including global and project
+supervisors. See [Flock sessions](flock-sessions.md) for the registration
+invariant, history filters, inactive supervisor cleanup, and the
+`sessions.untracked` check included in `stall.sweep`.
+
 | State | Owner and location | What an operator may infer |
 |---|---|---|
 | Task status, dependencies, claims, sessions and integration ownership | AQ database | The database is authoritative; dashboard labels and command output are views. |
@@ -227,6 +232,14 @@ AQ routes standard-library logging through structured logging. Console formats a
 When collecting an incident, filter or preserve correlation fields where present: `task_id`, `project_id`, `cycle_id`, `component`, `hook_id`, `agent_id`, and `command`. They are bound through async work and make it possible to join a doctor finding, a task, a session and a daemon event without guessing from timestamps.
 
 ## What doctor fixes — and what it will not do
+
+`aq doctor --check playbooks.orphaned_runs` reports V2 runs left executing by a
+previous daemon with no driver in the current process. Startup and each playbook
+cycle recover bounded pages automatically. The check names the run, playbook,
+step and lifecycle; it is read-only. Recovery replays safe commands with their
+existing attempt keys, preserves waits and loop frames, and pauses ambiguous
+external effects for an operator decision. A paused run is outside this check:
+its wait or decision owns resumption. Disabling playbooks also pauses recovery.
 
 `aq doctor --fix` selects only checks that declared a fix and returned `warn` or `error`, then reruns them. It is not a general "repair the system" button. Prefer `--check ID --fix` during an incident so the intended mutation is obvious.
 

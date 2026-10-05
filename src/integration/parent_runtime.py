@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -12,6 +13,7 @@ from src.database import tables as t
 from src.integration.models import BranchKey, Fence
 from src.integration.observe import GitObservationReader
 from src.integration.parent_adapters import (
+    REOPEN_REFUSED_META_KEY,
     ParentPolicyFacts,
     ParentPrimitiveAdapters,
     PendingParentPublication,
@@ -172,6 +174,7 @@ class ParentVisitObserver(ParentIntegrationObserver):
                 "verifier_failed": bool(
                     facts.verification and facts.verification.status == "failed"
                 ) or red_verifier,
+                "reopen_refused": _reopen_refused(snapshot, subject, operation),
                 "parent_completed": operation.get("state") == "completed",
                 "aggregate_verified": bool(
                     facts.verification
@@ -195,6 +198,34 @@ class ParentVisitObserver(ParentIntegrationObserver):
                 ),
             }
         )
+
+
+def _reopen_refused(snapshot, subject, operation) -> bool:
+    """Whether this exact head's collection reopen was durably refused.
+
+    Only a marker naming this episode, operation, head and generation counts; a
+    marker from an earlier generation or a malformed one never holds a parent.
+    """
+    marker = next(
+        (
+            row["value"]
+            for row in snapshot.all("task_metadata")
+            if row["task_id"] == subject.task_id and row["key"] == REOPEN_REFUSED_META_KEY
+        ),
+        None,
+    )
+    if not marker:
+        return False
+    try:
+        value = json.loads(marker)
+    except (TypeError, ValueError):
+        return False
+    return (
+        value.get("episode_id") == subject.parent_episode_id
+        and value.get("operation_id") == operation.get("id")
+        and value.get("head_sha") == subject.head_sha
+        and value.get("generation") == subject.generation
+    )
 
 
 class PinnedParentPolicy(PinnedRootPolicy):

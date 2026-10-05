@@ -534,7 +534,12 @@ class TestQuarantine:
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
             await orch.wait_for_pool_launches()
-        assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
+        history = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
+        assert len(history) == 1
+        stopped = history[0]
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.end_reason == "startup_exit" and stopped.ended_at
+        assert not provider.sessions
 
         status = await handler._cmd_pool_status({"project_id": PROJECT_ID})
         row = next(r for r in status["pools"] if r["profile_id"] == "worker")
@@ -557,7 +562,9 @@ class TestQuarantine:
             await orch._reconcile_pools()
             await orch.wait_for_pool_launches()
         assert _pool_warnings(caplog) == []
-        assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
+        history = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
+        assert [session.id for session in history] == [stopped.id]
+        assert history[0].state == "stopped"
 
     async def test_expired_quarantine_relaunches(self, orch, db):
         orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() - 1

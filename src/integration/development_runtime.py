@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from typing import Any
@@ -1088,8 +1089,11 @@ class DevelopmentSubjectRuntime:
             raise ValueError("a development runtime needs at least one loop")
         self.db, self.adapter, self.policy, self.clock = db, adapter, policy, clock
         self.cursor, self.page_size = "", page_size
+        from src.integration.reconciler import ScopedIntegrationDB
+
+        scoped_db = ScopedIntegrationDB(db, (DEVELOPMENT_MODE,))
         self.loops = [
-            adapter.reconciler(mode=mode, diagnostics=diagnostics)
+            adapter.reconciler(mode=mode, subject_db=scoped_db, diagnostics=diagnostics)
             for enabled, mode in ((active, JournalMode.ACTIVE), (shadow, JournalMode.SHADOW))
             if enabled
         ]
@@ -1119,7 +1123,9 @@ class DevelopmentSubjectRuntime:
                 (
                     await conn.execute(
                         select(t.integration_subjects.c.id)
+                        .join(t.projects, t.projects.c.id == t.integration_subjects.c.project_id)
                         .where(
+                            t.projects.c.hierarchical_integration_mode == DEVELOPMENT_MODE,
                             t.integration_subjects.c.kind.in_(DEVELOPMENT_SUBJECT_KINDS),
                             t.integration_subjects.c.phase != SubjectPhase.DONE.value,
                         )
@@ -1150,7 +1156,9 @@ class DevelopmentSubjectRuntime:
                             t.integration_subjects,
                             t.integration_subjects.c.gate_id == t.gates.c.id,
                         )
+                        .join(t.projects, t.projects.c.id == t.integration_subjects.c.project_id)
                         .where(
+                            t.projects.c.hierarchical_integration_mode == DEVELOPMENT_MODE,
                             t.integration_subjects.c.kind.in_(DEVELOPMENT_SUBJECT_KINDS),
                             t.integration_subjects.c.phase != SubjectPhase.DONE.value,
                             t.integration_subjects.c.next_due_at.is_(None),
@@ -1309,10 +1317,9 @@ def development_runtime_for(orchestrator):
 
     async def policy_for(artifact_sha256: str) -> PinnedDevelopmentPolicy:
         definition = await asyncio.to_thread(orchestrator._load_playbook_artifact, artifact_sha256)
-        source = getattr(definition, "source", None)
-        if source is None:
-            raise ValueError("development artifact carries no reviewed source")
-        return PinnedDevelopmentPolicy(definition, source)
+        return await asyncio.to_thread(
+            load_pinned_development_policy, orchestrator.config, artifact_sha256, definition
+        )
 
     async def retained_repository(repository_id: str) -> RetainedRepository:
         repo = await orchestrator.db.get_repo(repository_id)
@@ -1392,3 +1399,21 @@ __all__ = [
     "retain_candidate",
     "transfer_development_engine",
 ]
+
+
+def load_pinned_development_policy(config, artifact_sha256, definition):
+    """Load retained reviewed source, with a hash-checked bridge for old imports."""
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(config.compiled_root)
+    try:
+        source = store.load_source(artifact_sha256)
+    except FileNotFoundError:
+        # The compiled schema never contained Markdown. Older installs can
+        # bridge from the vault only while its source matches the frozen pin.
+        vault = Path(config.vault_root).expanduser().resolve()
+        path = (vault / "projects" / definition.scope.project_id / "playbooks"
+                / f"{definition.id}.md").resolve()
+        path.relative_to(vault)
+        source = path.read_text(encoding="utf-8")
+    return PinnedDevelopmentPolicy(definition, source)

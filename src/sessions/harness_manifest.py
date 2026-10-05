@@ -69,6 +69,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "1c2bb92d61957c2c936073c0355acf013321406c3735f7da42317ad05187fd4b",  # bold-rapids.2 2026-09-20 (dialog signal)
             "09d2a4cfb2351e8e34325d8cdfa30a6b9a33b9acc4d71a8b7783f27315b775e2",  # quick-stone 2026-09-22 (input prompts)
             "717e47aa1017c2dc242088530aebf800688b24d4e6957dd85d119c7e0e7160bb",  # bright-ridge-85 2026-10-03 (login-required dialog)
+            "f282a9ac5beb73fcf83cd60d12e6339f548d71a7da99bcb02123289cd687e807",  # K09 2026-10-03 (knowledge delivery through the envelope)
         }
     ),
     "codex.md": frozenset(
@@ -97,6 +98,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "2f962b1f0a40ff7475b04782f6b9c41b4c8da80c7d6c8162cfecb73633fc5356",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "85a26d026e3408af033523e8ac7107be7fa2af27cd6f63cb22a4225caa04781d",  # bold-rapids.2 2026-09-20 (dialog signal)
             "6eb68609a813f4be5f4df3fac74ae942ced6590e7cdc35a58d0b96a66a1bea85",  # quick-stone 2026-09-22 (input prompts)
+            "a8c2020a97d8fb17017043b3556af09ba66fe4f986d6d1d902e6b954f510bcdd",  # K09 2026-10-03 (no-hook knowledge delivery path)
         }
     ),
 }

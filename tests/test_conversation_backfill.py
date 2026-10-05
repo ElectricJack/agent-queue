@@ -457,4 +457,4 @@ async def test_live_and_history_overlap_and_edited_accepted_message_preserve_inp
         == original
     )
     assert len(await db.list_conversation_inputs(original["conversation_id"])) == 1
-    assert len(await db.get_pending_messages("session", "supervisor-global")) == 1
+    assert len(await db.get_pending_messages("session", "conversation-queued")) == 1

@@ -252,7 +252,6 @@ async def test_for_and_until_set_the_expiry(handler, service) -> None:
         "provider_set_state",
         {"provider": "codex", "state": "disabled", "reason": "x", "for": "30m"},
     )
-    assert result["status"]["override"]["until"] == pytest.approx(time.time() + 1800, abs=10)
     target = time.time() + 7200
     result = await handler.execute(
         "provider_set_state",

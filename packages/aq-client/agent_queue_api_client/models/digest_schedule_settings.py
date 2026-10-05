@@ -20,6 +20,9 @@ class DigestScheduleSettings:
         catchup_hours (int):
         project_ids (list[str] | Unset):
         categories (list[str] | Unset):
+        supervisor_authored (bool | Unset):  Default: False.
+        cadence_minutes (int | Unset):  Default: 120.
+        author_fallback_minutes (int | Unset):  Default: 10.
     """
 
     enabled: bool
@@ -27,6 +30,9 @@ class DigestScheduleSettings:
     catchup_hours: int
     project_ids: list[str] | Unset = UNSET
     categories: list[str] | Unset = UNSET
+    supervisor_authored: bool | Unset = False
+    cadence_minutes: int | Unset = 120
+    author_fallback_minutes: int | Unset = 10
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +50,12 @@ class DigestScheduleSettings:
         if not isinstance(self.categories, Unset):
             categories = self.categories
 
+        supervisor_authored = self.supervisor_authored
+
+        cadence_minutes = self.cadence_minutes
+
+        author_fallback_minutes = self.author_fallback_minutes
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -57,6 +69,12 @@ class DigestScheduleSettings:
             field_dict["project_ids"] = project_ids
         if categories is not UNSET:
             field_dict["categories"] = categories
+        if supervisor_authored is not UNSET:
+            field_dict["supervisor_authored"] = supervisor_authored
+        if cadence_minutes is not UNSET:
+            field_dict["cadence_minutes"] = cadence_minutes
+        if author_fallback_minutes is not UNSET:
+            field_dict["author_fallback_minutes"] = author_fallback_minutes
 
         return field_dict
 
@@ -73,12 +91,21 @@ class DigestScheduleSettings:
 
         categories = cast(list[str], d.pop("categories", UNSET))
 
+        supervisor_authored = d.pop("supervisor_authored", UNSET)
+
+        cadence_minutes = d.pop("cadence_minutes", UNSET)
+
+        author_fallback_minutes = d.pop("author_fallback_minutes", UNSET)
+
         digest_schedule_settings = cls(
             enabled=enabled,
             interval_minutes=interval_minutes,
             catchup_hours=catchup_hours,
             project_ids=project_ids,
             categories=categories,
+            supervisor_authored=supervisor_authored,
+            cadence_minutes=cadence_minutes,
+            author_fallback_minutes=author_fallback_minutes,
         )
 
         digest_schedule_settings.additional_properties = d

@@ -55,7 +55,7 @@ def presets(root: Path, *, test_python: str | None = None) -> dict[str, Preset]:
     available = {
         "test": Preset("test", (test_python or python, "-m", "pytest"), pytest=True),
         "lint": Preset("lint", (python, "-m", "ruff", "check")),
-        "e2e": Preset("e2e", (python, str(root / "src/jobs/e2e.py")), "exclusive"),
+        "e2e": Preset("e2e", (python, str(root / "src/jobs/e2e.py")), "exclusive", version=2),
     }
     if node_executable("node") is None:
         return available

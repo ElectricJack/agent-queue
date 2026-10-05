@@ -1098,6 +1098,18 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "optional": ["session_id"],
     },
     # -- launch / operator surface (literal emits) --------------------------
+    "session.registered": {
+        "required": ["session_id", "name", "task_id", "project_id"],
+        "optional": ["provider", "harness", "work_dir"],
+    },
+    "session.launch_failed": {
+        "required": ["session_id", "name", "task_id", "project_id"],
+        "optional": ["provider", "harness", "work_dir"],
+    },
+    "session.pruned": {
+        "required": ["session_id", "project_id"],
+        "optional": [],
+    },
     "session.started": {
         "required": ["session_id", "name", "task_id", "project_id"],
         "optional": ["provider", "harness", "work_dir"],

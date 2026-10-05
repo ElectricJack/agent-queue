@@ -203,6 +203,21 @@ aq pool set-enabled --profile-id astra-high-codex --no-enabled
 aq pool set-enabled --profile-id astra-high-codex --enabled
 ```
 
+The dashboard's pool switch shows the confirmed saved value as soon as the
+write finishes, independently of the fleet-status refresh. Pending status reads
+are cancelled so a read started before the write cannot restore the old value.
+Transport errors appear beside the switch; a save that takes longer than ten
+seconds reports a timeout and refreshes the current state, since the write may
+already have persisted. The browser regression exercises both directions and
+page reloads against a disposable daemon and PostgreSQL database:
+
+```bash
+aq test tests/test_e2e_cli_stateful.py -k test_dashboard_pool_toggle -m integration -s
+```
+
+This check needs the root npm dependencies, the generated TypeScript client and
+Chrome (`CHROME` overrides `/usr/bin/google-chrome`).
+
 The switch lives in the system profile's `## Config` (so it survives the next
 vault sync) and, like every other pool edit, is global: every project's pool
 for that profile is affected. What it changes is eligibility for **new** work:

@@ -77,6 +77,35 @@ class IntegrationReconciliationQueriesMixin:
             rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
 
+    async def outstanding_sweep_schedule_page(
+        self, *, after: tuple[str] | None, limit: int
+    ) -> list[dict[str, Any]]:
+        """Every schedule naming an outstanding sweep request, whatever is next due.
+
+        ``due_integration_schedule_page`` selects a schedule the periodic tick is
+        about to mint from, so one whose ``next_due_at`` is still in the future is
+        invisible to it.  A restart sweep needs the other selection: a request a
+        dead process accepted has to be freed at start, not at the next sweep
+        boundary, and only this page names it in the meantime.
+        """
+        _require_limit(limit)
+        project_id = project_integration_schedules.c.project_id
+        statement = (
+            select(
+                project_id,
+                project_integration_schedules.c.outstanding_request_id,
+                project_integration_schedules.c.outstanding_requested_at,
+            )
+            .where(project_integration_schedules.c.outstanding_request_id.is_not(None))
+            .order_by(project_id)
+            .limit(limit)
+        )
+        if after is not None:
+            statement = statement.where(project_id > after[0])
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(statement)).mappings().all()
+        return [dict(row) for row in rows]
+
     async def due_integration_repair_stage_page(
         self,
         *,

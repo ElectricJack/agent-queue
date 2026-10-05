@@ -209,6 +209,12 @@ class SessionSpec:
     #: Digest of the Git identity this launch's env carries
     #: (``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*``), recorded on the session row.
     git_identity_digest: str | None = None
+    #: Knowledge transport this launch actually provisioned (design §9
+    #: delivery seams): ``hook_envelope``, ``startup_prompt``,
+    #: ``startup_guidance`` or ``None`` when no bundle was prepared for it.
+    #: Recorded rather than re-derived, because "the hook file was written" and
+    #: "knowledge rides that hook" are different facts about the same launch.
+    knowledge_transport: str | None = None
 
 
 @dataclass(frozen=True)

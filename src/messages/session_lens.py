@@ -184,6 +184,7 @@ class SessionLens:
         profiles_loader,
         epoch: str = "",
         token_store=None,
+        bus=None,
     ):
         self._db = db
         self._providers = providers
@@ -202,6 +203,7 @@ class SessionLens:
         #: forwards it to the harness via ``AQ_API_TOKEN``.  Tests may
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
+        self._bus = bus
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._activity_cursors: dict[str, _ActivityCursor] = {}
         #: Latest refused nudge per session id, cleared by the next success.
@@ -544,9 +546,10 @@ class SessionLens:
             # Precompute our fenced handle so partial starts can also be cleaned up.
             handle = SessionHandle(spec.session_name, provider_name, instance_token)
             launched_at = time.time()
-            await provider.start(spec)
-            await self._db.create_session(
-                SessionRecord(
+            from src.sessions.launch import launch_session
+
+            await launch_session(
+                self._db, provider, spec, SessionRecord(
                     id=session_id,
                     agent_id=agent.id if agent is not None else None,
                     **resolve_launch_settings(profile, harness, self._spec_builder),
@@ -564,7 +567,7 @@ class SessionLens:
                     state="running",
                     desired_state="running",
                     hooks_provisioned=spec.hooks_provisioned,
-                )
+                ), bus=self._bus,
             )
             if bundle is not None and spec.prompt is not None:
                 from src.knowledge.context import live_bootstrap_principal
@@ -578,13 +581,14 @@ class SessionLens:
             # Adoption can publish our exact row during a slow launch. A
             # different instance is never ours to keep, stop, or overwrite.
             own = await self._db.get_session(session_id)
-            if own is not None and own.instance_token == instance_token:
+            if (own is not None and own.instance_token == instance_token
+                    and own.state == "running"):
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 logger.warning("supervisor %s started; post-start acknowledgement failed",
                                target_id, exc_info=True)
                 return True
-            if handle is not None:
+            if handle is not None and own is not None and own.state != "stopped":
                 try:
                     await provider.stop(handle)
                 except Exception:

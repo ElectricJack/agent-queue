@@ -36,7 +36,6 @@ from src.escalations import (
     EscalationFacts,
     MentionPolicy,
     render_resolution,
-    render_resolved_root,
     render_root,
     render_thread_opener,
 )
@@ -513,7 +512,6 @@ async def _rendered_by_every_sender(resolver: DashboardLinkResolver) -> list[str
     texts = [
         render_root(FACTS, mentions=MentionPolicy(), base_url=base_url, dedup_key="r",
                     dashboard_notice=notice),
-        render_resolved_root(FACTS, base_url=base_url, dedup_key="x", dashboard_notice=notice),
         render_thread_opener(FACTS, base_url=base_url, dedup_key="o", dashboard_notice=notice),
         render_resolution(FACTS, base_url=base_url, dedup_key="s", dashboard_notice=notice),
     ]
@@ -539,9 +537,10 @@ async def test_every_sender_renders_the_configured_public_origin():
     texts = await _rendered_by_every_sender(resolver)
 
     origin = "https://queue.tail1234.ts.net"
-    assert all(f"{origin}/settings/messaging#escalation-reply-esc-1" in t for t in texts[:4])
-    assert texts[4].rstrip().endswith(origin)
-    assert texts[5].endswith(f"{origin}/reviews/rev-1")
+    # §6.1: an escalation links its own focus page, never a settings anchor.
+    assert all(f"<{origin}/focus/escalations/esc-1>" in t for t in texts[:3])
+    assert texts[3].endswith(f"<{origin}/focus/inbox>")
+    assert texts[4].endswith(f"{origin}/reviews/rev-1")
     for text in texts:
         assert "8081" not in text and "localhost" not in text and "127.0.0.1" not in text
 

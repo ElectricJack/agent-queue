@@ -1,10 +1,12 @@
 """Turn an eligible window into one short, safe message.
 
-Constraints from §8, all enforced here rather than by the transport:
+Constraints from §8 of the digest spec and §3.2 of the Discord design spec,
+all enforced here rather than by the transport:
 
-* one message, ``<=1200`` characters -- never split into several posts;
-* counts first, then at most three highlights grouped by project, then an
-  aggregate overflow count and the dashboard link;
+* one message inside :data:`~src.discord.render_budget.DIGEST` -- three body
+  lines and 600 characters, never split across posts;
+* counts first, then the highlights that survived the cap, then one link to
+  the needs-you inbox as the last line;
 * plain language: one line per highlight, no stack traces or raw logs;
 * no mentions, ever, including text a human or agent wrote that merely looks
   like one.  A routine digest that pings a role is exactly the noise this
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import re
 
+from src.dashboard_paths import inbox_path
 from src.digest.eligibility import Eligibility
 from src.digest.facts import (
     KIND_COMPLETED,
@@ -25,12 +28,15 @@ from src.digest.facts import (
     KIND_STARTED,
     DigestWindow,
 )
+from src.discord.render_budget import DIGEST, GLYPH_DIGEST, compose, link_line
 
-#: Hard ceiling for the rendered message.
-MAX_CHARS = 1200
+#: Hard ceiling for the rendered message (§3.2's digest row).
+MAX_CHARS = DIGEST.chars
 
 #: How many highlights a normal digest shows before it switches to a count.
-MAX_HIGHLIGHTS = 3
+#: §3.2 allows three body lines: the header with its counts is one, so two are
+#: left for the sections a reader actually reads.
+MAX_HIGHLIGHTS = DIGEST.body_lines - 1
 
 #: Longest a single highlight line may be before it is elided.
 MAX_HIGHLIGHT_CHARS = 120
@@ -80,13 +86,12 @@ def _window_label(window: DigestWindow) -> str:
 
 
 def _highlight_line(fact, project_names: dict[str, str]) -> str:
+    detail = sanitise(fact.detail) or sanitise(fact.title)
     if fact.fleet:
         # Daemon health belongs to no project or task: its title names the
         # subject ("provider codex") and its detail says what happened.
-        detail = sanitise(fact.detail) or sanitise(fact.title)
         return _elide(f"• {sanitise(fact.title)}: {detail}")
     project = sanitise(project_names.get(fact.project_id, fact.project_id))
-    detail = sanitise(fact.detail) or sanitise(fact.title)
     verb = _KIND_VERB.get(fact.kind, fact.kind)
     return _elide(f"• {project}: {verb} — {detail} ({sanitise(fact.task_id)})")
 
@@ -111,8 +116,6 @@ def render_digest(
         raise ValueError(f"suppressed window has no message ({eligibility.reason})")
 
     names = project_names or {}
-    header = f"**Agent Queue — {_window_label(window)}**"
-
     completed = eligibility.completed_count
     started = sum(1 for fact in eligibility.facts if fact.kind == KIND_STARTED)
     progressed = sum(1 for fact in eligibility.facts if fact.kind == KIND_PROGRESS)
@@ -130,45 +133,31 @@ def render_digest(
     if started:
         counts.append(f"{started} started")
     counts.append(f"{eligibility.active_count} active")
-    summary = " · ".join(counts)
-
-    # Highlights are already ordered most-informative-first by eligibility;
-    # grouping by project keeps one project's lines together without
-    # reordering the ranking between groups.
+    if open_escalations > 0:
+        word = "escalation" if open_escalations == 1 else "escalations"
+        counts.append(f"{open_escalations} open {word}")
     ordered = list(eligibility.facts)
     ordered.sort(key=lambda f: (f.rank, names.get(f.project_id, f.project_id), -f.at, f.key))
 
     shown = ordered[: max(0, max_highlights)]
-    footer_parts = []
     overflow = len(ordered) - len(shown)
     if overflow > 0:
-        footer_parts.append(f"+{overflow} more")
-    if open_escalations > 0:
-        word = "escalation" if open_escalations == 1 else "escalations"
-        footer_parts.append(f"{open_escalations} open {word}")
-    if dashboard_url:
-        footer_parts.append(sanitise(dashboard_url))
-    elif dashboard_notice:
-        footer_parts.append(sanitise(dashboard_notice))
-    footer = " · ".join(footer_parts)
+        # The count belongs with the other counts: when the window is too full
+        # for three lines the highlights give way first, and a digest that
+        # quietly dropped a fact would be lying about the window.
+        counts.append(f"+{overflow} more")
+    # The window and its counts share the first line: §3.2 leaves three body
+    # lines for a message that has to carry both, and the counts are what the
+    # reader scans for.
+    header = " · ".join([f"{GLYPH_DIGEST} Agent Queue — {_window_label(window)}", *counts])
+    link = link_line(dashboard_url, inbox_path(), notice=dashboard_notice)
 
     def assemble(lines: list[str]) -> str:
-        body = [header, summary, *lines]
-        if footer:
-            body.append(footer)
-        return "\n".join(part for part in body if part)
+        return compose([header, *lines], DIGEST, link=link, chars=max_chars)
 
-    lines = [_highlight_line(fact, names) for fact in shown]
-    text = assemble(lines)
-    while lines and len(text) > max_chars:
-        # Drop the least informative highlight and fold it into the count
-        # rather than splitting the digest across messages.
-        lines.pop()
-        overflow += 1
-        footer_parts = [p for p in footer_parts if not p.startswith("+")]
-        footer_parts.insert(0, f"+{overflow} more")
-        footer = " · ".join(footer_parts)
-        text = assemble(lines)
-    if len(text) > max_chars:
-        text = text[: max(0, max_chars - 1)].rstrip() + "…"
+    # Highlights are already ordered most-informative-first by eligibility;
+    # grouping by project keeps one project's lines together without
+    # reordering the ranking between groups.  Overflow is taken from the end:
+    # the least informative highlight goes before the counts ever do.
+    text = assemble([_highlight_line(fact, names) for fact in shown])
     return text

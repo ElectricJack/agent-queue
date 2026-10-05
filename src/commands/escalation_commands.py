@@ -14,7 +14,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
-from src.database.queries.escalation_queries import EscalationConflict, EscalationStateError
+from src.database.queries.escalation_queries import (
+    TERMINAL_ESCALATION_STATES,
+    EscalationConflict,
+    EscalationStateError,
+)
+from src.escalations.sweep import SCAN_LIMIT, TARGET_OPEN_ITEMS, EscalationSweeper
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,17 @@ _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 _FORBIDDEN_AUTHORITY_ARGS = frozenset(
     {"actor", "actor_id", "human", "verified_actor", "supervisor_owner", "thread_id"}
 )
+
+#: The states ``escalation_resolve`` may close.  ``resolving`` is the supervisor
+#: acting on a recorded answer; ``reply_received`` is one answer ago and walks
+#: the single legal step into ``resolving`` first.  ``needs_human`` is absent on
+#: purpose: nothing has been answered yet, so there is no outcome to report and
+#: the honest states are "wait" and "withdraw", not "resolved".
+RESOLVABLE_STATES = frozenset({"reply_received", "resolving"})
+
+#: ``escalations.outcome`` for an incident a person closed, which is what keeps
+#: §5.2's collapsed row reading "Resolved" rather than "No longer needed".
+HUMAN_ESCALATION_OUTCOME = "human"
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -397,6 +413,104 @@ class EscalationCommandsMixin:
         )
         return {"success": True, "escalation": updated}
 
+    async def _cmd_escalation_resolve(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Close an incident a human answered, with the outcome they will read.
+
+        §5.3's other half: once Jack has answered -- from the thread, from a
+        choice button, or from the dashboard -- the supervisor says how it ended
+        with ``aq escalation resolve <id> --outcome "..."``, and the daemon
+        collapses the one post into its one-line resolved form and archives the
+        thread.  The outcome is the only text that crosses to the channel, which
+        is why it is required and why it is what §5.2 prints.
+
+        Two properties are load-bearing:
+
+        * **Only the owning supervisor may resolve.**  ``supervisor_required``
+          is the same fence ``escalation_update`` and ``escalation_apply_reply``
+          use, so a worker or a dashboard session cannot close a question a human
+          is still answering.
+        * **A newer answer is never resolved over.**  The stored vocabulary
+          reaches ``resolved`` only from ``resolving``, so an answered incident
+          is walked through the two legal steps rather than by inventing a
+          transition, and every step is a compare-and-set against the revision
+          it just read.  A human reply that lands mid-walk advances the revision
+          and this command reports ``stale_revision`` instead -- the same fence
+          :meth:`finish_escalation_action` relies on.
+
+        Delivery is not driven from here: the escalation tick re-plans the
+        incident's deliveries from durable state, so this command only has to
+        make the transition durable and announce it.
+        """
+        if error := self._reject_authority_args(args):
+            return error
+        incident, principal, error = await self._escalation_for_caller(
+            args.get("escalation_id"), supervisor_required=True
+        )
+        if error:
+            return error
+        outcome = args.get("outcome")
+        if not isinstance(outcome, str) or not outcome.strip() or len(outcome) > 4000:
+            return _error("invalid_request", "outcome must contain 1 to 4000 characters")
+        expected = args.get("expected_revision")
+        if expected is None:
+            expected = int(incident["revision"])
+        elif not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+            return _error("invalid_request", "expected_revision must be a non-negative integer")
+        if str(incident["state"]) not in RESOLVABLE_STATES:
+            if str(incident["state"]) in TERMINAL_ESCALATION_STATES:
+                return _error(
+                    "invalid_state",
+                    f"escalation is already {incident['state']} and terminal states are immutable",
+                )
+            return _error(
+                "invalid_state",
+                "no verified human answer is recorded on this escalation; wait for one, or "
+                "withdraw the question with aq escalation update --state cancelled",
+            )
+        path = (
+            ("resolving", "resolved")
+            if str(incident["state"]) == "reply_received"
+            else ("resolved",)
+        )
+        current = dict(incident)
+        for index, target in enumerate(path):
+            terminal = target in TERMINAL_ESCALATION_STATES
+            try:
+                updated = await self.db.transition_escalation(
+                    current["id"],
+                    expected_revision=expected if index == 0 else int(current["revision"]),
+                    new_state=target,
+                    terminal_outcome=outcome.strip() if terminal else None,
+                    terminal_evidence=(
+                        {"resolved_by": principal.describe(), "command": "escalation_resolve"}
+                        if terminal
+                        else None
+                    ),
+                    outcome=HUMAN_ESCALATION_OUTCOME if terminal else None,
+                )
+            except EscalationStateError as exc:
+                return _error("invalid_state", str(exc))
+            except ValueError as exc:
+                return _error("invalid_request", str(exc))
+            if updated is None:
+                return _error(
+                    "stale_revision",
+                    "escalation changed while it was being resolved; reload it and resolve again",
+                )
+            current = updated
+        await self._emit_escalation(
+            "escalation.updated.v1",
+            {
+                "escalation_id": current["id"],
+                "project_id": current["project_id"],
+                "task_id": current.get("task_id"),
+                "state": current["state"],
+                "revision": current["revision"],
+                "terminal_outcome": current.get("terminal_outcome"),
+            },
+        )
+        return {"success": True, "resolved": True, "escalation": current}
+
     async def _validate_apply_binding(
         self, incident: Mapping[str, Any], reply: Mapping[str, Any], args: Mapping[str, Any]
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -585,3 +699,72 @@ class EscalationCommandsMixin:
             "escalation": finished["escalation"],
             "action_result": action_result,
         }
+
+    async def _cmd_escalation_sweep(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Plan the §5.6 back-fill sweep; apply it only when asked.
+
+        The dry run is the default and writes nothing, so the review of the plan
+        happens before any incident closes.  ``--apply`` runs the *same* plan --
+        it is not a second code path -- so the two cannot disagree about what
+        would happen.
+        """
+        if error := self._reject_authority_args(args):
+            return error
+        principal = current_principal() or TRUSTED_LOCAL
+        project_id = args.get("project_id")
+        if principal.kind in {PrincipalKind.SESSION, PrincipalKind.PLAYBOOK}:
+            if principal.project_id is None and not principal.elevated:
+                return _error("out_of_scope", "a project-scoped principal is required")
+            if principal.project_id is not None:
+                if project_id is not None and project_id != principal.project_id:
+                    return _error("out_of_scope", "escalations belong to another project")
+                project_id = principal.project_id
+        if project_id is not None:
+            _, error = await self._authorize_escalation_project(project_id)
+            if error:
+                return error
+        apply = args.get("apply", False)
+        if not isinstance(apply, bool):
+            return _error("invalid_request", "apply must be a boolean")
+        limit = args.get("limit", SCAN_LIMIT)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+            return _error("invalid_request", "limit must be between 1 and 500")
+        sweeper = EscalationSweeper(
+            self.db,
+            self.config,
+            on_close=self._emit_sweep_close,
+        )
+        plan, report = await sweeper.run(
+            project_id=project_id, apply_changes=apply, limit=limit
+        )
+        open_after = report.open_after if apply else plan.open_before
+        return {
+            "success": True,
+            "mode": "apply" if apply else "dry_run",
+            "plan": plan.to_dict(),
+            "report": report.to_dict(),
+            "open_before": plan.open_before,
+            "open_after": open_after,
+            "target_open_items": TARGET_OPEN_ITEMS,
+            "within_target": open_after <= TARGET_OPEN_ITEMS,
+        }
+
+    async def _emit_sweep_close(self, incident: Mapping[str, Any]) -> None:
+        """Publish the same version-1 state hint every other escalation write does.
+
+        The sweep closes incidents through the query layer, not through a
+        command, so without this the dashboard and any watcher would only learn
+        about a closure on their next read.
+        """
+        await self._emit_escalation(
+            "escalation.updated.v1",
+            {
+                "escalation_id": incident["id"],
+                "project_id": incident["project_id"],
+                "task_id": incident.get("task_id"),
+                "state": incident["state"],
+                "revision": incident["revision"],
+                "terminal_outcome": incident.get("terminal_outcome"),
+                "swept_by": "escalation_sweep",
+            },
+        )

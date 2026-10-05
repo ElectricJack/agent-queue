@@ -270,6 +270,10 @@ async def test_approval_stores_exactly_the_pinned_artifact_and_tells_the_supervi
     stored = Path(row["path"]).read_bytes()
     pinned = (await db.get_review_revision(submitted["review_id"], 1))["playbook_artifact"]
     assert stored == pinned.encode("utf-8")
+    from src.playbooks.artifact_store import ArtifactStore
+    assert ArtifactStore(handler.config.compiled_root).load_source(sha) == (
+        submitted["playbook"]["source_markdown"]
+    )
     provenance = json.loads(row["validation"])["review"]
     assert provenance == {
         "review_id": submitted["review_id"],
