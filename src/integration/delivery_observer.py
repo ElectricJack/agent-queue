@@ -29,6 +29,7 @@ import logging
 import time
 import weakref
 from collections.abc import Iterable, Mapping
+from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -179,34 +180,37 @@ class DeliveryTarget:
     target_ref: str
 
 
-async def delivery_targets(conn, task_ids: Iterable[str]) -> dict[str, DeliveryTarget]:
-    """Each task's project target, for live and archived identities alike.
-
-    A task whose project has no designated repository has no target and is
-    omitted, so every consumer withholds it rather than guessing one.
-    """
+async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> dict[str, DeliveryTarget]:
+    """Current ordinary project/parent targets for live and archived tasks."""
     ids = sorted(set(task_ids))
     found: dict[str, DeliveryTarget] = {}
     if not ids:
         return found
+    parent = tasks.alias("delivery_parent")
     for table in (tasks, archived_tasks):
-        rows = await conn.execute(
-            select(
-                table.c.id, projects.c.id.label("project_id"), repos.c.id.label("repository_id"),
-                repos.c.url, repos.c.default_branch,
-            )
-            .select_from(
-                table.join(projects, projects.c.id == table.c.project_id).join(
-                    repos, repos.c.id == projects.c.integration_repository_id
-                )
-            )
-            .where(table.c.id.in_(ids))
-        )
+        rows = await conn.execute(select(
+            table.c.id, projects.c.id.label("project_id"), repos.c.id.label("repository_id"),
+            repos.c.url, repos.c.default_branch,
+        ).select_from(table.join(projects, projects.c.id == table.c.project_id).join(
+            repos, repos.c.id == projects.c.integration_repository_id,
+        )).where(table.c.id.in_(ids)))
         for row in rows.mappings():
             found.setdefault(row["id"], DeliveryTarget(
                 row["project_id"], row["repository_id"], row["url"],
                 "refs/heads/" + str(row["default_branch"]).removeprefix("refs/heads/"),
             ))
+        if reduced:
+            rows = (await conn.execute(select(table.c.id, parent.c.branch_name).select_from(
+                table.join(parent, parent.c.id == table.c.parent_task_id),
+            ).where(table.c.id.in_(ids), parent.c.project_id == table.c.project_id,
+                    parent.c.branch_name.is_not(None)))).all()
+            for task_id, parent_ref in rows:
+                if task_id in found:
+                    target = found[task_id]
+                    found[task_id] = DeliveryTarget(
+                        target.project_id, target.repository_id, target.repository_url,
+                        "refs/heads/" + str(parent_ref).removeprefix("refs/heads/"),
+                    )
     return found
 
 
@@ -229,6 +233,8 @@ class DeliveryView:
     evidence: Mapping[str, DeliveryEvidence] = field(default_factory=dict)
     targets: Mapping[str, DeliveryTarget] = field(default_factory=dict)
     snapshots: tuple[DeliverySnapshot, ...] = ()
+    request_loader: object = load_delivery_requests
+    target_loader: object = delivery_targets
 
     def get(self, task_id: str) -> DeliveryEvidence | None:
         return self.evidence.get(task_id)
@@ -259,7 +265,7 @@ class DeliveryView:
         ids = {task_id for task_id in task_ids if task_id in self.evidence}
         if not ids:
             return {}
-        current_targets = await delivery_targets(conn, ids)
+        current_targets = await self.target_loader(conn, ids)
         groups: dict[DeliveryTarget, set[str]] = {}
         for task_id in ids:
             target = current_targets.get(task_id)
@@ -267,7 +273,7 @@ class DeliveryView:
                 groups.setdefault(target, set()).add(task_id)
         verified: dict[str, DeliveryEvidence] = {}
         for target, group in groups.items():
-            current = await load_delivery_requests(
+            current = await self.request_loader(
                 self.db, group, repository_id=target.repository_id,
                 target_ref=target.target_ref, conn=conn,
             )
@@ -291,8 +297,8 @@ class DeliveryObserver:
     """Fetch and evaluate delivery truth for arbitrary tasks, outside transactions.
 
     Each repository gets an observer clone beside, never inside, the
-    publisher's retained checkout.  Every :meth:`observe` fetches it once per
-    target; only a read-only surface may reuse a snapshot fetched within
+    publisher's retained checkout. The reduced observer fetches once per
+    repository and shares its refs across targets; a read-only surface may reuse a snapshot within
     :data:`READ_MAX_AGE`, and no evaluated answer outlives its request.
     """
 
@@ -303,9 +309,12 @@ class DeliveryObserver:
     #: becoming a fetch per poll.  Guarded writers never reuse one.
     READ_MAX_AGE = 30.0
 
-    def __init__(self, db, *, git, data_dir) -> None:
+    def __init__(self, db, *, git, data_dir, truth=None) -> None:
         self.db = db
         self.git = git
+        self.truth = truth
+        self.request_loader = partial(load_delivery_requests, reduced=truth is not None)
+        self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
 
@@ -333,11 +342,18 @@ class DeliveryObserver:
         try:
             async with _fetch_lock(path):
                 store = await self._store(target)
-                snapshot = await delivery_snapshot(
-                    self.git, store, project_id=target.project_id,
-                    repository_id=target.repository_id,
-                    repository_url=target.repository_url, target_ref=target.target_ref,
-                )
+                if self.truth is not None:
+                    snapshot = (await self.truth.snapshot(
+                        str(store), project_id=target.project_id,
+                        repository_id=target.repository_id, repository_url=target.repository_url,
+                        target_ref=target.target_ref,
+                    )).observation
+                else:
+                    snapshot = await delivery_snapshot(
+                        self.git, store, project_id=target.project_id,
+                        repository_id=target.repository_id,
+                        repository_url=target.repository_url, target_ref=target.target_ref,
+                    )
             if snapshot.error is None:
                 self._recent[target] = (time.monotonic(), snapshot)
             return snapshot
@@ -354,16 +370,29 @@ class DeliveryObserver:
 
     async def snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
         """Fetch one isolated, request-scoped snapshot for an external reader."""
-        return (await self._snapshot(target)).for_request()
+        snapshot = (await self._snapshot(target)).for_request()
+        if self.truth is not None:
+            from src.integration.git_truth import GitTruthSnapshot
 
-    async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0):
-        snapshot = (await self._snapshot(target, max_age)).for_request()
-        requests = await load_delivery_requests(
+            return GitTruthSnapshot(self.truth, snapshot)
+        return snapshot
+
+    async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0,
+                        *, snapshot=None):
+        if snapshot is None:
+            snapshot = await self._snapshot(target, max_age)
+        snapshot = snapshot.for_request()
+        requests = await self.request_loader(
             self.db, task_ids, repository_id=target.repository_id,
             target_ref=target.target_ref,
         )
         try:
-            evaluated = await snapshot.evaluate_many(requests.values())
+            if self.truth is not None:
+                from src.integration.git_truth import GitTruthSnapshot
+
+                evaluated = await GitTruthSnapshot(self.truth, snapshot).evaluate_many(requests.values())
+            else:
+                evaluated = await snapshot.evaluate_many(requests.values())
         except Exception as exc:  # noqa: BLE001 - a broken observation is unknown
             logger.warning("delivery observer: evaluation failed: %s", exc)
             evaluated = {
@@ -373,6 +402,26 @@ class DeliveryObserver:
         return snapshot, {
             task_id: evaluated[task_id] for task_id in task_ids if task_id in evaluated
         }
+
+    async def prerequisite_view(self, project_id: str, *, task_id: str | None = None):
+        """One Git view for current completed sibling prerequisites on the frontier."""
+        from src.database.tables import task_dependencies
+
+        dependent = tasks.alias("delivery_dependent")
+        query = select(tasks.c.id).select_from(task_dependencies.join(
+            tasks, tasks.c.id == task_dependencies.c.depends_on_task_id,
+        ).join(dependent, dependent.c.id == task_dependencies.c.task_id)).where(
+            dependent.c.project_id == project_id,
+            dependent.c.status.in_(("READY", "IN_PROGRESS")),
+            dependent.c.parent_task_id.is_not(None),
+            tasks.c.parent_task_id == dependent.c.parent_task_id,
+            tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
+        )
+        if task_id is not None:
+            query = query.where(dependent.c.id == task_id)
+        async with self.db._engine.connect() as conn:
+            ids = (await conn.execute(query)).scalars().all()
+        return await self.observe(ids)
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
@@ -389,17 +438,29 @@ class DeliveryObserver:
             return view
         for _attempt in range(self.FRESH_ATTEMPTS):
             async with self.db._engine.connect() as conn:
-                targets = await delivery_targets(conn, ids)
+                targets = await self.target_loader(conn, ids)
             groups: dict[DeliveryTarget, set[str]] = {}
             for task_id, target in targets.items():
                 groups.setdefault(target, set()).add(task_id)
             evidence: dict[str, DeliveryEvidence] = {}
             snapshots = []
+            repositories = {}
             for target, group in sorted(groups.items(), key=lambda item: item[0].repository_id):
-                snapshot, found = await self._evaluate(target, group, max_age)
+                shared = None
+                if self.truth is not None:
+                    from src.integration.git_truth import GitTruthSnapshot
+
+                    key = target.project_id, target.repository_id, target.repository_url
+                    if key not in repositories:
+                        repositories[key] = GitTruthSnapshot(
+                            self.truth, await self._snapshot(target, max_age),
+                        )
+                    shared = repositories[key].for_target(target.target_ref).observation
+                snapshot, found = await self._evaluate(target, group, max_age, snapshot=shared)
                 snapshots.append(snapshot)
                 evidence.update(found)
-            view = DeliveryView(self.db, evidence, targets, tuple(snapshots))
+            view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
+                                self.target_loader)
             if max_age > 0 or await view.fresh():
                 return view
         return view

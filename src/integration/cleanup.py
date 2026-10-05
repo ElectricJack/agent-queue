@@ -1270,13 +1270,13 @@ class SubjectCleanupItem:
 
 
 class SubjectCleanup:
-    """Primitive 20 over shared Git/journal/authority ports, beside legacy cleanup.
+    """Primitive 20 over shared Git/authority ports, beside legacy cleanup.
 
-    ``inventory`` returns immutable cleanup identities after proving publication
-    from existing receipts. ``held`` rechecks live writer/reference holds.
+    ``inventory`` returns current cleanup identities after proving publication;
+    it omits already-closed PRs on replay. ``held`` rechecks live reference holds.
     ``close_pr`` must bind repository, PR identity and expected head, refusing a
-    moved PR. Each delete uses an expected-old lease and an intent recorded
-    before I/O. A new subject visit supplies the retry/backoff policy.
+    moved PR. Each delete uses an expected-old lease and authenticated read-back.
+    Cleanup failures retry opportunistically without a deletion journal.
     """
 
     def __init__(self, gitops, *, inventory, held, close_pr=None, clock=time.time):
@@ -1293,7 +1293,6 @@ class SubjectCleanup:
         from dataclasses import asdict
 
         from src.integration.development import DevelopmentBusy
-        from src.integration.gitops import operation_key
         from src.integration.ownership import BranchOwnershipError
         from src.integration.subjects import PrimitiveOutcome, SubjectPhase
 
@@ -1311,11 +1310,6 @@ class SubjectCleanup:
                         return PrimitiveOutcome(primitive=p, outcome="irreversible_marker",
                                                 detail={"item": asdict(item)})
                 for item in items:
-                    identity = asdict(item)
-                    key = operation_key(subject, p, identity)
-                    if await self.gitops.journal.read(subject, key + ":clean"):
-                        deleted.append(item.identity)
-                        continue
                     deadline = max(item.retain_until or 0, (
                         item.failed_at + args.retain_failed_seconds
                         if item.failed_at is not None else 0
@@ -1330,8 +1324,7 @@ class SubjectCleanup:
                     if await self.held(subject, item):
                         pending.append({"item": item.identity, "reason": "live_reference"})
                         continue
-                    # Reconcile an ambiguous deletion even after the write
-                    # budget was exhausted. Reads are not another attempt.
+                    # Derive completed deletion from the current external ref.
                     if item.kind == "remote_ref":
                         absent = await self.gitops.remote(repo, item.identity) is None
                     elif item.kind == "local_ref":
@@ -1343,16 +1336,7 @@ class SubjectCleanup:
                     else:
                         absent = False
                     if absent:
-                        await self.gitops.journal.append(
-                            subject, key + ":clean", p, "clean", identity
-                        )
                         deleted.append(item.identity)
-                        continue
-                    attempt = 0
-                    while await self.gitops.journal.read(subject, f"{key}:try:{attempt}"):
-                        attempt += 1
-                    if attempt >= args.max_tries:
-                        pending.append({"item": item.identity, "reason": "retry_exhausted"})
                         continue
                     await self.gitops.authority(subject)
                     if item.kind != "pull_request" and not await self.gitops.authority.unowned(
@@ -1360,9 +1344,7 @@ class SubjectCleanup:
                     ):
                         pending.append({"item": item.identity, "reason": "writer_owned"})
                         continue
-                    await self.gitops.journal.append(subject, f"{key}:try:{attempt}", p,
-                                                     "prepared", identity)
-                    # Repeat external holds after the durable intent is written.
+                    # Recheck holds immediately before bounded expected-old deletion.
                     await self.gitops.authority(subject)
                     if await self.held(subject, item):
                         pending.append({"item": item.identity, "reason": "live_reference"})
@@ -1375,9 +1357,8 @@ class SubjectCleanup:
                             await self._apply(repo, item, deadline)
                     except Exception as exc:
                         pending.append({"item": item.identity, "reason": str(exc),
-                                        "attempts": attempt + 1})
+                                        "attempts": 1})
                         continue
-                    await self.gitops.journal.append(subject, key + ":clean", p, "clean", identity)
                     deleted.append(item.identity)
             return PrimitiveOutcome(
                 primitive=p,
