@@ -191,6 +191,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Shared operator decisions shipped in PostgreSQL revision 77.
+        "operator_decisions",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
