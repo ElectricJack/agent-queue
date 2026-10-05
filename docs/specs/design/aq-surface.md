@@ -100,6 +100,15 @@ a BLOCKED checkpointed producer to READY.
 
 For an active repair delegate, `reserve-owner` instead redispatches its current
 repair stage using the normal fenced handoff, without resetting its budget.
+`aq task restart` uses that same handoff for a stopped delegate rather than a
+bare status flip: a repair delegate owns no branch origin, so the pool claim
+frontier admits it only on the exact reserved `repair` fence of its operation's
+branch. A restart that only moved the row to READY therefore stranded a task the
+frontier excluded (`frontier_origin_not_materialized`) and counted as zero
+demand, so no pool worker could ever claim it. When the handoff cannot prove the
+branch back — a fence still held by the stopped writer — restart is refused and
+leaves the task as it found it, naming `reserve-owner` (and `release-owner` for
+the held fence) as the recovery.
 
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the

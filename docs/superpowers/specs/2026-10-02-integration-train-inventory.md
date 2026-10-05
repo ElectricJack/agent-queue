@@ -2490,6 +2490,8 @@ These are the integration-bearing call sites in shared subsystems, not an invent
 | `_cmd_edit_task` | Apply authorized task edits while fencing hierarchy, route, and delivery identity changes. |
 | `_cmd_task_recover` | Apply a reasoned task recovery decision after proving the exact provider-backed stop state. |
 | `_cmd_restart_task` | Restart authorized work and restore its detached canonical branch reservation. |
+| `_restart_repair_delegate` | Restart a stopped repair delegate through its operation's exact branch reservation. |
+| `_undo_refused_restart` | Restore the delegate's prior task state when branch reservation refuses restart. |
 | `_cmd_reopen_with_feedback` | Reopen a completed/failed task with feedback appended to its description. |
 | `_cmd_archive_task` | Archive tasks — single task by ID or bulk by project. |
 | `_cmd_explain_task` | Return the ordered list of reasons *task_id* isn't running. |

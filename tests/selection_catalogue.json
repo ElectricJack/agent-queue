@@ -1413,7 +1413,7 @@
       ]
     }
   },
-  "digest": "sha256:eec65b3490decb010186fb0fe062798ed169afd975e7ba9971eefc80ae188ce8",
+  "digest": "sha256:b33be42d5860d1bab6d7e90a3fe5985e5a09ee443fc732c34f53e8e3dd1eece2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8130,6 +8130,7 @@
         "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
@@ -8180,6 +8181,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.task_commands",
         "src.database.tables",
         "src.git.manager",
         "src.integration.models",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.commands.task_commands import TaskCommandsMixin
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -2452,6 +2454,109 @@ async def _attached_dead_writer(db, delegate: str) -> None:
         await conn.execute(update(integration_branch_owners).values(
             handoff_state="attached", session_id="dead",
         ))
+
+
+async def _dead_writer_with_released_fence(db, delegate: str) -> None:
+    """A repair delegate whose worker died and whose fence owner recovery freed.
+
+    This is the shape ``aq task restart`` found on 2026-10-05: the writer's
+    session is gone, its claim is closed with the task BLOCKED, and the branch
+    fence is ``released`` — no reserved repair fence for the delegate.
+    """
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released",
+            fence_token=integration_branch_owners.c.fence_token + 1,
+            session_id=None,
+            workspace_id=None,
+            confirmed_workspace_id="ws-dead",
+        ))
+
+
+def _restart_command(db, service):
+    """The ``restart_task`` collaborators an integration delegate restart reads.
+
+    ``CommandHandler`` composes both mixins; these tests call the handler
+    method unbound, so the double carries the sibling methods explicitly.
+    """
+    command = SimpleNamespace(db=db, _integration_repair_service=lambda: service)
+    for name in ("_restart_repair_delegate", "_undo_refused_restart"):
+        setattr(command, name, partial(getattr(TaskCommandsMixin, name), command))
+    return command
+
+
+async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db):
+    """A restarted repair delegate must be claimable, not READY and stranded.
+
+    A repair delegate owns no branch origin: the pool claim frontier admits it
+    only on the exact reserved ``repair`` fence of its operation's branch. A
+    restart that only moved the row to READY left it off the frontier with
+    ``frontier_origin_not_materialized`` and zero counted demand, so no pool
+    worker could ever pick it up.
+    """
+    service, delegate = await _continuous_parent_stage(db)
+    await _dead_writer_with_released_fence(db, delegate)
+    stage_before = await _repair_stage(db, "operation", 0)
+    assert await db.is_hierarchy_task_runnable(delegate) is False
+
+    result = await TaskCommandsMixin._cmd_restart_task(
+        _restart_command(db, service), {"task_id": delegate}
+    )
+
+    assert result["restarted"] == delegate
+    assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
+    assert (await db.get_task(delegate)).status is TaskStatus.READY
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        delegate, "repair", "reserved",
+    )
+    assert owner["session_id"] is None and owner["workspace_id"] is None
+    assert await db.is_hierarchy_task_runnable(delegate) is True
+    assert await db.claim_frontier_exclusions(delegate) == []
+    # The claim predicate itself, in both the hoisted and the correlated form.
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    async with db._engine.connect() as conn:
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            claimable = await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == delegate, _frontier_where("p", mode),
+            ))
+    assert claimable == delegate
+    # The same delegate and the same stage resume; no budget or clock was reset.
+    stage_after = await _repair_stage(db, "operation", 0)
+    for field in ("ordinal", "state", "repair_task_id", "writer_kind", "started_at",
+                  "deadline_at", "attempts", "starting_sha", "current_subject"):
+        assert stage_after[field] == stage_before[field]
+    assert await service.missing_delegate_reservations() == []
+
+
+@pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+    """A fence no handoff can prove free is refused, naming the control to run."""
+    service, delegate = await _continuous_parent_stage(db)
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state=fence_state, session_id="dead",
+        ))
+
+    result = await TaskCommandsMixin._cmd_restart_task(
+        _restart_command(db, service), {"task_id": delegate}
+    )
+
+    assert "aq integration reserve-owner --task-id" in result["error"]
+    assert "aq integration release-owner --task-id" in result["error"]
+    assert (await db.get_task(delegate)).status is TaskStatus.BLOCKED
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["handoff_state"], owner["session_id"]) == (
+        delegate, fence_state, "dead",
+    )
+    assert await db.is_hierarchy_task_runnable(delegate) is False
 
 
 async def test_attached_stopped_writer_is_proven_by_owner_recovery_then_refiled(db):
