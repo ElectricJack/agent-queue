@@ -314,7 +314,8 @@ async def _run(git, store, *args):
     return result.stdout.strip()
 
 
-async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None):
+async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None,
+                                 reduced=False):
     """Batch read current completions and live/archive identities without locks.
 
     Absent tasks are omitted so consumers explicitly withhold them. PostgreSQL
@@ -368,27 +369,30 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         recorded_ids |= set((await reader.execute(
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
-        settlements = {
-            task_id: settlement_fields(value)
-            for task_id, value in (await reader.execute(
-                select(task_metadata.c.task_id, task_metadata.c.value).where(
-                    task_metadata.c.task_id.in_(task_ids),
-                    task_metadata.c.key == SETTLEMENT_KEY,
-                )
-            )).all()
-        }
-        parent_ids, abandoned, parent_completions = await _parent_completions_on(
-            reader, task_ids, repository_id=repository_id,
-        )
-        # A rework fence invalidates a parent adoption or verified completion, so
-        # every parent whose binding could carry one is read for it.
-        parent_history = parent_ids | abandoned
-        adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
-        parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
-        rework = dict((await reader.execute(select(
-            task_metadata.c.task_id, task_metadata.c.value,
-        ).where(task_metadata.c.task_id.in_(parent_history),
-                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
+        settlements, parent_ids, abandoned = {}, set(), set()
+        parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
+        if not reduced:
+            settlements = {
+                task_id: settlement_fields(value)
+                for task_id, value in (await reader.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        task_metadata.c.task_id.in_(task_ids),
+                        task_metadata.c.key == SETTLEMENT_KEY,
+                    )
+                )).all()
+            }
+            parent_ids, abandoned, parent_completions = await _parent_completions_on(
+                reader, task_ids, repository_id=repository_id,
+            )
+            # A rework fence invalidates a parent adoption or verified completion, so
+            # every parent whose binding could carry one is read for it.
+            parent_history = parent_ids | abandoned
+            adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
+            parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
+            rework = dict((await reader.execute(select(
+                task_metadata.c.task_id, task_metadata.c.value,
+            ).where(task_metadata.c.task_id.in_(parent_history),
+                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }

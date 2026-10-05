@@ -308,6 +308,7 @@ class IntegrationReconciler:
                     await asyncio.wait_for(
                         self._diagnostics(subject, facts), timeout=self._timeout
                     )
+
                 except Exception as exc:
                     # Diagnostic failure must not change the authoritative policy.
                     evidence = {

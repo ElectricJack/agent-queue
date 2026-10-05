@@ -3415,6 +3415,10 @@ integration_batches = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    # Non-null target marks the additive Git-first input/intent shape.
+    Column("target_ref", Text, nullable=True),
+    Column("intent", Text, nullable=False, server_default="open"),
+    Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
@@ -3433,6 +3437,11 @@ integration_batches = Table(
     Column("cleanup_state", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    CheckConstraint("intent IN ('open', 'paused', 'aborted')",
+                    name="ck_integration_batches_intent"),
+    CheckConstraint("repair_attempt_count >= 0", name="ck_integration_batches_repair_attempts"),
+    CheckConstraint("target_ref IS NULL OR target_ref LIKE 'refs/heads/%'",
+                    name="ck_integration_batches_target_ref"),
     CheckConstraint("current_revision >= 0", name="ck_integration_batches_revision"),
     CheckConstraint(
         "repair_stage_ordinal IS NULL OR repair_stage_ordinal >= 0",
@@ -3455,7 +3464,7 @@ integration_batches = Table(
         "project_id",
         unique=True,
         postgresql_where=text(
-            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+            "target_ref IS NULL AND lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
             "'human_blocked', 'promoting', 'cleanup_pending')"
         ),
     ),
@@ -3469,6 +3478,7 @@ integration_batch_members = Table(
     Column("task_id", Text, nullable=False),
     Column("pr_url", Text, nullable=True),
     Column("repository_id", Text, nullable=False),
+    Column("source_sha", Text, nullable=True),
     Column("source_base_sha", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
@@ -3479,7 +3489,7 @@ integration_batch_members = Table(
         "review_evidence_id",
         Text,
         ForeignKey("integration_review_evidence.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
     Column("review_evidence", JSON, nullable=False),
     UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
@@ -3495,6 +3505,8 @@ integration_batch_members = Table(
         unique=True,
     ),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
+    CheckConstraint("source_sha IS NOT NULL OR review_evidence_id IS NOT NULL",
+                    name="ck_integration_batch_members_review_or_input"),
     CheckConstraint(
         "(source_ref IS NULL AND source_ref_retention IS NULL) OR "
         "(source_ref IS NOT NULL AND source_ref LIKE 'refs/heads/%' AND "
