@@ -576,3 +576,20 @@ async def test_daemon_start_merges_the_supervisor_before_the_db_sync(stale_orche
     assert profile is not None
     assert "integration_status" in profile.aq_commands
     assert "operator_custom_command" in profile.aq_commands
+
+
+def test_existing_supervisor_gains_object_evidence_reads(data_dir):
+    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
+    grants = ["artifact_verify", "object_checkpoint_read", "job_retain"]
+    stale = shipped
+    for name in grants:
+        assert f'    "{name}",\n' in shipped
+        stale = stale.replace(f'    "{name}",\n', "", 1)
+    vault = _vault(data_dir)
+    _write(vault, stale)
+    result = sync_profile_capabilities(data_dir, "supervisor")
+    assert result.status == STATUS_SYNCED
+    assert result.added == {"aq_commands": grants}
+    assert set(grants) <= set(_aq_commands(vault))
+    assert Path(result.backup_path).read_text(encoding="utf-8") == stale
+    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT

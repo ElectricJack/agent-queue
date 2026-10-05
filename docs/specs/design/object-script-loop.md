@@ -179,6 +179,30 @@ URI and re-hashes the bytes behind it. A URI is a claim; something has to check
 it. `s3://` and `https://` receipts belong to the external artifact adapter and
 are refused here rather than guessed at.
 
+### Scoped evidence reads and the finalizer
+
+Object workers, including the finalizer, may read `object_checkpoint_read` and
+verify artifacts belonging to their own object. Authority comes from the live
+held task and its persisted object provenance, never an object named in editable
+task prose. A stale claim, another object or another project grants no access.
+Workers may also verify artifacts retained by their own jobs before a score or
+loop checkpoint exists; the stored job origin and live task ownership supply
+that authority.
+Supervisors may read checkpoints and evidence in their project; the global
+supervisor may read all projects. Both commands require explicit profile grants.
+Existing worker templates need an operator grants-only reseed; the supervisor
+receives these grants through its existing additive capability sync.
+
+Before releasing the finalizer, AQ resolves a per-view evidence bundle containing
+verified Before and After image URIs, hashes and local artifact paths. Before
+images come from the retained baseline capture receipt's image digests; After
+images come from the best scored receipt (or the baseline if none was promoted).
+The original capture run paths are never used. Missing or corrupt evidence is
+reported per view and cannot be presented as verified. Checkpoint reads expose
+the same bundle for a retry after artifact availability changes. Round handoffs
+retain capture and artifact pointers as well as candidate identities, so earlier
+round evidence remains readable after their workspaces and run directories expire.
+
 ### The render profile
 
 `render_profile_sha256` is the digest of a canonical render-profile document:

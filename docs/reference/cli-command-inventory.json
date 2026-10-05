@@ -16408,13 +16408,18 @@
           "--project-id"
         ],
         "optional": [
+          "--task-id",
+          "--session-id",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--task-id",
+          "--session-id"
+        ]
       }
     },
     {
