@@ -1,7 +1,8 @@
 # CI at integration boundaries
 
 Full GitHub CI runs automatically on pull requests into `main` and on pushes to
-`aq/integration/**` and `aq/parent/**`. A push to `main` does not launch it, and
+`aq/integration/**`, `aq/batches/**` (the Git-first train's batch candidates) and
+`aq/parent/**`. A push to `main` does not launch it, and
 neither does a push to a feature branch that has no PR. Manual testing is
 available through `workflow_dispatch`:
 

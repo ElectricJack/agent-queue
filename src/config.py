@@ -2588,10 +2588,10 @@ class IntegrationConfig:
     #: is off, so the reconciler can never be handed a project it may only
     #: mirror (``aq integration development-engine-transfer``).
     reconciler_active: bool = True
-    #: Temporary protocol selector for already reconciler-owned subjects.
-    #: Shadow compares Git facts without changing the authoritative subject protocol.
-    #: Active is consumed by the reduced protocol as its guards land; neither
-    #: value installs a loop or transfers root ownership.
+    #: Integration protocol selector. Shadow keeps the subject runtimes
+    #: authoritative and logs Git-first comparisons. Active replaces the root,
+    #: parent and development runtimes with one Git-first train
+    #: (src/integration/train.py) and stops outbox dispatch; read at daemon start.
     git_first: str = "shadow"
 
     #: Consecutive identical unsuccessful evaluations after which the

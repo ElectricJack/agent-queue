@@ -7822,6 +7822,14 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
     "additionalProperties": False,
 }
 
+# The git-first train's per-tick dispatch (integration.git_first: active).
+# Daemon-only: excluded from MCP, the API and the CLI; the service supplies its clock.
+_FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+
 # The parent reconciler's per-visit dispatch.  Excluded from MCP
 # (DEFAULT_EXCLUDED_COMMANDS): authority is the process-bound visit exclusion,
 # never the payload.  A fallback schema keeps it out of the LLM tool list while

@@ -788,6 +788,37 @@ async def test_subject_pass_runs_each_runtime_and_isolates_failed_maintenance():
                      ("root", "parent", "development", "failed", "later", "outbox")]
 
 
+async def test_active_train_replaces_the_runtimes_and_never_dispatches_legacy_events():
+    """git_first: active runs one train; pending outbox rows reach no old writer."""
+    calls = []
+
+    async def train_tick(now):
+        calls.append(("train", now))
+        return {"started": [], "running": [], "skipped": []}
+
+    async def maintenance(now):
+        calls.append(("maintenance", now))
+
+    outbox = SimpleNamespace(dispatch_due=AsyncMock())
+    for _restart in range(2):
+        train = SimpleNamespace(tick=train_tick, stop=AsyncMock())
+        service = IntegrationService(object(), outbox, train=train,
+                                     maintenance={"cleanup": maintenance}, clock=lambda: 100)
+        await service.tick(100)
+        await service.stop()
+        train.stop.assert_awaited_once()
+    assert calls == [("train", 100), ("maintenance", 100)] * 2
+    outbox.dispatch_due.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "runtime", ["subject_runtime", "parent_subject_runtime", "development_subject_runtime"]
+)
+def test_train_never_runs_beside_a_subject_runtime(runtime):
+    with pytest.raises(ValueError, match="replaces the subject runtimes"):
+        _IntegrationService(None, None, train=object(), **{runtime: object()})
+
+
 async def test_background_subject_pass_does_not_overlap_and_stop_cancels_it():
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []

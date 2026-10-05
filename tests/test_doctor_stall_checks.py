@@ -462,6 +462,20 @@ async def test_the_stranded_child_line_is_quiet_on_a_healthy_train(context):
     assert await module._stranded_child_findings(context, NOW) == []
 
 
+async def test_the_stranded_child_line_is_quiet_under_the_active_train(context):
+    """The git-first train collects children without a parent Subject."""
+    context.db.rows = [
+        {"task_id": "container.1", "project_id": "one", "parent_task_id": "container",
+         "branch": "aq/container.1", "updated_at": NOW - 22 * 60, "head_sha": "c" * 40,
+         "base_sha": "b" * 40, "parent_status": "PAUSED",
+         "parent_state": "awaiting_children", "operation_state": None,
+         "subject_phase": None},
+    ]
+    context.config.integration.git_first = "active"
+
+    assert await module._stranded_child_findings(context, NOW) == []
+
+
 def test_unknown_subject_journal_replay_reports_error_after_five_minutes():
     def entry(seq, timestamp, rule="unknown-facts", **fields):
         return dict(subject_id="30b7d7f1", project_id="one",
