@@ -7499,9 +7499,12 @@ async def test_ordinary_repair_brief_leads_the_description_and_freezes_at_filing
              "Conflicting member: source (source deadbeef); reason: alembic_head_collision.\n"
              "Still to merge onto the starting head, in this order:\n"
              "  1. source (source deadbeef)")
-    filed = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
-                                       brief=brief)
+    authorize = AsyncMock(return_value=True)
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, brief=brief, authorize=authorize,
+    )
     assert filed["outcome"] == "filed"
+    authorize.assert_awaited_once_with()
     description = (await env.db.get_task(filed["task_id"])).description
     assert description.startswith(brief + "\n\nRepair the observed head on " + env.ref)
     assert (await OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now).input(
