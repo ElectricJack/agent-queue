@@ -3559,6 +3559,93 @@ async def test_root_active_adoption_still_refuses_at_deadline(db, head):
             )
 
 
+async def test_an_expired_stage_with_a_late_push_rebuilds_and_releases_its_writer(db):
+    """The supported way forward for a batch whose expired stage left a push behind.
+
+    This is the state the incident batch was left in once the ladder ran:stage 0
+    out of budget, its writer having already pushed, so its ordinal is spent and
+    it must not bind a candidate revision.  Two routes exist, and both are
+    pinned here rather than left to the incident: the *batch* rebuilds on the
+    successor stage, and the *writer* is not stranded -- its seat is durably
+    retired, which is the proof the retired-delegate drain
+    (``aq session drain-ack``) needs to stop it after its own ack.  Before this
+    task, an attached writer whose stage had lapsed had neither.
+    """
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["root"]["repair"]["on_exhausted"] = "continue"
+    operation_id = await _seed_root_operation(db, policy=policy)
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/integration/batch"), operation_id, "collector",
+    )
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    dispatched = await service.dispatch(operation_id, 0)
+    delegate = dispatched["repair_task_id"]
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="late-pusher")
+
+    # The writer published before anything could close it, so the stage subject
+    # moved off the head its writer was allocated on. That is real progress, so
+    # the ladder escalates instead of waiting for a writer that is gone.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation_id,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(current_subject={"kind": "batch", "revision": 0, "candidate_sha": "e" * 40}))
+
+    expired = await service.expire(operation_id, 0, now=130.0)
+    assert (expired["outcome"], expired["action"], expired["stage"]) == (
+        "expired", "dispatch_debug", 1,
+    )
+
+    spent = await _repair_stage(db, operation_id, 0)
+    successor = await _repair_stage(db, operation_id, 1)
+    assert (spent["state"], spent["repair_task_id"]) == ("expired", delegate)
+    assert (successor["state"], successor["deadline_at"], successor["repair_task_id"]) == (
+        "active", 190.0, None,
+    )
+    rebuilt = await service.dispatch(operation_id, 1)
+    assert rebuilt["outcome"] == "dispatched", [
+        n["body"] for n in await _notices(db, "integration_repair_dispatch_unknown")
+    ]
+    assert rebuilt["repair_task_id"] != delegate
+    # The rebuild runs on the subject the push left behind.
+    assert (await _repair_stage(db, operation_id, 1))["current_subject"] == {
+        "kind": "batch", "revision": 0, "candidate_sha": "e" * 40,
+    }
+    assert (await db.get_integration_operation(operation_id))["active_stage"] == 1
+
+    # A spent ordinal never adopts: the close's own scope is already inactive,
+    # so the batch rebuilds on the successor rather than binding this revision
+    # from an expired stage.
+    async with db.immediate() as conn:
+        scope = await db.get_repair_filing_scope(delegate, session_id="late-pusher", conn=conn)
+    assert scope is not None
+    assert (scope["active"], scope["stage"], scope["operation_id"]) == (
+        False, 0, operation_id,
+    )
+
+    # And the writer is not left holding an unprovable claim: its seat is
+    # retired for good, which is exactly the proof the drain path requires.
+    async with db.immediate() as conn:
+        retirement = await db.get_retired_integration_writer(delegate, conn=conn)
+    assert retirement is not None
+    assert retirement["disposition"] == "superseded"
+    assert retirement["operation_id"] == operation_id
+
+    # The pool claim that would re-arm a budget re-arms nothing here: the stage
+    # belongs to the ladder now.
+    assert (await service.start_claimed_stage_budget(delegate, now=140.0)) == {
+        "outcome": "no_stage", "task_id": delegate,
+    }
+    assert (await _repair_stage(db, operation_id, 0))["deadline_at"] == spent["deadline_at"]
+
+    # The rebuild keeps the operation running, so the batch still has a route.
+    assert await service.due_stages(now=189.0) == []
+    assert [stage["stage"] for stage in await service.due_stages(now=191.0)] == [1]
+
+
 async def test_a_live_writer_close_rechecks_its_stage_instead_of_being_refused(db):
     """A deadline bounds the wait for a writer, not the writer a stage already holds.
 
