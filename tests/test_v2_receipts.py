@@ -314,3 +314,16 @@ class TestPrincipalProjection:
         principal = step_receipt(runs).principal
         assert principal["capability_fingerprint"] == TRUSTED_LOCAL.policy.fingerprint()
         assert "ensure_task" not in str(principal)
+
+
+async def test_rejected_summary_does_not_bypass_receipt_projection():
+    engine, adapter, runs, ref = build("ensure_task", ENSURE_TASK)
+    adapter.queue.append(CommandResult(
+        outcome="rejected", value=EnsureTaskResult(task_id="", created=False),
+        summary="unclassified secret from a command adapter",
+    ))
+    outcome = await run_one(engine, ref)
+    assert step_receipt(runs).error is None
+    # This fixture handles the refusal by completing successfully.
+    assert outcome.snapshot.error is None
+    assert "unclassified secret" not in str(runs.receipts)

@@ -630,3 +630,61 @@ async def test_object_review_approval_stores_pinned_bytes_without_activation(set
     assert await setup.db.get_playbook_artifact_row(digest)
     assert canonical_bytes(pinned) == revision["playbook_artifact"].encode()
     assert await setup.db.list_playbook_activations() == []
+
+
+async def test_revised_brief_start_failure_is_visible_and_notified_once(setup):
+    from types import SimpleNamespace
+
+    from src.database.tables import gates, messages
+    from src.doctor.stall_checks import _object_bootstrap_findings
+
+    handler = setup
+    await cook(handler)
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review").values(
+            current_revision=2,
+        ))
+        await conn.execute(insert(doc_review_revisions).values(
+            review_id="brief-review", revision=2, content="revised brief", content_sha256=B,
+            submitted_by="agent", submitted_at=2,
+        ))
+    definition = artifact()
+    ref = artifact_ref_for(definition)
+    store = InMemoryArtifactStore()
+    store.put(definition)
+    repository = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=time.time),
+        runs=repository,
+    )
+    for _ in range(2):
+        result = await engine.run_rule(ref, "recover", {
+            "event_type": "timer.5m", "project_id": PROJECT, "event_id": uuid.uuid4().hex,
+        }, TRUSTED_LOCAL)
+        assert result.outcome == "failed"
+        assert "pins revision 1" in result.snapshot.error
+        assert "current revision is 2 (approved)" in result.snapshot.error
+    failures = [r for r in repository.receipts if r.step_id.endswith("--start") and r.outcome == "failure"]
+    assert failures and all("pins revision 1" in r.error for r in failures)
+    assert all(r.result["error_code"] == "object_loop.start_refused" for r in failures)
+    async with handler.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.from_id == "object-loop",
+        ))).mappings().all()
+        assert len(notices) == 1
+        assert notices[0].to_id == f"supervisor-{PROJECT}"
+        assert "current revision is 2 (approved)" in notices[0].body
+        assert not (await conn.execute(select(object_loops))).first()
+        assert not (await conn.execute(select(tasks).where(
+            tasks.c.created_by_kind == "object_loop",
+        ))).first()
+    ctx = SimpleNamespace(db=handler.db)
+    assert await _object_bootstrap_findings(ctx, {PROJECT}, time.time()) == []
+    findings = await _object_bootstrap_findings(ctx, {PROJECT}, time.time() + 901)
+    assert len(findings) == 1
+    assert "pins revision 1" in findings[0]["detail"]
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(gates).where(gates.c.id == findings[0]["gate_id"]).values(
+            status="resolved",
+        ))
+    assert await _object_bootstrap_findings(ctx, {PROJECT}, time.time() + 901) == []
