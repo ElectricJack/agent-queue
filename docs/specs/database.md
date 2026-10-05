@@ -2644,6 +2644,32 @@ policy, writer and deadline.
 | `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
 | `completed_at` | REAL | nullable | Unix timestamp |
 
+### Table: `operator_decisions`
+
+Shared, durable operator instructions on an integration object (a task, batch or
+repair operation), written by `src/operator_decisions.py`. Rows are append-only:
+a `hold` stays active until a later `release` row names it, and the integration
+engine refuses to advance a held object. Any supervisor reads the same history,
+so no instruction lives only in one session's local state.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PK | Decision id |
+| `project_id` | TEXT | NOT NULL | Owning project of the object |
+| `object_kind` | TEXT | NOT NULL | `task`, `batch` or `operation` (`ck_operator_decisions_object_kind`) |
+| `object_id` | TEXT | NOT NULL | Id of the object the decision targets |
+| `effect` | TEXT | NOT NULL | `note`, `hold` or `release` (`ck_operator_decisions_effect`) |
+| `operator` | TEXT | NOT NULL | Who made the decision |
+| `decision` | TEXT | NOT NULL | The instruction text |
+| `source` | TEXT | NOT NULL | Where the decision came from |
+| `source_ref` | TEXT | NOT NULL | Reference within that source |
+| `recorded_by` | TEXT | NOT NULL | Who recorded the row |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `idempotency_key` | TEXT | NOT NULL | Unique per project (`uq_operator_decisions_request`) |
+| `releases` | TEXT | FK operator_decisions.id, nullable, UNIQUE | Set exactly when `effect = 'release'` (`ck_operator_decisions_release`); a hold is released at most once |
+
+Index `ix_operator_decisions_object` on (`project_id`, `object_kind`, `object_id`).
+
 ### Table: `integration_delegate_releases`
 
 Audit trail for delegates released because their integration operation ended
