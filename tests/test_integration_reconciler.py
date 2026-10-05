@@ -257,6 +257,38 @@ async def test_shadow_journals_choice_without_action_settlement_or_domain_write(
 
 
 
+@pytest.mark.parametrize("failure", ["none", "exception", "timeout"])
+async def test_git_first_diagnostics_cannot_change_selected_policy_or_emit_actions(db, failure):
+    from src.integration.shadow import GitFirstDiagnostics
+
+    clock = Clock()
+    original = await add_subject(db, clock)
+    digests = []
+
+    async def diagnose(subject, facts):
+        digests.append(facts.digest())
+        GitFirstDiagnostics.record(subject, "repair_progress", False, True, reason="fixture")
+        if failure == "exception":
+            raise RuntimeError("unavailable Git")
+        if failure == "timeout":
+            await asyncio.Event().wait()
+
+    harness = make_loop(db, clock, policy=Policy(WaitArgs(seconds=5, reason="old-policy")),
+                        diagnostics=diagnose, call_timeout_seconds=0.5)
+    await harness.loop.tick()
+    assert harness.actions == []
+    assert digests == [harness.policy.decisions[0][1].digest()]
+    assert harness.policy.settlements == []
+    entries = await db.list_integration_subject_journal("s1")
+    assert [entry["primitive"] for entry in entries] == [Primitive.WAIT.value] * 2
+    assert not any("git_first" in entry["payload"] for entry in entries)
+    after = await read_subject(db)
+    assert after.engine is original.engine
+    assert after.schedule.wait_reason == "old-policy"
+    assert after.schedule.next_due_at == clock() + 5
+    assert after.head_sha == original.head_sha and after.writer == original.writer
+
+
 async def test_unknown_refusal_has_bounded_exponential_backoff(db):
     clock = Clock()
     await add_subject(db, clock)

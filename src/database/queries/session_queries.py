@@ -565,12 +565,19 @@ class SessionQueryMixin:
                 or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
             )
             .values(last_activity=ts)
+            .returning(sessions.c.task_id)
         )
         if conn is not None:
-            await conn.execute(stmt)
+            # Only a session holding a task can hold leases: an idle touch
+            # (the claim path) costs no extra statement.
+            touched = (await conn.execute(stmt)).first()
+            if touched is not None and touched.task_id:
+                from src.integration.lock import renew_session_leases_on
+
+                await renew_session_leases_on(self, conn, session_id, ts)
             return
         async with self._engine.begin() as owned:
-            await owned.execute(stmt)
+            await self.touch_session_activity(session_id, ts, conn=owned)
 
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float

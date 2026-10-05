@@ -193,6 +193,7 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
         "project_id": task["project_id"],
         "status": task["status"],
         "parent_task_id": task["parent_task_id"],
+        "pr_url": task["pr_url"],
         "repository_id": task["repo_id"],
         "branch": task["branch_name"],
         "mode": project["hierarchical_integration_mode"] if project else None,

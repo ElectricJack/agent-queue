@@ -792,7 +792,7 @@ object_loops = Table(
 
 DOC_REVIEW_KINDS = ("spec", "plan", "other")
 DOC_REVIEW_STATES = ("in_review", "changes_requested", "rejected", "approved", "withdrawn")
-DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
+DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor", "supervisor")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -3071,6 +3071,10 @@ integration_branch_owners = Table(
     Column("id", Text, primary_key=True),
     Column("repository_id", Text, nullable=False),
     Column("ref", Text, nullable=False),
+    # Git-first authority. NULL fence identifies an untouched shadow/legacy row.
+    # Legacy columns remain readable until the schema retirement stage.
+    Column("holder", Text, nullable=True),
+    Column("fence", BigInteger, nullable=True),
     Column("owner_id", Text, nullable=False),
     Column("owner_role", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
@@ -3083,6 +3087,11 @@ integration_branch_owners = Table(
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
     CheckConstraint("fence_token >= 0", name="ck_integration_branch_owners_fence"),
+    CheckConstraint("fence IS NULL OR fence >= 0", name="ck_integration_branch_owners_lease_fence"),
+    CheckConstraint(
+        "holder IS NULL OR (fence IS NOT NULL AND expires_at IS NOT NULL)",
+        name="ck_integration_branch_owners_lease_binding",
+    ),
     CheckConstraint(
         "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
         name="ck_integration_branch_owners_handoff_state",
@@ -3406,6 +3415,10 @@ integration_batches = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    # Non-null target marks the additive Git-first input/intent shape.
+    Column("target_ref", Text, nullable=True),
+    Column("intent", Text, nullable=False, server_default="open"),
+    Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
@@ -3424,6 +3437,11 @@ integration_batches = Table(
     Column("cleanup_state", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    CheckConstraint("intent IN ('open', 'paused', 'aborted')",
+                    name="ck_integration_batches_intent"),
+    CheckConstraint("repair_attempt_count >= 0", name="ck_integration_batches_repair_attempts"),
+    CheckConstraint("target_ref IS NULL OR target_ref LIKE 'refs/heads/%'",
+                    name="ck_integration_batches_target_ref"),
     CheckConstraint("current_revision >= 0", name="ck_integration_batches_revision"),
     CheckConstraint(
         "repair_stage_ordinal IS NULL OR repair_stage_ordinal >= 0",
@@ -3446,7 +3464,7 @@ integration_batches = Table(
         "project_id",
         unique=True,
         postgresql_where=text(
-            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+            "target_ref IS NULL AND lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
             "'human_blocked', 'promoting', 'cleanup_pending')"
         ),
     ),
@@ -3460,6 +3478,7 @@ integration_batch_members = Table(
     Column("task_id", Text, nullable=False),
     Column("pr_url", Text, nullable=True),
     Column("repository_id", Text, nullable=False),
+    Column("source_sha", Text, nullable=True),
     Column("source_base_sha", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
@@ -3470,7 +3489,7 @@ integration_batch_members = Table(
         "review_evidence_id",
         Text,
         ForeignKey("integration_review_evidence.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
     Column("review_evidence", JSON, nullable=False),
     UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
@@ -3486,6 +3505,8 @@ integration_batch_members = Table(
         unique=True,
     ),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
+    CheckConstraint("source_sha IS NOT NULL OR review_evidence_id IS NOT NULL",
+                    name="ck_integration_batch_members_review_or_input"),
     CheckConstraint(
         "(source_ref IS NULL AND source_ref_retention IS NULL) OR "
         "(source_ref IS NOT NULL AND source_ref LIKE 'refs/heads/%' AND "
@@ -4131,23 +4152,47 @@ integration_check_evidence = Table(
     Column("conclusion", Text, nullable=False),
     Column("classification", Text, nullable=False),
     Column("observed_at", Float, nullable=False),
-    UniqueConstraint(
+    # Exact-commit cache (src/integration/checks.py): one row per repository,
+    # SHA, required check and trusted producer (``producer_id``), overwritten
+    # by each refresh with the latest attempt. Legacy run-attempt rows bound to
+    # a batch or parent generation leave these null.
+    Column("repository_id", Text, nullable=True),
+    Column("sha", Text, nullable=True),
+    Column("check_name", Text, nullable=True),
+    Column("run_url", Text, nullable=True),
+    Column("due_at", Float, nullable=True),
+    Index(
+        "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",
         "run_id",
         "attempt",
         "required_check_version",
-        name="uq_integration_check_evidence_producer_run_attempt_checks",
+        unique=True,
+        postgresql_where=text("sha IS NULL"),
+    ),
+    Index(
+        "uq_integration_check_evidence_commit_check",
+        "repository_id",
+        "sha",
+        "check_name",
+        "producer_id",
+        unique=True,
+        postgresql_where=text("sha IS NOT NULL"),
     ),
     CheckConstraint("attempt >= 0", name="ck_integration_check_evidence_attempt"),
     CheckConstraint(
         "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
-        "AND parent_generation IS NULL AND parent_head_sha IS NULL) OR "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND sha IS NULL) OR "
         "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
-        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL)",
+        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL AND sha IS NULL) OR "
+        "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NULL "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND repository_id IS NOT NULL "
+        "AND sha IS NOT NULL AND check_name IS NOT NULL)",
         name="ck_integration_check_evidence_subject",
     ),
     CheckConstraint(
-        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
+        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive', "
+        "'missing', 'unavailable')",
         name="ck_integration_check_evidence_conclusion",
     ),
 )

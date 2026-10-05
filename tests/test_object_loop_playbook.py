@@ -51,14 +51,15 @@ def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
 
 
-async def review(db, review_id="brief-review", kind="other", revision=1, digest=C):
+async def review(db, review_id="brief-review", kind="other", revision=1, digest=C,
+                 *, decider="user"):
     gate, _ = await db.create_gate(PROJECT, "review", review_id, await_id=review_id)
     await db.resolve_gate(gate, resolved_by="human", resolution="approved")
     async with db.immediate() as conn:
         await conn.execute(insert(doc_reviews).values(
             id=review_id, project_id=PROJECT, kind=kind, title=review_id,
             vault_path=f"projects/{PROJECT}/{review_id}.md", current_revision=revision,
-            state="approved", gate_id=gate, decider="user", decided_by="human",
+            state="approved", gate_id=gate, decider=decider, decided_by="human",
             decided_at=1, created_at=1, updated_at=1,
         ))
         await conn.execute(insert(doc_review_revisions).values(
@@ -164,6 +165,7 @@ async def sweep(handler, *, rule="recover"):
     if trace_dir := os.getenv("AQ_OBJECT_LOOP_TRACE_DIR"):
         destination = Path(trace_dir)
         destination.mkdir(parents=True, exist_ok=True)
+        reviews = await handler.db.list_reviews(project_id=PROJECT)
         (destination / f"{uuid.uuid4().hex}.json").write_text(json.dumps({
             "test": os.environ.get("PYTEST_CURRENT_TEST", "").split(" (", 1)[0],
             "rule": rule, "artifact_sha256": ref.artifact_sha256,
@@ -172,6 +174,10 @@ async def sweep(handler, *, rule="recover"):
                          for name, _, result in recordings],
             "dry_nodes": [{"step": n.step_id, "outcome": n.outcome, "target": n.target}
                           for n in tree.paths[0].nodes],
+            "review_audiences": sorted(
+                [{"decider": r["decider"], "kind": r["kind"], "title": r["title"]}
+                 for r in reviews], key=lambda r: (r["decider"], r["kind"], r["title"]),
+            ),
         }, indent=2) + "\n")
     return recordings, tree
 
@@ -210,8 +216,10 @@ async def score_packet(handler, current, *, loss=0.1, invalid=False, action="con
         "next_variants": next_variants if next_variants is not None else [variant("next").model_dump()],
     }
     if action == "checkpoint":
-        await review(handler.db, "checkpoint", digest=B)
+        await review(handler.db, "checkpoint", digest=B, decider="supervisor")
         packet.update(review_id="checkpoint", review_revision=1, review_sha256=B)
+    if action == "stop":
+        packet["stop_reason"] = "The planned work is complete."
     await handler.db.add_task_context(
         loop["score_task_id"], type="note", label="note", content=SCORE_PREFIX + json.dumps(packet),
     )
@@ -228,6 +236,100 @@ async def boot(handler, *, reference_kind="calibrated"):
     assert not any(g["status"] == "open" and g["gate_type"] == "event"
                    for g in await handler.db.get_gates_for_task(bootstrap.id))
     return cooked
+
+
+async def test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result(setup):
+    from src.deliverables import resolve_task_deliverables
+    from src.reviews.notifier import ReviewNotifier
+    from tests.test_review_commands import _image_args
+    from tests.test_review_notifier import FakeTransport
+
+    # The policy approval is preparatory, outside this object's attempt.
+    await setup.db.mark_review_notified("rev-amber-zenith", 2)
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review").values(
+            title="Build a procedural rock",
+        ))
+        await conn.execute(update(doc_review_revisions).where(
+            doc_review_revisions.c.review_id == "brief-review",
+        ).values(content="Build a procedural rock in up to eight rounds with a $30 budget."))
+    await boot(setup)
+    current = await complete_wave(setup)
+    candidate_id = current["state"]["wave"][0]["task_id"]
+    score_id = current["state"]["score_task_id"]
+    for task_id, title in ((candidate_id, "Half-depth chip-scar probe"),
+                           (score_id, "rock · r0 score")):
+        task = await setup.db.get_task(task_id)
+        assert await resolve_task_deliverables(setup.db, task) == []
+        internal = await setup.execute("review_submit", {
+            "task_id": task_id, "kind": "other", "title": title,
+            "content": "Internal capture receipts and continuation details.",
+        })
+        assert internal["success"], internal
+        assert (await setup.db.get_review(internal["review_id"]))["decider"] == "supervisor"
+    await score_packet(setup, current, action="stop", next_variants=[])
+    await sweep(setup)
+    async with setup.db._engine.connect() as conn:
+        finalizer_id = (await conn.execute(select(object_loops.c.finalization_task_id))).scalar_one()
+    finalizer = await setup.db.get_task(finalizer_id)
+    assert not finalizer.is_blocked
+    assert await resolve_task_deliverables(setup.db, finalizer) == [
+        {"id": "result", "kind": "review", "target": "other"},
+    ]
+    evidence = json.loads(finalizer.description.split("Internal evidence (for the worker):\n")[1])
+    assert evidence["baseline_capture_uri"] == "artifact://sha256/" + H
+    assert evidence["best_receipt"]["capture_receipts"][0]["view_id"] == "front"
+    assert "side by side" in finalizer.description
+    result = await setup.execute("review_submit", {
+        "task_id": finalizer_id, "kind": "other", "title": "Rock result",
+        "content": "The rock looks rounder. The exact improvement was not measured. "
+                   "Next time, improve the cracks. Front view images are attached below.",
+    })
+    assert result["success"], result
+    for caption in ("Before", "After"):
+        attached = await setup.execute("review_attachment_add", {
+            **_image_args(result["review_id"]), "candidate_id": caption,
+            "caption": caption, "view_id": "front",
+        })
+        assert attached["success"], attached
+    # Reconcile and report retries keep the same result and do not expose
+    # the worker-only evidence carried in the finalizer's description.
+    await sweep(setup)
+    assert len(await setup.db.list_reviews_submitted_by_task(finalizer_id)) == 1
+    reviews = await setup.db.list_reviews(project_id=PROJECT)
+    human = [r for r in reviews if r["kind"] == "other" and r["decider"] == "user"]
+    assert {r["title"] for r in human} == {"Build a procedural rock", "Rock result"}
+    attachments = await setup.db.list_review_attachments(result["review_id"], 1)
+    assert {(a["view_id"], a["candidate_id"]) for a in attachments} == {
+        ("front", "Before"), ("front", "After"),
+    }
+    transport = FakeTransport()
+    notifier = ReviewNotifier(setup.db, transport, "123", "https://aq.example.test")
+    assert await notifier.tick() == 2
+    notices = "\n".join(content for _, content in transport.posts)
+    assert "Build a procedural rock" in notices and "Rock result" in notices
+    assert "r0" not in notices and "probe" not in notices and "receipts" not in notices
+    assert finalizer_id not in notices
+    assert "other for review: Rock result" not in notices
+
+
+async def test_checkpoint_refuses_a_human_review_without_changing_the_loop(setup):
+    await boot(setup)
+    current = await complete_wave(setup)
+    packet = await score_packet(setup, current, action="checkpoint")
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "checkpoint")
+                           .values(decider="user"))
+    before = await state(setup)
+    rejected = await setup._cmd_object_score_record(packet)
+    assert not rejected["success"]
+    assert "supervisor decider" in rejected["error"]
+    assert (await state(setup))["state"] == before["state"]
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "checkpoint")
+                           .values(decider="supervisor"))
+    await sweep(setup)
+    assert (await state(setup))["state"]["checkpoint"]["review_id"] == "checkpoint"
 
 
 async def test_bootstrap_restart_and_formula_discovery(setup, tmp_path):

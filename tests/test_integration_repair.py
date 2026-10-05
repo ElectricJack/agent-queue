@@ -32,8 +32,8 @@ from src.database.tables import (
     messages,
     playbook_artifacts,
     sessions,
-    task_completion_records,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
@@ -7259,3 +7259,285 @@ async def test_a_settled_resolution_replays_its_own_start_without_a_fresh_stage(
 def reconciler_primitive_authority(monkeypatch):
     from tests.integration_primitive_scope import authorize_root_primitives
     authorize_root_primitives(monkeypatch)
+
+
+@pytest.fixture
+async def ordinary_env(db):
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+    from src.integration.lock import BranchLock
+    from src.integration.repair import OrdinaryRepairService
+
+    env = SimpleNamespace(db=db, now=1000.0)
+    env.store = BatchStore(db)
+    await env.store.freeze(Batch("ordinary", "p", "repo", "refs/heads/aq/epic"),
+                           (BatchMember("source", STARTING_SHA, "a" * 40),),
+                           trees={"source": "b" * 40})
+    env.ref = candidate_ref("ordinary")
+    env.target = BranchKey(repository_id="repo", branch=env.ref)
+    env.locks = BranchLock(db, clock=lambda: env.now)
+    env.service = OrdinaryRepairService(db, locks=env.locks, clock=lambda: env.now)
+    return env
+
+
+async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_restart(ordinary_env):
+    from src.integration.repair import OrdinaryRepairService
+
+    env = ordinary_env
+    results = await asyncio.gather(*(env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        intelligence_class="deep-high", priority=290,
+    ) for _ in range(8)))
+    assert [r["outcome"] for r in results].count("filed") == 1
+    assert len({r["task_id"] for r in results}) == 1
+    task_id = results[0]["task_id"]
+    restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
+    original = await restarted.input(task_id)
+    assert original == {"batch_id": "ordinary", "attempt": 1, "repository_id": "repo",
+                        "target_ref": env.ref, "starting_sha": STARTING_SHA}
+    for _ in range(5):
+        replay = await restarted.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40)
+        assert (replay["outcome"], replay["attempt_count"], replay["task_id"]) == (
+            "exists", 1, task_id)
+    task = await env.db.get_task(task_id)
+    assert (task.class_hint, task.priority) == ("deep-high", 290)
+    async with env.db._engine.connect() as conn:
+        assert len((await conn.execute(select(tasks))).all()) == 1
+        assert not (await conn.execute(select(integration_repair_operations))).first()
+        assert not (await conn.execute(select(integration_repair_stages))).first()
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(ordinary_env):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == "ordinary")
+                           .values(repair_attempt_count=100))
+    results = await asyncio.gather(*(env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+    ) for _ in range(4)))
+    assert [r["outcome"] for r in results].count("filed") == 1
+    assert {r["attempt_count"] for r in results} == {101}
+    assert (await env.store.get("ordinary")).repair_attempt_count == 101
+
+
+@pytest.mark.parametrize("constraint,outcome", [("held", "held"),
+                                                 ("review_rejected", "rejected")])
+async def test_ordinary_repair_green_preserves_binding_constraints(ordinary_env, constraint, outcome):
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       green_sha=STARTING_SHA, **{constraint: True})
+    assert (result["outcome"], result["attempt_count"]) == (outcome, 0)
+
+
+async def test_ordinary_repair_green_beats_counter_and_expired_attached_writer(ordinary_env):
+    from src.integration.ownership import StaleFence
+
+    env = ordinary_env
+    old = await env.locks.acquire(env.target, "dead-writer", ttl_seconds=10)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(repair_attempt_count=500))
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="handoff_pending", session_id="dead", workspace_id="lost"))
+    assert (await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                     green_sha=STARTING_SHA))["outcome"] == "busy"
+    env.now += 10
+    green = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       green_sha=STARTING_SHA)
+    assert (green["outcome"], green["attempt_count"]) == ("green", 500)
+    transport = AsyncMock()
+    with pytest.raises(StaleFence, match="expired"):
+        await env.locks.fenced_push(old, git=transport, checkout_path="/lost",
+                                   repository=None, tip_oid=STARTING_SHA,
+                                   expected_old_oid="a" * 40)
+    transport.apush_repository_oid.assert_not_awaited()
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks))).first()
+
+
+async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin(ordinary_env):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.orchestrator.workspace import WorkspaceMixin
+
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    await env.db.update_task(result["task_id"], status=TaskStatus.READY)
+    task = await env.db.get_task(result["task_id"])
+    async with env.db._engine.connect() as conn:
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task.id, _frontier_where("p", mode))) == task.id
+        assert not (await conn.execute(select(task_branch_origins))).first()
+    stub = SimpleNamespace(db=env.db, git=SimpleNamespace(
+        _arun=AsyncMock(return_value="c" * 40), afetch_origin=AsyncMock(),
+        ais_ancestor=AsyncMock(side_effect=AssertionError("moved head needs no old proof")),
+    ))
+    origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
+        stub, task, await env.db.get_project("p"))
+    assert role == "repair" and fence.owner_id == task.id
+    assert await WorkspaceMixin._hierarchy_repair_start(
+        stub, "/work", origin, fence, repository_url="") == "c" * 40
+
+
+async def test_ordinary_repair_close_uses_normal_published_completion(
+    command_handler_factory, tmp_path,
+):
+    from dataclasses import replace
+
+    from src.git.identity import GitIdentity, task_publish_policy
+    from src.git.manager import GitError
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+    from src.integration.repair import OrdinaryRepairService
+    from tests.test_integration_gitops import commit, git
+
+    handler = await command_handler_factory()
+    await _configure_db(handler.db)
+    remote = tmp_path / "ordinary.git"
+    checkout = tmp_path / "ordinary-work"
+    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    git(tmp_path, "clone", str(remote), str(checkout))
+    git(checkout, "config", "user.name", "Tester")
+    git(checkout, "config", "user.email", "tester@example.test")
+    base = commit(checkout, {"base": "base"})
+    git(checkout, "push", "origin", "HEAD:main")
+    git(checkout, "config", "user.name", "Source Worker")
+    git(checkout, "config", "user.email", "source@example.test")
+    with patch.dict("os.environ", GitIdentity("Source Worker", "source@example.test").env()):
+        starting = commit(checkout, {"source": "inherited source"})
+    git(checkout, "config", "user.name", "Tester")
+    git(checkout, "config", "user.email", "tester@example.test")
+    await handler.db.update_repo("repo", url=str(remote), source_path=str(checkout))
+    store = BatchStore(handler.db)
+    await store.freeze(Batch("ordinary", "p", "repo", "refs/heads/main"),
+                       (BatchMember("source", starting, base),), trees={"source": starting})
+    ref = candidate_ref("ordinary")
+    git(checkout, "push", "origin", f"HEAD:{ref}")
+    service = OrdinaryRepairService(handler.db)
+    result = await service.allocate("ordinary", target_ref=ref, head_sha=starting)
+    task_id = result["task_id"]
+    git(checkout, "checkout", "-b", ref.removeprefix("refs/heads/"))
+    with patch.dict("os.environ", GitIdentity("Tester", "tester@example.test").env()):
+        head = commit(checkout, {"fixed": "fixed"})
+    policy = await task_publish_policy(
+        None, SimpleNamespace(git_identity_name="Tester", git_identity_email="tester@example.test"),
+        handler.db, GitManager(), task_id,
+    )
+    assert policy.authorized_heads == {starting}
+    assert await GitManager().acheck_publish_identity(
+        str(checkout), head, base_ref=base, branch="aq/identity-probe", policy=policy,
+    ) == []
+    with pytest.raises(GitError, match="refusing to publish"):
+        await GitManager().acheck_publish_identity(
+            str(checkout), head, base_ref=base, branch="aq/identity-probe",
+            policy=replace(policy, authorized_heads=frozenset()),
+        )
+    assert service.progress(starting, starting, green=True)
+    assert not service.progress(starting, starting, green=False)
+    assert service.progress(starting, head, green=False)
+    assert await service.added_commits(task_id, GitManager(), str(checkout), head) == [head]
+    assert await service.added_commits(task_id, GitManager(), str(checkout), starting) == []
+    await handler.db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
+    async with handler.db.immediate() as conn:
+        await conn.execute(insert(workspaces).values(
+            id="ordinary-work", project_id="p", workspace_path=str(checkout), source_type="link",
+            locked_by_task_id=task_id, enabled=True, created_at=1))
+    await handler.db.create_session(SessionRecord(
+        id="ordinary-session", task_id=task_id, project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="ordinary", lifecycle="task", state="running",
+        work_dir=str(checkout), epoch="epoch", instance_token="token", started_at=1))
+    handler.orchestrator.git = GitManager()
+    handler.orchestrator._run_completion_pipeline = AsyncMock(
+        side_effect=AssertionError("ordinary repair entered legacy completion pipeline"))
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(
+        side_effect=AssertionError("ordinary repair required stop proof"))
+    handler.orchestrator.release_session_task_resources = AsyncMock()
+    handler._current_scope = {"kind": "session", "session_id": "ordinary-session",
+                              "task_id": task_id, "project_id": "p", "elevated": False}
+    args = {"task_id": task_id, "session_id": "ordinary-session", "outcome": "pass",
+            "summary": "published ordinary repair"}
+    refused = await handler._cmd_task_close(args)
+    assert refused["success"] is False
+    assert (await handler.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
+    git(checkout, "push", "origin", f"HEAD:{ref}")
+    closed = await handler._cmd_task_close(args)
+    assert closed["success"] is True, closed
+    assert (await handler.db.get_task(task_id)).status == TaskStatus.COMPLETED
+    completion = await handler.db.get_task_completion(task_id)
+    assert completion.outcome == "pass"
+    assert head in completion.commits
+    async with handler.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_repair_operations))).first()
+        assert not (await conn.execute(select(integration_promotion_intents))).first()
+    assert (await service.locks.get(BranchKey(repository_id="repo", branch=ref))).holder is None
+
+
+async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordinary_env):
+    import time
+
+    from src.git.manager import GitError
+    from src.plugins.internal.git import GitPlugin
+
+    env = ordinary_env
+    env.now = time.time()
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    task_id = result["task_id"]
+    plugin = GitPlugin.__new__(GitPlugin)
+    plugin._db = SimpleNamespace(_db=env.db)
+    plugin._git = SimpleNamespace(aref_exists=AsyncMock(return_value=True),
+                                 apush_validated_delivery=AsyncMock(return_value=STARTING_SHA))
+    plugin._ctx = SimpleNamespace(_bus=None)
+    publication = SimpleNamespace(task_id=task_id, branch=env.ref.removeprefix("refs/heads/"),
+                                  default_branch="main", repository_url="/authorized")
+    plugin._worker_publication = AsyncMock(return_value=publication)
+    plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
+    plugin._source_ci_inherited_oids = AsyncMock(return_value=[])
+    with patch("src.plugins.internal.git._worker_principal", return_value=object()):
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).values(expires_at=time.time() - 1))
+        with pytest.raises(GitError, match="expired"):
+            await plugin._push("/work", None, {}, None)
+        plugin._git.apush_validated_delivery.assert_not_awaited()
+        lease = await env.locks.acquire(env.target, task_id)
+        publication.branch = "aq/other"
+        with pytest.raises(GitError, match="allocated ref"):
+            await plugin._push("/work", None, {}, None)
+        plugin._git.apush_validated_delivery.assert_not_awaited()
+        publication.branch = env.ref.removeprefix("refs/heads/")
+        assert (await plugin._push("/work", None, {}, None))[:2] == (publication.branch, STARTING_SHA)
+        plugin._git.apush_validated_delivery.assert_awaited_once()
+        assert (await env.locks.get(env.target)).fence == lease.token
+
+
+async def test_ordinary_repair_restart_does_not_renew_expired_running_writer(ordinary_env):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.IN_PROGRESS)
+    expired = await env.locks.get(env.target)
+    env.now += 10
+    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40)
+    assert (replay["outcome"], replay["attempt_count"], replay["task_id"], replay["lease_expired"]) == (
+        "exists", 1, first["task_id"], True)
+    assert await env.locks.get(env.target) == expired
+    epic = await env.service.allocate("ordinary", target_ref="refs/heads/aq/epic", head_sha="c" * 40)
+    assert epic["outcome"] == "exists" and epic["target_changed"]
+    assert await env.locks.get(BranchKey(repository_id="repo", branch="aq/epic")) is None
+
+
+@pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
+async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ordinary_env, status):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=status, retry_count=0)
+    env.now += 10
+    results = await asyncio.gather(*(env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+    ) for _ in range(4)))
+    assert {r["task_id"] for r in results} == {first["task_id"]}
+    assert {r["outcome"] for r in results} == {"exists"}
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1

@@ -1331,6 +1331,22 @@ class ExecutionMixin:
             work_outcome=work_outcome,
             accepted_close=accepted_close,
         )
+        from src.integration.repair import OrdinaryRepairService
+
+        ordinary_repair = await OrdinaryRepairService(self.db).input(task.id)
+        ordinary_fence = None
+        if ordinary_repair is not None:
+            from src.integration.lock import BranchLock
+            from src.integration.models import BranchKey, Fence
+
+            lease = await BranchLock(self.db).get(BranchKey(
+                repository_id=ordinary_repair["repository_id"],
+                branch=ordinary_repair["target_ref"],
+            ))
+            if lease and lease.holder == task.id:
+                ordinary_fence = Fence(
+                    target=lease.target, owner_id=task.id, token=lease.fence,
+                )
         repair_scope = await self.db.get_repair_filing_scope(
             task.id, session_id=session_id
         )
@@ -1462,6 +1478,7 @@ class ExecutionMixin:
         managed_parent_suspended = False
         managed_parent_completed = False
         train_leaf_root = False
+        hier_child_leaf = False
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
@@ -1479,7 +1496,14 @@ class ExecutionMixin:
                 )
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
-                if repair_delegate:
+                if ordinary_repair is not None:
+                    if (workspace_path is None
+                        or task.repo_id != ordinary_repair["repository_id"]
+                        or task.branch_name != ordinary_repair["target_ref"].removeprefix("refs/heads/")):
+                        raise ValueError("ordinary repair publication target changed")
+                    # Normal completion provenance below verifies the clean,
+                    # exact published source. Delivery belongs to the train.
+                elif repair_delegate:
                     from src.git.manager import is_valid_git_oid
                     from src.integration.hierarchy import resolve_workspace_repair_proof
                     from src.integration.repair import repair_subject_sha
@@ -1660,6 +1684,15 @@ class ExecutionMixin:
                                 and getattr(project, "hierarchical_integration_mode", None)
                                 == "train"
                             )
+                            # A child is delivered by collection into its
+                            # container's branch.  When no collector will ever
+                            # take it, it opens its own pull request to the
+                            # default branch below; a container that has not
+                            # suspended itself yet is not stranded, so the
+                            # close leg is free.
+                            hier_child_leaf = bool(
+                                task.parent_task_id is not None and hierarchy_managed
+                            )
                 else:
                     pr_url, completed_ok = await self._run_completion_pipeline(ctx)
             except Exception:
@@ -1701,7 +1734,8 @@ class ExecutionMixin:
         verification_reopened = outcome == "pass" and ctx.verification_reopened
         development_completion = bool(
             outcome == "pass" and completed_ok
-            and getattr(project, "hierarchical_integration_mode", None) == "development"
+            and (getattr(project, "hierarchical_integration_mode", None) == "development"
+                 or ordinary_repair is not None)
         )
         completion_source = None
         if development_completion and commit and (not workspace_path or not task.branch_name):
@@ -1712,7 +1746,8 @@ class ExecutionMixin:
             }
         if development_completion and workspace_path and task.branch_name:
             try:
-                if not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx):
+                if (ordinary_repair is not None
+                    or not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx)):
                     from src.integration.provenance import record_worker_completion
 
                     completion_id = completion_id or str(uuid.uuid4())
@@ -1900,6 +1935,39 @@ class ExecutionMixin:
                 logger.warning(
                     "Task %s: could not open the train root pull request; "
                     "the root PR reconciler will retry",
+                    task.id,
+                    exc_info=True,
+                )
+
+        # A completed child is delivered by collection into its container's
+        # branch, and nothing in a healthy train ever opens it a pull request:
+        # only a root does (``open_for_epic`` refuses a parented task).  When
+        # the container has no collector left to carry it -- a paused epic whose
+        # episode lost its operation, an episode no Subject walks after the
+        # legacy engine's removal, or a container with no collection at all --
+        # this head would otherwise sit on a pushed branch forever
+        # (bright-rapids-84.1/.2/.3/.4/.7/.9, pr_url NULL).  Open it to the
+        # default branch instead.  Best-effort like the root leg above: a
+        # GitHub failure must not undo a committed COMPLETED, and the
+        # ``stranded_child`` line of ``stall.sweep`` says so out loud.
+        if hier_child_leaf and new_status == TaskStatus.COMPLETED:
+            from src.integration.stranded_children import (
+                open_stranded_child_pull_request,
+            )
+
+            try:
+                opened = await open_stranded_child_pull_request(
+                    self.db, self.git, task.id
+                )
+                logger.info(
+                    "Task %s: stranded child pull request outcome: %s (%s)",
+                    task.id, opened["outcome"], opened.get("reason"),
+                )
+                pr_url = opened.get("pr_url") or pr_url
+            except Exception:
+                logger.warning(
+                    "Task %s: could not open a pull request for a child no "
+                    "collector will deliver; stall.sweep will name it",
                     task.id,
                     exc_info=True,
                 )
@@ -2111,6 +2179,12 @@ class ExecutionMixin:
             repair_writer_closed or managed_parent_suspended or completed_writer or failed_writer
             or requeued_writer
         )
+        if ordinary_repair is not None:
+            # Publication is normal completion data. The managed lease can
+            # expire/release without a legacy delegate-close or stop proof.
+            if ordinary_fence is not None:
+                await BranchLock(self.db).release(ordinary_fence)
+            release_needed = False
         handoff_unproven = False
         slot_restored = False
         if release_needed:

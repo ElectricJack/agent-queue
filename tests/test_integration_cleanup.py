@@ -1187,6 +1187,111 @@ async def test_integration_cleanup_command_is_subject_only_and_project_scoped(
     await handler.db.close()
 
 
+async def _cleanup_command_with_items(handler, item_count, states):
+    """A promoted batch whose persisted items carry ``states``, one row each."""
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="mismatched-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="mismatched-request",
+                source_manifest_digest="sha256:" + "5" * 64,
+                base_sha=BASE,
+                lifecycle="promoted",
+                current_revision=0,
+                integration_branch=BRANCH,
+                final_main_sha=HEAD,
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        for index, state in enumerate(states):
+            await conn.execute(
+                insert(integration_cleanup_items).values(
+                    batch_id="mismatched-batch",
+                    kind="local_ref",
+                    identity=f"refs/heads/cleanup-{index}",
+                    domain_key=f"cleanup:mismatched:{index}",
+                    project_id="p",
+                    repository_id="repo",
+                    repository_numeric_id=99,
+                    repository_full_name="acme/widgets",
+                    revision=0,
+                    target_ref=f"refs/heads/cleanup-{index}",
+                    expected_sha=HEAD,
+                    state=state,
+                    attempts=1,
+                    next_attempt_at=1.0,
+                    created_at=1.0,
+                    updated_at=1.0,
+                    **({"terminal_at": 2.0} if state == "complete" else {}),
+                )
+            )
+    service = AsyncMock()
+    service.materialize.return_value = type(
+        "Materialized",
+        (),
+        {"outcome": "materialized", "item_count": item_count},
+    )()
+    service.advance.return_value = []
+    handler.orchestrator.integration_cleanup_service = service
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_cleanup"]),
+        project_id="p",
+    )
+    with principal_context(principal):
+        return await handler.execute("integration_cleanup", {"batch_id": "mismatched-batch"})
+
+
+async def test_cleanup_command_reports_complete_when_every_item_is_done_despite_the_count(
+    command_handler_factory,
+):
+    """A stale materialized count must not read as an invariant error.
+
+    Batch 288750f6 answered ``invariant_error`` on every tick with all five of
+    its items complete, which held the lease and blocked the next seal.
+    """
+    handler = await command_handler_factory()
+    try:
+        result = await _cleanup_command_with_items(
+            handler, item_count=6, states=["complete"] * 5
+        )
+    finally:
+        await handler.db.close()
+    assert result == {
+        "success": True,
+        "outcome": "already_complete",
+        "batch_id": "mismatched-batch",
+        "item_count": 6,
+        "completed_count": 5,
+        "conflict_count": 0,
+    }
+
+
+async def test_cleanup_command_still_refuses_a_mismatch_while_work_remains(
+    command_handler_factory,
+):
+    handler = await command_handler_factory()
+    try:
+        result = await _cleanup_command_with_items(
+            handler, item_count=6, states=["complete"] * 4 + ["pending"]
+        )
+    finally:
+        await handler.db.close()
+    assert result["success"] is False
+    assert result["outcome"] == "invariant_error"
+    assert (result["item_count"], result["completed_count"]) == (6, 4)
+
+
 async def test_cleanup_command_never_reports_complete_for_a_partial_page(
     command_handler_factory,
 ):

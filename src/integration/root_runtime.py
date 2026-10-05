@@ -21,6 +21,7 @@ from src.integration.reconciler import (
     CompiledPolicyAdapter, IntegrationReconciler, ScopedIntegrationDB, VisitTransition,
 )
 from src.integration.root_adapters import RootPrimitiveAdapters
+from src.integration.shadow import diagnostics_for
 from src.integration.subjects import (
     JournalMode,
     PolicyArtifactPin,
@@ -396,14 +397,18 @@ class _RootObservationReader:
 class RootSubjectRuntime:
     """A service-owned loop; no second background remote pass."""
 
-    def __init__(self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time):
+    def __init__(
+        self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time,
+        diagnostics=None,
+    ):
         self.db, self.policy, self.clock = db, policy, clock
         scoped_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
         self.loops = []
         if active:
             self.loops.append(
                 IntegrationReconciler(
-                    scoped_db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock
+                    scoped_db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock,
+                    diagnostics=diagnostics,
                 )
             )
         self.cursor = None
@@ -718,6 +723,8 @@ def root_runtime_for(orchestrator):
         ports,
         shadow=False,
         active=config.reconciler_active,
+        diagnostics=diagnostics_for(config, orchestrator.db, orchestrator.git,
+                                    reader=observer.reader),
     )
     runtime.subscribe(orchestrator.bus)
     return runtime
@@ -761,10 +768,17 @@ class RootGitObservationReader(GitObservationReader):
 
 
 def root_candidate_ci_reader(orchestrator):
-    """Read authenticated checks for the frozen candidate, without an evidence-row prerequisite."""
+    """Read authenticated checks for the frozen candidate, without an evidence-row prerequisite.
+
+    Under ``integration.git_first: active`` the read refreshes the exact-commit
+    checks cache instead, so no batch or generation copy is attested.
+    """
+    from src.integration.checks import ChecksState, ExactChecks, HostedChecks
     from src.integration.ci_producers import HostedCIProducer
     from src.integration.observe import _required
-    from src.integration.subjects import CIEvidence
+    from src.integration.subjects import CIEvidence, CIState
+
+    active = orchestrator.config.integration.git_first == "active"
 
     async def read(snapshot, head):
         repo = await orchestrator.db.get_repo(head.repository_id)
@@ -782,7 +796,20 @@ def root_candidate_ci_reader(orchestrator):
             "policy_snapshot": {"root": {"required_checks": dict(required)}},
         }
         trust, client = await orchestrator.integration_attestation_service._load_trust(state)
-        observed = await HostedCIProducer(client, trust).observe(snapshot.subject, head)
+        producer = HostedCIProducer(client, trust)
+        if active:
+            result = await ExactChecks(orchestrator.db, HostedChecks(producer)).refresh(head)
+            return CIEvidence(
+                head_sha=head.sha,
+                # Cancelled or unavailable is no verdict yet: retried like infra.
+                state=CIState.INFRA
+                if result.state is ChecksState.UNKNOWN
+                else CIState(result.state.value),
+                producer=result.required.producer_id,
+                observed_at=max((check.observed_at for check in result.checks), default=None),
+                age_seconds=0,
+            )
+        observed = await producer.observe(snapshot.subject, head)
         return CIEvidence(
             head_sha=head.sha, state=observed.state, producer=observed.producer,
             observed_at=observed.observed_at, age_seconds=0,

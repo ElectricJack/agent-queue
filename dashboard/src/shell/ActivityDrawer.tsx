@@ -13,6 +13,7 @@ import { useShellPaneStore } from "../panes/store";
 import { useListNav } from "./hotkeys/useListNav";
 
 import { useRightSurface } from "./useRightSurface";
+import { useReviews } from "../api/reviews";
 
 function tabClass(active: boolean): string {
   return `rounded px-2 py-1 text-xs ${
@@ -22,6 +23,12 @@ function tabClass(active: boolean): string {
 
 function GatesList() {
   const { data: gates, isLoading } = useAllOpenGates();
+  const { data: reviews, isLoading: reviewsLoading } = useReviews({});
+  const humanReviews = new Set((reviews?.reviews ?? [])
+    .filter((review) => review.decider === "user" || review.decider === "user_or_supervisor")
+    .map((review) => review.id));
+  const visibleGates = (gates ?? []).filter((gate) => gate.gate_type !== "review"
+    || humanReviews.has((gate as GateSummary & { await_id?: string }).await_id ?? ""));
   const resolveMut = useResolveGate();
   const pane = useShellPaneStore();
   const navigate = useNavigate();
@@ -44,13 +51,13 @@ function GatesList() {
     }
   };
 
-  if (isLoading) return <p className="p-3 text-xs text-gray-500">Loading…</p>;
-  if ((gates ?? []).length === 0)
+  if (isLoading || reviewsLoading) return <p className="p-3 text-xs text-gray-500">Loading…</p>;
+  if (visibleGates.length === 0)
     return <p className="p-3 text-xs text-gray-500">No open gates.</p>;
 
   return (
     <ul ref={listRef} className="divide-y divide-gray-800">
-      {(gates ?? []).map((g) => (
+      {visibleGates.map((g) => (
         <li
           key={g.id}
           tabIndex={0}

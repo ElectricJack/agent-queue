@@ -49,6 +49,14 @@ class AcquisitionFailed(Exception):
 
 async def integration_handoff_release_is_confirmed(db, owner: dict) -> bool:
     """Whether *owner* already durably released its exact old attachment."""
+    if owner.get("fence") is not None:
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+
+        lease = await BranchLock(db).get(BranchKey(
+            repository_id=owner["repository_id"], branch=owner["ref"]
+        ))
+        return bool(lease and lease.fence == owner["fence"] and lease.holder is None)
     owner_id = owner.get("id")
     workspace_id = owner.get("workspace_id") or owner.get("confirmed_workspace_id")
     if not owner_id or not workspace_id:

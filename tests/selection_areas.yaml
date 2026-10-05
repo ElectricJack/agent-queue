@@ -358,12 +358,14 @@ areas:
   - id: integration-trains
     description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup."
     match:
+      - tests/test_integration_size.py
       - tests/test_integration_state.py
       - tests/test_integration_service.py
       - tests/test_integration_stall_recovery.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
+      - tests/test_integration_batches.py
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
@@ -380,6 +382,7 @@ areas:
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
       - tests/test_integration_gitops.py
+      - tests/test_integration_git_truth.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_observe.py
       - tests/test_integration_shadow_report.py
@@ -390,12 +393,14 @@ areas:
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
       - tests/test_integration_ci_producers.py
+      - tests/test_integration_checks.py
       - tests/test_integration_cleanup.py
       - tests/test_attestation_check_run_id.py
       - tests/test_hosted_attestation.py
   - id: integration-ownership
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
+      - tests/test_integration_lock.py
       - tests/test_integration_writers.py
       - tests/test_integration_ownership.py
       - tests/test_canonical_reservation.py
@@ -418,9 +423,11 @@ areas:
       - tests/test_integration_cancelled_collection.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
+      - tests/test_integration_epics.py
       - tests/test_integration_parent_source.py
       - tests/test_integration_delivered_parent_adoption.py
       - tests/test_integration_root_pull_requests.py
+      - tests/test_integration_stranded_children.py
       - tests/test_integration_repair.py
       - tests/test_integration_repair_lineage.py
       - tests/test_integration_repair_rollover.py

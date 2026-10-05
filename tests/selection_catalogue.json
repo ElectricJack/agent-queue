@@ -523,6 +523,7 @@
         "tests/test_canonical_reservation.py",
         "tests/test_integration_eject.py",
         "tests/test_integration_finished_owners.py",
+        "tests/test_integration_lock.py",
         "tests/test_integration_owner_recovery.py",
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
@@ -540,6 +541,7 @@
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_delivered_parent_adoption.py",
+        "tests/test_integration_epics.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
@@ -551,6 +553,7 @@
         "tests/test_integration_review_evidence.py",
         "tests/test_integration_root_authorization.py",
         "tests/test_integration_root_pull_requests.py",
+        "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_repair_checkout_refs.py"
       ]
@@ -562,12 +565,15 @@
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
+        "tests/test_integration_batches.py",
         "tests/test_integration_candidates.py",
+        "tests/test_integration_checks.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
+        "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
@@ -583,6 +589,7 @@
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
+        "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
@@ -1400,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:348b6d2ff08b6c108de2a5367acb1f89da9ec8e27fc254400886d741a769880e",
+  "digest": "sha256:47963178683e2b04c5e16471d4aff4c409c21a886200bd402b609e9b12d6172f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4796,8 +4803,10 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.source_trailer",
         "src.integration.status",
         "src.models"
       ],
@@ -6615,6 +6624,8 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.parent_adapters",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7243,6 +7254,24 @@
       ],
       "summary": ""
     },
+    "tests/test_integration_batches.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git retries of the shared root/child batch path; disposable PostgreSQL."
+    },
     "tests/test_integration_cancelled_collection.py": {
       "areas": [
         "integration-promotion"
@@ -7285,6 +7314,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"
@@ -7293,6 +7323,24 @@
         "parametrize"
       ],
       "summary": "Ordered, restartable root integration candidate construction."
+    },
+    "tests/test_integration_checks.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.checks",
+        "src.integration.ci_producers",
+        "src.integration.root_runtime",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact-commit required checks: one refreshable cache, never a stale success."
     },
     "tests/test_integration_child_delivery.py": {
       "areas": [
@@ -7463,6 +7511,22 @@
       "markers": [],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
+    "tests/test_integration_epics.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.epics",
+        "src.integration.reviews",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
+    },
     "tests/test_integration_finished_owners.py": {
       "areas": [
         "integration-ownership"
@@ -7482,6 +7546,22 @@
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
     },
+    "tests/test_integration_git_truth.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Remote Git delivery proofs with real histories and retained completion identities."
+    },
     "tests/test_integration_gitops.py": {
       "areas": [
         "integration-trains"
@@ -7497,6 +7577,7 @@
         "src.integration.gitops",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.source_trailer",
         "src.integration.subjects"
       ],
       "markers": [
@@ -7537,6 +7618,26 @@
         "usefixtures"
       ],
       "summary": "Flag-enabled isolated child origins and hierarchy mutation guards."
+    },
+    "tests/test_integration_lock.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
     },
     "tests/test_integration_main_promotion.py": {
       "areas": [
@@ -7607,8 +7708,10 @@
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
       ],
       "markers": [
         "parametrize"
@@ -7870,6 +7973,7 @@
         "src.integration.promotion",
         "src.integration.records",
         "src.integration.repair",
+        "src.integration.source_trailer",
         "src.models",
         "src.profiles.capabilities",
         "src.test_selection.catalogue"
@@ -7929,6 +8033,7 @@
         "src.database.tables",
         "src.event_bus",
         "src.integration.reconciler",
+        "src.integration.shadow",
         "src.integration.subjects"
       ],
       "markers": [
@@ -7968,8 +8073,11 @@
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.owner_recovery",
@@ -7978,6 +8086,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.plugins.internal.git",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler",
@@ -8033,17 +8142,21 @@
         "src.commands.principal",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.git_truth",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.review_evidence",
+        "src.integration.reviews",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Trusted real-review verdict production for integration sources."
     },
     "tests/test_integration_root_adapters.py": {
@@ -8132,7 +8245,10 @@
         "src.integration.engine",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.ownership",
+        "src.integration.parent_adapters",
+        "src.integration.parent_subjects",
         "src.integration.promotion",
         "src.integration.release",
         "src.integration.repair",
@@ -8141,6 +8257,7 @@
         "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.service",
+        "src.integration.shadow",
         "src.integration.subjects",
         "src.models",
         "src.orchestrator",
@@ -8239,6 +8356,17 @@
       "markers": [],
       "summary": "Approvals share a bounded project integration settling window."
     },
+    "tests/test_integration_size.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
+    },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
         "integration-trains"
@@ -8321,6 +8449,22 @@
       ],
       "markers": [],
       "summary": "Durable hierarchical-integration persistence contracts."
+    },
+    "tests/test_integration_stranded_children.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.stranded_children",
+        "src.models",
+        "src.orchestrator.git_ops"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A completed child of a container nothing can collect opens its own PR."
     },
     "tests/test_integration_subjects.py": {
       "areas": [
@@ -8426,6 +8570,7 @@
       "imports": [
         "src.database.tables",
         "src.git.manager",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
@@ -10533,6 +10678,7 @@
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.database.tables",
+        "src.deliverables",
         "src.event_bus",
         "src.integration.development",
         "src.models",
@@ -10542,6 +10688,7 @@
         "src.playbooks.executors.base",
         "src.playbooks.required",
         "src.profiles.capabilities",
+        "src.reviews.notifier",
         "src.task_graph.formulas",
         "src.vault"
       ],
@@ -12932,13 +13079,16 @@
         "src.cli",
         "src.cli.app",
         "src.cli.reviews",
+        "src.deliverables",
         "src.event_bus",
         "src.integration.hierarchy",
         "src.intelligence_classes",
         "src.models",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Command-layer authorization and wiring for document reviews."
     },
     "tests/test_review_diff.py": {
@@ -13065,6 +13215,7 @@
         "src.tools.definitions"
       ],
       "markers": [
+        "migration",
         "parametrize"
       ],
       "summary": "Document review: schema, migration ``a00000000014`` and the query layer."
@@ -13153,11 +13304,14 @@
         "src.git.github_app",
         "src.integration.candidates",
         "src.integration.main_promotion",
+        "src.integration.models",
         "src.integration.release",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [],
@@ -14965,7 +15119,11 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership"
+      ],
       "markers": [],
       "summary": "Pool launch/exit metadata using fake providers and disposable workspaces."
     },

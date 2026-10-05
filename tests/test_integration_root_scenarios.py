@@ -57,6 +57,7 @@ from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from
 from src.profiles.capabilities import CapabilityPolicy
 from tests.db_fixtures import lease_dsn
 from tests.test_integration_candidates import _AppClient, _LocalPushGit
+from tests.test_integration_git_truth import repository as git_first_repository  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = json.loads((ROOT / "docs/config/agent-queue-train-policy.json").read_text())
@@ -84,6 +85,127 @@ ADAPTER_COMMANDS = frozenset(
     }
 )
 COLLIDING = "revision='a00000000002'\ndown_revision='a00000000001'\n"
+
+
+@pytest.fixture
+async def git_first_case(git_first_repository):  # noqa: F811 - imported pytest fixture
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.integration.observe import ObservationRows
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.parent_subjects import ParentChildFacts
+    from src.integration.shadow import GitFirstDiagnostics
+    from src.integration.subjects import (
+        CIEvidence, CIState, MemberFacts, PolicyArtifactPin, SubjectEngine, SubjectKind,
+        SubjectSchedule, WriterLease,
+    )
+
+    repo = git_first_repository
+    head = await repo.commit("child")
+    request = await repo.retain(head)
+    await repo.publish()
+    subject = Subject(
+        id="diagnostic", project_id="p", repository_id="r", task_id="epic",
+        kind=SubjectKind.PARENT_EPISODE, subject_key="parent_episode:r:epic:0",
+        parent_episode_id="episode", engine=SubjectEngine.RECONCILER,
+        phase=SubjectPhase.TESTING,
+        policy=PolicyArtifactPin(playbook_id="fixture", artifact_sha256="sha256:" + "1" * 64),
+        target_ref="refs/heads/main", head_sha=head,
+        schedule=SubjectSchedule.progress(now=10, max_wait_seconds=60),
+        created_at=10, updated_at=10,
+    )
+    facts = ParentPolicyFacts(
+        subject_id=subject.id, subject_version=0, kind=subject.kind, phase=subject.phase,
+        observed_at=10, head=subject.head, readiness="waiting", no_progress=True,
+        children=(ParentChildFacts(task_id="task", status="COMPLETED"),),
+        members=(MemberFacts(task_id="task", head_sha=head, base_sha=repo.base),),
+        writer=WriterLease(status=WriterStatus.WORKING, task_id="repair"),
+        ci=(CIEvidence(head_sha=head, state=CIState.GREEN),),
+    )
+    rows = {
+        "tasks": ({"id": "task", "project_id": "p", "repo_id": "r", "updated_at": 1,
+                   "legacy_completion_id": "legacy-1", "status": "COMPLETED"},),
+        "integration_repair_operations": ({"id": "op", "episode_id": "episode",
+            "policy_snapshot": {"parent": {"admission": "authorized"}}},),
+        "integration_repair_stages": ({"ordinal": 0, "created_at": 1,
+            "repair_task_id": "repair", "starting_sha": head},),
+        "integration_branch_owners": ({"repository_id": "r", "ref": "main",
+            "owner_id": "dead-writer", "fence_token": 1, "expires_at": 9,
+            "handoff_state": "attached"},),
+    }
+    snapshot = ObservationRows(subject, {}, {
+        "default_branch": "main", "checkout_base_path": str(repo.path), "url": str(repo.remote),
+    }, rows)
+    reader = SimpleNamespace(read=AsyncMock(return_value=snapshot))
+    db = SimpleNamespace(get_task_completion=AsyncMock(return_value=SimpleNamespace(
+        id=request.completion_id, completed_at=1, commits=[head],
+    )))
+    return SimpleNamespace(repo=repo, subject=subject, facts=facts, snapshot=snapshot,
+                           reader=reader, diagnostics=GitFirstDiagnostics(db, repo.git, reader))
+
+
+@pytest.mark.parametrize("agreement", [False, True])
+async def test_git_first_shadow_four_families_use_fetched_inputs(git_first_case, caplog, agreement):
+    from unittest.mock import AsyncMock
+    from src.integration.parent_subjects import ParentChildFacts, ParentVerificationFacts
+
+    case = git_first_case
+    facts = case.facts
+    if agreement:
+        facts = facts.model_copy(update={
+            "readiness": "ready", "no_progress": False,
+            "children": (ParentChildFacts(task_id="task", status="COMPLETED",
+                                          selected_receipt_id="receipt"),),
+            "verification": ParentVerificationFacts(episode_id="episode", operation_id="op",
+                                                     generation=0, head_sha=case.subject.head_sha,
+                                                     status="passed"),
+        })
+        case.snapshot.rows["integration_branch_owners"][0]["handoff_state"] = "released"
+    before = facts.model_dump()
+    before_refs = await case.repo.git._arun(["show-ref"], cwd=str(case.repo.remote))
+    case.repo.git.afetch_origin = AsyncMock(wraps=case.repo.git.afetch_origin)
+    caplog.set_level("INFO", logger="src.integration.shadow")
+    await case.diagnostics(case.subject, facts)
+    evidence = {record.git_first["family"]: record.git_first for record in caplog.records
+                if hasattr(record, "git_first")}
+    assert set(evidence) == {"child_delivery", "epic_readiness", "repair_progress", "lease_eligibility"}
+    expected = "agreement" if agreement else "disagreement"
+    assert {row["classification"] for row in evidence.values()} == {expected}
+    assert {row["proposed"] for row in evidence.values()} == {True}
+    assert evidence["repair_progress"]["start_oid"] == evidence["repair_progress"]["head_oid"]
+    assert evidence["repair_progress"]["green"]  # green ends an unchanged-head repair
+    assert evidence["lease_eligibility"]["input_kind"] == "non_git"
+    assert facts.model_dump() == before
+    assert case.repo.git.afetch_origin.await_count == 1
+    assert await case.repo.git._arun(["show-ref"], cwd=str(case.repo.remote)) == before_refs
+
+
+async def test_git_first_shadow_unavailable_fetch_is_unknown_but_lease_is_non_git(git_first_case, caplog):
+    from unittest.mock import AsyncMock
+    from src.git.manager import GitError
+
+    case = git_first_case
+    case.repo.git.afetch_origin = AsyncMock(side_effect=GitError("origin unavailable"))
+    await case.diagnostics(case.subject, case.facts)
+    evidence = {record.git_first["family"]: record.git_first for record in caplog.records
+                if hasattr(record, "git_first")}
+    for family in ("child_delivery", "epic_readiness", "repair_progress"):
+        assert evidence[family]["classification"] == "unknown"
+        assert evidence[family]["proposed"] is None
+    assert evidence["lease_eligibility"]["classification"] == "disagreement"
+
+
+async def test_git_first_shadow_missing_expiry_and_active_off(git_first_case, caplog):
+    from src.config import IntegrationConfig
+    from src.integration.shadow import diagnostics_for
+    case = git_first_case
+    case.snapshot.rows["integration_branch_owners"][0]["expires_at"] = None
+    await case.diagnostics(case.subject, case.facts)
+    lease = next(record.git_first for record in caplog.records
+                 if getattr(record, "git_first", {}).get("family") == "lease_eligibility")
+    assert lease["classification"] == "unknown" and lease["proposed"] is None
+    assert diagnostics_for(IntegrationConfig(git_first="active"), None, case.repo.git) is None
 
 
 def _git(cwd, *args: str) -> str:
@@ -1414,6 +1536,114 @@ async def test_live_green_candidate_promotes_without_prior_ci_evidence_or_operat
     assert train.remote("refs/heads/main") == current.head_sha
     journal = await train.journal(subject.id)
     assert any(row.get("rule") == "promote-exact-green" for row in journal)
+    await assert_reconciler_only(train)
+
+
+async def test_a_stale_cleanup_count_still_releases_the_lease_and_seals_the_next_request(
+    train,
+):
+    """Cleanup progress must never withhold what delivery already earned.
+
+    Batch 288750f6 answered ``invariant_error`` on every tick with all of its
+    items complete, so the project lease and the sweep request stayed held and
+    no later batch could seal.
+    """
+    from src.integration.subjects import CIEvidence, CIState
+
+    await train.open()
+    service = train.handler.orchestrator.integration_cleanup_service
+    materialize = service.materialize
+
+    async def stale_item_count(batch_id, *, now=None):
+        # The incident exactly: a persisted count that disagrees with what
+        # materialization found, while every item is already complete.
+        result = await materialize(batch_id, now=now)
+        return result.model_copy(update={"item_count": result.item_count + 1})
+
+    service.materialize = stale_item_count
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    current = await train.subject(subject.id)
+    train.ci.finish(current.head_sha, "success", run=66)
+
+    async def live(snapshot, head):
+        observation = train.ci.runs.get(head.sha)
+        return CIEvidence(
+            head_sha=head.sha,
+            observed_at=train.clock(),
+            state=CIState.GREEN if observation else CIState.NONE,
+        )
+
+    train.observer.candidate_ci = live
+    await train.run_until(
+        lambda: train.phase(subject.id, SubjectPhase.DONE), label="first batch delivered"
+    )
+    assert train.remote("refs/heads/main") == current.head_sha
+    assert train.contains(train.heads["alpha"], current.head_sha)
+    outcomes = [
+        (row["primitive"], row["outcome"])
+        for row in await train.journal(subject.id)
+        if row["entry_kind"] == "action"
+    ]
+    assert ("cleanup", "clean") in outcomes
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    assert batch["cleanup_state"] == "complete"
+    async with train.db._engine.connect() as conn:
+        leases = (await conn.execute(select(t.project_integration_leases))).all()
+        schedule = (
+            (
+                await conn.execute(
+                    select(t.project_integration_schedules).where(
+                        t.project_integration_schedules.c.project_id == PROJECT
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert leases == []
+    assert schedule["outstanding_request_id"] is None
+
+    # Newly approved work arrives: the released request must be able to seal it.
+    train.source("bravo", {"bravo.txt": "next batch\n"})
+    await train.add_source("bravo", number=2)
+    # Green GitHub observation precedes the legacy source-CI poller's DB record.
+    async with train.db.immediate() as conn:
+        await conn.execute(
+            delete(t.integration_source_ci).where(t.integration_source_ci.c.task_id == "bravo")
+        )
+
+    async def next_batch_testing():
+        later = [s for s in await train.subjects() if s.id != subject.id and s.batch_id]
+        live = [s for s in later if s.phase is not SubjectPhase.DONE]
+        return bool(live) and live[-1].phase is SubjectPhase.TESTING
+
+    await train.run_until(next_batch_testing, label="next batch sealed and built", limit=80)
+    following = [
+        s for s in await train.subjects() if s.batch_id and s.phase is SubjectPhase.TESTING
+    ][-1]
+    assert following.engine.value == "reconciler"
+    next_batch = await train.db.get_integration_batch(following.batch_id)
+    async with train.db._engine.connect() as conn:
+        members = (
+            (
+                await conn.execute(
+                    select(t.integration_batch_members.c.task_id).where(
+                        t.integration_batch_members.c.batch_id == next_batch["id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert members == ["bravo"]
+    assert train.contains(train.heads["alpha"], following.head_sha)
+    assert train.contains(train.heads["bravo"], following.head_sha)
+    train.ci.finish(following.head_sha, "success", run=23)
+    await train.run_until(lambda: train.phase(following.id, SubjectPhase.DONE), label="next main")
+    assert train.remote("refs/heads/main") == following.head_sha
     await assert_reconciler_only(train)
 
 

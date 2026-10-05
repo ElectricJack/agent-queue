@@ -13,10 +13,13 @@ import time
 
 from sqlalchemy import select
 
-from src.database import tables as t
 from src.commands.principal import ExecutionPrincipal, principal_context
+from src.database import tables as t
 from src.integration.engine import (
-    EngineRefused, RootEngineOwnership, root_admission, root_policy_ejection,
+    EngineRefused,
+    RootEngineOwnership,
+    root_admission,
+    root_policy_ejection,
 )
 from src.integration.ownership import BranchOwnership
 from src.integration.subjects import (
@@ -359,6 +362,17 @@ class RootPrimitiveAdapters:
             return PrimitiveOutcome.unknown(args.primitive, "publisher_authority_changed")
         if facts.ci_for(args.new_sha) is not CIState.GREEN:
             return PrimitiveOutcome.unknown(args.primitive, "exact_trusted_green_required")
+        evidence = next((check for check in facts.ci if check.head_sha == args.new_sha), None)
+        if evidence is not None and evidence.evidence_id is None:
+            # The compatibility promotion adapter still reads its check cache.
+            # Populate that exact observation on this green visit; never send
+            # green through the writer-budget/attempt or stop-proof paths.
+            await self._command(
+                "integration_ci_evidence", batch_id=subject.batch_id, revision=subject.generation
+            )
+            facts = await self.observer.observe(subject)
+            if facts.ci_for(args.new_sha) is not CIState.GREEN:
+                return PrimitiveOutcome.unknown(args.primitive, "exact_trusted_green_required")
         # Hold actual default-ref authority through journal, expected-old push
         # and remote read-back inside the existing promotion implementation.
         async with BranchOwnership(self.db).mutation_exclusion(
@@ -431,7 +445,7 @@ class RootPrimitiveAdapters:
         values = {}
         evidence = next((e for e in facts.ci if e.head_sha == args.head.sha), None)
         if (
-            state in {CIState.GREEN, CIState.RED}
+            state is CIState.RED
             and facts.budget is not None
             and evidence
             and evidence.evidence_id
@@ -758,21 +772,18 @@ class RootPrimitiveAdapters:
             return PrimitiveOutcome.unknown(args.primitive, "cleanup_contract_mismatch")
         result = await self._command("integration_cleanup", batch_id=subject.batch_id)
         code = result.get("outcome")
-        if code not in {
-            "complete",
-            "already_complete",
-            "advanced",
-            "retryable",
-            "wait",
-            "conflict",
-        }:
-            return self._unknown(args, result)
         # Primitive 20 folds release in: the published batch frees its request
         # and project lease from exact main-delivery evidence, independent of
-        # cleanup progress, so the next request can be sealed.
+        # cleanup progress, so the next request can be sealed. Cleanup is
+        # best-effort, so an unreadable cleanup answer never withholds it:
+        # returning early there stranded the lease behind a delivered batch.
         released = await self._command("integration_release", batch_id=subject.batch_id)
         if released.get("outcome") not in {"released", "already_released", "wait"}:
             return self._unknown(args, released)
         if code in {"complete", "already_complete"} and released["outcome"] != "wait":
             return self._answer(args, "clean")
-        return self._answer(args, "pending")
+        detail = {"cleanup_outcome": code}
+        reason = result.get("reason") or result.get("error")
+        if reason:
+            detail["cleanup_reason"] = reason
+        return self._answer(args, "pending", **detail)

@@ -98,6 +98,15 @@ async def test_tick_posts_each_pending_review_once_with_its_deep_link():
     assert len(transport.posts) == 1
 
 
+async def test_internal_review_is_suppressed_even_if_the_query_returns_it():
+    db = FakeDatabase([review(decider="supervisor")])
+    transport = FakeTransport()
+    notifier = ReviewNotifier(db, transport, "123", "https://aq.example.test")
+    assert await notifier.tick() == 0
+    assert transport.posts == []
+    assert db.marked == []
+
+
 @pytest.mark.parametrize("error", [TransportRetryable("rate limited"), TransportUnavailable("no access")])
 async def test_retryable_transport_errors_leave_review_pending(error):
     db = FakeDatabase([review()])

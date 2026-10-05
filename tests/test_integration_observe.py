@@ -1351,6 +1351,7 @@ async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkey
     }])
     service = SimpleNamespace(_load_trust=AsyncMock(return_value=(trust, client)))
     owner = SimpleNamespace(
+        config=SimpleNamespace(integration=SimpleNamespace(git_first="shadow")),
         db=SimpleNamespace(get_repo=AsyncMock(return_value=object())),
         github_repository_binding_resolver=AsyncMock(
             return_value=GitHubRepositoryBinding(123, "acme/widgets")),
@@ -1411,3 +1412,20 @@ async def test_observer_prefers_batched_remote_heads_and_keeps_errors_unknown():
 
     facts = await observe(snapshot(), Broken())
     assert all(head.state == "unknown" for head in facts.remote_heads)
+
+
+@pytest.mark.parametrize("kind", [SubjectKind.ROOT_BATCH, SubjectKind.PARENT_EPISODE])
+@pytest.mark.parametrize("expiry,competing", [(NOW + 1, True), (NOW, False), (NOW - 1, False)])
+async def test_managed_competing_lease_is_observed_for_root_and_parent(kind, expiry, competing):
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.playbooks.integration_policy import IntegrationPolicyFacts
+
+    ref = "refs/heads/main" if kind is SubjectKind.ROOT_BATCH else "refs/heads/aq/parent"
+    data = with_rows(snapshot(kind), integration_branch_owners=[publisher_owner(
+        ref=ref, owner_role="repair", owner_id="repair", handoff_state="attached",
+        session_id="worker", workspace_id="work", holder="repair", fence=5, expires_at=expiry,
+    )])
+    facts_type = IntegrationPolicyFacts if kind is SubjectKind.ROOT_BATCH else ParentPolicyFacts
+    facts = await IntegrationObserver(Reader(data), Git(), clock=lambda: NOW,
+                                      facts_type=facts_type).observe(data.subject)
+    assert facts.competing_lease is competing

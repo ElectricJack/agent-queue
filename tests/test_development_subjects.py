@@ -288,7 +288,7 @@ async def store_subject(db, s, pinned):
 
 def adapter(db, pinned, frontier, *, shared=None):
     async def observe(s):
-        return SubjectFacts(**facts(s).model_dump(exclude={"publisher_fence"}))
+        return SubjectFacts(**facts(s).model_dump(exclude={"publisher_fence", "competing_lease"}))
 
     return DevelopmentIntegrationAdapter(
         db, observe=observe, frontier_for=AsyncMock(return_value=frontier),
@@ -815,10 +815,8 @@ async def test_factory_admits_pushed_source_and_uses_subject_pinned_retained_sto
         members=(MemberRef(task_id="alpha", head_sha=head, base_sha=base),),
     ))
     assert outcome.outcome == "merged", outcome
-    journal = await db.list_integration_subject_journal(root.id)
-    [prepared] = [row for row in journal
-                  if row["primitive"] == "git_merge_members" and row["outcome"] == "prepared"]
-    assert prepared["payload"]["regenerate"] == regenerate
+    # Batch construction writes no journal; the pinned command rides the retained store.
+    assert repository.regenerate == regenerate
     ancestry = await runtime.adapter.shared.invoke(root, AncestryArgs(
         repository_id="repo", queries=(AncestryQuery(ancestor=base, descendant=head),),
     ))

@@ -46,6 +46,33 @@ class Handler:
         return {"success": True, "reasons": self.reasons.get(args["task_id"], [])}
 
 
+class _Rows:
+    """The one read a statement-backed probe needs from the fake engine."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return SimpleNamespace(all=lambda: list(self._rows))
+
+    def scalars(self):
+        return iter(self._rows)
+
+
+class _Connect:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, statement):
+        return _Rows(self._rows)
+
+
 class DB:
     def __init__(self, tasks=(), completions=None, sessions=(), repos=(), providers=(), profiles=(),
                  unowned=0):
@@ -56,6 +83,8 @@ class DB:
         self.providers = list(providers)
         self.profiles = list(profiles)
         self.unowned = unowned
+        self.rows: list = []
+        self._engine = SimpleNamespace(connect=lambda: _Connect(self.rows))
 
     async def list_projects(self, status=None):
         assert status is ProjectStatus.ACTIVE
@@ -322,6 +351,7 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     monkeypatch.setattr(module, "_branch_findings", branches)
     monkeypatch.setattr(module, "_unmaterialized_pr_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_unadmitted_parent_findings", lambda *args: branches())
+    monkeypatch.setattr(module, "_stranded_child_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
     assert module.stall_checks()[0].fix is None
@@ -399,6 +429,37 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert [item["kind"] for item in findings] == ["orphaned_pr", "pr_inventory_failed"]
     assert "pull/92" in findings[0]["detail"] and "26h" in findings[0]["detail"]
     assert findings[1]["detail"] == "offline"
+
+
+async def test_a_stranded_child_line_names_the_missing_path(context):
+    """The shape both PR lines miss: completed, pushed, no PR, no delivery."""
+    context.db.rows = [
+        {"task_id": "container.1", "project_id": "one", "parent_task_id": "container",
+         "branch": "aq/container.1", "updated_at": NOW - 22 * 60, "head_sha": "c" * 40,
+         "base_sha": "b" * 40, "parent_status": "PAUSED",
+         "parent_state": "awaiting_children", "operation_state": None,
+         "subject_phase": None},
+        {"task_id": "container.2", "project_id": "one", "parent_task_id": "container",
+         "branch": "aq/container.2", "updated_at": NOW - 19 * 60, "head_sha": "d" * 40,
+         "base_sha": "b" * 40, "parent_status": "COMPLETED",
+         "parent_state": None, "operation_state": None, "subject_phase": None},
+    ]
+
+    findings = await module._stranded_child_findings(context, NOW)
+
+    assert [item["kind"] for item in findings] == ["stranded_child", "stranded_child"]
+    first = findings[0]
+    assert first["project_id"] == "one" and first["parent_task_id"] == "container"
+    assert "22m" in first["detail"] and "aq/container.1" in first["detail"]
+    # Every part of the container's path is named, including the absent ones.
+    assert "checkpoint awaiting_children" in first["detail"]
+    assert "operation none" in first["detail"] and "Subject none" in first["detail"]
+    assert "no collector will carry it" in findings[1]["detail"]
+
+
+async def test_the_stranded_child_line_is_quiet_on_a_healthy_train(context):
+    context.db.rows = []
+    assert await module._stranded_child_findings(context, NOW) == []
 
 
 def test_unknown_subject_journal_replay_reports_error_after_five_minutes():

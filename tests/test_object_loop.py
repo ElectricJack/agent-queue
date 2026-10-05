@@ -458,7 +458,10 @@ async def test_round_two_is_handed_round_ones_changes_and_the_frozen_inputs(
     assert scored["state"]["incumbent_artifact"] == {"uri": "artifact://candidate", "sha256": B}
     second = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
     round_two = second["state"]["wave"][0]["task_id"]
-    handoff = json.loads((await db.get_task(round_two)).description)["round_handoff"]
+    packet = json.loads((await db.get_task(round_two)).description)
+    assert "no implicit human-review deliverable" in packet["review_guidance"]
+    assert "project supervisor" in packet["review_guidance"]
+    handoff = packet["round_handoff"]
     assert handoff["attempt_id"] == "attempt-1" and handoff["round_id"] == 1
     assert handoff["incumbent"] == {
         "sha256": B, "artifact": {"uri": "artifact://candidate", "sha256": B},
@@ -611,7 +614,7 @@ async def test_checkpoint_reads_only_same_approved_revision(command_handler_fact
         await conn.execute(insert(doc_reviews).values(
             id="review-1", project_id="p", author_task_id=None, kind="other",
             title="Rock", vault_path="projects/p/review-rock.md", current_revision=1,
-            state="approved", gate_id=gate_id, decider="user", decided_by="Jack",
+            state="approved", gate_id=gate_id, decider="supervisor", decided_by="supervisor",
             decided_at=1.0, created_at=1.0, updated_at=1.0,
         ))
         await conn.execute(insert(doc_review_revisions).values(
@@ -696,7 +699,7 @@ async def test_unapproved_promoted_checkpoint_can_record_defect_stop(
         await conn.execute(insert(doc_reviews).values(
             id="review-1", project_id="p", kind="other", title="Rock",
             vault_path="projects/p/review-rock.md", current_revision=1,
-            state="approved", gate_id=gate_id, decider="user", decided_by="Jack",
+            state="approved", gate_id=gate_id, decider="supervisor", decided_by="supervisor",
             decided_at=1, created_at=1, updated_at=1,
         ))
         await conn.execute(insert(doc_review_revisions).values(

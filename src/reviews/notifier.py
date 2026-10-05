@@ -61,6 +61,8 @@ class ReviewNotifier:
             try:
                 revision = int(review["current_revision"])
                 review_id = str(review["id"])
+                if review.get("decider") == "supervisor":
+                    continue
                 if (review_id, revision) in self._rejected:
                     continue
                 if self.transport is None or not self.channel_id:
@@ -126,10 +128,18 @@ class ReviewNotifier:
             heading = f"📄 {kind} for review: {title}"
         else:
             heading = f"📄 Revised {kind} (rev {revision}): {title}"
-        lines = [
-            heading,
-            f"Project: {review['project_id']} · Author task: {review.get('author_task_id') or '—'}",
-        ]
+        from src.object_loop.reviews import experiment_context
+
+        experiment = None
+        if hasattr(self.db, "get_task_meta"):
+            experiment = await experiment_context(self.db, review.get("author_task_id"))
+        if experiment:
+            heading = f"📄 {title}"
+        lines = [heading]
+        if not experiment:
+            lines.append(
+                f"Project: {review['project_id']} · Author task: {review.get('author_task_id') or '—'}"
+            )
         if changes_note:
             lines.append(str(changes_note))
         link = await self._links.resolve() if self._links is not None else DashboardLink(

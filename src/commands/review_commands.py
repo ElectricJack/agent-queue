@@ -319,7 +319,7 @@ class ReviewCommandsMixin:
         if (
             principal.kind is PrincipalKind.SESSION
             and principal.elevated
-            and review["decider"] == "user_or_supervisor"
+            and review["decider"] in {"user_or_supervisor", "supervisor"}
         ):
             row = await self.db.get_session(principal.session_id)
             if (
@@ -336,6 +336,8 @@ class ReviewCommandsMixin:
             if review["decider"] == "user"
             else "a live supervisor session is required"
         )
+        if review["decider"] == "supervisor":
+            return None, _error("not_decider", "a live project supervisor must decide this internal review")
         return None, _error("not_decider", f"only Jack (dashboard or local CLI) may decide: {why}")
 
     async def _review_for_caller(self, review_id: object) -> tuple[dict | None, dict | None]:
@@ -417,6 +419,14 @@ class ReviewCommandsMixin:
                 review, error = await self._review_for_caller(review_id)
                 if error:
                     return error
+                from src.object_loop.reviews import experiment_context, result_text_error
+
+                experiment = await experiment_context(self.db, review["author_task_id"])
+                if experiment and experiment["final_result"]:
+                    if error := await result_text_error(
+                        self.db, experiment, content + "\n" + str(args.get("changes") or ""),
+                    ):
+                        return _error("object_result_language", error)
                 submitted_task_id: str | None = None
                 if self._is_worker():
                     held, error = await self._worker_held_task()
@@ -464,6 +474,23 @@ class ReviewCommandsMixin:
             if error:
                 return error
             project = await self.db.get_project(project_id)
+            from src.object_loop.reviews import experiment_context, result_text_error
+
+            experiment = await experiment_context(self.db, author_task_id)
+            decider = (
+                "user_or_supervisor"
+                if project is not None and project.review_delegate_to == "supervisor"
+                else "user"
+            )
+            if experiment:
+                decider = "user" if experiment["final_result"] else "supervisor"
+                if experiment["final_result"]:
+                    if kind != "other":
+                        return _error("object_result_kind", "Submit the final result as an other review.")
+                    if error := await result_text_error(
+                        self.db, experiment, str(args.get("title") or "") + "\n" + content,
+                    ):
+                        return _error("object_result_language", error)
             return {
                 "success": True,
                 **await service.submit(
@@ -473,11 +500,8 @@ class ReviewCommandsMixin:
                     title=str(args.get("title") or ""),
                     content=content,
                     submitted_by=principal.describe(),
-                    decider=(
-                        "user_or_supervisor"
-                        if project is not None and project.review_delegate_to == "supervisor"
-                        else "user"
-                    ),
+                    decider=decider,
+                    single_author=bool(experiment and experiment["final_result"]),
                     playbook=playbook,
                 ),
                 **({"playbook": playbook.meta} if playbook else {}),
@@ -1242,6 +1266,13 @@ class ReviewCommandsMixin:
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
+        from src.object_loop.reviews import experiment_context
+
+        if await experiment_context(self.db, review["author_task_id"]):
+            return _error(
+                "object_review_audience",
+                "Experiment reviews go to the supervisor; the final result goes to Jack.",
+            )
         try:
             return {
                 "success": True,
