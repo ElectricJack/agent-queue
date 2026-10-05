@@ -122,6 +122,8 @@ class RepairAllocator(Protocol):
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
+        authorize: Callable[[], Awaitable[bool]] | None = None,
+        brief: str = "",
     ) -> dict:
         """File (or find) the ordinary repair task for a batch's candidate ref.
 
@@ -343,7 +345,7 @@ class IntegrationTrain:
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
         if observation.state == "conflict":
-            return await self._repair(target, batch, observation, None)
+            return await self._repair(target, lane, batch, members, observation, None)
         if observation.state != "testing" or not observation.candidate_sha:
             # held, moved, source_moved, unknown: the next visit observes again.
             return self._visit(target, observation.state, batch, observation)
@@ -357,7 +359,7 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
-            return await self._repair(target, batch, observation, result)
+            return await self._repair(target, lane, batch, members, observation, result)
         return self._visit(target, "testing", batch, observation, result)
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:
@@ -366,17 +368,26 @@ class IntegrationTrain:
         return await checks.refresh(head)
 
     async def _repair(
-        self, target: TrainTarget, batch: Batch, observation: BatchObservation,
+        self, target: TrainTarget, lane: TrainLane, batch: Batch,
+        members: tuple[BatchMember, ...], observation: BatchObservation,
         result: ChecksResult | None,
     ) -> TrainVisit:
         # The repair works on the batch's candidate ref, never the target: the
         # train alone fast-forwards the target once the repaired head is green.
-        head = observation.candidate_sha or observation.target_sha
+        head = observation.candidate_sha
         if not head:
-            return self._visit(target, "unknown", batch, observation, result)
+            return self._visit(target, "unknown", batch, replace(observation, detail={
+                **(observation.detail or {}), "repair_publication": "unpublished",
+            }), result)
+
+        async def authorize():
+            return await lane.service.repair_authorized(batch, members, head)
+
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
-                                            head_sha=head, held=batch.intent != "open")
-        return self._visit(target, "repair", batch, observation, result, repair=repair)
+                                            head_sha=head, held=batch.intent != "open",
+                                            authorize=authorize, brief=str(observation.detail or {}))
+        state = "repair" if repair.get("outcome") in {"filed", "exists"} else "unknown"
+        return self._visit(target, state, batch, observation, result, repair=repair)
 
     def _visit(
         self, target: TrainTarget, state: str, batch: Batch | None = None,
