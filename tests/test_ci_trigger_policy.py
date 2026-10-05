@@ -483,10 +483,11 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
 
 def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_together():
     scenarios = [scenario for group in SCENARIO_GROUPS.values() for scenario in group]
-    expected = {f'S{index}' for index in range(1, 20)} - {'S16'} | {'S16a', 'S16b'}
+    expected = {f'S{index}' for index in range(1, 21)} - {'S16'} | {'S16a', 'S16b'}
     assert set(scenarios) == expected
     assert len(scenarios) == len(expected)
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
+    assert 'S20' in SCENARIO_GROUPS['cli']
 
 
 @pytest.mark.parametrize(
