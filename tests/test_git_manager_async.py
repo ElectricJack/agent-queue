@@ -145,6 +145,63 @@ async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr
     assert "network unavailable" in (unavailable.error or "")
 
 
+async def test_patch_id_streams_large_complete_diffs_and_keeps_stdin_limit(clone, mgr):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    source = _commit_file(clone, "large.txt", "large source\n" * 100_000, "large source")
+    diff = _git(["diff", "--binary", base, source, "--"], cwd=clone)
+    assert len(diff.encode()) > mgr._MAX_STDIN_BYTES
+    expected = subprocess.check_output(
+        ["git", "patch-id", "--stable"], input=diff, text=True,
+    ).split()[0]
+    assert await mgr.apatch_id(clone, base, source) == expected
+    assert await mgr.apatch_id(clone, source, source) is None
+    with pytest.raises(GitError, match="bounded input limit"):
+        await mgr.arun_git_result(["patch-id", "--stable"], cwd=clone, stdin=diff)
+    with pytest.raises(GitError):
+        await mgr.apatch_id(clone, "0" * 40, source)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "spawn", "patch"])
+async def test_patch_id_reaps_both_processes_on_interruption(clone, mgr, monkeypatch, failure):
+    import sys
+
+    processes = []
+    started = asyncio.Event()
+    create = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        if len(processes) == 1:
+            if failure == "spawn":
+                raise FileNotFoundError("git")
+            # Keep patch-id alive, and keep the pipe open, until interrupted.
+            script = "import time; time.sleep(30)"
+            if failure == "patch":
+                # A syntactically valid partial answer with failure is no proof.
+                script = "print('" + "a" * 40 + " " + "0" * 40 + "'); raise SystemExit(1)"
+            args = (sys.executable, "-c", script)
+        process = await create(*args, **kwargs)
+        processes.append(process)
+        if len(processes) == 2:
+            started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    if failure == "timeout":
+        monkeypatch.setattr(mgr, "_GIT_TIMEOUT", 1)
+    operation = asyncio.create_task(mgr.apatch_id(clone, "HEAD", "HEAD"))
+    if failure == "cancel":
+        await asyncio.wait_for(started.wait(), timeout=10)
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+    else:
+        message = {"timeout": "timed out", "spawn": "unavailable", "patch": "compute patch id"}
+        with pytest.raises(GitError, match=message[failure]):
+            await operation
+    assert len(processes) == (1 if failure == "spawn" else 2)
+    assert all(process.returncode is not None for process in processes)
+
+
 # ------------------------------------------------------------------
 # _arun_subprocess tests
 # ------------------------------------------------------------------

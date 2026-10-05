@@ -44,7 +44,7 @@ from src.integration.train_sources import (
     batch_id,
     train_for,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
 from tests.test_delivery_consumers import Origin, close, git
 from tests.test_integration_gitops import LocalGit
@@ -388,6 +388,30 @@ async def test_shadow_status_keeps_the_subject_projection(world):
         "missing") is None
 
 
+async def test_failed_delivery_probe_projects_safe_step_detail_in_active_status(world, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.git.manager import GitError
+
+    await completed(world, "unknown")
+    monkeypatch.setattr("src.integration.git_truth._whole_patch", AsyncMock(side_effect=GitError(
+        "git command stdin exceeds the bounded input limit",
+    )))
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    await train.tick()
+    await train.drain()
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    project = await status.control_status("p")
+    assert project["batches"] == []
+    assert project["targets"][0]["state"] == "blocked"
+    [blocker] = project["blockers"]
+    assert blocker["code"] == "missing_or_ambiguous_source"
+    assert blocker["detail"].endswith(
+        "whole_source_patch: GitError: git command stdin exceeds the bounded input limit"
+    )
+    assert (await status.task_blockers("unknown"))["blockers"] == [blocker]
+
+
 async def test_unknown_source_is_visible_while_an_independent_batch_waits_for_checks(world):
     await completed(world, "missing", done=False)
     await close(world.db, "missing", [])
@@ -448,7 +472,7 @@ class HostedGitHub:
         return [check] if key == "check_runs" else [run]
 
 
-async def hosted_train(world):
+async def hosted_train(world, *, retained_store=None):
     """The daemon's own lanes for a project with no development pin: hosted checks."""
     db, origin = world.db, world.origin
     async with db._engine.begin() as conn:
@@ -473,7 +497,7 @@ async def hosted_train(world):
         return GitHubRepositoryBinding(123, HostedGitHub.full_name)
 
     async def store(repo_row):
-        return origin.clone
+        return retained_store or origin.clone
 
     orchestrator = SimpleNamespace(
         db=db, git=LocalGit(Path(origin.url)), github_repository_binding_resolver=binding,
@@ -486,6 +510,72 @@ async def hosted_train(world):
         lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
     )
     return train, github, trusts
+
+
+async def test_ordinary_train_completion_with_large_history_in_fresh_retained_store(world, tmp_path):
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+    from src.integration.provenance import record_worker_completion
+
+    db, origin = world.db, world.origin
+    git(origin.clone, "checkout", "main")
+    (origin.clone / "base.txt").write_text("historical train fixture\n" * 50_000)
+    git(origin.clone, "commit", "-am", "large historical target change")
+    git(origin.clone, "push", "origin", "main")
+    base = git(origin.clone, "rev-parse", "HEAD")
+    historical = git(origin.clone, "diff", f"{base}^", base, "--")
+    assert len(historical.encode()) > GitManager._MAX_STDIN_BYTES
+    # The daemon's retained store predates the worker's branch and provenance.
+    retained = tmp_path / "retained"
+    git(tmp_path, "clone", origin.url, str(retained))
+    tid, branch = "ordinary-train", "aq/epic/ordinary-train"
+    await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid, description="",
+                              branch_name=branch, status=TaskStatus.IN_PROGRESS, claim_epoch=1))
+    git(origin.clone, "checkout", "-b", branch)
+    with (origin.clone / "base.txt").open("a") as handle:
+        handle.write("new source\n")
+    git(origin.clone, "commit", "-am", "ordinary train source")
+    git(origin.clone, "push", "-u", "origin", branch)
+    head = git(origin.clone, "rev-parse", "HEAD")
+    await db.create_workspace(Workspace(
+        id="worker", project_id="p", workspace_path=str(origin.clone),
+        source_type=RepoSourceType.LINK, locked_by_task_id=tid,
+    ))
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="ordinary-origin", task_id=tid, repository_id="r", branch_name=branch,
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time(),
+        ))
+    # The fair-impact-55 path: the real completion writer verifies and retains
+    # the exact pushed source before its immutable passing close is recorded.
+    assert await record_worker_completion(
+        db, GitManager(), await db.get_task(tid), await db.get_project("p"),
+        str(origin.clone), "ordinary-close", commit=head,
+    ) == head
+    await close(db, tid, [head], close_id="ordinary-close")
+    request = (await load_delivery_requests(
+        db, [tid], repository_id="r", target_ref=MAIN.target_ref, reduced=True,
+    ))[tid]
+    truth = GitTruth(GitManager())
+
+    async def observed():
+        return await truth.snapshot(str(retained), project_id="p", repository_id="r",
+                                    repository_url=origin.url, target_ref=MAIN.target_ref)
+
+    proof = await (await observed()).is_delivered(request, source_base=base)
+    assert proof.state == DeliveryState.PENDING and proof.error_detail is None
+    train, github, _ = await hosted_train(world, retained_store=retained)
+    await train.tick()
+    await train.drain()
+    [testing] = train.status()
+    assert (testing["state"], testing["checks"]) == ("testing", "pending"), testing
+    status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
+    assert [member["source_sha"] for member in status["batches"][0]["members"]] == [head]
+    assert [blocker["code"] for blocker in status["blockers"]] == ["checks_pending"]
+    github.runs[testing["candidate_sha"]] = "success"
+    assert (await train.visit(MAIN)).state == "delivered"
+    proof = await (await observed()).is_delivered(request, source_base=base)
+    assert proof.state == DeliveryState.CONTAINED and proof.reason == "ancestor"
 
 
 async def test_hosted_lane_publishes_only_the_exact_candidate_github_passed(world):

@@ -9,6 +9,7 @@ Legacy consumers remain on delivery_truth until the protocol cutover.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,42 @@ from src.integration.delivery_truth import (
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
 
+logger = logging.getLogger(__name__)
+
+
+def _failure_message(exc: Exception) -> str:
+    """Describe failures without exposing Git stderr, paths or repository content."""
+    message = str(exc)
+    # Only fixed messages can leave the observer. Git stderr and exception
+    # arguments may contain credentials, filenames, commit bodies or file data.
+    known = (
+        "whole-source proof requires an exact base OID",
+        "provenance requires a full lowercase Git OID",
+        "source base is not its ancestor",
+        "source does not resolve to the exact commit",
+        "invalid whole-source patch id",
+        "git command stdin exceeds the bounded input limit",
+        "unsupported provenance record",
+        "provenance record does not retain its exact source",
+        "provenance marker changes the source tree",
+        "invalid completion artifact/claim evidence",
+        "completion ref has a different immutable identity",
+        "completion requires exact project/repository/task/generation",
+    )
+    if message in known:
+        return message
+    if isinstance(exc, KeyError):
+        return "required provenance field is missing"
+    if isinstance(exc, OSError):
+        return "Git store or process is unavailable"
+    if isinstance(exc, GitError):
+        if "Not a valid commit name" in message or "bad object" in message:
+            return "Git commit object is unavailable"
+        if "timed out" in message:
+            return "Git command timed out"
+        return "Git command failed (untrusted detail omitted)"
+    return "invalid delivery input (untrusted detail omitted)"
+
 
 @dataclass
 class _PairFacts:
@@ -37,6 +74,7 @@ class _PairFacts:
 @dataclass(frozen=True)
 class GitDeliveryEvidence(DeliveryEvidence):
     source_base: str | None = None
+    error_detail: str | None = None
 
 
 class GitTruth:
@@ -264,8 +302,12 @@ async def is_delivered(
     observed = snapshot.observation
     source = None
 
-    def answer(state: DeliveryState, reason: str) -> GitDeliveryEvidence:
-        return GitDeliveryEvidence(request, state, observed.target_oid, source, reason, source_base)
+    def answer(
+        state: DeliveryState, reason: str, *, error_detail: str | None = None,
+    ) -> GitDeliveryEvidence:
+        return GitDeliveryEvidence(
+            request, state, observed.target_oid, source, reason, source_base, error_detail,
+        )
 
     if (request.project_id, request.repository_id, request.target_ref) != (
         observed.project_id, observed.repository_id, observed.target_ref,
@@ -275,6 +317,7 @@ async def is_delivered(
         return answer(DeliveryState.UNKNOWN, observed.error or "missing_target")
     if request.task_status != "COMPLETED":
         return answer(DeliveryState.PENDING, "task_not_completed")
+    step = "completion_identity"
     try:
         identity = CompletionIdentity(
             request.project_id, request.repository_id, request.task_id,
@@ -282,18 +325,23 @@ async def is_delivered(
         )
         provenance = GitProvenance(observed.git, observed.store,
                                    repository_url=observed.repository_url)
+        step = "completion_provenance"
         record = await provenance.read_completion(identity, refs=observed.source_heads)
         if record is None:
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
+        step = "source_identity"
         source = record["source_oid"]
+        step = "target_object"
         await provenance.exact(observed.target_oid)
         if not record["artifact"]:
             return answer(DeliveryState.NO_ARTIFACT, "git_no_artifact")
+        step = "source_ancestry"
         facts = snapshot.truth._pair(observed, source)
         if facts.ancestor is None:
             facts.ancestor = await provenance.ancestor(source, observed.target_oid)
         if facts.ancestor:
             return answer(DeliveryState.CONTAINED, "ancestor")
+        step = "source_trailer"
         trailer = f"{request.task_id}@{source}"
         if trailer not in facts.trailers:
             facts.trailers[trailer] = bool(await observed.git.alog_grep_trailer(
@@ -302,21 +350,29 @@ async def is_delivered(
         if facts.trailers[trailer]:
             return answer(DeliveryState.CONTAINED, "source_trailer")
         if source_base is not None:
+            step = "source_base"
             if not is_valid_git_oid(source_base):
                 raise ValueError("whole-source proof requires an exact base OID")
             if source_base not in facts.patches:
+                step = "whole_source_patch"
                 facts.patches[source_base] = await _whole_patch(
                     observed, source, source_base, observed.target_oid,
                 )
             if facts.patches[source_base]:
                 return answer(DeliveryState.CONTAINED, "whole_source_patch")
+        step = "full_tree"
         if facts.equal_tree is None:
             facts.equal_tree = await _equal_tree(observed, source, observed.target_oid)
         if facts.equal_tree:
             return answer(DeliveryState.CONTAINED, "full_tree")
         return answer(DeliveryState.PENDING, "source_not_delivered")
-    except (GitError, OSError, ValueError, KeyError, TypeError):
-        return answer(DeliveryState.UNKNOWN, "missing_or_ambiguous_source")
+    except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
+        detail = f"{step}: {type(exc).__name__}: {_failure_message(exc)}"
+        logger.warning(
+            "Delivery observation failed for task %s on %s: %s",
+            request.task_id, request.target_ref, detail,
+        )
+        return answer(DeliveryState.UNKNOWN, "missing_or_ambiguous_source", error_detail=detail)
 
 
 async def epic_complete(
