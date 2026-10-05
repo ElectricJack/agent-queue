@@ -1,14 +1,14 @@
 """Add compatible frozen Git inputs and batch intent.
 
-Revision ID: a00000000073
-Revises: a00000000072
+Revision ID: a00000000074
+Revises: a00000000073
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000073"
-down_revision = "a00000000072"
+revision = "a00000000074"
+down_revision = "a00000000073"
 branch_labels = None
 depends_on = None
 

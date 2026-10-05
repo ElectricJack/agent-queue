@@ -27,10 +27,11 @@ export default function ReviewToasts() {
 
   const onEvent = useCallback((event: NotifyEvent) => {
     if (event.event_type !== "review.submitted" && event.event_type !== "review.revised") return;
-    const review = event as NotifyEvent & { review_id?: string; title?: string; kind?: string; revision?: number };
+    const review = event as NotifyEvent & { review_id?: string; title?: string; kind?: string; revision?: number; decider?: string };
+    if (review.decider === "supervisor") return;
     if (!review.review_id || !review.title) return;
     const id = `${event.event_type}:${review.review_id}:${review.revision ?? "current"}`;
-    const message = event.event_type === "review.submitted"
+    const message = review.kind === "other" ? review.title : event.event_type === "review.submitted"
       ? `New ${review.kind ?? "document"} for review: ${review.title}`
       : `Revised: ${review.title} (rev ${review.revision ?? "?"})`;
     setToasts((current) => [...current.filter((toast) => toast.id !== id), { id, reviewId: review.review_id!, message }]);

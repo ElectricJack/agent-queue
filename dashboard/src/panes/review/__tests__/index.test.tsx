@@ -226,6 +226,26 @@ describe("review pane", () => {
     expect(screen.getByText("SHA-256 abc123")).toBeInTheDocument();
   });
 
+  it("pairs result images by view with plain captions and no internal metadata", () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, attachments: ["Back", "Front"].flatMap((view) =>
+        ["After", "Before"].map((candidate) => ({
+          id: `${view}-${candidate}`, review_id: "rev-x", revision: 2,
+          url: `/${view}-${candidate}.png`, sha256: "internal-hash", content_type: "image/png",
+          size: 42, caption: `${view} ${candidate}`, view_id: view, candidate_id: candidate,
+        }))) }, isLoading: false, error: null,
+    }));
+    renderPane();
+    expect(screen.getByRole("heading", { name: "Before and after" })).toBeInTheDocument();
+    expect(screen.getAllByRole("img").map((img) => img.getAttribute("alt"))).toEqual([
+      "Back Before", "Back After", "Front Before", "Front After",
+    ]);
+    expect(screen.queryByText(/SHA-256/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Candidate Before/)).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Front Before" }).closest("figure")?.parentElement)
+      .toHaveClass("grid-cols-2");
+  });
+
   it("submits an image with the viewed revision and view/candidate IDs", async () => {
     renderPane();
     fireEvent.change(screen.getByLabelText("Screenshot image"), {

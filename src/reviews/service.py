@@ -29,9 +29,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import DOC_REVIEW_DECIDERS, DOC_REVIEW_KINDS
+from src.database.tables import (
+    DOC_REVIEW_DECIDERS, DOC_REVIEW_KINDS, doc_review_revisions, doc_reviews, tasks,
+)
 from src.reviews.diff import block_diff
 from src.reviews.vault import (
     body_sha256,
@@ -152,6 +155,7 @@ def _base_payload(review: dict) -> dict:
         "kind": review["kind"],
         "revision": review["current_revision"],
         "author_task_id": review["author_task_id"],
+        "decider": review["decider"],
     }
 
 
@@ -184,6 +188,7 @@ class ReviewService:
         submitted_by: str,
         decider: str = "user",
         playbook: PlaybookPin | None = None,
+        single_author: bool = False,
     ) -> dict:
         """Create a review at revision 1, its gate and its vault file.
 
@@ -201,6 +206,32 @@ class ReviewService:
             review_id = await self.db.generate_review_id()
             try:
                 async with self.db.immediate() as conn:
+                    if single_author:
+                        # The finalizer is the one result producer per attempt.
+                        # Lock its task before checking, so concurrent retries
+                        # cannot create two human result documents.
+                        await conn.execute(select(tasks.c.id).where(
+                            tasks.c.id == author_task_id,
+                        ).with_for_update())
+                        previous = (await conn.execute(select(doc_reviews).where(
+                            doc_reviews.c.author_task_id == author_task_id,
+                        ).order_by(doc_reviews.c.created_at).limit(1))).mappings().first()
+                        if previous:
+                            digest = (await conn.execute(select(
+                                doc_review_revisions.c.content_sha256,
+                            ).where(
+                                doc_review_revisions.c.review_id == previous.id,
+                                doc_review_revisions.c.revision == previous.current_revision,
+                            ))).scalar_one()
+                            if (digest != body_sha256(body) or previous.title != title
+                                    or previous.kind != kind):
+                                raise ReviewError(
+                                    "result_exists",
+                                    "This attempt already has a result; revise that review.",
+                                )
+                            await self._rewrite_status(dict(previous))
+                            return {"review_id": previous.id, "vault_path": previous.vault_path,
+                                    "revision": previous.current_revision, "gate_id": previous.gate_id}
                     vault_path = await self._free_path(project_id, kind, title, date, conn)
                     gate_id, _ = await self.db.create_gate(
                         project_id,

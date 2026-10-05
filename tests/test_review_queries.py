@@ -402,6 +402,14 @@ class TestComments:
 
 
 class TestNotificationOutbox:
+    async def test_only_human_deciders_enter_the_discord_outbox(self, db):
+        await _submit(db, "rev-internal-score", decider="supervisor")
+        await _submit(db, "rev-human-result", decider="user")
+        await _submit(db, "rev-delegated-plan", decider="user_or_supervisor")
+        assert {r["id"] for r in await db.reviews_pending_notification()} == {
+            "rev-human-result", "rev-delegated-plan",
+        }
+
     async def test_pending_until_marked_and_marking_is_monotonic(self, db):
         await _submit(db, "rev-a-one")
         await _submit(db, "rev-b-two", current_revision=3, notified_revision=3)
@@ -564,6 +572,49 @@ def _run(migration, *steps: str):
                 getattr(migration, step)()
 
     return _apply
+
+
+@pytest.mark.migration
+async def test_supervisor_review_migration_upgrades_replays_and_guards_downgrade(db):
+    migration = _load_migration("a00000000072_object_review_decider")
+    from sqlalchemy import insert, select
+    from src.database.tables import doc_reviews
+
+    await mktask(db, "old-score")
+    await mktask(db, "old-probe", parent_task_id="old-score")
+    await mktask(db, "old-finalizer")
+    await db.set_task_meta("old-score", "object_experiment", {
+        "object_id": "rock", "purpose": "score",
+    })
+    await db.set_task_meta("old-finalizer", "object_experiment", {
+        "object_id": "rock", "purpose": "finalize",
+    })
+    async with db._engine.begin() as conn:
+        # Simulate the previous schema, then apply twice. Tests use only
+        # their leased disposable database, including these DDL statements.
+        await conn.run_sync(_run(migration, "downgrade", "downgrade"))
+        for author in ("old-score", "old-probe", "old-finalizer", "unrelated"):
+            await conn.execute(insert(doc_reviews).values(**_review(
+                "rev-" + author, author_task_id=author, decider="user_or_supervisor",
+            )))
+        await conn.run_sync(_run(migration, "upgrade", "upgrade"))
+        assert dict((await conn.execute(select(
+            doc_reviews.c.author_task_id, doc_reviews.c.decider,
+        ))).all()) == {
+            "old-score": "supervisor", "old-probe": "supervisor",
+            "old-finalizer": "user", "unrelated": "user_or_supervisor",
+        }
+        with pytest.raises(RuntimeError, match="supervisor-only reviews"):
+            await conn.run_sync(_run(migration, "downgrade"))
+        await conn.execute(text("DELETE FROM doc_reviews"))
+        await conn.run_sync(_run(migration, "downgrade", "downgrade"))
+        check = (await conn.execute(text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_doc_reviews_decider'"
+        ))).scalar_one()
+        assert "'supervisor'" not in check
+        assert "'user_or_supervisor'" in check
+        await conn.run_sync(_run(migration, "upgrade"))
 
 
 _PRE_REVISION_GATE_CHECK = (

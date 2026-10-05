@@ -29,6 +29,12 @@ export function ReviewAttachments({
   const [viewId, setViewId] = useState("");
   const [candidateId, setCandidateId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const comparison = attachments.length > 0 && attachments.every((attachment) =>
+    ["before", "after"].includes(attachment.candidate_id.toLowerCase()));
+  const ordered = comparison ? [...attachments].sort((a, b) =>
+    a.view_id.localeCompare(b.view_id)
+    || Number(a.candidate_id.toLowerCase() === "after")
+      - Number(b.candidate_id.toLowerCase() === "after")) : attachments;
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -56,18 +62,18 @@ export function ReviewAttachments({
 
   return (
     <section aria-label="Review screenshots" className="border-b border-gray-800 p-4">
-      <h2 className="mb-2 text-sm font-semibold text-gray-200">Screenshots · revision {revision}</h2>
+      <h2 className="mb-2 text-sm font-semibold text-gray-200">{comparison ? "Before and after" : `Screenshots · revision ${revision}`}</h2>
       {attachments.length === 0 && <p className="text-sm text-gray-500">No screenshots attached.</p>}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {attachments.map((attachment) => (
+      <div className={comparison ? "grid grid-cols-2 gap-3" : "grid gap-3 sm:grid-cols-2 lg:grid-cols-3"}>
+        {ordered.map((attachment) => (
           <figure key={attachment.id} className="rounded border border-gray-800 bg-gray-900 p-2">
             <a href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.caption}`}>
               <img src={attachment.url} alt={attachment.caption} className="max-h-64 w-full object-contain" />
             </a>
             <figcaption className="mt-2 text-xs text-gray-300">
               <strong>{attachment.caption}</strong>
-              <span className="block text-gray-400">View {attachment.view_id} · Candidate {attachment.candidate_id}</span>
-              <span className="block break-all font-mono text-gray-500">SHA-256 {attachment.sha256}</span>
+              <span className="block text-gray-400">{comparison ? attachment.view_id : `View ${attachment.view_id} · Candidate ${attachment.candidate_id}`}</span>
+              {!comparison && <span className="block break-all font-mono text-gray-500">SHA-256 {attachment.sha256}</span>}
             </figcaption>
           </figure>
         ))}
