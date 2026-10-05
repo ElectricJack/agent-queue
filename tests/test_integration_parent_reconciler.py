@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, update
+from sqlalchemy import delete, insert, select, update
 
 from src.commands.gate_commands import GateCommandsMixin
 from src.commands.integration_commands import IntegrationCommandsMixin
@@ -44,7 +44,7 @@ from src.integration.subjects import (
     Subject,
 )
 from src.integration.writers import WriterPrimitives
-from src.models import Project, Task, TaskStatus
+from src.models import Agent, Project, SessionRecord, Task, TaskStatus
 from src.playbooks.definition import load_definition_json
 from src.playbooks.integration_policy import IntegrationPolicy
 from src.profiles.capabilities import DENY_ALL
@@ -445,6 +445,366 @@ async def test_ci_visit_completes_only_exact_trusted_green(db, evidence_head, co
         assert not await _rows(db, t.integration_parent_verifications)
         if conclusion == "failure":
             assert len(await _rows(db, t.gates)) == 1
+
+
+async def _stop_the_parent_worker(db, tmp_path):
+    """Leave the parent's own pool worker stopped, still holding its claim.
+
+    The live shape (bold-crest-75): the parent ran as a worker, committed its
+    own head, filed one child, and then its session stopped for good —
+    ``state`` and ``desired_state`` both ``stopped``, the claim still mid-flight
+    at the task's current epoch, the agent row still naming the parent and the
+    task still ``IN_PROGRESS``.  ``task_session_attempts`` carries the attempt
+    the session ended, which is what tells ``mark_ready_on`` that this parent
+    ran as a worker rather than never having been leased at all.
+    """
+    await db.create_agent(
+        Agent(id="parent-agent", name="parent-agent", profile_id="worker")
+    )
+    await db.create_session(
+        SessionRecord(
+            id="parent-session",
+            project_id="p",
+            profile_id="worker",
+            harness="claude",
+            provider="fake",
+            name="p-worker--p--parent-session",
+            lifecycle="pool",
+            work_dir=str(tmp_path / "parent-session"),
+            epoch="e",
+            instance_token="parent-instance",
+            started_at=1.0,
+            state="stopped",
+            desired_state="stopped",
+            ended_at=2.0,
+            end_reason="drained",
+            task_id="parent",
+            agent_id="parent-agent",
+            claim_phase="active",
+            claim_phase_at=1.0,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.agents)
+            .where(t.agents.c.id == "parent-agent")
+            .values(state="BUSY", current_task_id="parent")
+        )
+        await conn.execute(
+            update(t.sessions)
+            .where(t.sessions.c.id == "parent-session")
+            .values(
+                last_claim_epoch=await conn.scalar(
+                    select(t.tasks.c.claim_epoch).where(t.tasks.c.id == "parent")
+                )
+            )
+        )
+        await conn.execute(
+            insert(t.task_session_attempts).values(
+                id="parent-attempt",
+                session_id="parent-session",
+                task_id="parent",
+                project_id="p",
+                agent_id="parent-agent",
+                agent_name="parent-agent",
+                profile_id="worker",
+                name="p-worker--p--parent-session",
+                lifecycle="pool",
+                harness="claude",
+                provider="fake",
+                state="stopped",
+                work_dir=str(tmp_path / "parent-session"),
+                started_at=1.0,
+                session_started_at=1.0,
+                ended_at=2.0,
+                end_reason="drained",
+            )
+        )
+
+
+async def test_deleting_the_last_child_leaves_a_stopped_holders_parent_finishable(db, tmp_path):
+    """A container with no children left is finished, whatever its dead holder did.
+
+    Deleting a container's last child is what stranded bold-crest-75: §7
+    settlement refuses the parent because its collection episode owns the
+    completion, ``mark_ready_on`` refuses it while it is not ``PAUSED``, and the
+    claim frontier never offers a container to anybody — so the claim a stopped
+    worker left behind was the last thing in the way, and ``reopen-collection``,
+    ``recover-parent-head`` and ``redrive-root`` all refuse an IN_PROGRESS
+    parent.  Nothing but the delete may move it.
+
+    The parent must reach verification, and then COMPLETED, on the shipped
+    parent runtime alone.  With the child gone the collected aggregate is the
+    parent's own pre-collection head: that is the head CI runs against on the
+    ``aq/parent`` ref, so it is what the evidence must name.
+    """
+    hierarchy, checkpointed, (child,) = await _parent_tree(db, children=1)
+    await _stop_the_parent_worker(db, tmp_path)
+    parent = await db.get_task("parent")
+    assert (parent.status, parent.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+    assert await db.stale_container_claim_candidates() == ["parent"]
+
+    await db.delete_task(child, branch_policy="keep")
+
+    # The delete took the exact stopped claim back, in its own transaction:
+    # the parent is now the PAUSED, unassigned shape the collection consumers
+    # require, its episode and its own head intact.
+    parent = await db.get_task("parent")
+    assert (parent.status, parent.assigned_agent_id) == (TaskStatus.PAUSED, None)
+    session = await db.get_session("parent-session")
+    assert (session.state, session.task_id, session.claim_phase) == ("stopped", None, None)
+    assert session.last_claim_result == "stale_container_claim_released"
+    assert await db.get_task(child) is None
+    assert await db.stale_container_claim_candidates() == []
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["episode_id"] == checkpointed["episode_id"]
+    assert checkpoint["checkpoint_sha"] == "a" * 40
+    assert await _rows(db, t.task_delivery_receipts) == []
+
+    ci = SimpleNamespace(
+        handle=AsyncMock(return_value={"outcome": "green", "evidence_ids": ["ci"]})
+    )
+    env = await setup(db, hierarchy, parent_ci=ci)
+    for _ in range(4):
+        await visit(env)  # head refresh, readiness, file, lease
+
+    # Verification started, on the aggregate that is actually left: the
+    # parent's own pre-collection head, published on an ``aq/parent`` ref.
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["state"] == "verifying"
+    assert checkpoint["checkpoint_sha"] == "a" * 40
+    assert ci.handle.await_args.args[0]["head_sha"] == "a" * 40
+    # The parent itself is not the verifier and never has to be: it stays the
+    # PAUSED collection the writer is verifying on its behalf.
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(t.integration_check_evidence).values(
+                id="ci",
+                operation_id=checkpointed["operation_id"],
+                parent_task_id="parent",
+                parent_generation=checkpoint["generation"],
+                parent_head_sha="a" * 40,
+                producer_id="forge-observer",
+                workflow_id="workflow",
+                run_id="run",
+                attempt=1,
+                required_check_version="parent-v1",
+                checks={"unit": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=900,
+            )
+        )
+    await visit(env)
+    await visit(env)
+
+    assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
+    assert (await db.get_integration_subject(env.subject.id))["phase"] == "done"
+    # Nothing here is an operator command: the parent runtime drove every leg,
+    # and none of the controls that refuse an IN_PROGRESS parent was needed.
+    assert env.commands.calls
+    assert not {
+        "integration_reopen_collection",
+        "integration_recover_parent_head",
+        "integration_redrive_root",
+    } & set(env.commands.calls)
+
+
+async def test_the_backstop_reconciler_takes_back_the_same_stopped_claim(db, tmp_path):
+    """A strand that already exists is repaired by the shipped sweep, not an operator.
+
+    ``_delete_task_body`` prevents the shape; this is the path for rows that
+    predate it (``aq doctor`` names ``claims.container_held``, and the delete's
+    own event is long gone).  Same proof, same release — only the caller differs.
+    """
+    _, _, (child,) = await _parent_tree(db, children=1)
+    await _stop_the_parent_worker(db, tmp_path)
+    # Stand in for the strand as it is found: the child is gone, the parent's
+    # worker stopped, nothing has run since.
+    await db.delete_task(child, branch_policy="keep")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.tasks).where(t.tasks.c.id == "parent").values(status="IN_PROGRESS")
+        )
+        await conn.execute(
+            update(t.sessions)
+            .where(t.sessions.c.id == "parent-session")
+            .values(
+                task_id="parent",
+                claim_phase="active",
+                last_claim_epoch=(await conn.scalar(
+                    select(t.tasks.c.claim_epoch).where(t.tasks.c.id == "parent")
+                )),
+            )
+        )
+    assert await db.stale_container_claim_candidates() == ["parent"]
+
+    assert (await db.release_stale_container_claim("parent")).released
+
+    parent = await db.get_task("parent")
+    assert (parent.status, parent.assigned_agent_id) == (TaskStatus.PAUSED, None)
+    session = await db.get_session("parent-session")
+    assert (session.state, session.task_id, session.claim_phase) == ("stopped", None, None)
+    assert await db.stale_container_claim_candidates() == []
+    # Idempotent: the sweep runs every interval and must not act twice.
+    assert not (await db.release_stale_container_claim("parent")).released
+
+
+async def test_archiving_the_last_child_takes_the_same_claim_back(db, tmp_path):
+    """Archive empties a container exactly as a delete does, so it strands the same.
+
+    ``archive_task`` is the structural twin of ``delete_task`` on this path: the
+    child's row leaves ``tasks`` either way, so the parent is left with no
+    children, no receipt and a stopped holder's claim.  Both removals must hand
+    the parent's lifecycle back; neither may leave an operator control to run.
+    """
+    _, _, (child,) = await _parent_tree(db, children=1)
+    await _stop_the_parent_worker(db, tmp_path)
+    assert await db.stale_container_claim_candidates() == ["parent"]
+
+    # The child is archived as delivered work, which is the shape an operator
+    # is in when they sweep up a duplicate rather than deleting it outright.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(t.tasks).where(t.tasks.c.id == child).values(status="COMPLETED")
+        )
+    assert await db.archive_task(child) is True
+
+    parent = await db.get_task("parent")
+    assert (parent.status, parent.assigned_agent_id) == (TaskStatus.PAUSED, None)
+    assert (await db.get_session("parent-session")).task_id is None
+    assert await db.stale_container_claim_candidates() == []
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "running",
+        "restarting",
+        "unfenced_epoch",
+        "second_holder",
+        "agent_reused",
+        "workspace_locked",
+        "manual_hold",
+        "open_child",
+        "no_episode",
+        "not_a_container",
+    ],
+)
+async def test_the_stale_container_claim_release_refuses_everything_it_cannot_prove(
+    db, tmp_path, damage
+):
+    """The reconciler may only move a claim it can prove is already dead.
+
+    Every refusal here is one condition of
+    ``stale_container_claim_clauses`` plus the workspace and agent checks the
+    predicate cannot express.  A stopped session still mid-drain, a session a
+    restart is about to revive, a claim epoch the task has already moved past,
+    a second session on the same task, an agent and a workspace that have since
+    been reused, a human hold, a child still in flight, a checkpoint with no
+    collection episode, or a row that is not a container at all — each of those
+    keeps the claim, because the release moves a task's lifecycle and nothing
+    less than the exact-holder proof may do that.
+    """
+    _, _, children = await _parent_tree(db, children=2)
+    child = children[0]
+    await _stop_the_parent_worker(db, tmp_path)
+    async with db.immediate() as conn:
+        epoch = await conn.scalar(select(t.tasks.c.claim_epoch).where(t.tasks.c.id == "parent"))
+        if damage == "running":
+            await conn.execute(
+                update(t.sessions).where(t.sessions.c.id == "parent-session").values(
+                    state="running", desired_state="running"
+                )
+            )
+        elif damage == "restarting":
+            await conn.execute(
+                update(t.sessions).where(t.sessions.c.id == "parent-session").values(
+                    desired_state="running"
+                )
+            )
+        elif damage == "unfenced_epoch":
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == "parent").values(claim_epoch=epoch + 1)
+            )
+        elif damage == "second_holder":
+            await conn.execute(
+                insert(t.sessions).values(
+                    id="second-session",
+                    project_id="p",
+                    profile_id="worker",
+                    harness="claude",
+                    provider="fake",
+                    name="p-worker--p--second-session",
+                    lifecycle="pool",
+                    work_dir=str(tmp_path / "second-session"),
+                    epoch="e",
+                    instance_token="second-instance",
+                    started_at=1.0,
+                    task_id="parent",
+                    agent_id="parent-agent",
+                    claim_phase="active",
+                    claim_phase_at=1.0,
+                    last_claim_epoch=epoch + 1,
+                )
+            )
+        elif damage == "agent_reused":
+            await conn.execute(
+                update(t.agents)
+                .where(t.agents.c.id == "parent-agent")
+                .values(current_task_id=child)
+            )
+        elif damage == "workspace_locked":
+            await conn.execute(
+                insert(t.workspaces).values(
+                    id="parent-ws",
+                    project_id="p",
+                    workspace_path=str(tmp_path / "parent-session"),
+                    kind_id="project-repo",
+                    source_type="LINK",
+                    locked_by_task_id="parent",
+                    created_at=1.0,
+                )
+            )
+        elif damage == "manual_hold":
+            await conn.execute(
+                insert(t.task_metadata).values(
+                    task_id="parent",
+                    key="manual_pause",
+                    value=json.dumps({"reason": "operator is looking at it"}),
+                )
+            )
+        elif damage == "open_child":
+            await conn.execute(
+                update(t.tasks).where(t.tasks.c.id == child).values(status="READY")
+            )
+        elif damage == "no_episode":
+            await conn.execute(
+                update(t.task_integration_checkpoints)
+                .where(t.task_integration_checkpoints.c.task_id == "parent")
+                .values(episode_id=None)
+            )
+        else:
+            # Neither reason the frontier keeps a row off it: not the §7
+            # container flag, and no children either.
+            await conn.execute(
+                delete(t.task_metadata).where(
+                    t.task_metadata.c.task_id == "parent",
+                    t.task_metadata.c.key == "container",
+                )
+            )
+            await conn.execute(
+                update(t.tasks)
+                .where(t.tasks.c.id.in_([child, children[1]]))
+                .values(parent_task_id=None)
+            )
+    assert damage not in await db.stale_container_claim_candidates()
+    assert not (await db.release_stale_container_claim("parent")).released
+    parent = await db.get_task("parent")
+    assert parent.status is TaskStatus.IN_PROGRESS
+    assert (await db.get_session("parent-session")).task_id == "parent"
 
 
 async def test_subject_seed_uses_episode_pin_and_current_ownership(db):
@@ -1032,3 +1392,4 @@ def test_parent_policy_paths_are_typed_and_not_accepted_for_root():
     raw["tables"]["root_batch"] = raw["tables"].pop("parent_episode")
     with pytest.raises(ValueError, match="unknown policy path"):
         IntegrationPolicy.model_validate(raw)
+

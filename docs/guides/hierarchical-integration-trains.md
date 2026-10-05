@@ -159,6 +159,20 @@ principals are both refused, so a no-code child always needs a local operator
 (and a supervisor asked to record one reports the child id and its checkpoint
 head instead).
 
+### A parent whose last child was deleted
+
+Nothing to run: the delete and the parent runtime finish it. Deleting a
+container's last child takes back the parent's claim if a stopped worker still
+held one, and leaves the parent PAUSED with no agent and its collection episode
+intact. The parent runtime then projects readiness on the aggregate that is
+actually left — with no child receipt there is nothing collected on top of it,
+so the head to verify is the parent's own pre-collection commit, published on an
+`aq/parent` ref — files its writer, and completes the parent on trusted green CI
+([work-graph §13a](../specs/design/work-graph.md)). A parent already in that
+shape when the fix deploys is repaired by the container sweep on the next tick
+or on daemon start; `reopen-collection` and `recover-parent-head` are no longer
+needed and both refuse an IN_PROGRESS parent anyway.
+
 ### Stopped pool-writer handoff recovery
 
 Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing

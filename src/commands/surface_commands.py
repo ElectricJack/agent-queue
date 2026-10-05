@@ -376,7 +376,11 @@ class SurfaceCommandsMixin:
             return {"error": str(exc)}
 
         from src.commands.principal import current_principal
-        from src.knowledge.context import ACCESS_REFUSAL_CODES, context_enabled
+        from src.knowledge.context import (
+            ACCESS_REFUSAL_CODES,
+            context_bundle_commands,
+            context_enabled,
+        )
         from src.records.models import RecordError
 
         bundle = None
@@ -384,9 +388,10 @@ class SurfaceCommandsMixin:
         # Disabled context leaves prime's reads unchanged.
         task = await self.db.get_task(task_id) if context_enabled(self.config) else None
         if task is not None and task.project_id in self.config.knowledge.enabled_projects:
+            principal = current_principal()
             try:
                 bundle = await self._knowledge_context_service().prepare(
-                    principal=current_principal(), required=doc.to_markdown(),
+                    principal=principal, required=doc.to_markdown(),
                     query=task.title, project_ids=[task.project_id], claim_epoch=task.claim_epoch,
                     task_id=task.id,
                 )
@@ -402,6 +407,20 @@ class SurfaceCommandsMixin:
                 bundle = None
                 context_error = exc.code
                 doc = renderer.with_context_unavailable(doc, exc.code)
+                # A degraded prime is indistinguishable from a prime served
+                # with no corpus at all, so the daemon log is the only place
+                # the refusal is visible. It names the identity and the grant
+                # to add and nothing else: template drift between an installed
+                # worker profile and the shipped grants is the failure this
+                # exists to make findable, and no record content crosses here.
+                logger.warning(
+                    "prime: knowledge context unavailable (%s); serving the startup "
+                    "document without it. task=%s project=%s profile=%s needs the "
+                    "aq_commands %s granted to it",
+                    exc.code, task.id, task.project_id,
+                    getattr(principal, "profile_id", None),
+                    ", ".join(context_bundle_commands(self.config, task.title)),
+                )
         result = {
             "success": True,
             "body": doc.to_markdown(),

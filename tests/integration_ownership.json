@@ -3426,6 +3426,9 @@
         829
       ]
     },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.bump_claim_epoch": {
+      "reason": "Claim-epoch mutation referencing the explicitly owned row-local manual-pause fence."
+    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.get_settled_pool_claim": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3481,6 +3484,9 @@
         587
       ]
     },
+    "src/database/queries/claim_queries.py::_exact_stopped_pool_holder": {
+      "reason": "Exact stopped pool-holder and claim-epoch proof for hierarchical container recovery."
+    },
     "src/database/queries/claim_queries.py::_frontier_predicates": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3514,6 +3520,9 @@
         32
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports hierarchical container eligibility and delivery predicates for claim admission and recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3525,6 +3534,12 @@
         38
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.queries.task_queries import ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning": {
+      "reason": "Imports the row-local manual-pause fence shared by hierarchical claim recovery and ordinary claim mutation."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Imports integration owner, repair-stage and collection-checkpoint storage for claim fencing and recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, sessions, task_completion_records, task_delivery_receipts, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3535,6 +3550,12 @@
         46,
         58
       ]
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_clauses": {
+      "reason": "Eligibility for releasing a stale container claim under its hierarchical collection checkpoint."
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_statement": {
+      "reason": "Hierarchical-project candidate read for exact stopped-container-claim recovery."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.guard_hierarchy_bulk_write": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -3728,6 +3749,9 @@
         333,
         388
       ]
+    },
+    "src/database/queries/hierarchy_queries.py::never_leaseable_container": {
+      "reason": "Shared container frontier predicate used by hierarchical claim recovery."
     },
     "src/database/queries/hierarchy_queries.py::stale_container_clauses": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -4127,6 +4151,9 @@
         83,
         83
       ]
+    },
+    "src/database/queries/task_queries.py::_not_manually_paused": {
+      "reason": "Row-local operator-pause fence imported by hierarchical settlement and stale-claim recovery."
     },
     "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -8493,6 +8520,7 @@
     "19c12a2bae981ccf2a30c9b18cdea5da4a9350b66a2621f5ebfb978ef1876078",
     "19c83d72c69ae76306f05a6429a32db5ab7def6e43d6394a941ec72628dadee0",
     "19d46d98b48f97a4e59dc605db389be2de88e08f539b430c4bd706f2f7ff3bc7",
+    "19d4d473518c059c1375ba839382b61dbd826647c08c83810a5e1a7c358faa58",
     "1a21bc880f8c6407d6d3c5b447489208fcc9cc9dedb2bfc28ec8710791b8d3fc",
     "1a3952f2193b2d6c18a873b5dc051bf9536c3090fa8cec3fb0d705b4a145e858",
     "1a42e5b0639e1e56cf645009a7871305931698856b9270b33f36769fee8e1181",
@@ -8969,6 +8997,7 @@
     "3800e7cf69bda597d5687e446ac6d259ba34473ff330a0ac06cbdfec1409bd75",
     "3820b3a9adb364ae93ac952f7759c31854c7bf83fe574773de7a850d444f1b5e",
     "3827733ff14fd46cc525584d6fb7173d78bd78ffcae00e0d3fe1909bacc8a3ed",
+    "382f5b8b102eb8d46fe26ae669af6805def8e574faf8252de0107e40400738ae",
     "383fcb3a23c1dfd93ca1dcdc3ec7530c4a9c3e5da13632f39a1b9b031ebafa85",
     "3848f1f5cde968438b69c16e6f05a4e7d2a2b0e1b7d1018d0c8655efff70e423",
     "384bd357b97cdc60aefe54fc346bd4989455f6c429cc292b321d8c35ff941e72",
@@ -9015,6 +9044,7 @@
     "3b642a602e72807e8e0d59579aef438b629cad3bde20ff5c593757f722a3d61f",
     "3b6b266910f88bfac6436f29419de9dfaa0fb4d7e59c5af432be3ef6666f5f52",
     "3b6cdd25e4be03a4d900e06386e5df4ee0e805c4ba8072004e7cd1c6ec7a9992",
+    "3b80fe9b5910eb644130e6bab32d7208aa8e49865dd41c9f6d78a7e86d5291c5",
     "3b8f4657aa77f0895be3f3452cebd2d0e04aa71181eb0c238866e6b3d8be522f",
     "3ba8e71a5e8a694fac76224289703311272672203e1aa2883ea9ebe84ebc752c",
     "3baa91a944775922c03532b52552390117eddf3a72115dbeaaafac5a27d37c90",
@@ -9477,6 +9507,7 @@
     "5b55d5b839a5f8011ed2a3d3b21d9c076368e4b80b9fba2c759366cb037b8f47",
     "5b872da87ade7a7d267ddaf80286cd9110a3fb1f99cc2b83fbbb38f6ca131575",
     "5b90cc9d48011784f04fac8e29549c59850adeea1bf83aa1a60731e4e15d74fc",
+    "5ba4bd156d4185701691fb40e6a3611970aaee6b40a378d89d26d21561ec979d",
     "5bb3fb5bc92b082489d7f59d135db468f6489101ab79854f6545589ba682740c",
     "5bbf2d316ee6cffe8f02894b276eb3931c99a6ca3c60104fef63524d050cab15",
     "5bbf6845c13243f142ed905c7b27e913e23ec595dbfef5d3ddb18c7e3978c838",
@@ -9923,6 +9954,7 @@
     "777cbc067aeba3f9f4d89f2bf93744f1f61cc963a7391bf853d6714ffab36d42",
     "779e328472a5d1bd9000a7afb96453251192e694aabb565028a8844358beb52c",
     "77a5b2a37eb37c10f6e3b1a20700321702950c52c4c768898418fdaef80901fc",
+    "77aadf665444c4e3770f3192787c3f033408264f4c38489b39c187c7f9e4b993",
     "77b53e535b6ac91c514379e10b72fbe25a5619409e57cc81d73b2a52c52cf5e5",
     "77cd3193a2ef1da7f7ab5713ed365fe367a063588b278f734bc3a68d5f98b894",
     "77d66b6e72d311508da8752f10df5af3eb6136b8235e85354f61a8c319da1222",
@@ -10089,6 +10121,7 @@
     "82819d4ffac9484d035851ce280fc6f98ef5c455d261de655ef0d85472055dce",
     "82847c2884be0af1db8fa8de2ae44aaea4a733affce0510a300c273492be5fe3",
     "82874bd7b5f00b469d1ca5597720344815e8490f3c16b9461231d4d256c2eae3",
+    "82876c2d93aedadfd457466c16636b9f6dcf8cf9146e6a4d1fa0937504944ded",
     "82928cedaf07988930d90ea2913d3a3ff887c1ae987f4debe750fc8403cb2570",
     "82a7a98a7d0c68ca7f21d6c69858c9529bd88ae13b656da04451b9385acbc643",
     "82ac7d7c42ef14ead8a7e9f910527ca7edd1ceae949d51024c8f95ff7150e676",
@@ -10899,6 +10932,7 @@
     "b8288326d0dafe7841000926b22a12f110d60b16d2f2c402c0618ad3183d31e0",
     "b839a7265d023b8ce5edf61c2891a5d622c794e917a1d7d47a77ffa948821953",
     "b846748227d5ff85eefa0ec5f36e4dbfa2a30fdce49237f859ae24a6e7747088",
+    "b84fe8c329bb7f226fbb343497f62950a405570817671d8d977ff0649fd8793e",
     "b882c9aba66f15d7d7c379487a75794c67c28c002a02326f580a9670595e682f",
     "b88cc73a26cb732a673d2a3c1194db7a434a37739281ab0e1fb7ecd6231d06a2",
     "b890509f903572c19a3b6e743bde6dcabf4c5f28203cb2067a676b7ad4ee61f4",
@@ -11014,6 +11048,7 @@
     "bf1a0d4b99c978d83597f2379dba657b13c3bf1435ae1c43df71539527406632",
     "bf3ec419a0e0e06c6743bafa5ebf67d763aaba86f58f03ff25f794e3a0578e5b",
     "bf45940b69e08fc43368c8eb8f4b4be4063fb7bd72d702ba96dec52c211a65b6",
+    "bf5b9b1f3969ead7f9f94fd8ac72b3c3b94cfa7713874026c56a685209433ae6",
     "bf5bcd3dadb62aaa0b09fc30f8a4ec6a1156d0d30177643e28c94edca09d28a8",
     "bf5ff28cffc0d85c133fc1462dfa81ca3229a03fb2ba873e5b15b86d0d71f397",
     "bf637ea84822394c56337b302d5537e128c5a5d242e4f67a4d9a1b3cd4ff4802",
@@ -11827,6 +11862,7 @@
     "f76b8c43a91797e8b57ea376484a079769c81f5b715699a01264ea395d62470a",
     "f783cc7ec2c33bbd20eb5ce2434a747356ed6c225ecccba2d71adb0db3e8cc8d",
     "f7859cbcf17a91e98c1e346fd7fa3478c4a8519ff0afcc4a52a1cb40362eb04e",
+    "f793c62e0dcfea08ee16319292dd07d807ce2141610785bbd6ee487ee93d8981",
     "f7a794b5456d721cb57599908f37d22f4116ccf702371d65f14131560f68ed62",
     "f7c9f7555842b50333d00dc3f7e25b297e9d6f6aa1f0acb9277d9b57a4006de6",
     "f7ca0c96a44ac9e2d6b69650a65b5e6cd318b6a0bce38dbc024f67493c46d299",
@@ -12606,6 +12642,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
+      "line": 1524,
+      "owner": "ClaimQueryMixin._release_stale_container_claim_on",
+      "call": "log_event",
+      "owner_fingerprint": "cd3633b55a9afb93efcbfcfa9abe0662c01681f906e88d6e23e2be889bf610bc",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Audit of an exact stopped container-claim release: session id, claim epoch and prior status; no ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 806,

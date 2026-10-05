@@ -133,6 +133,32 @@ def container_flag_exists():
     )
 
 
+def never_leaseable_container():
+    """``WHERE`` clause: the claim frontier will never offer this row to a worker.
+
+    The conjunction of the two reasons ``_frontier_predicates``
+    (``src/database/queries/claim_queries.py``) keeps off the frontier:
+    ``container_settles_without_worker`` — the §7 container flag, because a
+    container settles when its children finish and a worker holding one could
+    never close it — and ``has_children``, which covers the parent row the flag
+    never reached (the flag lands with a task's first child, so for any parent
+    the two are the same rule).
+
+    They stay two named frontier predicates because ``aq task explain`` and the
+    doctor report each under its own code.  This is the composed question a
+    writer *outside* the frontier needs to ask: is this row settle-only work no
+    pool worker can ever be given?  A writer that has to give a task's
+    lifecycle back must not draw the line narrower than the one that took it
+    away, or a parent whose flag never landed is stranded by the difference
+    between the two spellings.
+    """
+    child = tasks.alias("never_leaseable_child")
+    return or_(
+        container_flag_exists(),
+        exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+    )
+
+
 def childless_held_open_container():
     """``WHERE`` clause: the row is a held-open container with no children.
 

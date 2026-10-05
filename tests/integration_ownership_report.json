@@ -4497,6 +4497,9 @@
         829
       ]
     },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.bump_claim_epoch": {
+      "reason": "Claim-epoch mutation referencing the explicitly owned row-local manual-pause fence."
+    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.get_settled_pool_claim": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -4552,6 +4555,9 @@
         587
       ]
     },
+    "src/database/queries/claim_queries.py::_exact_stopped_pool_holder": {
+      "reason": "Exact stopped pool-holder and claim-epoch proof for hierarchical container recovery."
+    },
     "src/database/queries/claim_queries.py::_frontier_predicates": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -4585,6 +4591,9 @@
         32
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports hierarchical container eligibility and delivery predicates for claim admission and recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -4596,6 +4605,12 @@
         38
       ]
     },
+    "src/database/queries/claim_queries.py::import from src.database.queries.task_queries import ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning": {
+      "reason": "Imports the row-local manual-pause fence shared by hierarchical claim recovery and ordinary claim mutation."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Imports integration owner, repair-stage and collection-checkpoint storage for claim fencing and recovery."
+    },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, sessions, task_completion_records, task_delivery_receipts, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -4606,6 +4621,12 @@
         46,
         58
       ]
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_clauses": {
+      "reason": "Eligibility for releasing a stale container claim under its hierarchical collection checkpoint."
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_statement": {
+      "reason": "Hierarchical-project candidate read for exact stopped-container-claim recovery."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.guard_hierarchy_bulk_write": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -4799,6 +4820,9 @@
         333,
         388
       ]
+    },
+    "src/database/queries/hierarchy_queries.py::never_leaseable_container": {
+      "reason": "Shared container frontier predicate used by hierarchical claim recovery."
     },
     "src/database/queries/hierarchy_queries.py::stale_container_clauses": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -5198,6 +5222,9 @@
         83,
         83
       ]
+    },
+    "src/database/queries/task_queries.py::_not_manually_paused": {
+      "reason": "Row-local operator-pause fence imported by hierarchical settlement and stale-claim recovery."
     },
     "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
