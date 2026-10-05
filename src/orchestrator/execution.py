@@ -1482,6 +1482,7 @@ class ExecutionMixin:
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
+        verifier_operation = None
         if outcome == "pass":
             try:
                 children = await self.db.get_children(task.id, limit=1)
@@ -1732,19 +1733,23 @@ class ExecutionMixin:
         # branches are terminal and must not bump the counter.
         new_retry: int | None = None
         verification_reopened = outcome == "pass" and ctx.verification_reopened
-        development_completion = bool(
+        from src.integration.train_sources import TRAIN_MODES
+
+        git_completion = bool(
             outcome == "pass" and completed_ok
-            and (getattr(project, "hierarchical_integration_mode", None) == "development"
+            and not (managed_parent_suspended or managed_parent_completed or repair_writer_closed)
+            and verifier_operation is None
+            and (getattr(project, "hierarchical_integration_mode", None) in TRAIN_MODES
                  or ordinary_repair is not None)
         )
         completion_source = None
-        if development_completion and commit and (not workspace_path or not task.branch_name):
+        if git_completion and commit and (not workspace_path or not task.branch_name):
             feedback = "A completion with a recorded code artifact requires its exact published task branch."
             return {
                 "status": task.status.value, "pr_url": None, "pipeline_ok": False,
                 "verification_retry": True, "issues": [feedback], "feedback": feedback,
             }
-        if development_completion and workspace_path and task.branch_name:
+        if git_completion and workspace_path and task.branch_name:
             try:
                 if (ordinary_repair is not None
                     or not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx)):
@@ -2272,7 +2277,7 @@ class ExecutionMixin:
             # task close. Preserve the head proved under the repair writer's
             # fence rather than making the completion infer it there.
             response["completion_source"] = repair_writer_head
-        elif development_completion:
+        elif git_completion:
             response["completion_source"] = completion_source
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown

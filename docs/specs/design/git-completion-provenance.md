@@ -74,6 +74,14 @@ history is never amended. Code-free outcomes retain existing validation: a
 proven empty, explicitly code-free Git source has `artifact:false`; branchless,
 non-Git and vault-only outcomes keep their existing completion behavior.
 
+This close contract applies to Git-using passing completions in every train mode:
+`train`, `hierarchy` and `development`. Under `integration.git_first: active`, an
+unretained completion cannot form a batch. A visit with only unknown completions
+reports `blocked` and projects the delivery reason, including
+`missing_git_provenance`, with its task and target in integration status. Legacy
+generations still require explicit provenance migration; branch observation is
+never substituted for immutable completion evidence.
+
 ## Complete replacements
 
 Delivery proof is ancestry of the exact final source in the inspected target,

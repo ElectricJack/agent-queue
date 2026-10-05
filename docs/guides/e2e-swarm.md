@@ -64,7 +64,7 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 18 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 20 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
@@ -80,9 +80,9 @@ deadline: PostgreSQL `SKIP LOCKED` can skip a READY fixture while another
 transaction holds its row. Other claim outcomes and claims of an unexpected
 task fail immediately. A timeout reports the last claim and the fixture state.
 
-CI covers all 18 scenarios as **19 individually reported pytest items** in four
+CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
-S17), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
+S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
 S16a covers outage detection/rerouting; S16b prepares a separate outage through
 public commands and covers recovery/undo/all-down. Select `S16` in the shell
 runner to run the original full serial transcript.
@@ -771,6 +771,15 @@ This run is a prerequisite of the operator canary in
 before `active` is selected on a real install. A development-mode delivery here
 does not prove hosted-train operation, and vice versa: the project's actual
 configured mode is proven only by the live canary.
+
+`S20` closes an ordinary root task in `train` mode against a disposable bare
+repository, verifies its immutable completion provenance, and under `active`
+waits for the train to publish the exact source and file onto `main`. It pins
+local validation before selecting train mode, so it needs neither hosted CI nor
+an LLM. The fake daemon substitutes GitHub credentials for remotes inside its
+marked disposable home; candidate construction, fenced pushes and Git delivery
+remain real. With `shadow`, it checks completion provenance and explicitly reports
+delivery as untested. The CI `cli` shard selects `active` to run the full proof.
 
 ## The App-mode train proof
 
