@@ -211,17 +211,20 @@ def _route_fields(task: Any) -> list[tuple[str, str]]:
     """Who routed the task and why (mandatory routing §10).
 
     ``Route`` is the source and the target; the router's lane, rule and
-    reason, or an override's author and reason, follow when recorded.
+    reason, or an override's author and reason, follow when recorded.  The
+    filer's preference is shown even before a route exists, because until the
+    router runs it is the only statement of what was asked for.
     """
     source = getattr(task, "route_source", None)
+    prefer = _preference_fields(task)
     if not isinstance(source, str) or not source:
-        return []
+        return prefer
     profile = getattr(task, "profile_id", None)
     klass = getattr(task, "intelligence_class", None)
     target = ""
     if isinstance(profile, str) and profile:
         target = f" -> {profile}" + (f" ({klass})" if isinstance(klass, str) and klass else "")
-    fields = [("Route", f"{source}{target}")]
+    fields = prefer + [("Route", f"{source}{target}")]
     route = _as_mapping(getattr(task, "route", None))
     override = _as_mapping(route.get("override"))
     if source == "override" and override:
@@ -235,6 +238,26 @@ def _route_fields(task: Any) -> list[tuple[str, str]]:
     if route.get("reason"):
         fields.append(("Route reason", str(route["reason"])))
     return fields
+
+
+def _preference_fields(task: Any) -> list[tuple[str, str]]:
+    """The preference the router weighs, and how it turned out (§4).
+
+    The stored pair is what was asked for; ``route.preference`` is the router's
+    verdict -- whether it decided the route, and why not when it did not.
+    """
+    target = getattr(task, "prefer_target", None)
+    route = _as_mapping(getattr(task, "route", None))
+    decided = _as_mapping(route.get("preference"))
+    if not isinstance(target, str) or not target:
+        return []
+    mode = getattr(task, "prefer_mode", None) or decided.get("mode") or "soft"
+    row = f"{target} ({mode})"
+    if decided and not decided.get("honoured", True):
+        row += f" not honoured: {decided.get('fallback_reason') or 'unknown'}"
+    elif decided:
+        row += " honoured"
+    return [("Routing preference", row)]
 
 
 def format_task_detail(

@@ -219,6 +219,12 @@ class TaskDetail(BaseModel):
     # ``get_task``; list rows omit them.
     route_source: str | None = None
     class_hint: str | None = None
+    # The filer's routing preference (mandatory routing §4): the harness or
+    # profile the router weighs before scoring, and in which mode.  Both
+    # ``None`` for a task filed without ``--prefer``, which routes exactly as
+    # it did before a preference existed.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     route: dict[str, Any] | None = None
     # Implementation vs delivery for a task with children; set by
     # ``get_task``, ``None`` for a leaf and omitted by list rows.
@@ -265,6 +271,10 @@ class CreateTaskResponse(BaseModel):
     # filer's intelligence-class hint (mandatory-routing spec §3-§4).
     route_source: str | None = None
     class_hint: str | None = None
+    # The stored routing preference (``aq task create --prefer``), echoed so a
+    # caller sees what the router will weigh without re-reading the task.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     # pinned | preferred | class_only (provider-failover D9).
     provider_intent: str | None = None
     preferred_workspace_id: str | None = None
@@ -855,6 +865,10 @@ class TaskRouteResponse(BaseModel):
     route_source: str = "unrouted"
     class_hint: str | None = None
     task_type: str | None = None
+    #: The stored preference after the call: ``None`` names none, an empty
+    #: ``--prefer`` cleared whatever was there.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     cleared: TaskRouteClearedRoute | None = None
 
 

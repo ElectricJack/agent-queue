@@ -534,6 +534,12 @@ class Task:
     # layer stores a profile written as ``unrouted`` as ``role`` or ``legacy``.
     route_source: str = UNROUTED
     class_hint: str | None = None
+    # The filer's routing preference (spec §4): a harness id or profile id the
+    # router weighs before scoring, in ``soft`` (take it when it has headroom)
+    # or ``strict`` (only it; wait rather than fall back) mode.  ``None`` names
+    # no preference and routes exactly as it did before either existed.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     route: dict[str, Any] | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached

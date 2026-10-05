@@ -12560,22 +12560,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
-      "line": 2975,
+      "line": 2994,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "8c2a8d4d4992a4a0af0463f1ffa0106682452b1ec6ebc9733b5f22cae96e4bb2",
+      "owner_fingerprint": "bddec20c8c487b777c48765040df5e2a277783c8205eaf0f99276fe3b961e367",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Task label.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
-      "line": 2966,
+      "line": 2985,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "8c2a8d4d4992a4a0af0463f1ffa0106682452b1ec6ebc9733b5f22cae96e4bb2",
+      "owner_fingerprint": "bddec20c8c487b777c48765040df5e2a277783c8205eaf0f99276fe3b961e367",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Task dependency.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::49364bafd150cdc68036fcf280efa5d6ef80b0f72ce84d78634c8766f6431278": {
       "line": 1012,
@@ -14261,6 +14261,7 @@
     "src/commands/report_commands.py::ReportCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/review_commands.py::ReviewCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/routing_commands.py::RoutingCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/routing_commands.py::validate_route_preference": "Ordinary task routing input validation against installed harnesses and enabled worker profiles; no integration subject, delivery state, ref mutation or storage writes. Integration-specific routing definitions remain charged independently.",
     "src/commands/session_commands.py::SessionCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/spec_commands.py::SpecCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/supervisor_authority.py::operator_or_supervisor": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -14801,7 +14802,10 @@
     "src/routing/filing.py::choice_forbidden": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/routing/filing.py::graph_route_refusal": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/routing/filing.py::refused_spec_keys": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/planner.py::PREFER_MODES": "Allowed ordinary task routing preference modes; no integration policy or delivery lifecycle.",
+    "src/routing/planner.py::PREFER_SOFT": "Default ordinary task routing preference mode; no integration policy or delivery lifecycle.",
     "src/routing/planner.py::TaskFacts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/planner.py::prefer_target": "Read and normalize an ordinary task's requested routing target; no integration subject, ref mutation or storage writes.",
     "src/routing/readiness.py::RouterReadiness": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/routing/readiness.py::orchestrator_ready_projects": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/routing/readiness.py::orchestrator_router_ready": "Generic dependency; integration-specific definitions in this file are charged independently.",

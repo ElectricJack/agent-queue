@@ -34,6 +34,14 @@ class CreateTaskRequest:
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.
+        prefer (None | str | Unset): Routing preference for the router to weigh before scoring: a harness id (e.g.
+            'codex') or a worker profile id. Unlike a profile pin this does NOT choose the route — the project's routing
+            playbook still does, and the preference decides only whether it may route elsewhere. Naming a target keeps the
+            task's stored mode; an empty value clears both. An unknown name, a disabled profile and a non-worker profile are
+            refused.
+        prefer_mode (str | Unset): How the router may refuse 'prefer': 'soft' (default) routes to it when it has
+            headroom and routes normally when it does not; 'strict' admits only that harness or profile and holds the task
+            rather than falling back to another one. Default: 'soft'.
         attachments (list[Any] | None | Unset): List of absolute file paths to images or files that the agent should
             have access to when working on this task. These are typically paths to Discord attachment images that were
             downloaded locally. The agent will be told to read these files using the Read tool.
@@ -90,6 +98,8 @@ class CreateTaskRequest:
     task_type: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
+    prefer: None | str | Unset = UNSET
+    prefer_mode: str | Unset = "soft"
     attachments: list[Any] | None | Unset = UNSET
     deliverables: list[Any] | None | Unset = UNSET
     skip_verification: bool | Unset = False
@@ -149,6 +159,14 @@ class CreateTaskRequest:
             preferred_workspace_id = UNSET
         else:
             preferred_workspace_id = self.preferred_workspace_id
+
+        prefer: None | str | Unset
+        if isinstance(self.prefer, Unset):
+            prefer = UNSET
+        else:
+            prefer = self.prefer
+
+        prefer_mode = self.prefer_mode
 
         attachments: list[Any] | None | Unset
         if isinstance(self.attachments, Unset):
@@ -273,6 +291,10 @@ class CreateTaskRequest:
             field_dict["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not UNSET:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
+        if prefer is not UNSET:
+            field_dict["prefer"] = prefer
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
         if deliverables is not UNSET:
@@ -370,6 +392,17 @@ class CreateTaskRequest:
             return cast(None | str | Unset, data)
 
         preferred_workspace_id = _parse_preferred_workspace_id(d.pop("preferred_workspace_id", UNSET))
+
+        def _parse_prefer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer = _parse_prefer(d.pop("prefer", UNSET))
+
+        prefer_mode = d.pop("prefer_mode", UNSET)
 
         def _parse_attachments(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -544,6 +577,8 @@ class CreateTaskRequest:
             task_type=task_type,
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
+            prefer=prefer,
+            prefer_mode=prefer_mode,
             attachments=attachments,
             deliverables=deliverables,
             skip_verification=skip_verification,

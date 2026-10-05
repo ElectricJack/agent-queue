@@ -260,6 +260,16 @@ tasks = Table(
     Column("route_source", Text, nullable=False, server_default="unrouted"),
     Column("class_hint", Text, nullable=True),
     Column("route", JSONB(none_as_null=True), nullable=True),
+    # The filer's routing preference (mandatory routing §4, "Preference"): a
+    # harness id or a profile id the router weighs before scoring, never a
+    # route.  ``prefer_mode='soft'`` (the default) takes it when it has
+    # headroom and routes normally when it does not; ``strict`` allows only
+    # that target and waits rather than falling back.  NULL means no
+    # preference and is exactly the pre-revision state of every row, so the
+    # router's behaviour is unchanged for a task that names nothing
+    # (revision a00000000076).
+    Column("prefer_target", Text, nullable=True),
+    Column("prefer_mode", Text, nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",
@@ -267,6 +277,10 @@ tasks = Table(
     CheckConstraint(
         "route_source IN ('unrouted','router','override','role','legacy')",
         name="ck_tasks_route_source",
+    ),
+    CheckConstraint(
+        "prefer_mode IS NULL OR prefer_mode IN ('soft','strict')",
+        name="ck_tasks_prefer_mode",
     ),
     # Mandatory routing I1: a profile always names who wrote it, and a row
     # without one is ``unrouted`` (revision a00000000042).

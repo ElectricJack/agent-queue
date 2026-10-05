@@ -15624,6 +15624,8 @@
           "--type",
           "--integration-mode",
           "--intelligence-class",
+          "--prefer",
+          "--prefer-mode",
           "--graph",
           "--from-spec",
           "--dry-run",
@@ -17037,6 +17039,8 @@
         "optional": [
           "--intelligence-class",
           "--task-type",
+          "--prefer",
+          "--prefer-mode",
           "--reason",
           "--json",
           "--brief",
