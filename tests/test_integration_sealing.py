@@ -1645,6 +1645,61 @@ async def test_live_batch_is_busy_without_frontier_read_and_expired_batch_resume
         ]
 
 
+async def test_rollback_with_a_sealed_git_first_batch_still_forms_a_batch(db):
+    """A rolled-back train's own batch is inert, so it cannot read as busy.
+
+    A non-null ``target_ref`` marks the Git-first train's input/intent shape;
+    only the train advances those rows, so after a rollback to
+    ``integration.git_first: shadow`` nothing visits them again.  Counting one
+    left the old engine refusing every sweep request until an operator
+    aborted the row by hand (stark-stone-83).
+    """
+    from src.integration.batches import Batch, BatchMember, BatchStore
+    from src.integration.scheduler import IntegrationScheduler, TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    await BatchStore(db, clock=lambda: 5.0).freeze(
+        Batch(
+            id="train-41dc47ad",
+            project_id="p",
+            repository_id="repo",
+            target_ref="refs/heads/main",
+            created_at=5.0,
+        ),
+        [BatchMember("root", "b" * 40, BASE_SHA)],
+        trees={"root": "c" * 40},
+    )
+
+    request = await _request(db, now=10.0)
+    sealed = await TrainService(db).seal("p", request["request_id"], 20.0)
+
+    assert sealed["outcome"] == "sealed"
+    assert sealed["batch_id"] != "train-41dc47ad"
+    async with db._engine.connect() as conn:
+        # The train's frozen member is back on the frontier, and the row that
+        # froze it is untouched: a rollback hides nothing and destroys nothing.
+        assert (
+            await conn.execute(
+                select(integration_batch_members.c.batch_id, integration_batch_members.c.task_id)
+            )
+        ).all() == [
+            ("train-41dc47ad", "root"),
+            (sealed["batch_id"], "root"),
+        ]
+        assert (
+            await conn.execute(
+                select(integration_batches.c.lifecycle, integration_batches.c.intent).where(
+                    integration_batches.c.id == "train-41dc47ad"
+                )
+            )
+        ).all() == [("sealed", "open")]
+    # The new legacy batch still fences the project: busy is not disabled.
+    coalesced = await IntegrationScheduler(db).mark_due("p", 30.0, "manual")
+    assert coalesced["outcome"] == "coalesced"
+    assert coalesced["request_id"] == request["request_id"]
+
+
 async def test_seal_exhausts_small_pages_past_200_and_advances_over_rejections(db):
     from src.integration.scheduler import TrainService
 

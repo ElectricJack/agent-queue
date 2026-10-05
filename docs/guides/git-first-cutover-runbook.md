@@ -166,6 +166,16 @@ of the rollback, and it is why the step-3 transfer is safe to keep. Rolling back
 does not un-transfer ownership — `engine-transfer` has no reverse direction, by
 design.
 
+A batch the train froze before the rollback (`target_ref` set on its
+`integration_batches` row) stays where it is and is **inert**: nothing visits it
+again, so the old engine neither reads it as busy nor holds its members out of
+the frontier — those members are re-sealed and delivered by the old protocol as
+usual. Leave the row in place rather than aborting it: `intent = 'aborted'` is
+irreversible, so a hand edit would throw away the frozen inputs a later
+roll-forward could still settle from (a visit treats an already-contained
+candidate as delivered). Its `refs/heads/aq/batches/<digest>` candidate ref is
+left on the remote too; after a rollback nothing publishes or deletes it.
+
 If a cutover produced a wrong publication, do not revert the branch from the
 daemon. Delivery means historical inclusion, so a revert is new work: file a
 task, let the train publish it through the normal path.
