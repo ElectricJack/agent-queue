@@ -1,8 +1,8 @@
 """The flock registration invariant, including failure and concurrent observation."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import importlib
 import time
 from collections import Counter
@@ -356,6 +356,8 @@ _PROCESS_SITES = {
     ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_unlocked", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._run_isolated_import_git", "create_subprocess_exec"): 1,
+    # Fixed git diff -> git patch-id pipeline; no agent or harness launch.
+    ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "native_status", "create_subprocess_exec"): 1,

@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:74f79f11f217288756c7b750a085dee7b1a64b019198c33f58ca375996270fb9",
+  "digest": "sha256:2c61547edb670d21d0d1e0eb9363616e28eb3247f864335d289a48c0dcd5c84e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7577,6 +7577,7 @@
       "default_arm": true,
       "imports": [
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.provenance"
@@ -8564,6 +8565,7 @@
         "src.git.manager",
         "src.integration.batches",
         "src.integration.ci",
+        "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
         "src.integration.lock",
