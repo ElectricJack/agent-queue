@@ -5620,6 +5620,62 @@ class GitManager:
             return False
         return None if strict else False
 
+    async def alog_grep_trailer(
+        self, checkout_path: str, target: str, key: str, value: str
+    ) -> list[str]:
+        """Reachable commits with an exact parsed trailer, never a message substring."""
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", key) or any(
+            ord(char) < 32 for char in value
+        ):
+            raise ValueError("invalid Git trailer")
+        result = await self.arun_git_result(
+            ["--no-replace-objects", "log", "-z",
+             f"--format=%H%x00%(trailers:key={key},valueonly,separator=%x1f)",
+             _validate_rev(target), "--"], cwd=checkout_path,
+        )
+        if result.returncode:
+            raise GitError(result.stderr or "cannot inspect reachable trailers")
+        fields = result.stdout.split("\0")
+        return [
+            fields[index].strip() for index in range(0, len(fields) - 1, 2)
+            if value in [item.strip() for item in fields[index + 1].split("\x1f")]
+        ]
+
+    async def apatch_id(self, checkout_path: str, base: str, head: str) -> str | None:
+        """Stable id of the entire base-to-head change; an empty diff has no id."""
+        diff = await self.arun_git_result(
+            ["--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
+             "--no-renames", "--binary", _validate_rev(base), _validate_rev(head), "--"],
+            cwd=checkout_path,
+        )
+        if diff.returncode:
+            raise GitError(diff.stderr or "cannot read whole-source diff")
+        if not diff.stdout:
+            return None
+        patch = await self.arun_git_result(
+            ["patch-id", "--stable"], cwd=checkout_path, stdin=diff.stdout,
+        )
+        if patch.returncode:
+            raise GitError(patch.stderr or "cannot compute patch id")
+        if not patch.stdout.strip():
+            return None
+        rows = patch.stdout.splitlines()
+        fields = rows[0].split() if len(rows) == 1 else []
+        if not fields or not is_valid_git_oid(fields[0]):
+            raise GitError("invalid whole-source patch id")
+        return fields[0]
+
+    async def atree_sha(self, checkout_path: str, rev: str) -> str:
+        """Exact full-tree OID, raising when the source is missing."""
+        result = await self.arun_git_result(
+            ["--no-replace-objects", "rev-parse", "--verify", "--end-of-options",
+             _validate_rev(rev) + "^{tree}"], cwd=checkout_path,
+        )
+        oid = result.stdout.strip()
+        if result.returncode or not is_valid_git_oid(oid):
+            raise GitError(result.stderr or "cannot resolve full tree")
+        return oid
+
     async def acount_commits_ahead(
         self,
         checkout_path: str,

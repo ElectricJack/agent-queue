@@ -1,0 +1,448 @@
+"""Remote Git delivery proofs with real histories and retained completion identities."""
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+
+from src.git.manager import GitError, GitManager
+from src.integration.delivery_truth import DeliveryRequest, DeliveryState
+from src.integration.git_truth import GitTruth, commits_added, epic_complete, repair_progress
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+
+@dataclass
+class Repository:
+    git: GitManager
+    path: Path
+    remote: Path
+    base: str
+    truth: GitTruth
+
+    async def run(self, *args):
+        return await self.git._arun(list(args), cwd=str(self.path))
+
+    async def commit(self, filename, content="work\n", *, message="work"):
+        (self.path / filename).write_text(content)
+        await self.run("add", "--", filename)
+        await self.run("commit", "-m", message)
+        return await self.run("rev-parse", "HEAD")
+
+    async def retain(self, source, *, task="task", completion="close-1", artifact=True):
+        identity = CompletionIdentity("p", "r", task, completion)
+        await GitProvenance(self.git, str(self.path), repository_url=str(self.remote)).write_completion(
+            CompletedSource(identity, source), artifact=artifact,
+        )
+        return DeliveryRequest(
+            "p", "r", "refs/heads/main", task, 1.0, "legacy-1",
+            branch_name="source", completion_id=completion, claim_epoch=1,
+            has_recorded_source=True,
+        )
+
+    async def publish(self):
+        await self.run("push", "origin", "HEAD:refs/heads/main")
+
+    async def snapshot(self, *, target="refs/heads/main", truth=None):
+        return await (truth or self.truth).snapshot(
+            str(self.path), project_id="p", repository_id="r",
+            repository_url=str(self.remote), target_ref=target,
+        )
+
+
+@pytest.fixture
+async def repository(tmp_path):
+    git = GitManager()
+    remote, path = tmp_path / "remote.git", tmp_path / "checkout"
+    await git._arun(["init", "--bare", str(remote)], cwd=str(tmp_path))
+    await git._arun(["init", "-b", "main", str(path)], cwd=str(tmp_path))
+    for key, value in (("user.name", "Tester"), ("user.email", "test@example.com"),
+                       ("commit.gpgsign", "false")):
+        await git._arun(["config", key, value], cwd=str(path))
+    repo = Repository(git, path, remote, "", GitTruth(git))
+    await repo.run("remote", "add", "origin", str(remote))
+    repo.base = await repo.commit("seed", "seed\n", message="initial")
+    await repo.publish()
+    await repo.run("checkout", "-b", "source")
+    return repo
+
+
+async def source_work(repo):
+    first = await repo.commit("one")
+    final = await repo.commit("two")
+    request = await repo.retain(final)
+    return first, final, request
+
+
+async def test_exact_ancestor_and_revert_remain_delivered(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.CONTAINED and proof.reason == "ancestor"
+    await repo.run("revert", "--no-edit", head)
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(request)).reason == "ancestor"
+
+
+async def test_whole_multi_commit_squash_and_its_revert(repository):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    await repo.run("merge", "--squash", "source")
+    await repo.run("commit", "-m", "squash without a source trailer")
+    squashed = await repo.run("rev-parse", "HEAD")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert not await repo.git.ais_ancestor(str(repo.path), head, snapshot.target_oid)
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.CONTAINED and proof.reason == "whole_source_patch"
+    await repo.run("revert", "--no-edit", squashed)
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(request, source_base=repo.base)).reason == (
+        "whole_source_patch"
+    )
+
+
+async def test_rebased_multi_commit_change_is_proved_as_a_whole(repository):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.run("commit", "--allow-empty", "-m", "different ancestry, same base tree")
+    await repo.run("checkout", "source")
+    await repo.run("rebase", "main")
+    assert await repo.run("rev-parse", "HEAD") != head
+    await repo.publish()
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.reason == "whole_source_patch"
+
+
+async def test_full_tree_unchanged_rebase_and_historical_equality(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.run("commit", "--allow-empty", "-m", "new parent")
+    await repo.run("checkout", "source")
+    await repo.run("rebase", "main")
+    assert await repo.run("rev-parse", "HEAD") != head
+    await repo.commit("unrelated")
+    await repo.publish()
+    # No trustworthy source base was supplied: full-tree equality still proves it.
+    assert (await (await repo.snapshot()).is_delivered(request)).reason == "full_tree"
+
+
+async def test_complete_rebased_range_after_unrelated_target_work(repository):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    await repo.run("checkout", "source")
+    await repo.run("rebase", "main")
+    assert await repo.run("rev-parse", "HEAD") != head
+    await repo.publish()
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.CONTAINED and proof.reason == "whole_source_patch"
+
+
+async def test_source_base_is_part_of_patch_fact_and_consumption_identity(repository):
+    repo = repository
+    first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    await repo.run("cherry-pick", head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    narrow = await snapshot.is_delivered(request, source_base=first)
+    assert narrow.state == DeliveryState.CONTAINED
+    assert (await snapshot.is_delivered(request, source_base=repo.base)).state == DeliveryState.PENDING
+    assert not await snapshot.usable(narrow, request, current_source_base=repo.base)
+
+
+async def test_partial_multi_commit_patch_match_is_pending(repository):
+    repo = repository
+    first, _head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    await repo.run("cherry-pick", first)
+    await repo.publish()
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.PENDING
+
+
+@pytest.mark.parametrize("suffix", ["", "-extra"])
+async def test_exact_reachable_trailer_only(repository, suffix):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    # The writer owns complete application; this fixture isolates the reader.
+    await repo.commit("unrelated", message=f"integration\n\nAQ-Source: task@{head}{suffix}")
+    await repo.publish()
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.state == (DeliveryState.CONTAINED if not suffix else DeliveryState.PENDING)
+    if not suffix:
+        assert proof.reason == "source_trailer"
+
+
+@pytest.mark.parametrize("message", ["quoted AQ-Source: task@{head}",
+                                       "AQ-Source: task@{head}\n\nordinary body follows",
+                                       "integration\n\nAQ-Source: other-task@{head}",
+                                       "integration\n\nAQ-Source: task@{short}"])
+async def test_message_substrings_are_not_source_trailers(repository, message):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated", message=message.format(head=head, short=head[:12]))
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(request, source_base=repo.base)).state == (
+        DeliveryState.PENDING
+    )
+
+
+async def test_unreachable_trailer_cannot_prove_delivery(repository):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("commit", "--allow-empty", "-m", f"marker\n\nAQ-Source: task@{head}")
+    await repo.run("push", "origin", "HEAD:refs/heads/unreachable")
+    assert (await (await repo.snapshot()).is_delivered(request, source_base=repo.base)).state == (
+        DeliveryState.PENDING
+    )
+
+
+async def test_reopen_uses_new_completion_and_old_trailer_is_insufficient(repository):
+    repo = repository
+    _first, old_head, old_request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated", message=f"integration\n\nAQ-Source: task@{old_head}")
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(old_request)).state == DeliveryState.CONTAINED
+    await repo.run("checkout", "source")
+    head = await repo.commit("new-work")
+    new_request = await repo.retain(head, completion="close-2")
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(new_request, source_base=repo.base)).state == (
+        DeliveryState.PENDING
+    )
+    assert not await snapshot.usable(await snapshot.is_delivered(old_request), new_request)
+
+
+async def test_missing_source_is_unknown_even_when_branchless(repository):
+    repo = repository
+    request = DeliveryRequest("p", "r", "refs/heads/main", "missing", 1, "legacy")
+    proof = await (await repo.snapshot()).is_delivered(request)
+    assert proof.state == DeliveryState.UNKNOWN and proof.reason == "missing_git_provenance"
+
+
+async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(repository):
+    repo = repository
+    request = await repo.retain(repo.base, artifact=False)
+    assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
+
+
+async def test_empty_patch_ids_never_match(repository):
+    repo = repository
+    await repo.run("commit", "--allow-empty", "-m", "empty source")
+    head = await repo.run("rev-parse", "HEAD")
+    request = await repo.retain(head)
+    assert await repo.git.apatch_id(str(repo.path), repo.base, head) is None
+    await repo.run("checkout", "--orphan", "different-root")
+    await repo.run("rm", "-rf", ".")
+    await repo.commit("different")
+    await repo.run("commit", "--allow-empty", "-m", "empty target")
+    await repo.run("push", "--force", "origin", "HEAD:refs/heads/main")
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.PENDING
+
+
+async def test_stale_tracking_and_local_refs_cannot_answer_new_visit(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    old = await repo.snapshot()
+    assert (await old.is_delivered(request)).state == DeliveryState.CONTAINED
+    await repo.run("push", "--force", "origin", f"{repo.base}:refs/heads/main")
+    assert await repo.run("rev-parse", "refs/remotes/origin/main") == repo.base
+    # Recreate a stale local cache deliberately; the next visit must fetch over it.
+    await repo.run("update-ref", "refs/remotes/origin/main", head)
+    assert not await old.usable(await old.is_delivered(request), request)
+    new = await repo.snapshot()
+    assert new.target_oid == repo.base
+    assert (await new.is_delivered(request, source_base=repo.base)).state == DeliveryState.PENDING
+
+
+async def test_failed_fetch_unknown_with_bounded_backoff_and_recovery(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(request)).satisfied
+    now = [0.0]
+    truth = GitTruth(repo.git, retry_delay=2, max_retry_delay=4, clock=lambda: now[0])
+    fetch = repo.git.afetch_origin
+    failing = AsyncMock(side_effect=GitError("transport unavailable"))
+    monkeypatch.setattr(repo.git, "afetch_origin", failing)
+    for instant, deadline, calls in ((0, 2, 1), (1, 2, 1), (2, 6, 2), (6, 10, 3)):
+        now[0] = instant
+        snapshot = await repo.snapshot(truth=truth)
+        assert snapshot.retry_at == deadline
+        assert (await snapshot.is_delivered(request)).state == DeliveryState.UNKNOWN
+        assert (await snapshot.for_target("refs/heads/main").is_delivered(request)).state == (
+            DeliveryState.UNKNOWN
+        )
+        assert failing.await_count == calls
+    monkeypatch.setattr(repo.git, "afetch_origin", fetch)
+    now[0] = 10
+    assert (await (await repo.snapshot(truth=truth)).is_delivered(request)).satisfied
+
+
+async def test_cache_keys_repository_and_oid_pair_never_branch(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    original = await repo.snapshot()
+    assert (await original.is_delivered(request)).satisfied
+    renamed = replace(request, branch_name="renamed", task_version=2)
+    assert (await original.is_delivered(renamed)).satisfied
+    assert list(repo.truth._cache) == [("r", str(repo.remote), head, head)]
+    await repo.run("push", "--force", "origin", f"{repo.base}:refs/heads/main")
+    new = await repo.snapshot()
+    assert (await new.is_delivered(renamed, source_base=repo.base)).state == DeliveryState.PENDING
+    assert set(repo.truth._cache) == {
+        ("r", str(repo.remote), head, head), ("r", str(repo.remote), head, repo.base),
+    }
+
+
+async def test_cached_pair_does_not_reuse_a_different_task_trailer(repository):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    other = await repo.retain(head, task="other")
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated", message=f"integration\n\nAQ-Source: task@{head}")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).satisfied
+    assert (await snapshot.is_delivered(other)).state == DeliveryState.PENDING
+
+
+async def test_identical_oid_pairs_in_different_repositories_are_separate(repository, tmp_path):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).satisfied
+    other_remote = tmp_path / "other.git"
+    await repo.git._arun(["clone", "--bare", str(repo.remote), str(other_remote)], cwd=str(tmp_path))
+    await repo.run("remote", "set-url", "origin", str(other_remote))
+    other_snapshot = await repo.truth.snapshot(
+        str(repo.path), project_id="p", repository_id="r", repository_url=str(other_remote),
+        target_ref="refs/heads/main",
+    )
+    assert (await other_snapshot.is_delivered(request)).satisfied
+    assert set(repo.truth._cache) == {
+        ("r", str(repo.remote), head, head), ("r", str(other_remote), head, head),
+    }
+
+
+async def test_cached_facts_skip_repeat_ancestry_and_cache_is_bounded(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    truth = GitTruth(repo.git, cache_limit=1)
+    # Bind the spy explicitly, so its calls retain the real store instance.
+    ancestor = GitProvenance.ancestor
+
+    async def inspect(self, source, target):
+        await probe(self, source, target)
+        return await ancestor(self, source, target)
+
+    probe = AsyncMock()
+    monkeypatch.setattr(GitProvenance, "ancestor", inspect)
+    for _ in range(2):
+        snapshot = await repo.snapshot(truth=truth)
+        assert (await snapshot.is_delivered(request)).satisfied
+    assert probe.await_count == 1
+    await repo.run("push", "--force", "origin", f"{repo.base}:refs/heads/main")
+    snapshot = await repo.snapshot(truth=truth)
+    assert (await snapshot.is_delivered(request)).state == DeliveryState.PENDING
+    assert list(truth._cache) == [("r", str(repo.remote), head, repo.base)]
+
+
+async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    await repo.run("push", "origin", "HEAD:refs/heads/epic")
+    fetch = AsyncMock(wraps=repo.git.afetch_origin)
+    monkeypatch.setattr(repo.git, "afetch_origin", fetch)
+    snapshot = await repo.snapshot()
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    marker_ref = "refs/remotes/origin/" + identity.branch
+    await repo.run("update-ref", "-d", marker_ref)
+    # The marker was captured by OID and is still readable after local ref deletion.
+    assert (await snapshot.is_delivered(request)).satisfied
+    assert (await snapshot.for_target("refs/heads/epic").is_delivered(
+        replace(request, target_ref="refs/heads/epic"),
+    )).satisfied
+    assert fetch.await_count == 1
+
+
+@pytest.mark.parametrize("change", [{"task_status": "READY"}, {"claim_epoch": 2},
+                                    {"task_version": 2}, {"target_ref": "refs/heads/epic"}])
+async def test_use_revalidates_ordinary_identity(repository, change):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request)
+    assert await snapshot.usable(proof, request)
+    assert not await snapshot.usable(proof, replace(request, **change))
+    patch_proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert await snapshot.usable(patch_proof, request, current_source_base=repo.base)
+    assert not await snapshot.usable(patch_proof, request, current_source_base=head)
+
+
+async def test_epic_needs_settled_children_exact_green_tree_and_no_hold(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    tree = await repo.git.atree_sha(str(repo.path), head)
+    assert await epic_complete(snapshot, [request], green_oid=head,
+                               review_required=True, approved_tree=tree)
+    assert not await epic_complete(snapshot, [request], green_oid=repo.base)
+    assert not await epic_complete(snapshot, [request], green_oid=head, held=True)
+    assert not await epic_complete(snapshot, [request], green_oid=head,
+                                   review_required=True, approved_tree="0" * 40)
+    assert not await epic_complete(snapshot, [replace(request, task_status="READY")], green_oid=head)
+    assert await epic_complete(snapshot, [replace(request, completion_id="missing")],
+                               green_oid=head) is None
+
+
+async def test_repair_green_precedes_movement_and_rev_list_includes_merged_commits(repository):
+    repo = repository
+    assert repair_progress(None, None, green=True)
+    assert repair_progress(repo.base, repo.base, green=True)
+    assert not repair_progress(repo.base, repo.base, green=False)
+    assert not repair_progress(None, None, green=False)
+    side = await repo.commit("side")
+    await repo.run("checkout", "main")
+    repair = await repo.commit("repair")
+    await repo.run("merge", "--no-ff", "source", "-m", "repair merge")
+    head = await repo.run("rev-parse", "HEAD")
+    assert repair_progress(repo.base, head, green=False)
+    assert set(await commits_added(repo.git, str(repo.path), repo.base, head)) == {side, repair, head}
+    assert await commits_added(repo.git, str(repo.path), head, head) == []
+    with pytest.raises(GitError):
+        await commits_added(repo.git, str(repo.path), "0" * 40, head)
+    with pytest.raises(GitError):
+        await repo.git.atree_sha(str(repo.path), "0" * 40)

@@ -3071,6 +3071,10 @@ integration_branch_owners = Table(
     Column("id", Text, primary_key=True),
     Column("repository_id", Text, nullable=False),
     Column("ref", Text, nullable=False),
+    # Git-first authority. NULL fence identifies an untouched shadow/legacy row.
+    # Legacy columns remain readable until the schema retirement stage.
+    Column("holder", Text, nullable=True),
+    Column("fence", BigInteger, nullable=True),
     Column("owner_id", Text, nullable=False),
     Column("owner_role", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
@@ -3083,6 +3087,11 @@ integration_branch_owners = Table(
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
     CheckConstraint("fence_token >= 0", name="ck_integration_branch_owners_fence"),
+    CheckConstraint("fence IS NULL OR fence >= 0", name="ck_integration_branch_owners_lease_fence"),
+    CheckConstraint(
+        "holder IS NULL OR (fence IS NOT NULL AND expires_at IS NOT NULL)",
+        name="ck_integration_branch_owners_lease_binding",
+    ),
     CheckConstraint(
         "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
         name="ck_integration_branch_owners_handoff_state",

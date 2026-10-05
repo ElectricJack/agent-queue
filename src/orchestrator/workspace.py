@@ -598,12 +598,18 @@ class WorkspaceMixin:
                 raise ValueError("repair delegate branch does not match its target")
             target = BranchKey(repository_id=repository_id, branch=branch)
             owner = await BranchOwnership(self.db).get_owner(target)
+            if owner is not None and owner.get("fence") is not None:
+                from src.integration.lock import BranchLock
+
+                await BranchLock(self.db).acquire(target, task.id, role="repair")
+                owner = await BranchOwnership(self.db).get_owner(target)
             if (
                 owner is None
                 or owner["owner_id"] != task.id
                 or owner["owner_role"] != "repair"
                 or not (
-                    owner["handoff_state"] == "reserved"
+                    owner.get("fence") is not None
+                    or owner["handoff_state"] == "reserved"
                     or (owner["handoff_state"] == "attached"
                         and preparing_session_id is not None
                         and preparing_workspace_id is not None
@@ -653,6 +659,13 @@ class WorkspaceMixin:
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
+        if owner is not None and owner.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            await BranchLock(self.db).acquire(
+                target, task.id, role="verifier" if operation is not None else "worker"
+            )
+            owner = await ownership.get_owner(target)
         if (
             operation is None
             and subject_id == task.id
@@ -673,7 +686,8 @@ class WorkspaceMixin:
             or owner["owner_id"] != task.id
             or role != expected_role
             or not (
-                owner["handoff_state"] == "reserved"
+                owner.get("fence") is not None
+                or owner["handoff_state"] == "reserved"
                 or (owner["handoff_state"] == "attached"
                     and preparing_session_id is not None
                     and preparing_workspace_id is not None
@@ -2125,6 +2139,12 @@ class WorkspaceMixin:
         role = str(owner["owner_role"] or "")
         if role not in roles:
             return False
+        if owner.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            # Managed authority is released by holder/fence alone. Ordinary
+            # workspace cleanup owns unsaved work; it is not a ref-write proof.
+            return await BranchLock(self.db).release(ownership._fence(owner))
         if owner["handoff_state"] == "reserved":
             return True
         fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))

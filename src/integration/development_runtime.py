@@ -1070,6 +1070,7 @@ class DevelopmentSubjectRuntime:
         policy: Callable[[str], Awaitable[PinnedDevelopmentPolicy]] | None = None,
         active: bool = False,
         shadow: bool = False,
+        diagnostics=None,
         page_size: int = 20,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -1285,6 +1286,7 @@ def development_runtime_for(orchestrator):
         IntegrationObserver,
     )
     from src.playbooks.integration_policy import IntegrationPolicyFacts
+    from src.integration.shadow import diagnostics_for
 
     primitives = orchestrator.development_integration
     app = getattr(orchestrator, "integration_app_client", None)

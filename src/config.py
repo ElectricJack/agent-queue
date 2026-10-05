@@ -2617,6 +2617,8 @@ class IntegrationConfig:
         for name in ("reconciler_shadow", "reconciler_active"):
             if not isinstance(getattr(self, name), bool):
                 errors.append(ConfigError("integration", name, "must be a boolean"))
+        if self.git_first not in ("shadow", "active"):
+            errors.append(ConfigError("integration", "git_first", "must be shadow or active"))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(

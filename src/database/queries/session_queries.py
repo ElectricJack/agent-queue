@@ -567,10 +567,14 @@ class SessionQueryMixin:
             .values(last_activity=ts)
         )
         if conn is not None:
-            await conn.execute(stmt)
+            result = await conn.execute(stmt)
+            if result.rowcount:
+                from src.integration.lock import renew_session_leases_on
+
+                await renew_session_leases_on(self, conn, session_id, ts)
             return
         async with self._engine.begin() as owned:
-            await owned.execute(stmt)
+            await self.touch_session_activity(session_id, ts, conn=owned)
 
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float
