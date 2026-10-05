@@ -175,7 +175,8 @@ async def control_refusal(db, name: str, args: dict) -> dict | None:
         from src.commands.principal import current_principal
         principal = current_principal()
         if principal and principal.project_id and projects - {principal.project_id}:
-            return {"success": False, "error": "decision control belongs to another project"}
+            return {"success": False, "outcome": "unauthorized",
+                    "error": "decision control belongs to another project"}
         held = []
         for project in sorted(projects):
             held.extend(row for row in await history_on(conn, project, refs or None)

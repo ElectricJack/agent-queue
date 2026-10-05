@@ -10,6 +10,11 @@ channel/reference, server timestamp and authenticated recorder. The object is
 resolved server-side and must belong to the caller's project. Global and project
 supervisors read the same history through `aq decision list`, task show/explain
 and integration status. Workers cannot record or release operator decisions.
+The API scope gate resolves `object_id` using its required `object_kind` tag for
+these two commands, through the same object lookup as their handlers. Missing
+objects, invalid tags and foreign projects fail closed without injecting a
+`project_id` argument into the strict command contracts. Integration control
+refusals for a foreign project retain the typed `unauthorized` outcome.
 
 Effects are explicit: `note` records context; `hold` prevents integration changes
 for the object and its related tasks/batches/operations; `release` references one

@@ -94,6 +94,7 @@ VALUE_ARGUMENTS: Final[frozenset[str]] = frozenset({"external_message_id"})
 #: A present row with no owner must never inherit the missing-row allowance.
 Ownership = tuple[bool, str | None]
 Resolver = Callable[[Any, str], Awaitable[Ownership]]
+ContextResolver = Callable[[Any, str, dict], Awaitable[Ownership]]
 
 
 async def _project_id_of(db, table, value: str) -> Ownership:
@@ -200,6 +201,27 @@ async def _project_reference(db, project_id: str) -> Ownership:
     return (False, None) if owning is None else (True, owning)
 
 
+async def _decision_object_project(db, identity: str, args: dict) -> Ownership:
+    """Resolve a decision's tagged target using its handler's exact lookup."""
+    from src.operator_decisions import object_project_on
+
+    kind = args.get("object_kind")
+    if not isinstance(kind, str) or kind not in {"task", "batch", "operation"}:
+        return True, None  # An invalid discriminator never grants ownership.
+    async with db._engine.connect() as conn:
+        try:
+            return True, await object_project_on(conn, kind, identity)
+        except ValueError:
+            return False, None
+
+
+# Tagged objects need both arguments; their IDs never gain an untyped resolver.
+CONTEXT_TARGET_RESOLVERS: Final[dict[tuple[str, str], ContextResolver]] = {
+    ("decision_record", "object_id"): _decision_object_project,
+    ("decision_list", "object_id"): _decision_object_project,
+}
+
+
 #: Target reference argument -> the resolver that reads its owning project.
 #: Written by hand on purpose: each entry is a claim about one table's ownership
 #: rule, and ``tests/test_target_scope.py`` pins the surface this admits, so a
@@ -287,7 +309,8 @@ def target_references(args: dict, *, command: str | None = None) -> dict[str, li
 def unresolvable_targets(args: dict, *, command: str | None = None) -> list[str]:
     """Target references this module has no ownership resolver for."""
     return sorted(
-        name for name in target_references(args, command=command) if name not in TARGET_RESOLVERS
+        name for name in target_references(args, command=command)
+        if name not in TARGET_RESOLVERS and (command, name) not in CONTEXT_TARGET_RESOLVERS
     )
 
 
@@ -323,7 +346,11 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
     unmatched: list[str] = []
     for name, ids in references.items():
         for value in ids:
-            found, owning = await _target_project(db, name, value)
+            context_resolver = CONTEXT_TARGET_RESOLVERS.get((command, name))
+            found, owning = (
+                await context_resolver(db, value, args) if context_resolver is not None
+                else await _target_project(db, name, value)
+            )
             if not found:
                 unmatched.append(f"{name} {value!r}")
                 continue

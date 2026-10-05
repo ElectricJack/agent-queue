@@ -735,7 +735,7 @@ def test_the_refused_surface_is_exactly_the_one_that_is_declared():
             for field, spec in model.model_fields.items()
             if spec.is_required() and field not in VALUE_ARGUMENTS
         }
-        missing = unresolvable_targets(args)
+        missing = unresolvable_targets(args, command=name)
         if missing:
             unresolvable[name] = missing
     assert unresolvable == _UNRESOLVED_TARGETS
@@ -746,6 +746,38 @@ def test_the_resolver_table_names_only_row_references():
     for name in TARGET_RESOLVERS:
         assert name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES, name
     assert not set(TARGET_RESOLVERS) & VALUE_ARGUMENTS
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "own", "foreign"),
+    [("task", "own", "foreign"), ("batch", "batch-p", "batch-other"),
+     ("operation", "op-p", "op-other")],
+)
+async def test_decision_scope_resolves_the_tagged_object(db, command, kind, own, foreign):
+    args = {"object_kind": kind, "object_id": own}
+    assert await check_request_scope(command, args, _scope("p"), db=db) is None
+    assert "project_id" not in args
+    args["object_id"] = foreign
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error == f"out of scope: {command} targets another project (object_id belongs to other)"
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "identity"),
+    [("task", "gone"), ("batch", "gone"), ("operation", "gone"),
+     ("task", "batch-p"), ("invalid", "own"), (None, "own"), (["task"], "own")],
+)
+async def test_decision_scope_refuses_missing_objects_and_invalid_tags(db, command, kind, identity):
+    args = {"object_kind": kind, "object_id": identity}
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error is not None and error.startswith("out of scope:"), error
+
+
+def test_an_unrelated_command_cannot_use_a_decision_discriminator():
+    args = {"object_kind": "task", "object_id": "own"}
+    assert unresolvable_targets(args, command="unrelated") == ["object_id"]
 
 
 # ---------------------------------------------------------------------------

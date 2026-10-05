@@ -9162,6 +9162,18 @@
     },
     "src/commands/handler.py::CommandHandler.execute": {
       "reason": "Shared dispatch boundary applies durable holds to integration commands before mutation."
+    },
+    "src/api/target_scope.py::ContextResolver": {
+      "reason": "Contextual project ownership resolver type used by integration operator decision commands."
+    },
+    "src/api/target_scope.py::_decision_object_project": {
+      "reason": "Project scope gate resolves a tagged integration decision object through its exact handler lookup."
+    },
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_record', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision write ownership."
+    },
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision read ownership."
     }
   },
   "shared_state": {
