@@ -29,6 +29,14 @@ from src.integration.provenance import CompletionIdentity, GitProvenance
 logger = logging.getLogger(__name__)
 
 
+class _HistoricalPatchFailure(GitError):
+    """A historical comparison failed after all other patch candidates were tried."""
+
+    def __init__(self, error: GitError | OSError):
+        super().__init__("historical patch comparison is unavailable")
+        self.error = error
+
+
 def _failure_message(exc: Exception) -> str:
     """Describe failures without exposing Git stderr, paths or repository content."""
     message = str(exc)
@@ -195,14 +203,20 @@ class GitTruthSnapshot:
                 ))
             if facts.trailers[identity]:
                 return True
+            patch_error = None
             if source_base not in facts.patches:
-                facts.patches[source_base] = await _whole_patch(
-                    observed, source_oid, source_base, observed.target_oid,
-                )
-            if facts.patches[source_base]:
+                try:
+                    facts.patches[source_base] = await _whole_patch(
+                        observed, source_oid, source_base, observed.target_oid,
+                    )
+                except _HistoricalPatchFailure as exc:
+                    patch_error = exc.error
+            if facts.patches.get(source_base):
                 return True
             if facts.equal_tree is None:
                 facts.equal_tree = await _equal_tree(observed, source_oid, observed.target_oid)
+            if not facts.equal_tree and patch_error is not None:
+                raise patch_error
             return facts.equal_tree
         except (GitError, OSError, ValueError):
             return None
@@ -263,6 +277,7 @@ async def _whole_patch(
                          "--format=%H %P", target,
                          "--", *(path for path in paths if path))
     starts = {base} if common_base else set()
+    first_error = None
     for row in history.splitlines():
         head, *parents = row.split()
         after_base = common_base and await provenance.ancestor(base, head)
@@ -275,9 +290,11 @@ async def _whole_patch(
                 continue
             try:
                 candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
-            except (GitError, OSError):
+            except (GitError, OSError) as exc:
                 # An optional historical probe cannot invalidate the retained
                 # source or prevent a later patch/tree from proving delivery.
+                if first_error is None:
+                    first_error = exc
                 continue
             if candidate == patch:
                 return True
@@ -285,6 +302,8 @@ async def _whole_patch(
             for parent in parents:
                 if await provenance.ancestor(base, parent):
                     starts.add(parent)
+    if first_error is not None:
+        raise _HistoricalPatchFailure(first_error) from first_error
     return False
 
 
@@ -355,22 +374,29 @@ async def is_delivered(
             ))
         if facts.trailers[trailer]:
             return answer(DeliveryState.CONTAINED, "source_trailer")
+        patch_error = None
         if source_base is not None:
             step = "source_base"
             if not is_valid_git_oid(source_base):
                 raise ValueError("whole-source proof requires an exact base OID")
             if source_base not in facts.patches:
                 step = "whole_source_patch"
-                facts.patches[source_base] = await _whole_patch(
-                    observed, source, source_base, observed.target_oid,
-                )
-            if facts.patches[source_base]:
+                try:
+                    facts.patches[source_base] = await _whole_patch(
+                        observed, source, source_base, observed.target_oid,
+                    )
+                except _HistoricalPatchFailure as exc:
+                    patch_error = exc.error
+            if facts.patches.get(source_base):
                 return answer(DeliveryState.CONTAINED, "whole_source_patch")
         step = "full_tree"
         if facts.equal_tree is None:
             facts.equal_tree = await _equal_tree(observed, source, observed.target_oid)
         if facts.equal_tree:
             return answer(DeliveryState.CONTAINED, "full_tree")
+        if patch_error is not None:
+            step = "whole_source_patch"
+            raise patch_error
         return answer(DeliveryState.PENDING, "source_not_delivered")
     except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
         detail = f"{step}: {type(exc).__name__}: {_failure_message(exc)}"

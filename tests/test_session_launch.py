@@ -1,8 +1,8 @@
 """The flock registration invariant, including failure and concurrent observation."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import importlib
 import time
 from collections import Counter
