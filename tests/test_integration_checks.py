@@ -119,9 +119,9 @@ def test_required_checks_resolve_from_policy_trust_and_subject_manifest():
 
 
 def rerun(client, *, status, conclusion):
-    client.checks.append(
-        {**client.checks[0], "id": 12, "status": status, "conclusion": conclusion}
-    )
+    # The re-run's check run (id 12) moves from in_progress to completed in place.
+    run = {**client.checks[0], "id": 12, "status": status, "conclusion": conclusion}
+    client.checks[:] = [check for check in client.checks if check["id"] != 12] + [run]
     client.workflows[0].update(run_attempt=2, status=status, conclusion=conclusion)
     client.jobs[0].update(
         run_attempt=2,
@@ -334,9 +334,9 @@ async def test_slow_provider_holds_no_connection_lock_or_transaction(db):
 
 async def test_local_jobs_bind_the_exact_candidate_and_required_commands(db):
     client = JobClient()
-    producer = local(client, commands=("ruff check src", "ruff format --check src"))
+    producer = local(client, commands=("npm ci", "npm run build"))
     checks = ExactChecks(db, LocalChecks(producer, project_id="p"), clock=Clock())
-    assert checks.required.names == ("ruff check src", "ruff format --check src")
+    assert checks.required.names == ("npm ci", "npm run build")
 
     assert (await checks.refresh(head())).state is ChecksState.PENDING
     assert (await checks.request(head())).outcome == "requested"
@@ -371,7 +371,7 @@ async def test_local_cancelled_job_is_unknown_not_green(db):
     client = JobClient()
     checks = ExactChecks(db, LocalChecks(local(client), project_id="p"), clock=Clock())
     await checks.request(head())
-    client.complete(0, outcome="cancelled", exit_code=None)
+    client.complete(0, exit_code=-15, cancelled=True, input_stability="unverified")
 
     result = await checks.refresh(head())
     assert result.state is ChecksState.UNKNOWN
