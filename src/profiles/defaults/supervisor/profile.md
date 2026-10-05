@@ -120,6 +120,8 @@ start code work, tests or QA from a digest author turn.
     "knowledge_diff",
     "knowledge_retire",
     "knowledge_restore",
+    "decision_record",
+    "decision_list",
     "record_show",
     "record_search",
     "record_capabilities",

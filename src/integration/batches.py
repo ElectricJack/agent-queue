@@ -257,6 +257,10 @@ class BatchService:
         self.publish, self.eligible, self.gate = publish, eligible, gate
 
     async def _authorized(self, batch, members):
+        from src.operator_decisions import OperatorDecisions
+
+        if await OperatorDecisions(self.store.db).holds("batch", batch.id):
+            return False
         current = await self.store.get(batch.id)
         return bool(current and current.intent == "open" and
                     (current.project_id, current.repository_id, current.target_ref) ==
@@ -334,6 +338,11 @@ class BatchService:
 
     async def visit(self, batch: Batch, members: Iterable[BatchMember], snapshot: GitTruthSnapshot):
         """Derive progress from this visit's fetched refs; never from legacy lifecycle."""
+        from src.operator_decisions import OperatorDecisions
+
+        holds = await OperatorDecisions(self.store.db).holds("batch", batch.id)
+        if holds:
+            return BatchObservation("held", detail={"operator_decisions": holds})
         members = tuple(members)
         current = await self.store.get(batch.id)
         if (current is None or

@@ -9674,6 +9674,125 @@
         "title": "KnowledgeContextDeliverArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "decision_record",
+      "description": "Record an operator instruction durably before acting or messaging supervisors.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "object_kind": {
+            "enum": [
+              "task",
+              "batch",
+              "operation"
+            ],
+            "title": "Object Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "minLength": 1,
+            "title": "Object Id",
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "note",
+              "hold",
+              "release"
+            ],
+            "title": "Effect",
+            "type": "string"
+          },
+          "operator": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Operator",
+            "type": "string"
+          },
+          "decision": {
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Decision",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "chat",
+              "discord",
+              "cli"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "source_ref": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "releases": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Releases"
+          }
+        },
+        "required": [
+          "object_kind",
+          "object_id",
+          "effect",
+          "operator",
+          "decision",
+          "source",
+          "source_ref",
+          "idempotency_key"
+        ],
+        "title": "DecisionRecordArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "decision_list",
+      "description": "Read shared operator decisions and active holds for a task, batch or operation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "object_kind": {
+            "enum": [
+              "task",
+              "batch",
+              "operation"
+            ],
+            "title": "Object Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "minLength": 1,
+            "title": "Object Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_kind",
+          "object_id"
+        ],
+        "title": "DecisionListArgs",
+        "type": "object"
+      }
     }
   ],
   "fallback": {
@@ -14296,6 +14415,7 @@
     "system": "Token usage, log access, event history, config reload, diagnostics, prompt management, daemon control",
     "message": "Inter-agent and user message queue \u2014 send, reply, inbox, and list the messages that carry all chat and handoff traffic",
     "escalation": "Durable supervisor-owned human escalations \u2014 create, inspect, reply, update, and apply verified reply evidence",
+    "decision": "Durable operator decisions shared by all supervisors",
     "supervisor_inbox": "Durable Discord conversations with the global supervisor",
     "review": "Document reviews: submit specs and plans for Jack's approval",
     "github_issue": "Repository-bound GitHub issue triage and reviewed fixes",
@@ -14315,6 +14435,8 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "decision_record": "decision",
+    "decision_list": "decision",
     "object_loop_start": "task",
     "object_loop_inputs": "task",
     "object_loop_reconcile": "task",

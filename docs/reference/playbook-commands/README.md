@@ -142,6 +142,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
+| [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |

@@ -3920,6 +3920,96 @@
         }
       }
     },
+    "/api/decision/list": {
+      "post": {
+        "tags": [
+          "decision"
+        ],
+        "summary": "Read shared operator decisions and active holds for a task, batch or operation.",
+        "description": "Read shared operator decisions and active holds for a task, batch or operation.",
+        "operationId": "decision_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/decision/record": {
+      "post": {
+        "tags": [
+          "decision"
+        ],
+        "summary": "Record an operator instruction durably before acting or messaging supervisors.",
+        "description": "Record an operator instruction durably before acting or messaging supervisors.",
+        "operationId": "decision_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/digest/facts": {
       "post": {
         "tags": [
@@ -26946,6 +27036,94 @@
         "properties": {},
         "type": "object",
         "title": "DbPreflightHierarchyRequest"
+      },
+      "DecisionListRequest": {
+        "properties": {
+          "object_kind": {
+            "type": "string",
+            "title": "Object Kind",
+            "description": ""
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_kind",
+          "object_id"
+        ],
+        "title": "DecisionListRequest"
+      },
+      "DecisionRecordRequest": {
+        "properties": {
+          "object_kind": {
+            "type": "string",
+            "title": "Object Kind",
+            "description": ""
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          },
+          "effect": {
+            "type": "string",
+            "title": "Effect",
+            "description": ""
+          },
+          "operator": {
+            "type": "string",
+            "title": "Operator",
+            "description": ""
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": ""
+          },
+          "source_ref": {
+            "type": "string",
+            "title": "Source Ref",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "releases": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Releases",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_kind",
+          "object_id",
+          "effect",
+          "operator",
+          "decision",
+          "source",
+          "source_ref",
+          "idempotency_key"
+        ],
+        "title": "DecisionRecordRequest"
       },
       "DelegationPolicyDTO": {
         "properties": {

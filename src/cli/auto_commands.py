@@ -205,6 +205,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "message": "message",
     "escalation": "escalation",
     "supervisor_inbox": "supervisor-inbox",
+    "decision": "decision",
     "review": "review",
     "github_issue": "github-issue",
     "digest": "digest",

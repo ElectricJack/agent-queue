@@ -2017,6 +2017,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
 
     register_generation_contracts(registry)
     register_record_contracts(registry)
+    from src.commands.contracts.decisions import register_decision_contracts
+
+    register_decision_contracts(registry)
     from src.commands.contracts.inventory import register_inventory_contracts
 
     register_inventory_contracts(registry)

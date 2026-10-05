@@ -515,6 +515,7 @@ class IntegrationOperationalValue(CommandValue):
 
 
 class IntegrationStatusValue(IntegrationOperationalValue):
+    operator_decisions: tuple[dict[str, Any], ...] = ()
     projection_kind: Literal["subjects"] | None = None
     subjects: tuple[dict[str, Any], ...] = ()
     drain_blockers: tuple[dict[str, Any], ...] = ()

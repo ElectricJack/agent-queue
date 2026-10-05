@@ -175,6 +175,10 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
                     value = candidate_value
                     break
         projected[field] = value
+    # Human instructions remain actionable even in compact task/batch views.
+    if entity in {"task", "integration"} and isinstance(item, Mapping):
+        if "operator_decisions" in item:
+            projected["operator_decisions"] = item["operator_decisions"]
     return projected
 
 

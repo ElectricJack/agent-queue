@@ -366,6 +366,7 @@ areas:
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
       - tests/test_integration_batches.py
+      - tests/test_integration_operator_decisions.py
       - tests/test_integration_train.py
       - tests/test_integration_train_sources.py
       - tests/test_integration_cutover.py
