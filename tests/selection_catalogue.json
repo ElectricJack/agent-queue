@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:d6e7096f2a03ce16b7f35e2bb8eecc65a896fc860829225443e82901b1300125",
+  "digest": "sha256:9bf1645c2eca4c586878ee9ae832ca630e682e49ca972181ef061d6c5e489ffc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13949,6 +13949,7 @@
         "src.sessions.provider",
         "src.sessions.spec",
         "src.sessions.transcripts",
+        "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude"
       ],
       "markers": [
