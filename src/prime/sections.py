@@ -692,6 +692,22 @@ def build_knowledge_section(bundle) -> PrimeSection:
                         body=markdown.removeprefix("## Knowledge context\n\n").rstrip())
 
 
+#: One sentence naming the refusal code and nothing else. The principal that
+#: was refused a read learns that the enrichment is missing and why, without
+#: any retained record content, identity, count or title crossing the boundary.
+CONTEXT_UNAVAILABLE_NOTE = (
+    "Knowledge context is unavailable for this session (`{code}`), so this "
+    "briefing carries no knowledge corpus content. Continue with the rest of it: "
+    "the refusal is about read access, not about the task."
+)
+
+
+def build_context_unavailable_section(code: str) -> PrimeSection:
+    """The ``l2_context`` slot holding an access refusal, code only."""
+    return PrimeSection(key="l2_context", title="Knowledge context",
+                        body=CONTEXT_UNAVAILABLE_NOTE.format(code=code))
+
+
 # ---------------------------------------------------------------------------
 # Section 9 — tool guidance (static template)
 # ---------------------------------------------------------------------------

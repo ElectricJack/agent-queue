@@ -37,8 +37,15 @@ input allowance. Whole items are dropped with omission reasons. Required
 content overflow stores an empty diagnostic bundle and refuses delivery with
 `context.required_over_budget`; authoritative instructions are never cut.
 
-`prime` returns `context_bundle` and `context_state: prepared`. The K09
-CLI/hook adapter calls `knowledge_context_deliver` only after successful
+`prime` returns `context_bundle` and `context_state: prepared`. A read refused
+on access grounds — `record.forbidden`, `knowledge.disabled` — degrades instead
+of failing: `prime` returns its full ordinary body with
+`context_state: unavailable`, `context_error_code`, no bundle and one sentence
+in the context section naming the code alone. The grant check is not bypassed
+and no knowledge content reaches a principal that may not read it; the CLI
+receives no bundle, so it records no delivery receipt. Every other refusal,
+including a stale claim or an over-budget prompt, still surfaces as an error.
+The K09 CLI/hook adapter calls `knowledge_context_deliver` only after successful
 transport output, with bundle ID, rendered knowledge SHA-256, transport,
 idempotency key and current claim epoch. Preparation and `failed`/`unknown`
 receipts create no injected citations. A successful supervisor start followed
