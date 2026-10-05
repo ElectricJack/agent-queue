@@ -188,8 +188,8 @@ async def setup(tmp_path):
     await db.ensure_integration_subject(subject.to_row())
     repo = RetainedRepository("r", store, GitHubRepositoryBinding(123, "test/repo"), "main")
 
-    async def resolver(rid):
-        assert rid == "r"
+    async def resolver(subject):
+        assert subject.repository_id == "r"
         return repo
 
     green = {head}
