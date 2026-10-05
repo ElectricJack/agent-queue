@@ -228,8 +228,20 @@ class GitOperations:
         rid = repository_id or subject.repository_id
         if rid != subject.repository_id:
             raise StaleFence("request names another repository")
-        repo = await self.repository(subject)
-        if repo.repository_id != rid:
+        return await self.retained(subject)
+
+    async def retained(self, subject_or_repository_id):
+        """The validated retained clone for a subject, or for a bare repository id.
+
+        The subject runtimes resolve by subject so the clone carries that
+        subject's own pinned settings. Batch construction names a repository
+        instead: its members are immutable Git facts with no subject to scope
+        by, and the batch's own lease is the authority for its writes.
+        """
+        repository_id = getattr(subject_or_repository_id, "repository_id",
+                                subject_or_repository_id)
+        repo = await self.repository(subject_or_repository_id)
+        if repo.repository_id != repository_id:
             raise StaleFence("retained repository binding mismatch")
         return await self.validate_repository(repo)
 

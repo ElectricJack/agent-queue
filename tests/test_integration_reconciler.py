@@ -6,10 +6,10 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 
 from src.database import Database
-from src.database.tables import playbook_artifacts
+from src.database.tables import integration_subjects, playbook_artifacts
 from src.event_bus import EventBus
 from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler, VisitTransition
 from src.integration.subjects import (
@@ -811,3 +811,28 @@ def test_default_is_shadow_and_invalid_timing_is_rejected():
     ):
         with pytest.raises(ValueError):
             IntegrationReconciler(None, None, None, PrimitivePorts(), **{option: 0})
+
+
+async def test_git_first_diagnostics_skip_legacy_ownership_even_in_existing_shadow_loop(db):
+    """A durable row the reconciler does not own is never diagnosed.
+
+    ``integration_subjects.engine`` still admits ``legacy`` even though the
+    engine enum has one member, so a row written before a cutover can outlive
+    its owner. The shadow loop visits it (shadow covers every subject) and must
+    still run no diagnostic and take no action on it.
+    """
+    from unittest.mock import AsyncMock
+
+    clock = Clock()
+    await add_subject(db, clock)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_subjects).where(integration_subjects.c.id == "s1").values(
+                engine="legacy")
+        )
+    diagnose = AsyncMock()
+    harness = make_loop(db, clock, mode=JournalMode.SHADOW, diagnostics=diagnose)
+    await harness.loop.tick()
+    diagnose.assert_not_awaited()
+    assert harness.actions == []
+    assert (await db.get_integration_subject("s1"))["engine"] == "legacy"

@@ -1,0 +1,475 @@
+{
+  "generated_by": "scripts/integration-cutover-evidence.py",
+  "measured_tree": "4e81460891c649aa1d7631e164622aa68069a080",
+  "source_base": "f31e0a97c5e78e9bd70022ff75915dd578c00e78",
+  "ownership": {
+    "baseline_revision": "2483f634aef2ece9fd3a6e5d92174cc145aa564a",
+    "landing_revision": "8e73e088fa5050621a165b9d13f90ef88334572d",
+    "phase": "transition",
+    "groups": {
+      "shared": 40183,
+      "companions": 11192,
+      "engine": 71607,
+      "policy_sources": 1839,
+      "policy": 480,
+      "ui": 326,
+      "guards": 639
+    },
+    "total": 126266,
+    "tables": 45,
+    "table_cap_in_phase": 45,
+    "uninventoried": [],
+    "unreviewed_writers": [],
+    "legacy_sinks_pending_stage4": [
+      "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::2640196177c24b14dc6f061a9ed0349d2f796c10ccc5affa49106456b90139be",
+      "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::850f284411169c6129c656dca5037d124055172dd237d95322d0a706d42f4f73",
+      "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal::4a70cdc4f2029c032de3a9af830f5cec3a047e7456248c8b461d161f222350ce",
+      "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal_on::4055e0d096106088406c108319c1bb6f0c8f656a4ef494267587f2fd0e060988",
+      "src/integration/ci_adapters.py::CIAdapters._record::f24a910932fd04223fce85eb802cd0fee6012b1a48ee37ec75cc9a605f928f70",
+      "src/integration/development.py::DevelopmentPrimitives.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db",
+      "src/integration/development.py::DevelopmentPrimitives.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70",
+      "src/integration/development_adapter.py::DevelopmentIntegrationAdapter._record_on::702e45e3d58f1919b9761bd1eb1c7dbbd47a30b156ead275183d7ee30484d94f",
+      "src/integration/development_runtime.py::_transfer_on::771b4b7889923a8826cc42168c14721a43489f38a946872578c9ebe01d2354ea",
+      "src/integration/engine.py::RootEngineOwnership.transfer::07681510682d1b980f297c83dd32cee6073abf45d12605fad2eca4f1fd0bb462",
+      "src/integration/parent_engine.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41",
+      "src/integration/reconciler.py::IntegrationReconciler._finish::20284a0791a875d72d7ba5f1004f15ad32b1d0739bab478655b9c55b6ce68210",
+      "src/integration/reconciler.py::IntegrationReconciler._prepare::80d0cfcace439f7f83d63fcebdd5bdb5879bcb14ef495c380d82b136f4a7b0b7",
+      "src/integration/records.py::append_record_on::2975ebc9f9661128b24c63404fc4fa76e7f5cbabd7d7fb25eb4373858467f1e7",
+      "src/integration/root_adapters.py::RootPrimitiveAdapters._journal::a0e501158092e2f8b0db91017b8aa25b6c76123a7843e0de9a1f0882e3ad1a8c",
+      "src/integration/root_runtime.py::RootSubjectRuntime._supersede_admitting::936f2a7229cd7cfb1eb1ee8c11864166e8da1d1e4273289e6551345c6570f04e",
+      "src/integration/writers.py::WriterPrimitives._journal_on::d6fd9757273da627a3f0f7f83b6e42a4964f4c99601f882c41267dd01981a676",
+      "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate::495bbe9c82278c9b769089debd6c7bb39af3eb428ec3191cbd7fa594c59c482f",
+      "src/orchestrator/git_ops.py::GitOpsMixin._trusted_evidence_refusal::77722704d939f3aa1904334d1844b8d329d7a59861d800c90a1ee56c3502cb83"
+    ],
+    "budget_errors": [],
+    "engine_cap_in_phase": 97627,
+    "owned_cap_in_phase": 155499,
+    "final_caps": {
+      "engine": 11999,
+      "owned_total": 19999,
+      "tables": 10,
+      "target_tables": 5
+    }
+  },
+  "replay": {
+    "reconstructed_cases": 28,
+    "cases": [
+      {
+        "name": "brisk-beacon-64",
+        "family": "no-progress escalation on a root batch",
+        "test": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress",
+        "assertions": [
+          "15/15 green read before any counter",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "no repair allocated",
+          "every child contained in main"
+        ]
+      },
+      {
+        "name": "swift-delta-90",
+        "family": "no-progress escalation on an epic batch",
+        "test": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress",
+        "assertions": [
+          "15/15 green epic candidate contains every child",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "epic completes and reaches main",
+          "no repair allocated"
+        ]
+      },
+      {
+        "name": "crisp-horizon-90",
+        "family": "duplicate delegate-close audits broke a uniqueness check",
+        "test": "test_crisp_horizon_90_children_already_in_epic_complete_it",
+        "assertions": [
+          "every child is an ancestor of the epic head",
+          "no batch for contained children",
+          "epic completes as an ordinary close",
+          "epic reaches main"
+        ]
+      },
+      {
+        "name": "vivid-quest-44",
+        "family": "cumulative repair list and an owner reserved with no expiry",
+        "test": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner",
+        "assertions": [
+          "stale owner lease expires without stop proof",
+          "one repair task for the failing candidate",
+          "repair commits read from rev-list including merged commits",
+          "batch delivers the repaired candidate"
+        ]
+      },
+      {
+        "name": "epic-verifiers",
+        "family": "parent review coupled to a verification generation",
+        "test": "test_epic_verifiers_review_verdict_keyed_by_tree",
+        "assertions": [
+          "review requested by tree SHA",
+          "approved tree completes epic with no prior generation",
+          "epic reaches main"
+        ]
+      },
+      {
+        "name": "stale-branch-owners",
+        "family": "workspace identity compared against reused slots",
+        "test": "test_stale_branch_owner_lease_is_per_session_and_expires",
+        "assertions": [
+          "a reused slot is a different holder",
+          "train waits only until expiry",
+          "the old incarnation's push is refused",
+          "child delivered to the epic"
+        ]
+      },
+      {
+        "name": "squash-delivery",
+        "family": "cutover",
+        "test": "test_squash_merged_child_is_delivered_without_a_batch",
+        "assertions": [
+          "squash commit proves delivery by whole patch",
+          "no batch frozen",
+          "main not pushed by train"
+        ]
+      },
+      {
+        "name": "multi-commit-partial-match",
+        "family": "cutover",
+        "test": "test_partial_multi_commit_patch_match_stays_pending",
+        "assertions": [
+          "one commit's patch on main is not delivery",
+          "batch delivers the whole source",
+          "source is an ancestor of main"
+        ]
+      },
+      {
+        "name": "dead-worker-lease",
+        "family": "cutover",
+        "test": "test_dead_worker_lease_expires_and_repair_is_recovered",
+        "assertions": [
+          "dead holder blocks the candidate ref only until expiry",
+          "open repair task recovered, not re-allocated",
+          "dead holder's fence is refused",
+          "repaired candidate delivered"
+        ]
+      },
+      {
+        "name": "green-on-repair-entry",
+        "family": "cutover",
+        "test": "test_green_on_repair_entry_promotes_despite_counter",
+        "assertions": [
+          "repair writer's commits read from Git",
+          "green read before counter and no-progress fact",
+          "promoted with the open repair's head",
+          "no second repair"
+        ]
+      },
+      {
+        "name": "checks-rerun",
+        "family": "cutover",
+        "test": "test_checks_rerun_latest_attempt_decides",
+        "assertions": [
+          "a failed attempt rerun green is green",
+          "a green attempt rerun red is red",
+          "rerun green promotes without repair"
+        ]
+      },
+      {
+        "name": "non-holder-and-stale-fence",
+        "family": "cutover",
+        "test": "test_non_holder_and_stale_fence_cannot_publish",
+        "assertions": [
+          "a non-holder's managed push is refused",
+          "a stale fence of the same holder is refused",
+          "the current fence publishes with expected-old",
+          "a moved remote refuses the current fence"
+        ]
+      },
+      {
+        "name": "reopen-old-trailers",
+        "family": "cutover",
+        "test": "test_old_trailer_after_reopen_does_not_prove_new_source",
+        "assertions": [
+          "the first completion delivered with its trailer",
+          "an old trailer does not prove the reopened source",
+          "a new batch delivers the reopened source"
+        ]
+      },
+      {
+        "name": "changed-tree-review",
+        "family": "cutover",
+        "test": "test_review_does_not_transfer_to_a_changed_tree",
+        "assertions": [
+          "review requested by candidate tree",
+          "an approval does not cover a changed tree",
+          "the approved tree is delivered"
+        ]
+      },
+      {
+        "name": "moving-target",
+        "family": "cutover",
+        "test": "test_moving_target_refuses_then_rebuilds",
+        "assertions": [
+          "the expected-old push refuses a moved target",
+          "the outside commit is kept",
+          "the rebuilt candidate delivers"
+        ]
+      },
+      {
+        "name": "nested-epics",
+        "family": "cutover",
+        "test": "test_nested_epics_complete_bottom_up",
+        "assertions": [
+          "the child reaches the inner epic",
+          "the inner epic completes into the outer epic",
+          "the outer epic completes into main"
+        ]
+      },
+      {
+        "name": "generated-conflict",
+        "family": "cutover",
+        "test": "test_generated_file_conflict_is_regenerated",
+        "assertions": [
+          "a generated-only conflict is regenerated",
+          "the trailer stays the last paragraph",
+          "no repair allocated"
+        ]
+      },
+      {
+        "name": "migration-conflict",
+        "family": "cutover",
+        "test": "test_migration_head_conflict_is_an_ordinary_repair",
+        "assertions": [
+          "two migration heads go to an ordinary repair",
+          "the repair writer's candidate is adopted from Git",
+          "main has one migration head"
+        ]
+      },
+      {
+        "name": "crash-restart",
+        "family": "cutover",
+        "test": "test_crash_at_each_boundary_restarts_cleanly",
+        "assertions": [
+          "the crash leaves the remote at its boundary",
+          "a restarted train waits for the dead lease, then delivers",
+          "each push happens once",
+          "every child is in main exactly once"
+        ]
+      },
+      {
+        "name": "crash-after-repair-create",
+        "family": "cutover",
+        "test": "test_crash_after_repair_create_recovers_the_task",
+        "assertions": [
+          "the crash leaves one repair task",
+          "the restart recovers it and its attempt",
+          "no duplicate repair after restart"
+        ]
+      },
+      {
+        "name": "candidate-ref-loss",
+        "family": "cutover",
+        "test": "test_lost_candidate_ref_is_rebuilt",
+        "assertions": [
+          "a lost candidate ref is rebuilt from exact sources",
+          "the rebuilt candidate has the same tree",
+          "delivered once"
+        ]
+      },
+      {
+        "name": "aborted-after-ref-loss",
+        "family": "cutover",
+        "test": "test_aborted_batch_is_not_recreated_after_ref_loss",
+        "assertions": [
+          "an aborted batch is not recreated after ref loss",
+          "no candidate is re-pushed",
+          "main is unchanged"
+        ]
+      },
+      {
+        "name": "aborted-members-not-refrozen",
+        "family": "cutover",
+        "test": "test_aborted_members_are_not_refrozen_with_a_new_child",
+        "assertions": [
+          "a new child freezes without the aborted member",
+          "the new child is delivered",
+          "the aborted member stays out of the target"
+        ]
+      },
+      {
+        "name": "escalation-never-gates",
+        "family": "control",
+        "test": "test_counter_escalates_a_red_head_but_never_gates",
+        "assertions": [
+          "a red head past the budget escalates once",
+          "an ordinary repair is still allocated",
+          "the open repair is recovered without a second escalation",
+          "the repaired green head promotes and consumes no attempt"
+        ]
+      },
+      {
+        "name": "simultaneous-visits",
+        "family": "cutover",
+        "test": "test_simultaneous_visits_publish_once",
+        "assertions": [
+          "a visit inside another's critical section is locked out",
+          "each push happens once",
+          "a free race between two trains still pushes once",
+          "every child delivered"
+        ]
+      },
+      {
+        "name": "hold-and-rejection",
+        "family": "cutover",
+        "test": "test_hold_and_rejection_outrank_green",
+        "assertions": [
+          "an explicit hold outranks green",
+          "releasing the hold delivers",
+          "a required rejection outranks green",
+          "no repair for a rejection"
+        ]
+      },
+      {
+        "name": "unavailable-ci-other-target",
+        "family": "cutover",
+        "test": "test_unavailable_ci_blocks_one_target_while_another_advances",
+        "assertions": [
+          "an unavailable provider blocks only its own target",
+          "the other target delivers in the same visit",
+          "nothing unobserved is treated as green",
+          "the blocked target delivers once checks return"
+        ]
+      },
+      {
+        "name": "slow-ci",
+        "family": "cutover",
+        "test": "test_slow_ci_waits_without_repair",
+        "assertions": [
+          "a slow check run stays pending without a repair or failure",
+          "another target advances while the slow run waits",
+          "the lease is released between visits, never held across the wait",
+          "the late success delivers once"
+        ]
+      }
+    ],
+    "historical": {
+      "crisp-horizon-90": {
+        "reconstructed": "test_crisp_horizon_90_children_already_in_epic_complete_it",
+        "capture": "gap"
+      },
+      "vivid-quest-44": {
+        "reconstructed": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner",
+        "capture": "gap"
+      },
+      "epic-verifiers": {
+        "reconstructed": "test_epic_verifiers_review_verdict_keyed_by_tree",
+        "capture": "gap"
+      },
+      "stale-branch-owners": {
+        "reconstructed": "test_stale_branch_owner_lease_is_per_session_and_expires",
+        "capture": "gap"
+      },
+      "brisk-beacon-64": {
+        "reconstructed": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress",
+        "capture": "gap"
+      },
+      "swift-delta-90": {
+        "reconstructed": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress",
+        "capture": "gap"
+      }
+    },
+    "historical_gaps": [
+      "brisk-beacon-64",
+      "crisp-horizon-90",
+      "epic-verifiers",
+      "stale-branch-owners",
+      "swift-delta-90",
+      "vivid-quest-44"
+    ],
+    "removed_controls": {
+      "guarded": [
+        "integration_adopt",
+        "integration_adopt_legacy_deliveries",
+        "integration_authorize_root",
+        "integration_bind_legacy_repositories",
+        "integration_cancel_preserving",
+        "integration_clear_stale_request",
+        "integration_close_delivered_pr",
+        "integration_development_engine_transfer",
+        "integration_development_sweep",
+        "integration_engine_transfer",
+        "integration_materialize_root",
+        "integration_migrate_provenance",
+        "integration_rebind_detached_repair",
+        "integration_rebind_repair",
+        "integration_rebind_reused_identity",
+        "integration_reconcile_unmaterialized",
+        "integration_record_noop",
+        "integration_recover_candidate_member",
+        "integration_recover_parent_head",
+        "integration_recover_preserved_repair",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_release_delegates",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_reopen_collection",
+        "integration_reserve_owner",
+        "integration_resolve_candidate_member",
+        "integration_retry_cleanup",
+        "integration_settle_delivered_batch",
+        "integration_settle_parked",
+        "integration_shadow_report",
+        "integration_waive_history"
+      ],
+      "already_retired_in_this_checkout": [
+        "integration_adopt",
+        "integration_adopt_legacy_deliveries",
+        "integration_bind_legacy_repositories",
+        "integration_cancel_preserving",
+        "integration_clear_stale_request",
+        "integration_development_sweep",
+        "integration_materialize_root",
+        "integration_migrate_provenance",
+        "integration_rebind_reused_identity",
+        "integration_reconcile_unmaterialized",
+        "integration_release_delegates",
+        "integration_retry_cleanup",
+        "integration_settle_delivered_batch",
+        "integration_settle_parked",
+        "integration_shadow_report",
+        "integration_waive_history"
+      ]
+    }
+  },
+  "shadow": {
+    "families": [
+      "child_delivery",
+      "epic_readiness",
+      "lease_eligibility",
+      "observation",
+      "repair_progress"
+    ],
+    "classifications": [
+      "agreement",
+      "disagreement",
+      "unknown"
+    ],
+    "read_only_ports": "GitTruth read ports plus SELECT observation rows",
+    "action_ports": "none",
+    "installed_only_when": "integration.git_first == shadow",
+    "subjects": "reconciler-owned subjects only"
+  },
+  "cutover": {
+    "selector": "integration.git_first: shadow | active",
+    "train_selected_when": "The train when ``integration.git_first`` is ``active``; otherwise None.",
+    "service_refuses_train_beside_runtimes": false,
+    "daemon_only_tick_principal": "service",
+    "stage_two_revisions": [
+      "a00000000072_integration_ref_leases",
+      "a00000000073_git_batch_inputs",
+      "a00000000074_integration_check_evidence_commit_cache"
+    ]
+  }
+}
