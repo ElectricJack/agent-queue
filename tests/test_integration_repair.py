@@ -82,6 +82,24 @@ def test_repair_delegate_matches_full_root_ref_after_claim(task_branch):
     assert RepairService._delegate_task_matches(task, {"id": "operation"}, target, "p")
 
 
+@pytest.mark.parametrize("recorded,head,expected", [
+    ([], STARTING_SHA, True),
+    ([STARTING_SHA], STARTING_SHA, True),
+    ([], "f" * 40, True),
+    (["f" * 40], STARTING_SHA, False),
+    ([STARTING_SHA], "f" * 40, False),
+    ([STARTING_SHA, "f" * 40], STARTING_SHA, False),
+    (["f" * 40, STARTING_SHA], STARTING_SHA, False),
+    ([STARTING_SHA, STARTING_SHA], STARTING_SHA, False),
+    ({}, STARTING_SHA, False),
+    (None, STARTING_SHA, False),
+])
+def test_unchanged_close_names_nothing_or_only_the_confirmed_head(recorded, head, expected):
+    from src.integration.noop_repair import names_only_the_confirmed_head
+
+    assert names_only_the_confirmed_head(recorded, head) is expected
+
+
 def _artifact() -> ArtifactSnapshot:
     return ArtifactSnapshot(
         playbook_id="hierarchical-delivery",
@@ -1744,11 +1762,40 @@ async def test_completed_noop_on_exact_green_head_passes_without_no_progress(db,
     assert (await _repair_stage(db, "operation", ordinal))["attempts"] == 1
 
 
+@pytest.mark.parametrize("recorded,settles", [
+    ([], True),
+    ([STARTING_SHA], True),
+    (["f" * 40], False),
+    ([STARTING_SHA, "f" * 40], False),
+])
+async def test_noop_settlement_settles_a_close_that_named_the_unchanged_head(db, recorded, settles):
+    service, _delegate, subject = await _closed_green_parent(db, escalated=True)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_completion_records).values(
+            commits=json.dumps(recorded)))
+    if not settles:
+        before = await _repair_stage(db, "operation", 1)
+        assert (await service.reevaluate("operation", expected_subject=subject))["outcome"] == "blocked"
+        assert await _repair_stage(db, "operation", 1) == before
+        return
+    preview = await service.reevaluate("operation")
+    assert preview["outcome"] == "would_reevaluate", preview
+    assert (await _apply_noop_preview(service, preview))["outcome"] == "reevaluated"
+    stage = await _repair_stage(db, "operation", 1)
+    assert stage["state"] == "passed"
+    proof = stage["dossier"]["green_subject_verification"]["close_proof"]
+    assert proof["completion_id"] == "noop-completion"
+    assert proof["completion"]["commits"] == json.dumps(recorded)
+    assert (await db.get_integration_operation("operation"))["verifier_task_id"]
+    assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+
+
 @pytest.mark.parametrize("invalid", [
     "missing", "wrong_head", "wrong_generation", "wrong_producer", "wrong_version",
     "partial", "infrastructure", "newer_red", "cancelled", "held", "human_gate",
     "live_writer", "canonical_head_moved", "not_completed", "unresolved_write",
-    "incomplete_audit", "incomplete_accepted_close", "nonpass", "committed_completion",
+    "incomplete_audit", "incomplete_accepted_close", "nonpass", "authored_completion",
+    "committed_and_authored", "wrong_dossier_head",
     "introduced_commit", "remote_moved", "locked_workspace", "live_session", "other_incident",
 ])
 async def test_noop_recovery_refuses_incomplete_stale_or_blocked_green(db, invalid):
@@ -1801,10 +1848,20 @@ async def test_noop_recovery_refuses_incomplete_stale_or_blocked_green(db, inval
         if invalid == "incomplete_accepted_close":
             await conn.execute(update(task_metadata).where(task_metadata.c.key == "accepted_close")
                                .values(value="{}"))
-        if invalid in {"nonpass", "committed_completion"}:
+        if invalid == "nonpass":
+            await conn.execute(update(task_completion_records).values(outcome="fail"))
+        if invalid == "authored_completion":
             await conn.execute(update(task_completion_records).values(
-                **({"outcome": "fail"} if invalid == "nonpass" else {"commits": json.dumps([STARTING_SHA])})
-            ))
+                commits=json.dumps(["f" * 40])))
+        if invalid == "committed_and_authored":
+            await conn.execute(update(task_completion_records).values(
+                commits=json.dumps([STARTING_SHA, "f" * 40])))
+        if invalid == "wrong_dossier_head":
+            changed = dict((await _repair_stage(db, "operation", 1))["dossier"])
+            changed["branch_sha"] = "f" * 40
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.ordinal == 1
+            ).values(dossier=changed))
         if invalid in {"introduced_commit", "other_incident"}:
             changed = dict((await _repair_stage(db, "operation", 1))["dossier"])
             if invalid == "introduced_commit":
