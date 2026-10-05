@@ -6500,3 +6500,31 @@ register_record_schema_events(metadata)
 from src.knowledge.extraction_schema import register_extraction_schema  # noqa: E402
 
 register_extraction_schema(metadata)
+
+# Human instructions survive supervisor sessions and message consumption.
+operator_decisions = Table(
+    "operator_decisions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("object_kind", Text, nullable=False),
+    Column("object_id", Text, nullable=False),
+    Column("effect", Text, nullable=False),
+    Column("operator", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("recorded_by", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("releases", Text, ForeignKey("operator_decisions.id"), nullable=True),
+    CheckConstraint("object_kind IN ('task', 'batch', 'operation')",
+                    name="ck_operator_decisions_object_kind"),
+    CheckConstraint("effect IN ('note', 'hold', 'release')",
+                    name="ck_operator_decisions_effect"),
+    CheckConstraint("(effect = 'release') = (releases IS NOT NULL)",
+                    name="ck_operator_decisions_release"),
+    UniqueConstraint("project_id", "idempotency_key", name="uq_operator_decisions_request"),
+    UniqueConstraint("releases", name="uq_operator_decisions_release"),
+    Index("ix_operator_decisions_object", "project_id", "object_kind", "object_id"),
+)

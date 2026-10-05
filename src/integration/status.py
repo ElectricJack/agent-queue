@@ -281,6 +281,8 @@ class IntegrationStatusService:
             .order_by(integration_subjects.c.created_at, integration_subjects.c.id)
             .limit(100),
         )
+        from src.operator_decisions import history_on, related_on
+
         subjects = []
         for row in rows:
             journal = await self._one(
@@ -292,7 +294,13 @@ class IntegrationStatusService:
                 .order_by(integration_subject_journal.c.seq.desc())
                 .limit(1),
             )
-            subjects.append({**row, "last_record": journal})
+            refs = set()
+            for kind, identity in (("task", row.get("task_id")),
+                                   ("batch", row.get("batch_id"))):
+                if identity:
+                    refs.update(await related_on(conn, kind, identity))
+            subjects.append({**row, "last_record": journal,
+                             "operator_decisions": await history_on(conn, project_id, refs)})
         return {
             "projection_kind": "subjects",
             "project_id": project_id,
@@ -301,6 +309,7 @@ class IntegrationStatusService:
             "generation": project["hierarchical_integration_generation"],
             "repository_id": project["integration_repository_id"],
             "subjects": subjects,
+            "operator_decisions": await history_on(conn, project_id),
         }
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
@@ -616,6 +625,9 @@ class IntegrationStatusService:
             )
             visits = self._train_visits(project_id)
             evidence = await self._train_evidence_on(conn, visits)
+            from src.operator_decisions import history_on
+
+            decisions = await history_on(conn, project_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
@@ -630,6 +642,7 @@ class IntegrationStatusService:
             # compare-and-set token `edit_project` requires, so it stays.
             "generation": project["hierarchical_integration_generation"],
             "repository_id": project["integration_repository_id"],
+            "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
             "blockers": _sorted_blockers(blockers),
@@ -675,7 +688,7 @@ class IntegrationStatusService:
         table = integration_batches
         rows = await self._all(
             conn,
-            select(table.c.id, table.c.repository_id, table.c.target_ref, table.c.intent,
+            select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
                    table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
@@ -705,7 +718,12 @@ class IntegrationStatusService:
         )
         from src.integration.batches import candidate_ref
 
+        from src.operator_decisions import history_on, related_on
+
         for row in rows:
+            row["operator_decisions"] = await history_on(
+                conn, row["project_id"], await related_on(conn, "batch", row["id"])
+            )
             row["candidate_ref"] = candidate_ref(row["id"])
             row["members"] = [
                 {"task_id": m["task_id"], "source_sha": m["source_sha"]}
@@ -773,6 +791,10 @@ class IntegrationStatusService:
         batch: dict[str, Any], visits: dict[tuple[str, str], dict[str, Any]]
     ) -> list[dict[str, Any]]:
         ref = batch["id"]
+        holds = [row for row in batch.get("operator_decisions", []) if row["active"]]
+        if holds:
+            return [_blocker("operator_decision_hold", row["decision"], row["id"])
+                    for row in holds]
         if batch["intent"] == "aborted":
             return [_blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
         if batch["intent"] == "paused":

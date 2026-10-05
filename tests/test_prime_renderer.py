@@ -992,6 +992,8 @@ class TestPrimeDocumentModel:
 #: ``aq <group> <sub>`` phrase -> the command name ``check_command_scope``
 #: gates, or ``None`` for a CLI verb that never reaches the daemon.
 _CLI_TO_COMMAND: dict[str, str | None] = {
+    "aq decision record": "decision_record",
+    "aq decision list": "decision_list",
     "aq test": None,
     # The ``[aq question answered]`` marker AQ itself types, not a command.
     "aq question answered": None,
