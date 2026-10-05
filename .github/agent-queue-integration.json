@@ -21,9 +21,10 @@
       "E2E CLI (claims)",
       "E2E CLI (cli)",
       "E2E CLI (graphs)",
-      "E2E CLI (failover)"
+      "E2E CLI (failover)",
+      "Dashboard (typecheck/build)"
     ],
-    "version": "ci-4c6e0c2a989c"
+    "version": "ci-4f7c710bba01"
   },
   "schema": "aq.integration-trust.v1"
 }

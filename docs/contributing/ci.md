@@ -38,7 +38,7 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
 | [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `main` | Verifies the pushed SHA's integration attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
@@ -64,12 +64,13 @@ flowchart TD
     C --> G[migration-and-slow]
     C --> H[postgres-integration]
     C --> I[E2E CLI: claims, cli, graphs, failover]
+    C --> J[Dashboard: typecheck and build]
 ```
 
 ### Which pull requests run
 
-Every pull request into `main` runs the matrix, from a fork or a task branch
-alike, with two exceptions decided by the job's `if:`:
+Every pull request into `main` runs the Python matrix, E2E groups and dashboard
+job, from a fork or a task branch alike, with two exceptions decided by each job's `if:`:
 
 * A **draft** runs nothing until it is marked ready for review; the
   `ready_for_review` event then starts the run.
@@ -137,6 +138,29 @@ Wall-clock budgets still skip in the `postgres-integration` arm: they need
 `AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
 them measure the runner rather than the code. Statement-count budgets, which
 are deterministic, do run. See [testing](testing.md#latency-budgets).
+
+### Dashboard typecheck and build
+
+`Dashboard (typecheck/build)` is a required check for both parent snapshots and
+root train candidates. It checks out and verifies the exact event SHA, sets up
+Node 24, caches npm downloads using the root `package-lock.json`, and runs
+`npm ci` from the repository root to install both npm workspaces. It then runs
+`npm run typecheck` and `npm run build` in `dashboard/`. Both scripts generate
+the TypeScript client from the committed `openapi.json`; the build runs
+`tsc -b` followed by Vite's production build. A TypeScript error or failed build
+fails the check. The job has a 15-minute total deadline, with separate 8-minute
+install, 2-minute typecheck and 3-minute build limits.
+
+The sixteen required check names and their derived version `ci-4f7c710bba01`
+are recorded in [the train policy](../config/agent-queue-train-policy.json) and
+[the App trust manifest](../../.github/agent-queue-integration.json). The
+operator must approve rotation from `ci-4c6e0c2a989c` before rebinding the
+installed policy and updating the `AQ_INTEGRATION_REQUIRED_CHECK_VERSION`
+Actions variable. Existing train operations retain their frozen policy
+snapshots; landing the workflow and manifest does not update those snapshots
+or the installed project policy. Follow the
+[train policy handoff](../config/agent-queue-train-policy.md) and
+[App-mode rotation procedure](../config/app-mode-train.md#95-changing-the-required-check-set-rotation).
 
 ### Default shard timings and refresh
 
@@ -440,8 +464,9 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
   `gh workflow run tests.yml --ref <branch>` for either.
 * It does not lint. Ruff runs in [pre-commit](checks.md#lint) if you install
   the hooks, and nowhere else.
-* It does not build or test the dashboard. `npm run lint`, `typecheck` and
-  `vitest` are local-only ([checks](checks.md#frontend)). The dashboard
+* It does not run dashboard lint or the Vitest suite; those remain local
+  checks ([checks](checks.md#frontend)). Typechecking and the production build
+  run in `Dashboard (typecheck/build)`. The dashboard
   *server*'s Python suites (`tests/test_dashboard_server_*.py`) do run, in the
   default arm like any other test file; they stage a small synthetic bundle
   rather than building the real one.
@@ -455,11 +480,11 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A PR into `main` opened, updated, reopened or marked ready | Fifteen check runs on the PR's merge with its base |
-| A push to `aq/integration/**` or `aq/parent/**` | Fifteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A PR into `main` opened, updated, reopened or marked ready | Sixteen check runs on the PR's merge with its base |
+| A push to `aq/integration/**` or `aq/parent/**` | Sixteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
-| A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also fifteen `unattested-ci / …` check runs; then one `Warm venv cache` run, which saves the venv cache only if `main`'s key is new |
+| A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also sixteen `unattested-ci / …` check runs; then one `Warm venv cache` run, which saves the venv cache only if `main`'s key is new |
 | The hourly schedule | One `Warm venv cache` run on `main`, which installs and saves only on a miss |
 
 ## State ownership
