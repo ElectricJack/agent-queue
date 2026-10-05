@@ -412,19 +412,32 @@ children afterwards used to sit on the frontier in between, and pool workers lea
   `stale_container_claim_clauses` (`src/database/queries/claim_queries.py`) names the
   cases and `release_stale_container_claim` releases them to PAUSED with no agent. It
   proves the same exact holder `noop_repair.stale_parent_claim_on` does for the green-noop
-  repair path (`sharp-glacier-30`): exactly one session on the task, a pool worker whose
-  `state` and `desired_state` are both `stopped` (a restart cannot revive it), still
-  `active` mid-claim, still fenced to a concrete tmux `instance_token`, at the task's
-  *current* `claim_epoch` (a requeued or re-leased pointer carries a newer one), with no
-  operator hold, no agent on other work, no workspace locked to the task or that agent,
-  no child outside COMPLETED, and a checkpoint carrying both a collection episode and a
-  head of its own — the aggregate the parent runtime is there to verify. It qualifies on
+  repair path (`sharp-glacier-30`) — and the holder is the one the **task** names, not the
+  one pointing back at it. A real pool stop clears `sessions.task_id` and
+  `sessions.claim_phase` (`release_container_claim` hands the task back and drains the
+  seat; `terminate_pool_session` does the same on any other drain), so
+  `task_metadata.claimed_by_session` is the only surviving record of the claim and a
+  `sessions.task_id == tasks.id` join matches nothing at all — which is why the reconciler
+  never fired on `bold-crest-75` or `calm-quest-88` and every restart instead logged the
+  `IN_PROGRESS → READY` recovery reset followed by the container release back to
+  `IN_PROGRESS` (`fleet-delta-97`). Both proofs therefore read that record: the session
+  it names must be a pool worker whose `state` and `desired_state` are both `stopped` (a
+  restart cannot revive it), not mid-preparation on a claim nobody ever activated, still
+  fenced to a concrete tmux `instance_token`, at the task's *current* `claim_epoch` (a
+  requeued or re-leased claim carries a newer one), not holding some other task, and with
+  no other live session still claiming this one — all of which, plus no operator hold, no
+  agent on other work, no workspace locked to the task or that agent, no child outside
+  COMPLETED, and a checkpoint carrying both a collection episode and a head of its own —
+  the aggregate the parent runtime is there to verify. It qualifies on
   `never_leaseable_container()` — the container flag *or* any child — so the line it draws
   is exactly the frontier's own: a writer that hands a task's lifecycle back must not draw
   it narrower than the one that took it away. The release
   itself is `release_historical_pool_claim`, so only the exact task and the exact session
   change: a stopped worker's slot, agent state, claim file and workspace lock are left as
-  the successor found them. `task delete` runs it for the parent in its own transaction
+  the successor found them. It is handed the claim record as the holder's authority and
+  clears it in the same transaction, since that record *is* the claim and leaving it is
+  what made the strand invisible in the first place. `task delete` runs it for the parent
+  in its own transaction
   (`_delete_task_body`, before `settle_containers`), which is what deleting a container's
   last child needs — §7 cannot complete the parent, and the parent-episode readiness
   projection refuses anything that is not PAUSED — as does `task archive`, whose archived

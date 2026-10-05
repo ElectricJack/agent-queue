@@ -8043,6 +8043,9 @@
     },
     "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
       "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
+      "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
     }
   },
   "exclusions": {
@@ -10292,6 +10295,7 @@
     "8de402c1bcec97926a962b4285dd2b329e62b6b4b92eb560f9493bdc05946796",
     "8de7432c2ab846d8cbe4992d4d5c739e8d47427132052279cc05fbab6f92862e",
     "8df6facee999f81cf1db1547eb91e8adede81a46ab0289c527f7f479210a2123",
+    "8e01babcdd5b54273660efab220d1253ec09b813a91d720b89ac637f2a3a5ca1",
     "8e2158e6d9b9d8b971116ef5fac6d31d6ded44cec6b0d80e4b7df99c9e3bc4d9",
     "8e25ed3253a63b6d528575f0d4f9d99cd77dfa193d83679ffa9ac9af02636810",
     "8e44cb80e27dc7d555034e25f0bb7d85596d0617b04bcf06b3d068ba8fb0e6a9",
@@ -10301,6 +10305,7 @@
     "8e6aee78fef57fb14753ac5fd7e7e97b2da51529abce18745bcae0e0350260d9",
     "8e8135a42c2ae9c7e0add6f9ec94accd49709f34f38323e55ec401983acdd4c6",
     "8e9dd12b19518d34788c4d9c71699183682229aedd3d06cf96b44bb8905913f8",
+    "8ec4cc55cb631f6cb3e5c159858d42df6ae74f22def86e4fb20fc6c4313eaea9",
     "8f17cae7948d627641c090d6f9eccd18032ce74893a7602775d822c6ab713376",
     "8f3ebdff317658e40ecd97b16d8503c6b27e2672b6ff68311e4a3c8ccd2c2490",
     "8f564090d4ddaf4d0ffc667ef70d3e0a0cab17a9da64838f0d190f675f809ab8",
@@ -10893,6 +10898,7 @@
     "b56a44a01487182151c50a05843fb5a1afd8c4cd026a2d3804aaf6ca04a0afed",
     "b572186c6cfa716faa65711f21f5ba9c6296be447ad928cf24291402951f8d14",
     "b57d185d7bcfb94f117fbe79d4d5acb5f4a317bc1a4034b9ccfe12e391afb031",
+    "b57e0493bea4ef9eb62b165827e7a345b4c761886d9acddb5bbff9424f4f6279",
     "b5ea33838f48d54c05f15af238ecaf7b638d3e7d96e60bd5be89307e41bce279",
     "b5f3aa5feacbbb01663166b8c05ee7438c8ca8f4f617196c76728b582d1f7454",
     "b60be1b2a026b63bffc59dcb17edc2132f7485af8a23c8c1d07add280248bfab",
@@ -12644,10 +12650,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
-      "line": 1524,
+      "line": 1594,
       "owner": "ClaimQueryMixin._release_stale_container_claim_on",
       "call": "log_event",
-      "owner_fingerprint": "cd3633b55a9afb93efcbfcfa9abe0662c01681f906e88d6e23e2be889bf610bc",
+      "owner_fingerprint": "f4c16c961ffa7c4364b8713dfc9b61be23d715455e54ca7e4b11886dbc017a03",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
@@ -14055,6 +14061,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 1977,
+      "owner": "ClaimQueryMixin.release_historical_pool_claim",
+      "call": "delete",
+      "owner_fingerprint": "33f786f583e284469fe110ba22079b81831aed80c4ae9748522dbb2b46caff44",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     }
   },
   "generic_dependencies": {

@@ -4475,6 +4475,9 @@
         290
       ]
     },
+    "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
+      "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
+    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._release_claim_on": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
