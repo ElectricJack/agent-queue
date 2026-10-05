@@ -294,6 +294,15 @@ async def _close_on_owner(
             )
             # Even a failed delegate may have useful pushed work; preserve that
             # revision and let the next policy visit decide CI or another writer.
+            #
+            # A stage that ran out of budget while this exact fenced writer was
+            # attached gets expire's live-writer recheck first: the deadline
+            # bounds the wait for a writer, not the writer it already has, and
+            # refusing here left the worker holding a claim it could neither
+            # complete nor release.
+            await repair.defer_lapsed_writer_close(
+                conn, scope["operation_id"], task.id, now=now
+            )
             await repair.adopt_batch_repair_on(
                 conn,
                 scope["operation_id"],

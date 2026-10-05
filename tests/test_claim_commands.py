@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from sqlalchemy import update
@@ -513,6 +513,52 @@ class TestClaim:
         assert handler.orchestrator._hierarchy_repair_start.await_args.kwargs == {
             "repository_url": ""
         }
+
+    async def test_pool_repair_claim_starts_the_stage_budget(
+        self, handler, db, tmp_path, monkeypatch
+    ):
+        """A repair claim starts the stage clock it could not hold while queued.
+
+        A stage's deadline runs from activation, so a delegate the pool cannot
+        staff in time is claimed with its budget already spent -- and its close
+        is then refused for a repair attempt that never began, leaving the
+        worker holding a claim it could neither complete nor release. The claim
+        re-arms the stage instead (see
+        ``RepairService.start_claimed_stage_budget``).
+        """
+        from src.integration.repair import RepairService
+
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        repair_fence = await ownership.transfer(fence, "child", "repair")
+        handler.orchestrator._hierarchy_origin_and_fence = AsyncMock(
+            return_value=({"base_sha": "a" * 40}, repair_fence, "repair")
+        )
+        handler.orchestrator._hierarchy_repair_start = AsyncMock(return_value="a" * 40)
+        start_budget = AsyncMock(return_value={"outcome": "started"})
+        sid, _wd = await pool_session(db, tmp_path)
+
+        monkeypatch.setattr(RepairService, "start_claimed_stage_budget", start_budget)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed" and result["task"]["id"] == "child"
+        # Runs before the ownership exclusion, so the pool claim never holds a
+        # row lock ahead of the repair rows it re-arms.
+        assert start_budget.await_args_list == [call("child")]
+
+    async def test_non_repair_pool_claim_does_not_touch_a_repair_stage(
+        self, handler, db, tmp_path, monkeypatch
+    ):
+        from src.integration.repair import RepairService
+
+        await self._hierarchy_task(db, tmp_path)
+        start_budget = AsyncMock(return_value={"outcome": "no_stage"})
+        sid, _wd = await pool_session(db, tmp_path)
+
+        monkeypatch.setattr(RepairService, "start_claimed_stage_budget", start_budget)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed" and result["task"]["id"] == "child"
+        start_budget.assert_not_awaited()
 
     async def test_collector_owned_hierarchy_branch_cannot_reset_or_activate_pool_claim(
         self, handler, db, tmp_path
