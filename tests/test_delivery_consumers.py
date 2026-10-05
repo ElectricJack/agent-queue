@@ -184,6 +184,101 @@ async def test_git_answers_each_shape_once(world):
     }
 
 
+async def test_git_first_observer_reuses_parent_target_and_revalidates_ordinary_identity(world, tmp_path):
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "reduced",
+                                truth=GitTruth(transport))
+    db.set_delivery_observer(observer)
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+    view = await observer.observe(["done"])
+    assert view.satisfied("done")
+    assert view.targets["done"].target_ref == "refs/heads/aq/epic"
+    async with db._engine.connect() as conn:
+        assert (await view.verified_on(conn, ["done"]))["done"].satisfied
+    # Ordinary parent retargeting invalidates the old view without an episode.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/elsewhere"))
+    async with db._engine.connect() as conn:
+        assert await view.verified_on(conn, ["done"]) == {}
+    assert not (await observer.observe(["done"])).satisfied("done")
+
+
+async def test_git_first_nested_targets_share_one_repository_fetch(world, tmp_path):
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "reduced",
+                                truth=GitTruth(transport))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    await db.create_task(Task(id="other-epic", project_id="p", repo_id="r", title="other",
+                              description="", branch_name="aq/missing-epic"))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "reopened")
+                           .values(parent_task_id="other-epic"))
+    real_snapshot = observer.truth.snapshot
+    observer.truth.snapshot = AsyncMock(wraps=real_snapshot)
+    view = await observer.observe(["done", "reopened"])
+    assert view.satisfied("done")
+    assert view.get("reopened").state is DeliveryState.UNKNOWN
+    assert len(view.snapshots) == 2
+    assert observer.truth.snapshot.await_count == 1
+
+
+async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_receipts(world, tmp_path):
+    from sqlalchemy import select
+
+    from src.database.queries.hierarchy_queries import (
+        ProjectIntegrationMode, delivered_same_parent_prerequisites_when_hierarchical,
+    )
+    from src.database.tables import task_branch_origins, task_delivery_receipts
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "reduced",
+                                truth=GitTruth(transport))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent", status=TaskStatus.READY))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=git(origin.clone, "rev-parse", "main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
+        ))
+    view = await observer.prerequisite_view("p", task_id="dependent")
+    assert view.satisfied("done")
+    assert await view.fresh()
+    async with db._engine.connect() as conn:
+        verified = await view.verified_on(conn, view.evidence)
+        for ids, expected in ((frozenset(), []), (frozenset(verified), ["dependent"])):
+            predicate = delivered_same_parent_prerequisites_when_hierarchical(
+                ProjectIntegrationMode(True, "r", ids),
+            )
+            assert (await conn.execute(select(tasks.c.id).where(
+                tasks.c.id == "dependent", predicate,
+            ))).scalars().all() == expected
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    async with db._engine.connect() as conn:
+        assert await view.verified_on(conn, ["done"]) == {}
+
+
 async def test_status_and_explanations_agree_with_git(world):
     db, _origin, _observer, _service = world
     status = await IntegrationStatusService(db).status("p")
