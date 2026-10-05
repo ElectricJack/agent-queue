@@ -552,6 +552,19 @@ class WorkspaceMixin:
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
             raise ValueError("task is not bound to the designated repository")
+        from src.integration.repair import OrdinaryRepairService
+
+        ordinary = await OrdinaryRepairService(self.db).input(task.id)
+        if ordinary is not None:
+            from src.integration.lock import BranchLock
+
+            if (ordinary["repository_id"] != repository_id
+                or ordinary["target_ref"].removeprefix("refs/heads/") != task.branch_name):
+                raise ValueError("ordinary repair task no longer names its allocated target")
+            target = BranchKey(repository_id=repository_id, branch=ordinary["target_ref"])
+            fence = await BranchLock(self.db).acquire(target, task.id, role="repair")
+            return ({"base_sha": ordinary["starting_sha"], "reserved": True,
+                     "materialized": True, "ordinary_repair": True}, fence, "repair")
         repair = await self.db.get_active_integration_repair_for_task(task.id)
         if repair is not None:
             if repair.get("writer_kind") != "repair_delegate":
@@ -724,6 +737,12 @@ class WorkspaceMixin:
         tracking = f"refs/remotes/origin/{branch}"
         await self.git.afetch_origin(workspace, repository_url=repository_url)
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
+        if origin.get("ordinary_repair"):
+            if not is_valid_git_oid(head):
+                raise GitError("ordinary repair target is missing")
+            # Remote movement is progress, including a rebuilt candidate.
+            # Never reset it to an obsolete allocation input or recreate a ref.
+            return head
         progress = origin.get("preserved_progress")
         if progress:
             preserved = await self.git.als_remote_ref(workspace, progress["ref"])

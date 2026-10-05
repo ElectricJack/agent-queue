@@ -824,18 +824,24 @@ class GitPlugin(InternalPlugin):
             principal, project, publication.task_id,
             checkout_path=checkout_path, repository_url=publication.repository_url,
         )
-        oid = await git.apush_validated_delivery(
-            checkout_path,
-            base_ref,
-            publication.branch,
-            publication.branch,
-            expected_remote_oid=expected_remote_oid,
-            repository_url=publication.repository_url,
-            event_bus=self._ctx._bus,
-            project_id=args.get("project_id"),
-            identity_policy=policy,
-            inherited_oids=await self._source_ci_inherited_oids(publication.task_id),
-        )
+        from src.integration.repair import OrdinaryRepairService
+
+        inherited = await self._source_ci_inherited_oids(publication.task_id)
+        async with OrdinaryRepairService(self._db._db).publication(
+            publication.task_id, branch=publication.branch,
+        ):
+            oid = await git.apush_validated_delivery(
+                checkout_path,
+                base_ref,
+                publication.branch,
+                publication.branch,
+                expected_remote_oid=expected_remote_oid,
+                repository_url=publication.repository_url,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+                identity_policy=policy,
+                inherited_oids=inherited,
+            )
         return publication.branch, oid, list(policy.notes)
 
     async def _source_ci_inherited_oids(self, task_id: str) -> list[str]:

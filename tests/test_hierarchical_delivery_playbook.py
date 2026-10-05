@@ -238,3 +238,27 @@ async def test_hosted_parent_ci_event_verifies_without_a_live_workspace(command_
     assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
     checkpoint = await db.get_integration_checkpoint("parent")
     assert checkpoint["verified_sha"] == head_sha
+
+
+def test_parent_exact_green_precedes_legacy_dossier_writer_budget_and_stop_proof():
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.subjects import Primitive, SubjectKind
+    from tests.test_root_integration_playbook import _green_first_policy_case
+
+    decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                       ParentPolicyFacts, legacy_repair_dossier={"exhausted": True})
+    assert (decision.rule, decision.request.primitive) == ("observe-green", Primitive.CI_OBSERVE)
+
+
+def test_parent_green_still_obeys_holds_rejection_and_competing_lease():
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.subjects import HoldFacts, SubjectKind
+    from tests.test_root_integration_playbook import _green_first_policy_case
+
+    for hold in ("operator_hold", "review_rejected"):
+        decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                           ParentPolicyFacts, holds=(HoldFacts(kind=hold),))
+        assert decision.rule == "human-hold"
+    decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                       ParentPolicyFacts, competing_lease=True)
+    assert decision.rule == "competing-lease"

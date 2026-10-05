@@ -53,6 +53,7 @@ class ParentPolicyFacts(ParentSubjectFacts):
     """Typed additions to the parent observer; all participate in its digest."""
 
     identity_moved: bool = False
+    competing_lease: bool = False
     failed_child_count: int = 0
     collection_members: tuple[MemberRef, ...] = ()
     collector_fence: Fence | None = None

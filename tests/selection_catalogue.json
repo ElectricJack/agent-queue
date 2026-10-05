@@ -1406,7 +1406,7 @@
       ]
     }
   },
-  "digest": "sha256:15dafa89a731846abd76e1ab703508f79ca43991e55ab0b19dbf3cd1ddfc165d",
+  "digest": "sha256:d07970cf6db10470a25c17921276291c06a069ce82b251f2f5f99988ca449f9a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6621,6 +6621,8 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.parent_adapters",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7703,8 +7705,10 @@
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
       ],
       "markers": [
         "parametrize"
@@ -8066,8 +8070,11 @@
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.owner_recovery",
@@ -8076,6 +8083,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.plugins.internal.git",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler",
@@ -13274,11 +13282,14 @@
         "src.git.github_app",
         "src.integration.candidates",
         "src.integration.main_promotion",
+        "src.integration.models",
         "src.integration.release",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [],
