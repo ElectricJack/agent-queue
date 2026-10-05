@@ -23,7 +23,12 @@ from src.integration.development import DevelopmentBusy, publisher_exclusion
 from src.integration.migration_heads import declaration
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError, StaleFence
-from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
+from src.integration.regeneration import (
+    DEFAULT_REGENERATE_COMMAND,
+    GeneratedMergeConflict,
+    MissingRegenerator,
+    merge_generated_tree,
+)
 from src.integration.source_trailer import source_identity, with_source_trailers
 from src.integration.subjects import (
     AncestryArgs,
@@ -50,7 +55,10 @@ class RetainedRepository:
     store: Path
     binding: GitHubRepositoryBinding
     default_branch: str
-    regenerate: str | None = None
+    #: Command that rebuilds the paths ``.gitattributes`` marks generated.
+    #: ``None`` is a deliberate configuration gap the merge reports as
+    #: ``no_regenerator``; it never becomes an empty command.
+    regenerate: str | None = DEFAULT_REGENERATE_COMMAND
     regenerate_timeout_seconds: int = 600
 
 
@@ -509,10 +517,16 @@ class GitOperations:
                 try:
                     with commit_identity(self.git.resolve_commit_identity()):
                         tree = await merge_generated_tree(
-                            self.git, repo.store, args,
-                            command=(repo.regenerate or "") if regenerate_generated else "",
+                            self.git, repo.store, args, command=repo.regenerate,
                             timeout_seconds=repo.regenerate_timeout_seconds,
+                            regenerate=regenerate_generated,
                         )
+                except MissingRegenerator as exc:
+                    # A missing regenerator is the project's configuration, not a
+                    # member's content: it must never park the member.
+                    return {"outcome": "no_regenerator", "head": current,
+                            "members": results, "member": member.task_id,
+                            "reason": exc.reason}
                 except GeneratedMergeConflict as exc:
                     files = sorted({line.split("\t", 1)[1]
                                     for line in exc.stdout.splitlines()[1:]
@@ -560,6 +574,11 @@ class GitOperations:
                 if actual != args.base_sha:
                     result.update(outcome="base_moved", observed_sha=actual)
                 outcome = result.pop("outcome")
+                if outcome == "no_regenerator":
+                    # The closed primitive outcomes cannot carry a project
+                    # configuration gap; ``unknown`` keeps it out of the
+                    # conflict route that would park a member.
+                    return PrimitiveOutcome.unknown(p, str(result.get("reason")))
                 return PrimitiveOutcome(primitive=p, outcome=outcome, detail=result)
         except (GitError, BranchOwnershipError, DevelopmentBusy, ValueError) as exc:
             return PrimitiveOutcome.unknown(p, str(exc))
