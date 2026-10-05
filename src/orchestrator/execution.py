@@ -1462,6 +1462,7 @@ class ExecutionMixin:
         managed_parent_suspended = False
         managed_parent_completed = False
         train_leaf_root = False
+        hier_child_leaf = False
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
@@ -1659,6 +1660,15 @@ class ExecutionMixin:
                                 task.parent_task_id is None
                                 and getattr(project, "hierarchical_integration_mode", None)
                                 == "train"
+                            )
+                            # A child is delivered by collection into its
+                            # container's branch.  When no collector will ever
+                            # take it, it opens its own pull request to the
+                            # default branch below; a container that has not
+                            # suspended itself yet is not stranded, so the
+                            # close leg is free.
+                            hier_child_leaf = bool(
+                                task.parent_task_id is not None and hierarchy_managed
                             )
                 else:
                     pr_url, completed_ok = await self._run_completion_pipeline(ctx)
@@ -1900,6 +1910,39 @@ class ExecutionMixin:
                 logger.warning(
                     "Task %s: could not open the train root pull request; "
                     "the root PR reconciler will retry",
+                    task.id,
+                    exc_info=True,
+                )
+
+        # A completed child is delivered by collection into its container's
+        # branch, and nothing in a healthy train ever opens it a pull request:
+        # only a root does (``open_for_epic`` refuses a parented task).  When
+        # the container has no collector left to carry it -- a paused epic whose
+        # episode lost its operation, an episode no Subject walks after the
+        # legacy engine's removal, or a container with no collection at all --
+        # this head would otherwise sit on a pushed branch forever
+        # (bright-rapids-84.1/.2/.3/.4/.7/.9, pr_url NULL).  Open it to the
+        # default branch instead.  Best-effort like the root leg above: a
+        # GitHub failure must not undo a committed COMPLETED, and the
+        # ``stranded_child`` line of ``stall.sweep`` says so out loud.
+        if hier_child_leaf and new_status == TaskStatus.COMPLETED:
+            from src.integration.stranded_children import (
+                open_stranded_child_pull_request,
+            )
+
+            try:
+                opened = await open_stranded_child_pull_request(
+                    self.db, self.git, task.id
+                )
+                logger.info(
+                    "Task %s: stranded child pull request outcome: %s (%s)",
+                    task.id, opened["outcome"], opened.get("reason"),
+                )
+                pr_url = opened.get("pr_url") or pr_url
+            except Exception:
+                logger.warning(
+                    "Task %s: could not open a pull request for a child no "
+                    "collector will deliver; stall.sweep will name it",
                     task.id,
                     exc_info=True,
                 )

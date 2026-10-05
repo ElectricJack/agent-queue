@@ -505,6 +505,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _local_model_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
         _unadmitted_parent_findings(ctx, active),
+        _stranded_child_findings(ctx, now),
         _reviewed_file_guard_findings(ctx, active),
         _orphaned_pr_findings(ctx, active, now),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
@@ -570,6 +571,48 @@ async def _validation_findings() -> list[dict]:
         return []
     return [_finding("validation_db", None, f"{_VALIDATION_CONTAINER} is {state}",
                      container=_VALIDATION_CONTAINER, state=state)]
+
+
+async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Completed children whose container cannot deliver their pushed branch.
+
+    Both existing pull-request lines require a pull request to already be on the
+    row, so neither sees a completed task with ``pr_url`` NULL -- which is
+    exactly how bright-rapids-84.1/.2/.3/.4/.7/.9 stranded.  This line reports
+    the missing one and names which part of the container's path is gone.
+    """
+    from src.integration.stranded_children import (
+        STRANDED_CHILD_AFTER_SECONDS,
+        stranded_child_statement,
+    )
+
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                stranded_child_statement(
+                    completed_before=now - STRANDED_CHILD_AFTER_SECONDS
+                )
+            )
+        ).mappings().all()
+    findings = []
+    for row in rows:
+        minutes = int((now - row["updated_at"]) / 60)
+        findings.append(_finding(
+            "stranded_child",
+            row["project_id"],
+            f"{row['task_id']} completed {minutes}m ago on branch {row['branch']} with "
+            f"no pull request and no delivery, and its container {row['parent_task_id']} "
+            f"is {row['parent_status']} "
+            f"(checkpoint {_row(row, 'parent_state')}, operation "
+            f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
+            "no collector will carry it",
+            **{key: value for key, value in row.items() if key != "project_id"},
+        ))
+    return findings
+
+
+def _row(row, key: str) -> str:
+    return row[key] or "none"
 
 
 def stall_checks() -> list[DoctorCheck]:
