@@ -17,6 +17,10 @@ The steps, as the spec numbers them:
    pool profile and, for work the ``local_models`` gate refuses (priority at
    or above its threshold, a train bugfix, work others wait on), every
    self-hosted model.  A narrow lane's candidates form the preferred tier.
+2b. **Preference** — the filer's ``prefer_target``, a harness or a profile:
+   ``strict`` leaves only the candidates that serve it and refuses to fall
+   back, ``soft`` flags them so :func:`reselect` prefers them while they have
+   headroom.  A task that names none is untouched.
 3. **Availability** — an unlaunchable provider is dropped from the choice
    but stays in ``candidates``; nothing launchable is ``held``.
 4. **Classification needed?** — only when the answer could change the route.
@@ -25,15 +29,16 @@ The steps, as the spec numbers them:
    routed work (dependency, hold, origin, container, gate, already-assigned)
    is evidenced but never load: a worker cannot run it, so it must not
    consume a slot.
-6. **Choice** — a preferred-tier profile with a free slot, else the lowest
-   pressure overall; ties go to candidate order.
+6. **Choice** — a hold lane's preferred tier, else the task's own preference
+   with headroom, else a preferred-tier profile with a free slot, else the
+   lowest pressure overall; ties go to candidate order.
 7. **Reason** — one sentence naming what decided.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from src.models import TaskType
@@ -56,6 +61,13 @@ LOCAL_MODEL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
 
 PREFERRED = "preferred"
 FALLBACK = "fallback"
+
+#: How the router may refuse a task's ``prefer_target`` (mandatory routing §4).
+#: ``soft`` takes the target when it has headroom and routes normally when it
+#: does not; ``strict`` allows only the target and never falls back.
+PREFER_SOFT = "soft"
+PREFER_STRICT = "strict"
+PREFER_MODES: frozenset[str] = frozenset({PREFER_SOFT, PREFER_STRICT})
 
 #: The kinds a classification may answer: the policy's kinds that are task
 #: types, since ``task_route_apply`` may write the answer onto the task.
@@ -142,6 +154,13 @@ class TaskFacts:
     created_by_kind: str | None = None
     exclude_providers: frozenset[str] = frozenset()
     preferred_provider: str | None = None
+    #: The filer's routing preference: a harness id or a profile id the router
+    #: weighs before scoring.  ``None`` names nothing, which is the state of
+    #: every task filed without ``--prefer``.
+    prefer_target: str | None = None
+    #: ``soft`` (:data:`PREFER_SOFT`) or ``strict`` (:data:`PREFER_STRICT`);
+    #: :data:`PREFER_SOFT` for any value outside the vocabulary.
+    prefer_mode: str = PREFER_SOFT
     #: The task needs a workspace kind other than ``project-repo``/``vault``,
     #: which keeps it away from pools (``_claim_preparation_predicates``).
     needs_task_lifecycle: bool = False
@@ -171,6 +190,8 @@ class Candidate:
     lane: str | None = None
     hold: bool = False
     preferred_hosted: bool = False
+    #: The candidate serves the task's ``prefer_target`` (§4).
+    prefer_target: bool = False
     local: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -189,6 +210,7 @@ class Candidate:
             lane=(str(data["lane"]) if data.get("lane") else None),
             hold=bool(data.get("hold")),
             local=bool(data.get("local")),
+            prefer_target=bool(data.get("prefer_target")),
             preferred_hosted=bool(data.get("preferred_hosted")),
         )
 
@@ -226,6 +248,9 @@ class Selection:
     #: The preferred tier had a free slot and the choice came from it.
     took_preferred: bool
     took_hosted_preference: bool = False
+    #: The choice came from the task's preferred target (§4).  With no
+    #: preference, or when the target had no headroom, this is false.
+    took_preferred_target: bool = False
 
     @property
     def score(self) -> Score:
@@ -583,6 +608,99 @@ def _candidates(
     return _Pool(tuple(ordered), tuple(potential), None if ordered else reason)
 
 
+# -- step 2b: the task's preference ---------------------------------------------
+
+
+def prefer_target(task: TaskFacts) -> str:
+    """The preference *task* names, or ``""`` when it names none."""
+    return (task.prefer_target or "").strip()
+
+
+def prefer_mode(task: TaskFacts) -> str:
+    """The preference's mode, defaulting to ``soft`` for any other value."""
+    return task.prefer_mode if task.prefer_mode in PREFER_MODES else PREFER_SOFT
+
+
+def serves_preference(candidate: Candidate, target: str) -> bool:
+    """Whether *candidate* is the named profile or runs on the named harness.
+
+    A harness target matches every candidate on that harness (each class rung of
+    it); a profile target matches that one profile.  Filing resolves the name the
+    same way -- a profile id is taken as a profile id when one exists -- so the
+    resolution the filer saw is the one the planner applies.
+    """
+    return bool(target) and (candidate.profile_id == target or candidate.harness == target)
+
+
+def _flagged(candidates: tuple[Candidate, ...], target: str) -> tuple[Candidate, ...]:
+    return tuple(
+        replace(candidate, prefer_target=True) if serves_preference(candidate, target)
+        else replace(candidate, prefer_target=False)
+        for candidate in candidates
+    )
+
+
+def _apply_preference(pool: _Pool, task: TaskFacts) -> tuple[_Pool, str | None]:
+    """Step 2b: narrow the pool to the preference, or flag what serves it.
+
+    A strict preference admits only candidates that serve it: when none does,
+    the reason comes back and the caller reports ``no_candidates`` instead of
+    routing somewhere else, so the task waits for its target.  A soft
+    preference keeps the whole pool and only flags its own candidates, which
+    :func:`reselect` prefers while they have headroom.  With no preference the
+    pool comes back untouched.
+    """
+    target = prefer_target(task)
+    if not target:
+        return pool, None
+    matching = tuple(c for c in pool.candidates if serves_preference(c, target))
+    matching_potential = tuple(c for c in pool.potential if serves_preference(c, target))
+    if prefer_mode(task) == PREFER_STRICT:
+        if not matching and not matching_potential:
+            return _Pool((), (), "prefer_target_unavailable"), "prefer_target_unavailable"
+        return _Pool(matching, matching_potential, pool.reason), None
+    return _Pool(_flagged(pool.candidates, target), _flagged(pool.potential, target),
+                 pool.reason), None
+
+
+def preference_record(
+    task: TaskFacts,
+    candidates: Sequence[Candidate],
+    snapshot: Snapshot,
+    selection: Selection | None = None,
+) -> dict[str, Any] | None:
+    """The preference as the route decision records it, or ``None`` for none.
+
+    ``honoured`` is whether the chosen candidate serves the target.  For a
+    soft preference that did not win, ``fallback_reason`` says why: no
+    candidate serves it, its providers are not launchable, it had no headroom,
+    or an allowlisted benchmark arm pins the task's model.
+    """
+    target = prefer_target(task)
+    if not target:
+        return None
+    mode = prefer_mode(task)
+    matching = [c for c in candidates if serves_preference(c, target)]
+    honoured = selection is not None and serves_preference(selection.chosen, target)
+    reason: str | None = None
+    if not honoured:
+        if task.benchmark_arms:
+            reason = "benchmark_arm_pins_its_model"
+        elif not matching:
+            reason = "no_candidate_serves_the_target"
+        elif not any(launchable(c, snapshot) for c in matching):
+            reason = "provider_unavailable"
+        else:
+            reason = "no_headroom"
+    return {
+        "target": target,
+        "mode": mode,
+        "kind": "profile" if any(c.profile_id == target for c in candidates) else "harness",
+        "honoured": honoured,
+        "fallback_reason": reason,
+    }
+
+
 # -- steps 3, 5 and 6 ----------------------------------------------------------
 
 
@@ -654,6 +772,14 @@ def reselect(
         entry for entry in scored
         if entry[1].tier == PREFERRED and entry[2].load < entry[2].slots
     ]
+    # A hold lane pins the provider, so its preferred tier outranks even a
+    # preference that has headroom; every other preference tier falls below
+    # the task's own.
+    free_hold = [
+        entry for entry in scored
+        if entry[1].hold and entry[1].tier == PREFERRED and _free(entry[2])
+    ]
+    free_target = [entry for entry in scored if entry[1].prefer_target and _free(entry[2])]
     free_hosted = [
         entry for entry in scored
         if entry[1].preferred_hosted
@@ -665,13 +791,25 @@ def reselect(
     # documents keep their existing pressure and lane behavior.
     free_fallback = [entry for entry in scored if _free(entry[2])]
     hosted = any(candidate.preferred_hosted for candidate in candidates)
-    pool = free_preferred or free_hosted or (free_fallback if hosted else []) or scored
+    if free_hold:
+        pool, source = free_hold, "hold"
+    elif free_target:
+        pool, source = free_target, "preference"
+    elif free_preferred:
+        pool, source = free_preferred, "lane_preference"
+    elif free_hosted:
+        pool, source = free_hosted, "hosted_preference"
+    elif hosted and free_fallback:
+        pool, source = free_fallback, "pressure_fallback"
+    else:
+        pool, source = scored, "pressure_fallback"
     _index, chosen, _score = min(pool, key=lambda entry: (entry[2].pressure, entry[0]))
     return Selection(
         chosen=chosen,
         scores=tuple(entry[2] for entry in scored),
-        took_preferred=bool(free_preferred),
-        took_hosted_preference=not free_preferred and bool(free_hosted),
+        took_preferred=source in {"hold", "lane_preference"},
+        took_hosted_preference=source == "hosted_preference",
+        took_preferred_target=source == "preference",
     )
 
 
@@ -684,6 +822,7 @@ def _free(result: Score) -> bool:
 def selection_evidence(
     candidates: Sequence[Candidate], selection: Selection, snapshot: Snapshot,
     *, prefer_harnesses: Sequence[str] = (),
+    preference: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bounded fit, capacity and quota provenance for the actual fresh selection."""
     scores = {(s.profile_id, s.intelligence_class): s for s in selection.scores}
@@ -714,9 +853,14 @@ def selection_evidence(
             "quota_status": "observed" if facts.quota else "unknown",
             "quota": list(facts.quota[:8]), "preference_bypassed": bypass,
         })
-    mode = "lane_preference" if selection.took_preferred else (
-        "hosted_preference" if selection.took_hosted_preference else "pressure_fallback"
-    )
+    if selection.took_preferred_target:
+        mode = "task_preference"
+    elif selection.took_preferred:
+        mode = "lane_preference"
+    elif selection.took_hosted_preference:
+        mode = "hosted_preference"
+    else:
+        mode = "pressure_fallback"
     return {
         "mode": mode, "profile_id": selection.chosen.profile_id,
         "provider": selection.chosen.provider, "class": selection.chosen.intelligence_class,
@@ -726,6 +870,9 @@ def selection_evidence(
         "preference_unavailable": bool(prefer_harnesses) and not any(
             c.preferred_hosted for c in candidates
         ),
+        #: The task's own ``--prefer``: what was asked, in which mode, whether
+        #: it decided the route, and why not when it did not (§4).
+        "preference": dict(preference) if preference else None,
         "candidates": observations, "truncated": len(candidates) > 64,
     }
 
@@ -750,6 +897,13 @@ def selection_reason(evidence: Mapping[str, Any]) -> str:
                 for c in evidence["candidates"] if c["preference_bypassed"]]
     if evidence["preference_unavailable"]:
         bypassed.append("no compatible preferred hosted candidate")
+    preference = evidence.get("preference")
+    if preference:
+        asked = f"preferred {preference['target']} ({preference['mode']})"
+        bypassed.append(
+            f"{asked} honoured" if preference["honoured"]
+            else f"{asked} not honoured ({preference['fallback_reason']})"
+        )
     return reason + ("; bypassed " + ", ".join(bypassed[:2]) if bypassed else "")
 
 
@@ -777,7 +931,9 @@ def _reason(rule: _Rule, pool: _Pool, selection: Selection) -> str:
         key=lambda s: s.pressure,
     )[:2]
     decided = f"lowest pressure {chosen.profile_id} {selection.score.pressure:.2f}"
-    if selection.took_preferred:
+    if selection.took_preferred_target:
+        decided = f"task preference {chosen.profile_id} {selection.score.pressure:.2f}"
+    elif selection.took_preferred:
         decided = f"preferred {chosen.profile_id} {selection.score.pressure:.2f}"
     elif selection.took_hosted_preference:
         decided = f"hosted preference {chosen.profile_id} {selection.score.pressure:.2f}"
@@ -851,6 +1007,8 @@ def plan_route(
                 {**c.as_dict(), "launchable": launchable(c, snapshot)} for c in candidates
             ],
             "scores": [s.as_dict() for s in selection.scores],
+            # An allowlisted arm pins the model, so a preference never moves it.
+            "preference": preference_record(task, candidates, snapshot, selection),
             "reason": f"allowlisted benchmark arm {name}: {arm.class_}/{arm.harness}",
             "policy_sha256": policy_sha256,
             "classification": None,
@@ -861,6 +1019,23 @@ def plan_route(
     flags = (classified.flags if classified else frozenset()) if known else None
     rule = _rule(task, policy, classified)
     pool = _candidates(task, policy, snapshot, rule, flags)
+    eligible = pool.candidates
+    pool, refused = _apply_preference(pool, task)
+
+    if refused is not None:
+        # A strict preference with no candidate at all: the task waits for its
+        # target instead of being routed somewhere the filer did not ask for.
+        return PlanResult("no_candidates", {
+            "task_id": task.task_id,
+            "reason": refused,
+            "detail": (
+                f"strict preference {prefer_target(task)}: no worker candidate serves it"
+                + (f" in lane {rule.lane}" if rule.lane else "")
+            ),
+            # The pre-preference list, so ``kind`` still reads as profile or
+            # harness for a name the planner could not place.
+            "preference": preference_record(task, eligible, snapshot, None),
+        })
 
     if not pool.candidates and not pool.potential:
         return PlanResult("no_candidates", {
@@ -868,6 +1043,7 @@ def plan_route(
             "reason": pool.reason or "no_worker_candidates",
             "detail": f"{rule.rule}: no worker candidate at class {rule.class_id}"
             + (f" in lane {rule.lane}" if rule.lane else ""),
+            "preference": preference_record(task, eligible, snapshot, None),
         })
 
     everything = [*pool.candidates, *pool.potential]
@@ -876,6 +1052,7 @@ def plan_route(
             "task_id": task.task_id,
             "candidates": [c.as_dict() for c in pool.candidates],
             "providers": sorted({c.provider for c in everything}),
+            "preference": preference_record(task, pool.candidates, snapshot, None),
         })
 
     if not known:
@@ -906,6 +1083,7 @@ def plan_route(
             "task_id": task.task_id,
             "candidates": [c.as_dict() for c in pool.candidates],
             "providers": sorted({c.provider for c in pool.candidates}),
+            "preference": preference_record(task, pool.candidates, snapshot, None),
         })
 
     if classified is not None:
@@ -917,8 +1095,10 @@ def plan_route(
     candidates = [
         {**c.as_dict(), "launchable": launchable(c, snapshot)} for c in pool.candidates
     ]
+    preference = preference_record(task, pool.candidates, snapshot, selection)
     evidence = selection_evidence(
         pool.candidates, selection, snapshot, prefer_harnesses=rule.prefer_harnesses,
+        preference=preference,
     )
     return PlanResult("planned", {
         "task_id": task.task_id,
@@ -934,6 +1114,7 @@ def plan_route(
         "reason": _reason(rule, pool, selection) + "; " + selection_reason(evidence),
         "decision": evidence,
         "prefer_harnesses": list(rule.prefer_harnesses),
+        "preference": preference,
         "policy_sha256": policy_sha256,
         "class_clamped_from": rule.clamped_from,
         "classification": classification_record,
@@ -944,6 +1125,9 @@ def plan_route(
 __all__ = [
     "FALLBACK",
     "PREFERRED",
+    "PREFER_MODES",
+    "PREFER_SOFT",
+    "PREFER_STRICT",
     "ROUTABLE_SOURCES",
     "ROUTED_SOURCES",
     "UNLAUNCHABLE_STATES",
@@ -960,8 +1144,12 @@ __all__ = [
     "is_candidate",
     "launchable",
     "plan_route",
+    "prefer_mode",
+    "prefer_target",
+    "preference_record",
     "read_classification",
     "reselect",
     "score",
+    "serves_preference",
     "worker_classes",
 ]

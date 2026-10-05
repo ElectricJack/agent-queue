@@ -911,3 +911,155 @@ def test_historical_replay_quantifies_changes_and_reports_missing_evidence():
     assert report["changed"] == 1 and report["skipped"] == 2
     assert report["missing_observations"]["headroom_and_snapshot_age_unknown"] == 2
     assert "measured quota savings" in report["limitations"][1]
+
+
+# -- the per-task preference (mandatory routing §4) -------------------------------
+
+
+def _preferred_plans(snapshot=None, **task_changes):
+    """``{'soft': plan, 'strict': plan}`` for the same task against one snapshot."""
+    policy, digest = routine_policy()
+    task_changes.setdefault("task_type", "research")
+    task_changes.setdefault("prefer_target", "claude")
+    return {
+        mode: plan_route(
+            _task(**{**task_changes, "prefer_mode": mode}),
+            policy, snapshot or _snapshot(), policy_sha256=digest,
+        )
+        for mode in ("soft", "strict")
+    }
+
+
+def test_a_soft_preference_takes_its_target_when_it_has_headroom():
+    result = _preferred_plans(prefer_target="claude")["soft"]
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["decision"]["mode"] == "task_preference"
+    # Without it the shipped policy prefers Codex for routine work.
+    assert routine_plan().value["profile_id"] == "standard-high-codex"
+
+
+def test_a_soft_preference_falls_back_and_records_why():
+    snapshot = replace(_snapshot(), headroom={"standard-high-claude": 0,
+                                              "standard-high-codex": 1})
+    result = _preferred_plans(snapshot, prefer_target="claude")["soft"]
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-codex"
+    preference = result.value["preference"]
+    assert preference == {
+        "target": "claude", "mode": "soft", "kind": "harness",
+        "honoured": False, "fallback_reason": "no_headroom",
+    }
+    assert result.value["decision"]["preference"] == preference
+    assert "preferred claude (soft) not honoured (no_headroom)" in result.value["reason"]
+
+
+def test_a_soft_preference_records_an_unavailable_target_and_a_provider_that_is_out():
+    fleet = _snapshot()
+    unknown = _preferred_plans(fleet, prefer_target="gemini")["soft"]
+    assert unknown.value["preference"]["fallback_reason"] == "no_candidate_serves_the_target"
+    assert unknown.value["preference"]["kind"] == "harness"
+    out = _preferred_plans(_snapshot(out={"claude"}), prefer_target="claude")["soft"]
+    assert out.value["preference"]["fallback_reason"] == "provider_unavailable"
+
+
+def test_a_strict_preference_waits_for_its_target_and_never_falls_back():
+    snapshot = replace(_snapshot(), headroom={"standard-high-claude": 0,
+                                              "standard-high-codex": 1})
+    result = _preferred_plans(snapshot, prefer_target="claude")["strict"]
+    # Full, not busy: the task queues for its target instead of moving.
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["preference"]["honoured"] is True
+    assert {c["provider"] for c in result.value["candidates"]} == {"claude"}
+
+
+def test_a_strict_preference_holds_while_its_provider_is_out_and_refuses_an_unknown():
+    held = _preferred_plans(_snapshot(out={"claude"}), prefer_target="claude")["strict"]
+    assert held.outcome == "held"
+    assert held.value["preference"]["fallback_reason"] == "provider_unavailable"
+    assert {c["provider"] for c in held.value["candidates"]} == {"claude"}
+    refused = _preferred_plans(prefer_target="gemini")["strict"]
+    assert refused.outcome == "no_candidates"
+    assert refused.value["reason"] == "prefer_target_unavailable"
+    assert refused.value["preference"]["fallback_reason"] == "no_candidate_serves_the_target"
+
+
+def test_a_preference_may_name_one_profile_as_well_as_a_harness():
+    by_profile = _preferred_plans(prefer_target="standard-high-claude")["strict"]
+    assert by_profile.value["profile_id"] == "standard-high-claude"
+    assert by_profile.value["preference"]["kind"] == "profile"
+    # One rung of that harness only: the other rung is not a candidate.
+    assert {c["profile_id"] for c in by_profile.value["candidates"]} == {"standard-high-claude"}
+
+
+def test_a_preference_outranks_a_lane_preference_but_not_a_hold_lane():
+    policy, digest = routine_policy()
+    narrow = plan_route(
+        _task(task_type="bugfix", prefer_target="claude", prefer_mode="soft"),
+        policy, _snapshot(), policy_sha256=digest, classification=NARROW_YES,
+    )
+    assert narrow.value["profile_id"] == "standard-high-claude"
+    assert narrow.value["decision"]["mode"] == "task_preference"
+    art = plan_route(
+        _task(task_type="art", prefer_target="claude", prefer_mode="soft"),
+        policy, _snapshot(), policy_sha256=digest,
+    )
+    # The art lane holds Codex: a soft preference does not unpick a hold.
+    assert art.value["profile_id"] == "deep-high-codex"
+    assert art.value["provider_intent"] == "pinned"
+    assert art.value["preference"]["honoured"] is False
+
+
+def test_a_benchmark_arm_pins_its_model_over_a_preference():
+    policy, _digest = routine_policy()
+    body = policy.model_dump(mode="json", by_alias=True)
+    body["benchmark_arms"] = {"codex-arm": {
+        "class": "deep-high", "harness": "codex", "requested_model": "gpt",
+        "observed_models": ["gpt"],
+    }}
+    policy, digest = parse_policy(json.dumps(body))
+    result = plan_route(
+        _task(task_type="research", benchmark_arms=("codex-arm",),
+              prefer_target="claude", prefer_mode="strict"),
+        policy, _snapshot(), policy_sha256=digest,
+    )
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "deep-high-codex"
+    assert result.value["preference"]["fallback_reason"] == "benchmark_arm_pins_its_model"
+
+
+def test_no_preference_leaves_every_routed_decision_exactly_as_it_was():
+    snapshot = _snapshot(busy={"standard-high-codex": 1})
+    for changes in (
+        {"task_type": "research"},
+        {"task_type": "bugfix"},
+        {"task_type": "design"},
+        {"task_type": "art"},
+        {"task_type": "chore"},
+    ):
+        planned = _planned(_task(**changes), snapshot, NARROW_NO)
+        assert planned["preference"] is None
+        assert planned["decision"]["preference"] is None
+        assert planned["decision"]["mode"] in {
+            "lane_preference", "hosted_preference", "pressure_fallback"
+        }
+        assert "preferred " not in planned["reason"].split(";")[0]
+    # An explicit ``None`` and an out-of-vocabulary mode both mean "no preference".
+    for task in (_task(task_type="research", prefer_target=None, prefer_mode="strict"),
+                 _task(task_type="research", prefer_target="", prefer_mode="loud")):
+        planned = _planned(task, snapshot)
+        assert planned["preference"] is None
+
+
+def test_a_preference_survives_the_candidate_round_trip_through_a_plan():
+    planned = routine_plan(prefer_target="claude").value
+    candidates = [Candidate.from_dict(c) for c in planned["candidates"]]
+    assert any(c.prefer_target for c in candidates)
+    policy, _digest = routine_policy()
+    # Apply re-selects on a fresh snapshot, so the flag has to be in the plan.
+    chosen = reselect(candidates, replace(_snapshot(), headroom={
+        "standard-high-claude": 1, "standard-high-codex": 1,
+    }), policy.balance)
+    assert chosen.chosen.provider == "claude"
+    assert chosen.took_preferred_target

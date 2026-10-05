@@ -2702,6 +2702,22 @@ class TaskCommandsMixin:
             if isinstance(constraints, dict) and constraints and filing_session is None
             else None
         )
+        # The filer's routing preference (spec §4): a harness or profile the
+        # router weighs before scoring, in ``soft`` or ``strict`` mode.  It is
+        # an input to the router, never a route, so it is filed on any surface
+        # -- an operator, a supervisor and a worker alike -- and every filer is
+        # held to the same validation (an installed harness or an enabled
+        # worker profile; an unknown name is refused here, before the write).
+        if "prefer" in args or "prefer_mode" in args:
+            from src.commands.routing_commands import validate_route_preference
+
+            (prefer_target, prefer_mode), preference_error = await validate_route_preference(
+                self, project_id, args.get("prefer"), args.get("prefer_mode")
+            )
+            if preference_error is not None:
+                return {"success": False, "error": preference_error}
+        else:
+            prefer_target = prefer_mode = None
         task = Task(
             id="",
             project_id=project_id,
@@ -2726,6 +2742,8 @@ class TaskCommandsMixin:
             provider_intent=provider_intent,
             route_source=route_source or UNROUTED,
             class_hint=class_id,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
             route=route_record,
             created_by_kind=created_by_kind,
             created_by_id=created_by_id,
@@ -3089,6 +3107,11 @@ class TaskCommandsMixin:
         result["route_source"] = task.route_source
         if task.class_hint:
             result["class_hint"] = task.class_hint
+        # The preference the router will weigh (§4), echoed so the filer can
+        # see what was stored without re-reading the task.
+        if task.prefer_target:
+            result["prefer_target"] = task.prefer_target
+            result["prefer_mode"] = task.prefer_mode
         if task.intelligence_class:
             result["intelligence_class"] = task.intelligence_class
         if preferred_workspace_id:
@@ -3596,6 +3619,8 @@ class TaskCommandsMixin:
             # record of it (mandatory-routing spec §3 I1, I6).
             "route_source": task.route_source,
             "class_hint": task.class_hint,
+            "prefer_target": task.prefer_target,
+            "prefer_mode": task.prefer_mode,
             "route": task.route,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,

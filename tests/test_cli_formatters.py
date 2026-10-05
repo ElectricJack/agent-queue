@@ -318,3 +318,47 @@ def test_review_formatters_render_generated_response_models():
     review.additional_properties["relation"] = "author"
     out = _render("review_list", GeneratedModel(reviews=[review]))
     assert "review-typed" in out and "author" in out
+
+
+def test_task_detail_shows_the_routing_preference_and_its_verdict():
+    """`aq task show` names what was asked for and whether it decided."""
+    from types import SimpleNamespace
+
+    from src.cli.formatters import _route_fields
+
+    unrouted = SimpleNamespace(
+        route_source="unrouted", profile_id=None, intelligence_class=None, route=None,
+        prefer_target="codex", prefer_mode=None,
+    )
+    assert _route_fields(unrouted) == [
+        ("Routing preference", "codex (soft)"), ("Route", "unrouted"),
+    ]
+
+    honoured = SimpleNamespace(
+        route_source="router", profile_id="standard-high-codex",
+        intelligence_class="standard-high",
+        route={"preference": {"target": "codex", "mode": "soft", "kind": "harness",
+                              "honoured": True, "fallback_reason": None}},
+        prefer_target="codex", prefer_mode="soft",
+    )
+    assert ("Routing preference", "codex (soft) honoured") in _route_fields(honoured)
+
+    refused = SimpleNamespace(
+        route_source="router", profile_id="standard-high-claude",
+        intelligence_class="standard-high",
+        route={"preference": {"target": "codex", "mode": "strict", "kind": "profile",
+                              "honoured": False, "fallback_reason": "provider_unavailable"}},
+        prefer_target="standard-high-codex", prefer_mode="strict",
+    )
+    assert (
+        "Routing preference",
+        "standard-high-codex (strict) not honoured: provider_unavailable",
+    ) in _route_fields(refused)
+
+    # A task that names none stays exactly as quiet as it was.
+    plain = SimpleNamespace(
+        route_source="router", profile_id="standard-high-codex",
+        intelligence_class="standard-high", route={},
+        prefer_target=None, prefer_mode=None,
+    )
+    assert all(name != "Routing preference" for name, _ in _route_fields(plain))

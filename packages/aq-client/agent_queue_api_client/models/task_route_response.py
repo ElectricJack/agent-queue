@@ -25,6 +25,8 @@ class TaskRouteResponse:
         route_source (str | Unset):  Default: 'unrouted'.
         class_hint (None | str | Unset):
         task_type (None | str | Unset):
+        prefer_target (None | str | Unset):
+        prefer_mode (None | str | Unset):
         cleared (None | TaskRouteClearedRoute | Unset):
     """
 
@@ -33,6 +35,8 @@ class TaskRouteResponse:
     route_source: str | Unset = "unrouted"
     class_hint: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
+    prefer_target: None | str | Unset = UNSET
+    prefer_mode: None | str | Unset = UNSET
     cleared: None | TaskRouteClearedRoute | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -57,6 +61,18 @@ class TaskRouteResponse:
         else:
             task_type = self.task_type
 
+        prefer_target: None | str | Unset
+        if isinstance(self.prefer_target, Unset):
+            prefer_target = UNSET
+        else:
+            prefer_target = self.prefer_target
+
+        prefer_mode: None | str | Unset
+        if isinstance(self.prefer_mode, Unset):
+            prefer_mode = UNSET
+        else:
+            prefer_mode = self.prefer_mode
+
         cleared: dict[str, Any] | None | Unset
         if isinstance(self.cleared, Unset):
             cleared = UNSET
@@ -80,6 +96,10 @@ class TaskRouteResponse:
             field_dict["class_hint"] = class_hint
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
+        if prefer_target is not UNSET:
+            field_dict["prefer_target"] = prefer_target
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if cleared is not UNSET:
             field_dict["cleared"] = cleared
 
@@ -114,6 +134,24 @@ class TaskRouteResponse:
 
         task_type = _parse_task_type(d.pop("task_type", UNSET))
 
+        def _parse_prefer_target(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_target = _parse_prefer_target(d.pop("prefer_target", UNSET))
+
+        def _parse_prefer_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_mode = _parse_prefer_mode(d.pop("prefer_mode", UNSET))
+
         def _parse_cleared(data: object) -> None | TaskRouteClearedRoute | Unset:
             if data is None:
                 return data
@@ -137,6 +175,8 @@ class TaskRouteResponse:
             route_source=route_source,
             class_hint=class_hint,
             task_type=task_type,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
             cleared=cleared,
         )
 

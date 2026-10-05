@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
+  "digest": "sha256:1162a3a0ced8d459814ee6d10063833be85a86cddc35152d10c414de8c41afef",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3269,7 +3269,8 @@
       "default_arm": true,
       "imports": [
         "src.api.models.task",
-        "src.cli.formatter_registry"
+        "src.cli.formatter_registry",
+        "src.cli.formatters"
       ],
       "markers": [
         "parametrize"
@@ -13596,6 +13597,7 @@
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
         "src.playbooks.invocation",
+        "src.profiles.capabilities",
         "src.providers",
         "src.providers.availability",
         "src.routing.planner",

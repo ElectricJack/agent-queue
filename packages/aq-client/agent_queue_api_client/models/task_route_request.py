@@ -21,12 +21,22 @@ class TaskRouteRequest:
             task's hint; an empty value clears it.
         task_type (None | str | Unset): New kind for the router (e.g. 'feature', 'bugfix', 'design', 'docs'). Omit to
             keep the task's kind; an empty value clears it.
+        prefer (None | str | Unset): Routing preference for the router to weigh before scoring: a harness id (e.g.
+            'codex') or a worker profile id. The router still picks the route; this only decides whether it may route
+            elsewhere. Omit to keep the task's preference; an empty value clears it. An unknown name, a disabled profile and
+            a non-worker profile are refused.
+        prefer_mode (str | Unset): How the router may refuse 'prefer': 'soft' (default) routes to it when it has
+            headroom and routes normally when it does not; 'strict' admits only that harness or profile and holds the task
+            rather than falling back to another one. On 'aq task route' a mode with no 'prefer' keeps the stored target.
+            Default: 'soft'.
         reason (None | str | Unset): Why the task is re-routed; posted as a task comment.
     """
 
     task_id: str
     intelligence_class: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
+    prefer: None | str | Unset = UNSET
+    prefer_mode: str | Unset = "soft"
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -45,6 +55,14 @@ class TaskRouteRequest:
         else:
             task_type = self.task_type
 
+        prefer: None | str | Unset
+        if isinstance(self.prefer, Unset):
+            prefer = UNSET
+        else:
+            prefer = self.prefer
+
+        prefer_mode = self.prefer_mode
+
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
             reason = UNSET
@@ -62,6 +80,10 @@ class TaskRouteRequest:
             field_dict["intelligence_class"] = intelligence_class
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
+        if prefer is not UNSET:
+            field_dict["prefer"] = prefer
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if reason is not UNSET:
             field_dict["reason"] = reason
 
@@ -90,6 +112,17 @@ class TaskRouteRequest:
 
         task_type = _parse_task_type(d.pop("task_type", UNSET))
 
+        def _parse_prefer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer = _parse_prefer(d.pop("prefer", UNSET))
+
+        prefer_mode = d.pop("prefer_mode", UNSET)
+
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -103,6 +136,8 @@ class TaskRouteRequest:
             task_id=task_id,
             intelligence_class=intelligence_class,
             task_type=task_type,
+            prefer=prefer,
+            prefer_mode=prefer_mode,
             reason=reason,
         )
 

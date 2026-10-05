@@ -13,6 +13,8 @@ from typing import Any
 
 import click
 
+from src.routing.planner import PREFER_MODES
+
 from .app import cli, console, _run, _get_client, _handle_errors
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
@@ -229,6 +231,26 @@ def _create_task_graph(
     ),
 )
 @click.option(
+    "--prefer",
+    default=None,
+    help=(
+        "Routing preference the router weighs before scoring: a harness (e.g. codex) "
+        "or a worker profile id. It does not choose the route -- the project's router "
+        "still does -- and an unknown name, a disabled profile or a non-worker profile "
+        "is refused. Omit for no preference"
+    ),
+)
+@click.option(
+    "--prefer-mode",
+    default=None,
+    type=click.Choice(sorted(PREFER_MODES), case_sensitive=False),
+    help=(
+        "How the router may refuse --prefer: soft (default) routes to it when it has "
+        "headroom and routes normally when it does not; strict admits only that harness "
+        "or profile and holds the task rather than falling back"
+    ),
+)
+@click.option(
     "--graph",
     "graph_file",
     default=None,
@@ -323,6 +345,8 @@ def task_create(
     task_type: str | None,
     integration_mode: str | None,
     intelligence_class: str | None,
+    prefer: str | None,
+    prefer_mode: str | None,
     graph_file: str | None,
     from_spec: str | None,
     dry_run: bool,
@@ -345,9 +369,15 @@ def task_create(
     refused. A profile, provider, model or pin is refused on every surface
     with ``routing.choice_forbidden``.
 
+    ``--prefer`` is the third filer input: a harness or worker profile the
+    router weighs before scoring, in ``--prefer-mode soft`` (the default —
+    take it when it has headroom) or ``strict`` (only it; the task waits
+    rather than falling back). It is an input to the router, not a bypass
+    of it, so the router still writes the route and still decides.
+
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
-    in one transaction instead of a single task; add ``--dry-run`` to see the
-    validation report and the ids that would be assigned.  With
+    in one transaction instead of a single task; add ``--dry-run`` to see
+    the validation report and the ids that would be assigned.  With
     ``--after-review`` every node of the graph waits on that review's gate
     until it is approved; an unknown or withdrawn review creates nothing.
 
@@ -364,6 +394,12 @@ def task_create(
 
     if root and parent_id:
         raise click.UsageError("--root and --parent are mutually exclusive")
+    if (prefer is not None or prefer_mode is not None) and (graph_file or from_spec):
+        raise click.UsageError(
+            "--prefer is not supported with --graph/--from-spec; graph nodes carry no "
+            "routing preference. Create the task on its own with --prefer, or set the "
+            "preference afterwards with `aq task route --prefer`."
+        )
     if container and (graph_file or from_spec):
         raise click.UsageError(
             "--container applies to single-task creation; a graph declares its new "
@@ -453,6 +489,10 @@ def task_create(
 
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
+
+    if prefer is not None or prefer_mode is not None:
+        params["prefer"] = prefer
+        params["prefer_mode"] = prefer_mode
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id

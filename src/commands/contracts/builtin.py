@@ -60,6 +60,14 @@ class CreateTaskArgs(CommandArgs):
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None
     dedup_key: str | None = None
+    # The filer's routing preference (mandatory-routing spec §4): a harness or
+    # profile the router weighs before scoring.  ``prefer_mode`` is ``soft``
+    # (the default: take it when it has headroom) or ``strict`` (only it; the
+    # task waits rather than falling back).  An input to the router, never a
+    # route -- the project's bound router still writes every route.  An unknown
+    # name or mode is refused and nothing is filed.
+    prefer: str | None = None
+    prefer_mode: str | None = None
     # Provider intent (provider-failover D9): ``pinned`` | ``preferred`` |
     # ``class_only``; ``pin`` is sugar for ``pinned``. Retained for contract
     # fingerprint compatibility; agent_task steps cannot supply either field.
@@ -79,6 +87,10 @@ class CreateTaskValue(CommandValue):
     profile_id: str | None = None
     provider_intent: str | None = None
     intelligence_class: str | None = None
+    #: The routing preference that was stored (``None`` when the filer named
+    #: none), echoed so a caller need not re-read the task to see it.
+    prefer_target: str | None = None
+    prefer_mode: str | None = None
     preferred_workspace_id: str | None = None
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None

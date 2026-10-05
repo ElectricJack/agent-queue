@@ -1333,6 +1333,29 @@ _ALL_TOOL_DEFINITIONS = [
                         "find_merge_conflict_workspaces or list_workspaces."
                     ),
                 },
+                "prefer": {
+                    "type": "string",
+"description": (
+                        "Routing preference for the router to weigh before scoring: a "
+                        "harness id (e.g. 'codex') or a worker profile id. Unlike a "
+                        "profile pin this does NOT choose the route — the project's "
+                        "routing playbook still does, and the preference decides only "
+                        "whether it may route elsewhere. Naming a target keeps the "
+                        "task's stored mode; an empty value clears both. An unknown "
+                        "name, a disabled profile and a non-worker profile are refused."
+                    ),
+                },
+                "prefer_mode": {
+                    "type": "string",
+                    "enum": ["soft", "strict"],
+                    "default": "soft",
+                    "description": (
+                        "How the router may refuse 'prefer': 'soft' (default) routes to "
+                        "it when it has headroom and routes normally when it does not; "
+                        "'strict' admits only that harness or profile and holds the task "
+                        "rather than falling back to another one."
+                    ),
+                },
                 "attachments": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1617,7 +1640,8 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Send a task back to its project's router, which picks the route again. "
             "Never picks a profile: optionally set new hints (an intelligence class "
-            "and a kind), then clear the task's profile, class and route record so "
+            "and a kind) and the routing preference the router weighs before scoring, "
+            "then clear the task's profile, class and route record so "
             "the next cascade asks the router. Also clears an emergency override. "
             "Refused on a claimed, running or finished task (stop it first) and on "
             "a role task. Allowed to the local operator, the supervisor, and a "
@@ -1641,6 +1665,29 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "New kind for the router (e.g. 'feature', 'bugfix', 'design', "
                         "'docs'). Omit to keep the task's kind; an empty value clears it."
+                    ),
+                },
+                "prefer": {
+                    "type": "string",
+                    "description": (
+                        "Routing preference for the router to weigh before scoring: a "
+                        "harness id (e.g. 'codex') or a worker profile id. The router "
+                        "still picks the route; this only decides whether it may route "
+                        "elsewhere. Omit to keep the task's preference; an empty value "
+                        "clears it. An unknown name, a disabled profile and a non-worker "
+                        "profile are refused."
+                    ),
+                },
+                "prefer_mode": {
+                    "type": "string",
+                    "enum": ["soft", "strict"],
+                    "default": "soft",
+                    "description": (
+                        "How the router may refuse 'prefer': 'soft' (default) routes to "
+                        "it when it has headroom and routes normally when it does not; "
+                        "'strict' admits only that harness or profile and holds the task "
+                        "rather than falling back to another one. On 'aq task route' a "
+                        "mode with no 'prefer' keeps the stored target."
                     ),
                 },
                 "reason": {
