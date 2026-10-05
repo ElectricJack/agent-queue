@@ -528,6 +528,17 @@ does not create the redundant audit run prohibited by this design, while hotfixe
 Infrastructure failures may be retried without a code change when a deterministic classifier
 identifies them as infrastructure failures. All other red runs enter repair.
 
+A red run is classified from the per-check (job) evidence, in one precedence shared by the
+authenticated observer, the hosted producer and the exact-commit check cache, so no layer can call a
+run red where the layer below it called it infrastructure. A failing or never-produced required
+check is conclusive and enters repair whatever else the run reports: the cancellation of its
+siblings, from any cause, never hides it. GitHub concludes a workflow run `failure` when its jobs
+are cancelled for want of a runner, so a run whose only unfinished jobs were cancelled — a runner
+never acquired, a fail-fast sibling, a stopped run — is infrastructure and is retried on its exact
+head, even when the run itself concluded `failure`. An attempt that concluded nothing conclusive
+(`skipped`, `neutral`, `timed_out`, `action_required`, `startup_failure`, `stale`) is
+infrastructure, as it always was.
+
 ## 9. Roll-forward repair and escalation
 
 Batch membership is never changed after sealing. Agent Queue does not bisect, guess a culprit,
@@ -560,8 +571,9 @@ Repair is event-driven rather than an in-run loop. Candidate push ends the curre
 core exact-SHA check poller records the first conclusive check result and emits
 `integration.ci_completed`; that event starts the next playbook activation, which either promotes,
 creates the next repair task, or advances the repair ladder. A cancelled or superseded run is
-inconclusive and consumes no attempt. Counters live in durable repair-stage rows, so playbook or
-daemon restart cannot reset a budget.
+inconclusive and consumes no attempt; a conclusive required-check failure enters repair even when
+the rest of its run was cancelled (§8), so a train cannot wait out a real failure as infrastructure.
+Counters live in durable repair-stage rows, so playbook or daemon restart cannot reset a budget.
 
 Stage deadlines are enforced independently of CI completion. Persist `started_at` and `deadline_at`
 when a stage is activated, and publish a durable timeout event at the deadline. The shipped policy
