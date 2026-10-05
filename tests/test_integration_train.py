@@ -69,7 +69,7 @@ class Batches:
         self.opened = {} if opened is None else opened
         self.settled = []
 
-    async def open_batch(self, target, snapshot):
+    async def open_batch(self, target, snapshot, service):
         return self.opened.get(target.key)
 
     async def settle(self, batch, observation):

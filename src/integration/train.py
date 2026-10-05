@@ -104,9 +104,13 @@ class TargetSource(Protocol):
 
 class BatchSource(Protocol):
     async def open_batch(
-        self, target: TrainTarget, snapshot: GitTruthSnapshot
+        self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
     ) -> tuple[Batch, tuple[BatchMember, ...]] | None:
-        """The target's open batch with its frozen members, freezing one when due."""
+        """The target's open batch with its frozen members, freezing one when due.
+
+        A new batch freezes through ``service.freeze``, which retains every
+        exact completion source before the membership becomes immutable.
+        """
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
         """Record that the target contains the batch; idempotent."""
@@ -297,7 +301,7 @@ class IntegrationTrain:
         """Observe the target once and take at most one step toward delivery."""
         lane = await self.lane_for(target)
         snapshot = await lane.snapshot()
-        opened = await self.batches.open_batch(target, snapshot)
+        opened = await self.batches.open_batch(target, snapshot, lane.service)
         if opened is None:
             return self._visit(target, "idle", snapshot=snapshot)
         batch, members = opened
