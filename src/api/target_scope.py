@@ -70,6 +70,7 @@ from src.database.tables import (
     jobs,
     projects,
     repos,
+    task_branch_origins,
     test_selection_promotions,
     test_selections,
 )
@@ -234,6 +235,9 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
     "intent_id": _promotion_intent_project,
     # Rows that carry their own project.
     "batch_id": _row_resolver(integration_batches),
+    "origin_id": _foreign_resolver(
+        task_branch_origins, task_branch_origins.c.task_id, "task_id"
+    ),
     "event_id": _row_resolver(integration_outbox),
     "escalation_id": _row_resolver(escalations),
     "gate_id": _row_resolver(gates),

@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-164 commands are registered.
+166 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -81,6 +81,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
+| [`integration_abort_batch`](integration_abort_batch.md) | Integration Abort Batch | Authenticated hierarchical integration operational control. |
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
 | [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
@@ -122,6 +123,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) | Resolve candidate member | Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session. |
 | [`integration_resolve_conflict`](integration_resolve_conflict.md) | Reserve conflict resolution | Freeze an active repair session's exact conflict resolution before push. |
+| [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |

@@ -766,12 +766,21 @@ class IntegrationStatusService:
         visits: dict[tuple[str, str], dict[str, Any]], *, task_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Unknown completions can block a target before any batch exists."""
-        return [
+        blockers = [
             blocker
             for visit in visits.values()
             for blocker in (visit.get("detail") or {}).get("blockers", [])
             if task_id is None or blocker.get("task_id") == task_id
         ]
+        if task_id is None:
+            for visit in visits.values():
+                detail = visit.get("detail") or {}
+                if detail.get("reason") == "visit_timeout":
+                    blockers.append(_blocker(
+                        "visit_timeout", f"target visit exceeded {detail['timeout_seconds']}s "
+                        f"during {detail['stage']}", visit["target_ref"], evidence=detail,
+                    ))
+        return blockers
 
     @staticmethod
     def _train_batch_blockers(

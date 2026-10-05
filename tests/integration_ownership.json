@@ -8046,6 +8046,12 @@
     },
     "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
       "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
+    },
+    "src/api/target_scope.py::import from src.database.tables import escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['origin_id']": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
     }
   },
   "exclusions": {
@@ -12001,7 +12007,9 @@
     "ffdc36d90f4f43094d53cf205cccbc03fbe913f70fa271be3daeecd15f3b31de",
     "ffe0128684373bc7ce70298b0809ff368b7381cca05a4485b68e0cbdc8d67b14",
     "fff14f8db26fe7d356fa54882f8b9fad11b3df0209c79521bd934fc3cd6e4962",
-    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193"
+    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193",
+    "b2b8b1fca3f7fca3974df588fc0b252662f055e7618857df175a587c64f6d58b",
+    "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -14070,6 +14078,24 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
+    },
+    "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
+      "line": 213,
+      "owner": "BatchStore.set_intent",
+      "call": "log_event",
+      "owner_fingerprint": "1fba644dbd4cacd61bb242b663e52e935b79937995e90c799b9baacbd531f561",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
+    },
+    "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
+      "line": 226,
+      "owner": "TrainControls.retire_origin",
+      "call": "log_event",
+      "owner_fingerprint": "ff03cd1a6f71ea55aa5f04ee4f917d24efb8133241aabdf65a8ac4b1bd89488e",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
     }
   },
   "generic_dependencies": {
