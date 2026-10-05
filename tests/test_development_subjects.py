@@ -738,3 +738,90 @@ def test_runtime_loads_retained_reviewed_source_after_vault_changes(tmp_path):
     vault_path.unlink()
     assert load_pinned_development_policy(config, ref.artifact_sha256,
                                          pinned.definition).settings == pinned.settings
+
+
+async def test_factory_admits_pushed_source_and_uses_subject_pinned_retained_store(db, tmp_path):
+    """Exercise the shipped factory with real Git and no base checkout."""
+    from src.database import tables as t
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.development import DevelopmentPrimitives
+    from src.integration.development_runtime import development_runtime_for
+    from src.integration.subjects import AncestryArgs, AncestryQuery
+    from src.models import Project, RepoConfig, RepoSourceType
+    from src.playbooks.artifact_store import ArtifactStore
+    from tests.test_integration_gitops import LocalGit, commit, git
+
+    remote, work = tmp_path / "remote.git", tmp_path / "source"
+    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    git(tmp_path, "clone", str(remote), str(work))
+    git(work, "config", "user.name", "Tester")
+    git(work, "config", "user.email", "tester@example.test")
+    base = commit(work, {"base.txt": "base\n"})
+    git(work, "push", "origin", "HEAD:main")
+    head = commit(work, {"alpha.txt": "alpha\n"})
+    git(work, "push", "origin", "HEAD:aq/alpha")
+    await db.create_project(Project(id="p", name="Development factory"))
+    await db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(remote), default_branch="main",
+    ))
+    assert (await db.get_repo("repo")).checkout_base_path == ""
+    async with db.immediate() as conn:
+        await conn.execute(insert(t.tasks).values(
+            id="alpha", project_id="p", repo_id="repo", title="Alpha",
+            description="", status="COMPLETED", branch_name="aq/alpha",
+            created_at=1, updated_at=2,
+        ))
+        await conn.execute(insert(t.task_branch_origins).values(
+            id="origin-alpha", task_id="alpha", repository_id="repo",
+            base_sha=base, creation_generation=0, reserved=True, created_at=1,
+        ))
+        await conn.execute(insert(t.task_integration_checkpoints).values(
+            task_id="alpha", repository_id="repo", branch="aq/alpha",
+            checkpoint_sha=head, generation=0, updated_at=2,
+        ))
+    regenerate = "scripts/regenerate-generated.sh --check"
+    pinned = pinned_policy(regenerate=regenerate)
+    root = subject(pinned, SubjectPhase.BUILDING, head_sha=base, base_sha=base)
+    await store_subject(db, root, pinned)
+    config = SimpleNamespace(
+        integration=SimpleNamespace(reconciler_active=True),
+        compiled_root=str(tmp_path / "compiled"), vault_root=str(tmp_path / "vault"),
+    )
+    artifacts = ArtifactStore(config.compiled_root)
+    ref = artifacts.put(
+        pinned.definition, source_digest=pinned.definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="test", compiler_build="test",
+    )
+    artifacts.put_source(ref.artifact_sha256, pinned.source)
+    transport = LocalGit(remote)
+    primitives = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=transport)
+    orchestrator = SimpleNamespace(
+        config=config, db=db, git=transport, development_integration=primitives,
+        integration_app_client=SimpleNamespace(repository=GitHubRepositoryBinding(123, "test/repo")),
+        _load_playbook_artifact=lambda sha: artifacts.load(sha),
+        _root_subject_session_probe=AsyncMock(), _command_handler=AsyncMock(),
+    )
+    runtime = development_runtime_for(orchestrator)
+    frontier = await runtime.adapter.frontier_for(root)
+    assert [(m.facts.task_id, m.pushed) for m in frontier.members] == [("alpha", True)]
+    assert [m.task_id for m in ordered_development_members(frontier, 10)] == ["alpha"]
+    repository = await runtime.adapter.repository_for(root)
+    git(repository.store, "config", "user.name", "Tester")
+    git(repository.store, "config", "user.email", "tester@example.test")
+    outcome = await runtime.adapter.shared.invoke(root, MergeMembersArgs(
+        target_ref=root.target_ref, base_sha=base,
+        members=(MemberRef(task_id="alpha", head_sha=head, base_sha=base),),
+    ))
+    assert outcome.outcome == "merged", outcome
+    journal = await db.list_integration_subject_journal(root.id)
+    [prepared] = [row for row in journal
+                  if row["primitive"] == "git_merge_members" and row["outcome"] == "prepared"]
+    assert prepared["payload"]["regenerate"] == regenerate
+    ancestry = await runtime.adapter.shared.invoke(root, AncestryArgs(
+        repository_id="repo", queries=(AncestryQuery(ancestor=base, descendant=head),),
+    ))
+    assert ancestry.outcome == "facts", ancestry
+    assert ancestry.detail["queries"][0]["is_ancestor"] is True
+    assert git(remote, "rev-parse", "refs/heads/main") == base

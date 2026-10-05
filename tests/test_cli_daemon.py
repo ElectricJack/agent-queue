@@ -8,6 +8,7 @@ are patched — nothing here touches Docker or a real process.
 
 from __future__ import annotations
 
+import gzip
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,56 @@ from click.testing import CliRunner
 import src.cli.daemon as daemon_mod
 from src.cli.app import cli
 from src.sessions.env import AQ_MARKER_KEYS, DAEMON_ENV_STRIP_KEYS, DB_ISOLATION_KEYS
+
+
+def test_log_rotation_preserves_bytes_and_retains_only_its_newest_archives(tmp_path, monkeypatch):
+    log = tmp_path / "custom.log"
+    content = b"subprocess output\xff\n" * 10
+    log.write_bytes(content)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 1)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004120000")
+    for timestamp in ("20261001120000", "20261002120000", "20261003120000"):
+        (tmp_path / f"custom.log.{timestamp}.gz").write_bytes(b"old archive")
+    unrelated = tmp_path / "other.log.20261001120000.gz"
+    unrelated.write_bytes(b"other log")
+    malformed = tmp_path / "custom.log.backup.gz"
+    malformed.write_bytes(b"manual backup")
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == b""
+    with gzip.open(tmp_path / "custom.log.20261004120000.gz", "rb") as archive:
+        assert archive.read() == content
+    assert not (tmp_path / "custom.log.20261001120000.gz").exists()
+    assert (tmp_path / "custom.log.20261002120000.gz").exists()
+    assert (tmp_path / "custom.log.20261003120000.gz").exists()
+    assert unrelated.read_bytes() == b"other log"
+    assert malformed.read_bytes() == b"manual backup"
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_small_or_missing_log_is_not_rotated(tmp_path, monkeypatch, exists):
+    log = tmp_path / "daemon.log"
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 4)
+    if exists:
+        log.write_bytes(b"four")
+    daemon_mod._rotate_if_needed(str(log))
+    assert list(tmp_path.glob("*.gz")) == []
+    assert log.exists() is exists
+    if exists:
+        assert log.read_bytes() == b"four"
+
+
+def test_rotation_failure_preserves_active_log_and_existing_archive(tmp_path, monkeypatch):
+    log = tmp_path / "daemon.log"
+    log.write_bytes(b"active output")
+    backup = tmp_path / "daemon.log.20261004120000.gz"
+    backup.write_bytes(b"existing archive")
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 1)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004120000")
+    daemon_mod._rotate_if_needed(str(log))
+    assert log.read_bytes() == b"active output"
+    assert backup.read_bytes() == b"existing archive"
 
 
 @pytest.fixture(autouse=True)
