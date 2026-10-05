@@ -566,6 +566,7 @@
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
         "tests/test_integration_candidates.py",
+        "tests/test_integration_checks.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
@@ -1404,7 +1405,7 @@
       ]
     }
   },
-  "digest": "sha256:d79cc16cc2042b4eb3d095ab6eba377d2ea10c82e34f5193371daf6d4bef7b0b",
+  "digest": "sha256:ecf14e9a9d0922e11cab8710674b275e3c5f757385b0b31eaca15ab945592bcf",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7316,6 +7317,24 @@
         "parametrize"
       ],
       "summary": "Ordered, restartable root integration candidate construction."
+    },
+    "tests/test_integration_checks.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.checks",
+        "src.integration.ci_producers",
+        "src.integration.root_runtime",
+        "src.integration.subjects"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact-commit required checks: one refreshable cache, never a stale success."
     },
     "tests/test_integration_child_delivery.py": {
       "areas": [
