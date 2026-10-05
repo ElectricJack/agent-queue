@@ -325,6 +325,13 @@ class ArchiveQueryMixin:
                 (tid, "unblocked")
                 for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
             ]
+            # Archiving empties a container exactly as deleting a child does, and
+            # strands its parent the same way, so the same proved release of a
+            # stopped holder's claim runs here (sharp-ridge-57).
+            if parent:
+                stale = await self.release_stale_container_claim(parent, conn=conn)
+                flipped |= stale.flipped
+                ready.extend(stale.ready)
             settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
         await self.log_blocked_flips(flipped | settle_result.flipped)
         await self._notify_settled(settle_result.settled)

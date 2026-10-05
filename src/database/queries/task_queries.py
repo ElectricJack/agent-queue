@@ -1906,6 +1906,20 @@ class TaskQueryMixin:
             (tid, "unblocked")
             for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
         ]
+        # Deleting a container's last child is what strands a parent in a
+        # hierarchy/train project: §7 settlement refuses it because its
+        # collection episode owns the completion, the episode's readiness
+        # projection refuses it while it is not PAUSED, and the frontier will
+        # never offer a container to anyone — so a claim left behind by a
+        # worker that has since stopped is the last thing in the way, and no
+        # supervisor control will move it (bold-crest-75, sharp-ridge-57).
+        # Take that exact claim back first, in the same transaction, so
+        # ``settle_containers`` below projects the parent's own head for
+        # verification instead of finding nothing to do.
+        if parent:
+            stale = await self.release_stale_container_claim(parent, conn=conn)
+            flipped |= stale.flipped
+            ready.extend(stale.ready)
         settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
         return TransitionResult(
             flipped=flipped | settle_result.flipped,
