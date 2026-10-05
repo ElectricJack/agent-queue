@@ -1033,8 +1033,24 @@ class IntegrationObserver:
         default = next(head.sha for head in remote_heads if head.ref == default_ref)
         target = candidate or subject.head
         ci = []
+        candidate_unpublished = False
         if target:
-            if candidate and self.candidate_ci and subject.engine.value == "reconciler":
+            candidate_remote = next(
+                (head for head in remote_heads if candidate and head.ref == candidate.ref), None
+            )
+            candidate_unpublished = bool(
+                candidate
+                and subject.engine.value == "reconciler"
+                and candidate_remote is not None
+                and candidate_remote.state != "unknown"
+                and candidate_remote.sha != candidate.sha
+            )
+            if candidate_unpublished:
+                # A locally recorded rebuild is not a hosted CI subject until
+                # its exact ref is published. NONE sends the policy back through
+                # the journaled publication/request path, never repair or infra.
+                ci.append(CIEvidence(head_sha=target.sha, state=CIState.NONE, observed_at=now))
+            elif candidate and self.candidate_ci and subject.engine.value == "reconciler":
                 try:
                     evidence = await self.candidate_ci(snapshot, target)
                     if evidence.head_sha != target.sha:
@@ -1105,7 +1121,10 @@ class IntegrationObserver:
                 state = evidence.state
                 if not any(item.head_sha == evidence.head_sha for item in ci):
                     ci.append(evidence)
-            if ancestry == "unknown" and member.head_sha:
+            if ancestry == "unknown" and member.head_sha and not candidate_unpublished:
+                # An unpublished local candidate may be absent from this Git
+                # reader. Its builder proves ancestry before the fenced push;
+                # do not prevent that recovery with a remote-only read.
                 unknown.append("ancestry_unknown:" + member.task_id)
             observed_members.append(member.model_copy(update={"ci": state, "ancestry": ancestry}))
         # An unsealed root's frontier is admission input: a paused or rejected

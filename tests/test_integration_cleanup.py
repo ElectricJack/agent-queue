@@ -6,7 +6,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
@@ -438,6 +438,75 @@ async def test_release_atomically_promotes_first_catchup_once(release_db):
     assert schedule["request_sequence"] == 2
     assert schedule["catchup_trigger"] is None
     assert events == []
+
+
+async def test_release_with_stale_catchup_still_frees_lease_and_starts_next_train(
+    release_db,
+):
+    """2026-10-05 stall: a catch-up pinned to an older sequence wedged release.
+
+    Release returned invariant_error on every published-cleanup visit, so the
+    lease and outstanding request stayed held and no new batch could seal.
+    """
+    db, scheduler = release_db
+    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=300.0)
+    await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
+    async with db.immediate() as conn:
+        # The catch-up was recorded under a request that has since been superseded.
+        await conn.execute(
+            update(project_integration_schedules)
+            .where(project_integration_schedules.c.project_id == "p")
+            .values(catchup_after_sequence=0)
+        )
+
+    result = await IntegrationReleaseService(db).release("batch", 601.0)
+
+    assert result.outcome == "released"
+    assert result.request_id == original["request_id"]
+    assert result.catchup_request_id == "integration-sweep:p:2"
+    async with db._engine.connect() as conn:
+        schedule = (
+            await conn.execute(select(project_integration_schedules))
+        ).mappings().one()
+        lease = (
+            await conn.execute(select(project_integration_leases))
+        ).mappings().one_or_none()
+    assert lease is None
+    assert schedule["outstanding_request_id"] == "integration-sweep:p:2"
+    assert schedule["catchup_trigger"] is None
+    assert schedule["catchup_after_sequence"] is None
+
+
+async def test_fresh_request_absorbs_a_lingering_catchup(release_db):
+    db, scheduler = release_db
+    await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=300.0)
+    await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
+    async with db.immediate() as conn:
+        # A supervisor hand-clears the outstanding request but not the catch-up.
+        await conn.execute(
+            update(project_integration_schedules)
+            .where(project_integration_schedules.c.project_id == "p")
+            .values(
+                outstanding_request_id=None,
+                outstanding_trigger=None,
+                outstanding_requested_at=None,
+            )
+        )
+        await conn.execute(delete(project_integration_leases))
+
+    fresh = await scheduler.mark_due(project_id="p", now=900.0, trigger="manual")
+
+    assert fresh["request_id"] == "integration-sweep:p:2"
+    async with db._engine.connect() as conn:
+        schedule = (
+            await conn.execute(select(project_integration_schedules))
+        ).mappings().one()
+    assert schedule["catchup_trigger"] is None
+    assert schedule["catchup_after_sequence"] is None
 
 
 async def test_release_during_drain_discards_catchup_without_starting_new_train(

@@ -118,7 +118,12 @@ class RootObserver(IntegrationObserver):
             != (subject.generation, subject.head_sha, subject.base_sha)
         ):
             facts = facts.model_copy(
-                update={"unknown": (*facts.unknown, "subject_identity_unmirrored")}
+                update={
+                    "unknown": (*facts.unknown, "subject_identity_unmirrored"),
+                    # Mirror the accepted/rebuilt identity before another build.
+                    # A build with the old generation cannot pass its row guard.
+                    "base_moved": False,
+                }
             )
         if facts.budget:
             # Count survives an interrupted visit between the append-only
