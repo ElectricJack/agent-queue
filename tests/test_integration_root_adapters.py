@@ -478,7 +478,12 @@ async def test_cleanup_refuses_a_retention_contract_the_legacy_policy_cannot_hon
         ("already_complete", "already_released", "clean"),
         ("complete", "wait", "pending"),
         ("advanced", "released", "pending"),
+        # Cleanup is best-effort: an answer the primitive cannot read still
+        # releases the request and lease the next batch needs.
+        ("invariant_error", "released", "pending"),
+        ("conflict", "already_released", "pending"),
         ("complete", "invariant_error", "unknown"),
+        ("invariant_error", "stale", "unknown"),
     ],
 )
 async def test_cleanup_releases_the_request_and_lease_before_closing(
@@ -491,6 +496,35 @@ async def test_cleanup_releases_the_request_and_lease_before_closing(
     result = await RootPrimitiveAdapters(db, commands, None).cleanup(subject, CleanupArgs())
     assert result.outcome == expected
     # Primitive 20 folds release in, independent of cleanup progress.
+    assert [call.args[0] for call in commands.execute.await_args_list] == [
+        "integration_cleanup",
+        "integration_release",
+    ]
+
+
+async def test_an_unreadable_cleanup_answer_keeps_only_the_cleanup_pending(root):
+    """A promoted batch whose cleanup count mismatches must still deliver.
+
+    Returning ``unknown`` before release held the project lease and the sweep
+    request behind delivered work, so no next batch could ever be sealed.
+    """
+    db, _, subject = root
+    commands = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                {
+                    "success": False,
+                    "outcome": "invariant_error",
+                    "item_count": 5,
+                    "completed_count": 5,
+                },
+                {"success": True, "outcome": "released"},
+            ]
+        )
+    )
+    result = await RootPrimitiveAdapters(db, commands, None).cleanup(subject, CleanupArgs())
+    assert result.outcome == "pending"
+    assert result.detail == {"cleanup_outcome": "invariant_error"}
     assert [call.args[0] for call in commands.execute.await_args_list] == [
         "integration_cleanup",
         "integration_release",

@@ -1835,7 +1835,15 @@ class IntegrationCommandsMixin:
         conflicts = int(counts.get("conflict", 0)) + int(counts.get("failed", 0))
         total = sum(int(value) for value in counts.values())
         if total != materialized.item_count:
-            outcome = "invariant_error"
+            # A materialized count that disagrees with the persisted rows is
+            # only actionable while work remains. Every persisted item already
+            # complete leaves nothing to clean, so the batch is complete
+            # whatever the count says: reporting invariant_error there held the
+            # project lease and blocked the next seal for delivered work.
+            if total > 0 and not conflicts and completed == total:
+                outcome = "complete" if advanced else "already_complete"
+            else:
+                outcome = "invariant_error"
         elif conflicts:
             outcome = "conflict"
         elif completed == materialized.item_count:

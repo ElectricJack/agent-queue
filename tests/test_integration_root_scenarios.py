@@ -1417,6 +1417,114 @@ async def test_live_green_candidate_promotes_without_prior_ci_evidence_or_operat
     await assert_reconciler_only(train)
 
 
+async def test_a_stale_cleanup_count_still_releases_the_lease_and_seals_the_next_request(
+    train,
+):
+    """Cleanup progress must never withhold what delivery already earned.
+
+    Batch 288750f6 answered ``invariant_error`` on every tick with all of its
+    items complete, so the project lease and the sweep request stayed held and
+    no later batch could seal.
+    """
+    from src.integration.subjects import CIEvidence, CIState
+
+    await train.open()
+    service = train.handler.orchestrator.integration_cleanup_service
+    materialize = service.materialize
+
+    async def stale_item_count(batch_id, *, now=None):
+        # The incident exactly: a persisted count that disagrees with what
+        # materialization found, while every item is already complete.
+        result = await materialize(batch_id, now=now)
+        return result.model_copy(update={"item_count": result.item_count + 1})
+
+    service.materialize = stale_item_count
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    current = await train.subject(subject.id)
+    train.ci.finish(current.head_sha, "success", run=66)
+
+    async def live(snapshot, head):
+        observation = train.ci.runs.get(head.sha)
+        return CIEvidence(
+            head_sha=head.sha,
+            observed_at=train.clock(),
+            state=CIState.GREEN if observation else CIState.NONE,
+        )
+
+    train.observer.candidate_ci = live
+    await train.run_until(
+        lambda: train.phase(subject.id, SubjectPhase.DONE), label="first batch delivered"
+    )
+    assert train.remote("refs/heads/main") == current.head_sha
+    assert train.contains(train.heads["alpha"], current.head_sha)
+    outcomes = [
+        (row["primitive"], row["outcome"])
+        for row in await train.journal(subject.id)
+        if row["entry_kind"] == "action"
+    ]
+    assert ("cleanup", "clean") in outcomes
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    assert batch["cleanup_state"] == "complete"
+    async with train.db._engine.connect() as conn:
+        leases = (await conn.execute(select(t.project_integration_leases))).all()
+        schedule = (
+            (
+                await conn.execute(
+                    select(t.project_integration_schedules).where(
+                        t.project_integration_schedules.c.project_id == PROJECT
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert leases == []
+    assert schedule["outstanding_request_id"] is None
+
+    # Newly approved work arrives: the released request must be able to seal it.
+    train.source("bravo", {"bravo.txt": "next batch\n"})
+    await train.add_source("bravo", number=2)
+    # Green GitHub observation precedes the legacy source-CI poller's DB record.
+    async with train.db.immediate() as conn:
+        await conn.execute(
+            delete(t.integration_source_ci).where(t.integration_source_ci.c.task_id == "bravo")
+        )
+
+    async def next_batch_testing():
+        later = [s for s in await train.subjects() if s.id != subject.id and s.batch_id]
+        live = [s for s in later if s.phase is not SubjectPhase.DONE]
+        return bool(live) and live[-1].phase is SubjectPhase.TESTING
+
+    await train.run_until(next_batch_testing, label="next batch sealed and built", limit=80)
+    following = [
+        s for s in await train.subjects() if s.batch_id and s.phase is SubjectPhase.TESTING
+    ][-1]
+    assert following.engine.value == "reconciler"
+    next_batch = await train.db.get_integration_batch(following.batch_id)
+    async with train.db._engine.connect() as conn:
+        members = (
+            (
+                await conn.execute(
+                    select(t.integration_batch_members.c.task_id).where(
+                        t.integration_batch_members.c.batch_id == next_batch["id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert members == ["bravo"]
+    assert train.contains(train.heads["alpha"], following.head_sha)
+    assert train.contains(train.heads["bravo"], following.head_sha)
+    train.ci.finish(following.head_sha, "success", run=23)
+    await train.run_until(lambda: train.phase(following.id, SubjectPhase.DONE), label="next main")
+    assert train.remote("refs/heads/main") == following.head_sha
+    await assert_reconciler_only(train)
+
+
 @pytest.mark.parametrize("outcome", ["pass", "fail"])
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
 async def test_reconciler_delegate_task_close_records_stop_and_resumes(train, outcome, lifecycle):
