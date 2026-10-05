@@ -245,3 +245,10 @@ async def test_batch_ci_fix_copies_frozen_member_results(candidate_db):
     assert {
         k: v for k, v in members[0].items() if k not in {"revision", "created_at", "updated_at"}
     } == {k: v for k, v in members[1].items() if k not in {"revision", "created_at", "updated_at"}}
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)

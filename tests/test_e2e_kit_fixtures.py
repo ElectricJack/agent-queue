@@ -828,13 +828,14 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
     # filing under the fake provider, so the docs and runner stay synchronized.
-    assert set(by_key) == {f"S{number}" for number in range(1, 20) if number != 15}
+    assert set(by_key) == {f"S{number}" for number in range(1, 20)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
     assert by_key["S12"].families == ("MCP registry CRUD",)
     assert by_key["S13"].families == ("plugin extension startup",)
     assert by_key["S14"].families == ("graph/vault",)
+    assert by_key["S15"].families == ("integration/CLI",)
     assert by_key["S16"].families == ("provider availability/failover",)
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)

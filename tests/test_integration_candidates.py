@@ -2586,10 +2586,14 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     assert accepted["batch_id"] == "batch"
     assert accepted["member_ordinal"] == 1
     assert accepted["partial_head_sha"] == conflict.head_sha
-    assert accepted["continuation"]["outcome"] in {"built", "already_built"}
-    assert accepted["continuation"]["revision"] == 1
+    # The reconciler owns the continuation build; the command never builds
+    # while a root subject holds the batch.
+    assert accepted["continuation"] is None
+    continuation = (await service.build("batch")).model_dump(mode="json")
+    assert continuation["outcome"] in {"built", "already_built"}
+    assert continuation["revision"] == 1
     for member in members:
-        _git(origin, "merge-base", "--is-ancestor", member[1], accepted["continuation"]["head_sha"])
+        _git(origin, "merge-base", "--is-ancestor", member[1], continuation["head_sha"])
     batch = await db.get_integration_batch("batch")
     assert batch["tested_candidate_sha"] is None
     async with db._engine.connect() as conn:
@@ -2600,7 +2604,7 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     assert resolution["source_head_sha"] == members[1][1]
     assert resolution["resolved_head_sha"] == resolved
     if migration_repair:
-        candidate = accepted["continuation"]["head_sha"]
+        candidate = continuation["head_sha"]
         assert _git(origin, "show", f"{candidate}:{migration_path}") == text.strip()
         sibling_path = "migrations/versions/a00000000044_object_loops.py"
         assert _git(origin, "rev-parse", f"{candidate}:{sibling_path}") == _git(

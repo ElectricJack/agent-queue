@@ -561,3 +561,10 @@ async def test_unfinished_publication_recovery_preserves_writer_guards(
     async with db._engine.connect() as conn:
         owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
     assert owner["owner_id"] == task_id
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)
