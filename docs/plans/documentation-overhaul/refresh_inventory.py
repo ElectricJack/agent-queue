@@ -429,6 +429,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Finite managed-job command translation and queue clients."),
     ("src/jobs/artifacts.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "Fsync/rename receipts, bounded output and logical tail cursors."),
+    ("src/jobs/editor_pin.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Per-attempt content-addressed editor build pin for render jobs."),
     ("src/jobs/e2e.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "The finite e2e managed-job preset."),
     ("src/jobs/identity.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
