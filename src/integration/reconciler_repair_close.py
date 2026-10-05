@@ -14,6 +14,12 @@ from src.integration.subjects import Subject
 from src.models import TaskStatus
 
 
+def _ref_forms(name):
+    """Owner rows store full refs; tasks store bare branch names. Match both."""
+    bare = (name or "").removeprefix("refs/heads/")
+    return [bare, f"refs/heads/{bare}"]
+
+
 async def reconciler_batch_subject(db, batch_id, *, include_done=False):
     """Read durable engine ownership; terminal roots still fence legacy calls."""
     statement = select(t.integration_subjects).where(
@@ -146,7 +152,7 @@ async def _close_on_owner(
         owner = await row(
             t.integration_branch_owners,
             t.integration_branch_owners.c.repository_id == task.repo_id,
-            t.integration_branch_owners.c.ref == task.branch_name,
+            t.integration_branch_owners.c.ref.in_(_ref_forms(task.branch_name)),
         )
         fresh = await db.get_repair_filing_scope(task.id, session_id=session_id, conn=conn)
         attached = (
