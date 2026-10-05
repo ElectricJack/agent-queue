@@ -2084,6 +2084,13 @@ class MessagesConfig:
     enabled: bool = True  # native supervisor messaging is available by default
     delivery_interval: float = 5.0  # piggybacks the cascade cycle
     reply_timeout: float = 120.0  # transcript-tail fallback trigger
+    #: How many ``reply_timeout``s after delivery a transcript turn may still
+    #: count as that message's answer.  Raise it if your workers routinely
+    #: need longer than the window to speak; lower it to tighten what may be
+    #: claimed as a reply.  A missed recovery is silent (the human sees no
+    #: relayed answer), a too-wide one fabricates one — 2026-10-05, a resumed
+    #: supervisor answered two days of backlog with its next turns.
+    reply_window_multiplier: float = 3.0
     transcript_tail_fallback: bool = True
     max_inject_per_prompt: int = 10
 
@@ -2093,6 +2100,10 @@ class MessagesConfig:
             errors.append(ConfigError("messages", "delivery_interval", "must be > 0"))
         if self.reply_timeout < 0:
             errors.append(ConfigError("messages", "reply_timeout", "must be >= 0"))
+        if self.reply_window_multiplier < 1:
+            errors.append(
+                ConfigError("messages", "reply_window_multiplier", "must be >= 1")
+            )
         if self.max_inject_per_prompt < 0:
             errors.append(ConfigError("messages", "max_inject_per_prompt", "must be >= 0"))
         return errors
@@ -5268,6 +5279,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             enabled=bool(ms_cfg.get("enabled", True)),
             delivery_interval=float(ms_cfg.get("delivery_interval", 5.0)),
             reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
+            reply_window_multiplier=float(ms_cfg.get("reply_window_multiplier", 3.0)),
             transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),
             max_inject_per_prompt=int(ms_cfg.get("max_inject_per_prompt", 10)),
         )

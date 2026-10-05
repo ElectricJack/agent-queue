@@ -806,6 +806,79 @@ class TestTailAssistantTurn:
         )
         assert got == "fresh reply"
 
+    async def test_tool_use_only_turn_is_not_an_answer(
+        self, db, providers, lens, tmp_path, monkeypatch
+    ):
+        """A tool call is harness bookkeeping, not prose: the reader renders it
+        as ``[tool_use: X]``.  Skipping it (rather than returning it) keeps the
+        real answer inside the same window reachable."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-tool"
+        entries = [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": None,
+                "timestamp": "2026-08-30T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "name": "Bash"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "a2",
+                "parentUuid": "a1",
+                "timestamp": "2026-08-30T12:00:05Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "Ran it; nothing to report."}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, "tool-tail", entries)
+        row = await self._seed_task_with_transcript(db, providers, work_dir, "tool-tail")
+
+        got = await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1", since=0.0
+        )
+        assert got == "Ran it; nothing to report."
+
+    async def test_until_closes_the_window(self, db, providers, lens, tmp_path, monkeypatch):
+        """``until`` is what keeps a resumed session's next turn from answering
+        a delivery made days earlier (2026-10-05)."""
+        from src.sessions.transcripts.base import parse_iso_ts
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-until"
+        entries = [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": None,
+                "timestamp": "2026-08-30T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "answered in the window"}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, "until-tail", entries)
+        row = await self._seed_task_with_transcript(db, providers, work_dir, "until-tail")
+        turn_ts = parse_iso_ts("2026-08-30T12:00:00Z")
+
+        assert await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1",
+            since=turn_ts - 10.0, until=turn_ts,
+        ) == "answered in the window"
+        assert await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1",
+            since=turn_ts - 10.0, until=turn_ts - 1.0,
+        ) is None
+
     async def test_returns_none_when_nothing_newer_than_since(
         self, db, providers, lens, tmp_path, monkeypatch
     ):
