@@ -422,6 +422,7 @@ areas:
       - tests/test_integration_cancelled_collection.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
+      - tests/test_integration_epics.py
       - tests/test_integration_parent_source.py
       - tests/test_integration_delivered_parent_adoption.py
       - tests/test_integration_root_pull_requests.py
