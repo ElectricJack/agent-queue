@@ -1,7 +1,7 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:e51544470afea068f0620b1d731a75048e6cb79d646e757bc31a61d2e9ab8e08
-source_sha256: sha256:fc4003fbd27f7e090bb9ea294663ded27032d960e636813e33f7b063caec6001
+artifact_sha256: sha256:579813fdfdfd2978115f513cb8c8cb1690c362a4f78099fb0e1d371a033d5a9d
+source_sha256: sha256:88bae5f1de1e68022f8eb171699fc4d748a4d17980933c7ebf5e52c12cc9c5b9
 contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0
 capabilities_granted:
@@ -47,3 +47,11 @@ decision table. Only that command's compiled fingerprint and compile timestamp
 changed; the artifact digest and aggregate contract fingerprint follow them.
 No compiler questions remain. Installed activation and frozen operation pins
 are still owned by the operator and daemon.
+
+## Dashboard check-set compatibility (2026-10-04)
+
+The subject table and its CI observation action now pin the sixteen-check
+`ci-4f7c710bba01` set already required by the repository workflow, trust manifest
+and project policy. The added check is `Dashboard (typecheck/build)`. Rebuilt
+with `scripts/rebuild-reviewed-playbook-artifacts.py`; no compiler questions
+remain. Existing subjects retain their frozen artifacts and policy snapshots.

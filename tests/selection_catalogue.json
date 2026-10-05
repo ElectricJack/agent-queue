@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:08b6dbd5230a0f1e38940e42cbc253d9e6183d08b642174f94ff86353513fc4c",
+  "digest": "sha256:348b6d2ff08b6c108de2a5367acb1f89da9ec8e27fc254400886d741a769880e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2101,7 +2101,6 @@
       "imports": [
         "src.integration.ci",
         "src.integration.models",
-        "src.integration.train_onboarding",
         "src.playbooks.definition",
         "src.playbooks.proposal",
         "src.playbooks.validation"
@@ -4888,6 +4887,7 @@
         "src.commands.principal",
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.integration.ci_producers",
         "src.integration.development",
         "src.integration.development_adapter",
@@ -4896,6 +4896,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.subjects",
+        "src.models",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
