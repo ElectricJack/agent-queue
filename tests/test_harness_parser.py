@@ -459,9 +459,9 @@ class TestRunsCliProjectScope:
 
     def test_a_harness_named_after_the_cli_answers_before_the_registry(self, tmp_path):
         # Pinned deliberately: the id match is the only answer available
-        # without a registry, so it is the short-circuit -- a project file
-        # that shadows the ``opencode`` id itself is not consulted.  Shadowing
-        # the CLI-named id is how an operator would have to rename to opt out.
+        # without a registry, so it short-circuits ahead of the registry and a
+        # project file shadowing the ``opencode`` id itself is never consulted.
+        # Renaming the id is a project's only way to opt out.
         registry = self._registry(
             tmp_path,
             {
