@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:82aff44e7389f2c68c2bc24d929825f3b1a8da9feb34b6580ce4882a63e13371",
+  "digest": "sha256:3e9963560534f46d7e411b45dc08bf2b02b2f369a595794466af9d2ce8f5656b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4971,6 +4971,7 @@
         "src.jobs.result",
         "src.models",
         "src.orchestrator",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
       ],

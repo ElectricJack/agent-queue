@@ -120,7 +120,7 @@ a different table; copying a template never activates it or authorizes ejection.
   "max_wait_seconds": 3600,
   "tables": {
     "root_batch": {
-      "required_checks": {"version": "ci-4c6e0c2a989c", "names": ["Tests (cli-conformance)", "Tests (default-1/8)", "Tests (default-2/8)", "Tests (default-3/8)", "Tests (default-4/8)", "Tests (default-5/8)", "Tests (default-6/8)", "Tests (default-7/8)", "Tests (default-8/8)", "Tests (migration-and-slow)", "Tests (postgres-integration)", "E2E CLI (claims)", "E2E CLI (cli)", "E2E CLI (graphs)", "E2E CLI (failover)"], "producer_id": "15368"},
+      "required_checks": {"version": "ci-4f7c710bba01", "names": ["Tests (cli-conformance)", "Tests (default-1/8)", "Tests (default-2/8)", "Tests (default-3/8)", "Tests (default-4/8)", "Tests (default-5/8)", "Tests (default-6/8)", "Tests (default-7/8)", "Tests (default-8/8)", "Tests (migration-and-slow)", "Tests (postgres-integration)", "E2E CLI (claims)", "E2E CLI (cli)", "E2E CLI (graphs)", "E2E CLI (failover)", "Dashboard (typecheck/build)"], "producer_id": "15368"},
       "default": "wait",
       "cases": [
         {"rule": "binding-human-hold", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "held"}, "right": {"type": "literal", "value": true}}, "action": "held"},
@@ -181,7 +181,7 @@ a different table; copying a template never activates it or authorizes ejection.
         },
         "observe-ci": {
           "primitive": "ci_observe",
-          "inputs": {"head": {"type": "binding_ref", "binding": "s", "path": "tested_head"}, "required_check_version": {"type": "literal", "value": "ci-4c6e0c2a989c"}},
+          "inputs": {"head": {"type": "binding_ref", "binding": "s", "path": "tested_head"}, "required_check_version": {"type": "literal", "value": "ci-4f7c710bba01"}},
           "outcomes": {"green": {"kind": "progress", "phase": "promotable"}, "infra": {"kind": "wait", "seconds": 60, "reason": "ci-infrastructure"}, "none": {"kind": "wait", "seconds": 60, "reason": "ci-not-observed"}, "pending": {"kind": "wait", "seconds": 60, "reason": "exact-head-ci"}, "red": {"kind": "progress", "phase": "repairing"}, "unknown": {"kind": "backoff", "seconds": 30, "ceiling_seconds": 3600}, "untrusted": {"kind": "wait", "seconds": 60, "reason": "untrusted-ci"}}
         },
         "publish": {

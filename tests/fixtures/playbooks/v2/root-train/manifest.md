@@ -1,7 +1,7 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:1a56083121b48f032199cd7657768c874f549c70970cb6236e8a5378bcc1e1c6
-source_sha256: sha256:723b8dca06fb081ca3daf410e2eeeaa382d515bb84b6968f0a4e5fe516b2e07b
+artifact_sha256: sha256:8941ccea86d9cca07eede2a3dcb7a3a7c243470d245d6cf668ba49b99301f740
+source_sha256: sha256:85c4c79c62f992950ceefc8a5ac9659ad2bc1e505aa410244d5282699cc39509
 contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0
 capabilities_granted:
@@ -49,3 +49,10 @@ decision table. Only that command's compiled fingerprint and compile timestamp
 changed; the artifact digest and aggregate contract fingerprint follow them.
 No compiler questions remain. Installed activation and frozen operation pins
 are still owned by the operator and daemon.
+
+## Dashboard check-set alignment (2026-10-04)
+
+The reviewed subject table now names the sixteen-check workflow set, including
+`Dashboard (typecheck/build)`, and observes its derived version
+`ci-4f7c710bba01`. This keeps the frozen table and train policy consistent.
+Installed activations and existing operation pins retain their current versions.

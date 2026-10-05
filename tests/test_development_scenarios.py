@@ -83,6 +83,7 @@ from src.integration.subjects import (
 from src.jobs.result import build_result
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from src.orchestrator import Orchestrator
+from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import ProjectScope, load_definition_json, source_digest
 from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from_markdown
 from tests.db_fixtures import lease_dsn
@@ -398,6 +399,15 @@ class Development:
         )
         config.resources.jobs.enabled = True
         config.resources.test_slots = 2
+        store = ArtifactStore(config.compiled_root)
+        store.put(
+            definition,
+            source_digest=definition.source_hash,
+            contract_fingerprint=definition.contract_fingerprint(),
+            profile_fingerprint="test",
+            compiler_build="test",
+        )
+        store.put_source(self.artifact_sha, source)
         orchestrator = self.orchestrator = Orchestrator(config)
         orchestrator.db = db
         orchestrator.git = self.git

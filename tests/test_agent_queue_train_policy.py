@@ -55,6 +55,17 @@ def test_required_checks_match_workflow_matrix() -> None:
         assert trust.producer_id == "15368"
         assert trust.required_checks.names == expected
 
+    artifact = load_definition_json(
+        (BUNDLES / policy.root.route.playbook_id / "artifact.json").read_text()
+    )
+    table = artifact.integration_policy.model_dump(mode="json")["tables"]["root_batch"]
+    assert tuple(table["required_checks"]["names"]) == expected
+    assert table["required_checks"]["version"] == policy.root.required_checks.version
+    assert (
+        table["actions"]["observe-ci"]["inputs"]["required_check_version"]["value"]
+        == policy.root.required_checks.version
+    )
+
 
 @pytest.mark.parametrize("boundary", ["parent", "root"])
 def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
