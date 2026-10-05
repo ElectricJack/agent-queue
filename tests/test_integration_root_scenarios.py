@@ -1492,3 +1492,55 @@ async def test_reconciler_delegate_task_close_records_stop_and_resumes(train, ou
             return current.writer.status is WriterStatus.FILED and current.writer.task_id != task.id
 
         await train.run_until(successor, label="blocked writer replaced", limit=90)
+
+
+async def test_main_moved_after_build_rebuilds_once_then_red_ci_routes_to_repair(train):
+    """Live 2026-10-04 subject d3fb5c5b: main moved under a built candidate.
+
+    ``git_merge_members`` answered ``merged`` with the already-built revision
+    on the old base, so ``base-moved`` re-fired every visit and red CI was
+    never reached.  Now the candidate is rebuilt onto observed main once.
+    """
+    from src.integration.subjects import CIEvidence, CIState
+
+    await train.open()
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    stale = await train.subject(subject.id)
+
+    _git(train.work, "switch", "-C", "main", train.base)
+    (train.work / "unrelated.txt").write_text("moved\n")
+    _git(train.work, "add", "-A")
+    _git(train.work, "commit", "-m", "main moved")
+    _git(train.work, "push", "origin", "HEAD:refs/heads/main")
+    moved = train.remote("refs/heads/main")
+
+    async def reported(snapshot, head):
+        observation = train.ci.runs.get(head.sha)
+        state = CIState.NONE
+        if observation is not None:
+            state = CIState.GREEN if hasattr(observation, "receipt") else CIState.RED
+        return CIEvidence(head_sha=head.sha, observed_at=train.clock(), state=state)
+
+    train.observer.candidate_ci = reported
+    for _ in range(4):
+        await train.tick()
+    current = await train.subject(subject.id)
+    assert current.base_sha == moved
+    assert current.head_sha != stale.head_sha
+    assert current.generation == stale.generation + 1
+    assert not (await train.observer.observe(current)).base_moved
+    fired = [row for row in await train.journal(subject.id) if row.get("rule") == "base-moved"]
+    assert 0 < len(fired) <= 4
+
+    for _ in range(3):
+        await train.tick()
+    again = [row for row in await train.journal(subject.id) if row.get("rule") == "base-moved"]
+    assert len(again) == len(fired)
+
+    train.ci.finish(current.head_sha, "failure", run=77)
+    await train.run_until(
+        lambda: train.phase(subject.id, SubjectPhase.REPAIRING), label="red routes to repair"
+    )

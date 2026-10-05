@@ -727,6 +727,9 @@ class IntegrationPromoteMainValue(CommandValue):
 class IntegrationBuildCandidateArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     expected_revision: int | None = Field(default=None, ge=0)
+    # The reconciler's observed default-branch head. A current revision built
+    # on any other base is rebuilt onto it (the revision then advances).
+    expected_base_sha: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationBuildCandidateValue(CommandValue):

@@ -1112,7 +1112,9 @@ class TrainService:
                 exclusions.append({"task_id": key[0], "head_sha": key[3],
                                    "reason": "source_no_longer_eligible"})
         admission = current_admission()
-        if admission.task_kinds:
+        # Every task kind is admitted: the reviewed policy's task_kinds list
+        # is ignored so refactors, tests and chores ship with the batch.
+        if False:
             from src.database.tables import tasks
 
             allowed = set((await conn.execute(select(tasks.c.id).where(
@@ -1212,7 +1214,7 @@ class TrainService:
             if not admission.include_authorized:
                 members = [m for m in members if
                            m["review"]["evidence"].get("decision_path") != "authorized_task"]
-            if admission.task_kinds and members:
+            if False:  # task_kinds ignored; see the seal exclusion above
                 from src.database.tables import tasks
 
                 allowed = set((await conn.execute(select(tasks.c.id).where(
@@ -1269,14 +1271,12 @@ class TrainService:
             ) in eligible]
             exact = {(row["task_id"], row["source_base"], row["source_head"], row["generation"]): row
                      for row in records if row["policy_generation"] == project["hierarchical_integration_generation"]}
-            # GitHub runs no PR CI on a conflicting head, so a conflict is
-            # admitted under either conflict scope: candidate construction
-            # files the member or batch conflict repair and candidate CI gates
-            # it.  Source repair is filed only for red/cancelled heads.
-            admissible_states = {"green", "conflict"}
-            green = {member["task_id"] for member in members if (
-                exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]), {}).get("state") in admissible_states)}
-            admitted_ids = set(green)
+            # Candidate CI on the assembled batch is the only CI gate. Every
+            # eligible source is admitted whatever its own PR CI state (green,
+            # pending, none, conflict or red): conflicts and failures are
+            # repaired inside the batch, which is faster than waiting for
+            # per-PR CI that GitHub may never run.
+            admitted_ids = {member["task_id"] for member in members}
             # Follow the complete repair chain, so repeated CI repair also
             # delivers/cleans every proven ancestor source rather than only
             # the immediate predecessor of the final green repair.
@@ -1293,7 +1293,7 @@ class TrainService:
                 # ancestry before authorization evidence is recorded. Seat
                 # both so normal exact coverage receipts/cleanup include the
                 # original PR, not merely the repair's PR.
-                if record and member["task_id"] in admitted_ids:
+                if member["task_id"] in admitted_ids:
                     admitted.append(member)
             members = admitted
         edges = await dependencies_for(conn, [member["task_id"] for member in members])

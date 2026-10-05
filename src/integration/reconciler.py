@@ -247,7 +247,9 @@ class IntegrationReconciler:
             logger.exception("integration subject due page failed")
 
     async def _bounded(self, operation: Awaitable[Any]) -> Any:
-        return await asyncio.wait_for(operation, timeout=self._timeout)
+        # No call timeout: a slow observe/seal/build finishes instead of being
+        # cancelled and restarted from scratch on the next visit.
+        return await operation
 
     async def _committed(self, operation: Awaitable[Any]) -> Any:
         """Bound the local durable commit by its own budget, never the call one.

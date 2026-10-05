@@ -293,6 +293,7 @@ class RootPrimitiveAdapters:
             "integration_build_candidate",
             batch_id=subject.batch_id,
             expected_revision=subject.generation,
+            expected_base_sha=args.base_sha,
         )
         code = result.get("outcome")
         if code in {"built", "already_built"}:
@@ -313,6 +314,10 @@ class RootPrimitiveAdapters:
                 )
             if result.get("head_sha") != revision["head_sha"]:
                 return PrimitiveOutcome.unknown(args.primitive, "built_head_mismatch")
+            if revision["construction_base_sha"] != args.base_sha:
+                # Never report a candidate built on an older main as merged:
+                # its stale base would re-fire base-moved on every visit.
+                return self._answer(args, "base_moved")
             return self._answer(
                 args,
                 "merged",

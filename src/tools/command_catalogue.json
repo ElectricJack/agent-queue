@@ -10162,6 +10162,19 @@
             ],
             "default": null,
             "title": "Expected Revision"
+          },
+          "expected_base_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Base Sha"
           }
         },
         "required": [

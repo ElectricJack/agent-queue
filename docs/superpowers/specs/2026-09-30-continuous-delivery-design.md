@@ -17,18 +17,13 @@ allowlist also admits individually authorized chores such as `steady-delta`,
 preserving their type and genuine parent/child verification. While the train
 runs, an operator admits one more explicitly authorized root by its exact source
 (`aq integration authorize-root`) without a policy generation swap
-(`2026-10-01-explicit-root-authorization-design.md`). Failed and cancelled source checks create
-one actionable repair per source revision. Repair keeps source lineage and returns
-the repaired head to admission. GitHub runs no `pull_request` workflow on a PR
-whose head conflicts with its base, so a conflicting source never acquires checks
-and would stay `pending` forever. When no required check has run on the exact
-head and GitHub reports the PR unmergeable (`mergeable: false`,
-`mergeable_state: dirty`), the source is recorded as `conflict`. With
-`repair.conflict_scope: batch` a `conflict` source is admitted like a green one:
-the conflict is resolved collectively by the batch repair workspace and the
-candidate's own exact green CI is the gate. With member scope it stays
-unadmitted. A recorded `conflict` never files a per-source repair, and any run
-of a required check on the head (pending, red, cancelled or green) supersedes it. An approved aggregate may cover smaller branches
+(`2026-10-01-explicit-root-authorization-design.md`). The operator's 2026-10-04
+policy admits every otherwise eligible reviewed source regardless of its PR CI
+state: pending, red, cancelled, conflict, green or missing checks. There is no CI
+gate before admission. The batch repair workspace resolves aggregate conflicts,
+and the candidate's own exact authenticated green CI is the only CI gate.
+Source observations and existing repairs retain their diagnostic and lineage
+evidence without making source CI a prerequisite. An approved aggregate may cover smaller branches
 only with Git/content evidence; PR count is not evidence of distinct work.
 Untracked branches require original authorization and an overlap audit.
 
