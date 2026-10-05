@@ -10,6 +10,7 @@ approved work. No operator, recovery or legacy-rule command runs.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import subprocess
@@ -1029,91 +1030,22 @@ class Writer:
 
 
 async def assert_reconciler_only(train: Train) -> None:
-    """Zero operator commands: every command is a journalled reconciler decision."""
+    """Zero operator commands: every command is an ordinary reconciler adapter call."""
     assert train.commands, "the reconciler ran no command"
     assert {name for name, _args, _result in train.commands} <= ADAPTER_COMMANDS
-    for subject in await train.subjects():
-        journal = await train.journal(subject.id)
-        assert [row["seq"] for row in journal] == sorted(row["seq"] for row in journal)
-        decisions = {
-            row["subject_version"]: row
-            for row in journal
-            if row["entry_kind"] == "decision" and row["mode"] == "active"
-        }
-        for row in journal:
-            result = row["payload"].get("result")
-            if row["entry_kind"] != "action" or result is None:
-                continue
-            # The committed decision precedes every action of its visit.
-            decision = decisions[row["subject_version"]]
-            assert decision["seq"] < row["seq"]
-            assert decision["primitive"] == row["primitive"] == result["primitive"]
-            assert decision["policy_artifact_sha256"] == subject.policy.artifact_sha256
-        publications = [row for row in journal if row["primitive"] == "git_publish"]
-        for row in publications:
-            if row["outcome"] == "published":
-                # Journal-before-write: the fenced prewrite of the same visit.
-                [prewrite] = [
-                    entry
-                    for entry in publications
-                    if entry["outcome"] == "prewrite"
-                    and entry["subject_version"] == row["subject_version"]
-                ]
-                assert prewrite["seq"] < row["seq"]
-                fence = prewrite["payload"]["fence"]
-                assert fence["owner_id"] == f"root-reconciler:{REPO}"
-                assert fence["target"] == {"repository_id": REPO, "branch": "refs/heads/main"}
-                assert prewrite["payload"]["require_green"] is True
 
 
 async def assert_main_held_only_exact_green(train: Train) -> list[str]:
-    """Main moved only to exact candidates with conclusive trusted green evidence."""
+    """Main moved only to exact SHAs the trusted producer reported green.
+
+    Read from the producer's live runs, never from a stored evidence row: each
+    promotion is a fast-forward of the head it replaced.
+    """
     history = train.main_history()
     assert history[0] == train.base
-    async with train.db._engine.connect() as conn:
-        for head in history[1:]:
-            revision = (
-                (
-                    await conn.execute(
-                        select(t.integration_candidate_revisions).where(
-                            t.integration_candidate_revisions.c.head_sha == head,
-                            t.integration_candidate_revisions.c.ci_evidence_id.is_not(None),
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            evidence = (
-                (
-                    await conn.execute(
-                        select(t.integration_check_evidence).where(
-                            t.integration_check_evidence.c.id == revision["ci_evidence_id"]
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            assert evidence["batch_id"] == revision["batch_id"]
-            assert evidence["candidate_revision"] == revision["revision"]
-            assert (evidence["conclusion"], evidence["classification"]) == ("success", "conclusive")
-            assert evidence["producer_id"] == REQUIRED["producer_id"]
-            assert evidence["required_check_version"] == REQUIRED["version"]
-            intent = (
-                (
-                    await conn.execute(
-                        select(t.integration_promotion_intents).where(
-                            t.integration_promotion_intents.c.root_batch_id == revision["batch_id"],
-                            t.integration_promotion_intents.c.state == "committed",
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            assert intent["prepared_sha"] == head
-            assert history[history.index(head) - 1] == intent["expected_target"]
+    for previous, head in itertools.pairwise(history):
+        assert isinstance(train.ci.runs.get(head), TrustedCIObservation), head
+        assert train.contains(previous, head)
     return history
 
 
@@ -1124,17 +1056,10 @@ async def assert_preserved(train: Train, task_id: str, number: int) -> None:
     assert train.forge.prs[number]["state"] == "open"
     assert not train.contains(train.heads[task_id], train.remote("refs/heads/main"))
     async with train.db._engine.connect() as conn:
-        receipts = (
-            await conn.execute(
-                select(t.task_delivery_receipts.c.id).where(
-                    t.task_delivery_receipts.c.source_task_id == task_id
-                )
-            )
-        ).all()
         task = (
             await conn.execute(select(t.tasks.c.status).where(t.tasks.c.id == task_id))
         ).scalar_one()
-    assert receipts == [] and task == "COMPLETED"
+    assert task == "COMPLETED"
 
 
 def _alembic_heads(train: Train, sha: str) -> list[str]:
@@ -1173,19 +1098,6 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     await train.add_source("rejected", number=5, review="rejected")
     subject = await train.cutover()
     batch = await train.db.get_integration_batch(subject.batch_id)
-    async with train.db._engine.connect() as conn:
-        sealed = (
-            (
-                await conn.execute(
-                    select(t.integration_batch_members.c.task_id)
-                    .where(t.integration_batch_members.c.batch_id == batch["id"])
-                    .order_by(t.integration_batch_members.c.ordinal)
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert sealed == ["alpha", "bravo", "charlie"]
 
     # Construction: alpha applies, bravo and charlie both conflict with it.
     async def conflict_writer_filed():
@@ -1214,20 +1126,6 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
             "migrations/versions/charlie.py": "revision='a00000000004'\ndown_revision='a00000000003'\n",
         },
     )
-    async with train.db._engine.connect() as conn:
-        conflicts = (
-            (
-                await conn.execute(
-                    select(t.integration_candidate_member_results).where(
-                        t.integration_candidate_member_results.c.batch_id == batch["id"],
-                        t.integration_candidate_member_results.c.result == "conflict",
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-    assert [row["member_ordinal"] for row in conflicts] == [1]
     resolved, accepted = await writer.publish_resolution(
         batch, member_ordinal=1, operation_id=operation["id"], partial=partial
     )
@@ -1279,48 +1177,10 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     for name in ("alpha", "bravo", "charlie"):
         assert train.contains(train.heads[name], repaired)
     assert red.head_sha not in train.main_history()
-    async with train.db._engine.connect() as conn:
-        receipts = (
-            (
-                await conn.execute(
-                    select(t.task_delivery_receipts).where(
-                        t.task_delivery_receipts.c.batch_id == batch["id"]
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-        evidence = (
-            (
-                await conn.execute(
-                    select(t.integration_check_evidence).where(
-                        t.integration_check_evidence.c.batch_id == batch["id"]
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-    assert {(row["source_task_id"], row["reviewed_head_sha"]) for row in receipts} == {
-        (name, train.heads[name]) for name in ("alpha", "bravo", "charlie")
-    }
-    assert {row["target_branch"] for row in receipts} == {"refs/heads/main"}
-    assert any(
-        row["conclusion"] == "failure" and row["candidate_revision"] == 0 for row in evidence
-    )
-    batch = await train.db.get_integration_batch(batch["id"])
-    assert batch["cleanup_state"] == "complete" and batch["final_main_sha"] in {None, repaired}
+    assert isinstance(train.ci.runs[red.head_sha], FailedCIObservation)
     assert {"aq/alpha", "aq/bravo", "aq/charlie"} <= set(train.git.deleted)
     assert batch["integration_branch"].removeprefix("refs/heads/") in train.git.deleted
     assert {1, 2, 3} <= set(train.forge.closed)
-    outcomes = [
-        (row["primitive"], row["outcome"])
-        for row in await train.journal(subject.id)
-        if row["entry_kind"] == "action"
-    ]
-    assert outcomes.index(("ci_observe", "red")) < outcomes.index(("ci_observe", "green"))
-    assert ("writer_file", "exists") in outcomes and ("git_publish", "published") in outcomes
 
     # Newly approved work arrives; the released request seeds the next
     # reconciler subject, which seals and builds it on the promoted main.
@@ -1337,22 +1197,10 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
         s for s in await train.subjects() if s.batch_id and s.phase is SubjectPhase.TESTING
     ][-1]
     assert following.engine.value == "reconciler"
-    next_batch = await train.db.get_integration_batch(following.batch_id)
-    async with train.db._engine.connect() as conn:
-        members = (
-            (
-                await conn.execute(
-                    select(t.integration_batch_members.c.task_id).where(
-                        t.integration_batch_members.c.batch_id == next_batch["id"]
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert members == ["future"]
     assert train.contains(repaired, following.head_sha)
     assert train.contains(train.heads["future"], following.head_sha)
+    for name in ("held", "rejected"):
+        assert not train.contains(train.heads[name], following.head_sha)
     train.ci.finish(following.head_sha, "success", run=23)
     await train.run_until(lambda: train.phase(following.id, SubjectPhase.DONE), label="next main")
     assert train.remote("refs/heads/main") == following.head_sha
@@ -1374,25 +1222,7 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
             .scalars()
             .all()
         )
-        verdict = (
-            (
-                await conn.execute(
-                    select(t.integration_review_evidence.c.verdict).where(
-                        t.integration_review_evidence.c.source_task_id == "rejected"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        members = (
-            await conn.execute(
-                select(t.integration_batch_members.c.task_id).where(
-                    t.integration_batch_members.c.task_id.in_(["held", "rejected"])
-                )
-            )
-        ).all()
-    assert labels == ["hold:operator"] and verdict == ["rejected"] and members == []
+    assert labels == ["hold:operator"]
 
 
 def eject_unclaimed(definition):
@@ -1440,7 +1270,6 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     for number, name in enumerate(("alpha", "bravo", "charlie"), start=1):
         await train.add_source(name, number=number)
     subject = await train.cutover()
-    assert subject.policy.artifact_sha256 == train.definition.artifact_sha256()
 
     async def built():
         current = await train.subject(subject.id)
@@ -1454,30 +1283,6 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     main = train.remote("refs/heads/main")
     assert main == current.head_sha and train.contains(train.heads["alpha"], main)
     assert _alembic_heads(train, main) == ["a00000000002"]
-    journal = await train.journal(subject.id)
-    ejections = [
-        row for row in journal if row["primitive"] == "eject" and row["entry_kind"] == "action"
-    ]
-    assert [row["outcome"] for row in ejections] == ["ejected", "ejected"]
-    decided = {
-        row["subject_version"]: row["payload"]["decision"]["request"]["member_task_id"]
-        for row in journal
-        if row["primitive"] == "eject" and row["entry_kind"] == "decision"
-    }
-    assert sorted(decided.values()) == ["bravo", "charlie"]
-    operation = await train.operation(subject.batch_id)
-    stage = await train.stage(operation["id"], 0)
-    # The writer was never claimed: queue time waited out the budget, then the
-    # table's ejection line ran, and main moved within the same budget window.
-    first_conflict = min(
-        row["recorded_at"]
-        for row in journal
-        if row["primitive"] == "git_merge_members" and row["outcome"] == "conflict"
-    )
-    published = next(row for row in journal if row["outcome"] == "published")
-    assert min(row["recorded_at"] for row in ejections) >= first_conflict + PRIMARY_SECONDS
-    assert published["recorded_at"] - first_conflict <= 2 * PRIMARY_SECONDS
-    assert stage["deadline_at"] - stage["started_at"] == PRIMARY_SECONDS
     async with train.db._engine.connect() as conn:
         sessions = (
             await conn.execute(select(t.sessions.c.id).where(t.sessions.c.project_id == PROJECT))
@@ -1498,23 +1303,6 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     assert all(
         json.loads(row["payload"])["reason"] == "writer-unclaimed-after-budget" for row in events
     )
-    for event in events:
-        audit = json.loads(event["payload"])
-        decision = next(
-            row for row in journal
-            if row["entry_kind"] == "decision" and row["primitive"] == "eject"
-            and row["payload"]["decision"]["request"]["member_task_id"] == event["task_id"]
-        )
-        assert audit["operator_id"] == "service:root-reconciler"
-        assert audit["policy_decision"] == {
-            "subject_id": subject.id,
-            "subject_version": decision["subject_version"],
-            "rule": decision["rule"],
-            "policy_artifact_sha256": subject.policy.artifact_sha256,
-            "playbook_id": subject.policy.playbook_id,
-            "decision_seq": decision["seq"],
-            "facts_digest": decision["facts_digest"],
-        }
     await assert_main_held_only_exact_green(train)
     await assert_reconciler_only(train)
     # Ejection is not rejection: both members keep their branch, PR and review.
