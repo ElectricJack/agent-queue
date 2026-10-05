@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:74f79f11f217288756c7b750a085dee7b1a64b019198c33f58ca375996270fb9",
+  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7577,6 +7577,7 @@
       "default_arm": true,
       "imports": [
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.provenance"
@@ -7887,6 +7888,7 @@
         "src.integration.collection",
         "src.integration.engine",
         "src.integration.gates",
+        "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.parent_adapters",
         "src.integration.parent_ci",
@@ -7898,6 +7900,7 @@
         "src.integration.subjects",
         "src.integration.writers",
         "src.models",
+        "src.orchestrator.monitoring",
         "src.playbooks.definition",
         "src.playbooks.integration_policy",
         "src.profiles.capabilities"
@@ -8564,6 +8567,7 @@
         "src.git.manager",
         "src.integration.batches",
         "src.integration.ci",
+        "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
         "src.integration.lock",

@@ -31,7 +31,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
 
-  const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
+  const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks-knowledge");
   const backLabel = labelForBack(from);
 
   return (
@@ -52,7 +52,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
               ? <EpicStatus delivery={task.delivery_status} status={task.status} />
               : <StatusBadge status={task.status} />}
             {task.project_id && (
-              <Link to={workspaceHref(task.project_id, "tasks")} className="text-sm text-indigo-400 hover:underline">{task.project_id}</Link>
+              <Link to={workspaceHref(task.project_id, "tasks-knowledge")} className="text-sm text-indigo-400 hover:underline">{task.project_id}</Link>
             )}
             {task.priority != null && (
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
@@ -184,6 +184,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
  * Falls back to "Back" when the source path is unfamiliar.
  */
 function labelForBack(from: string): string {
+  if (from.match(/^\/(projects\/[^/]+|command-center)\/tasks-knowledge/)) return "Back to Tasks & Knowledge";
   if (from.match(/^\/(projects\/[^/]+|command-center)\/tasks/)) return "Back to tasks";
   if (from.match(/^\/projects\/[^/]+\/?$/)) return "Back to project";
   if (from.startsWith("/tasks/")) return "Back";

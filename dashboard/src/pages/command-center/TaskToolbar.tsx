@@ -14,7 +14,7 @@ import { useGraphState } from "./useGraphHierarchy";
 import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
-export default function TaskToolbar() {
+export default function TaskToolbar({ onCreated }: { onCreated?: (taskId: string) => void }) {
   const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork } = useTaskWorkspace();
   // The variant the canvas was actually SERVED, not the one the filters ask
   // for: the daemon promotes a focused request to the full layout when the
@@ -139,7 +139,10 @@ export default function TaskToolbar() {
         {tidy.isError && <span role="alert" className="text-xs text-amber-200">Tidy failed. Try again.</span>}
       </div>
       {createOpen && <CreateTaskModal key={projectId ?? "all"} open onClose={() => setCreateOpen(false)} defaultProjectId={projectId}
-        onCreated={(taskId) => { clearFilters(); pane.open("task-detail", { taskId }); }} />}
+        onCreated={(taskId) => {
+          if (onCreated) onCreated(taskId);
+          else { clearFilters(); pane.open("task-detail", { taskId }); }
+        }} />}
     </div>
   );
 }

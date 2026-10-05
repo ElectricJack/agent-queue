@@ -242,6 +242,69 @@ async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(rep
     assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
 
 
+@pytest.mark.parametrize("operation,step,exception", [
+    ("read_completion", "completion_provenance", KeyError("private provenance content")),
+    ("ancestor", "source_ancestry", GitError("fatal: bad object private content")),
+    ("alog_grep_trailer", "source_trailer", TypeError("https://user:secret@example.test")),
+    ("_whole_patch", "whole_source_patch",
+     GitError("git command stdin exceeds the bounded input limit")),
+    ("atree_sha", "full_tree", OSError("/private/path: private file content")),
+])
+async def test_failed_proof_names_step_and_exception_without_untrusted_content(
+    repository, monkeypatch, caplog, operation, step, exception,
+):
+    repo = repository
+    request = await repo.retain(await repo.commit("one"))
+    snapshot = await repo.snapshot()
+    if operation in {"read_completion", "ancestor"}:
+        owner = GitProvenance
+    elif operation == "_whole_patch":
+        from src.integration import git_truth
+
+        owner = git_truth
+    else:
+        owner = repo.git
+    monkeypatch.setattr(owner, operation, AsyncMock(side_effect=exception))
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.UNKNOWN
+    assert proof.reason == "missing_or_ambiguous_source"
+    assert proof.error_detail.startswith(f"{step}: {type(exception).__name__}:")
+    assert proof.error_detail in caplog.text
+    for private in ("private", "secret", "https://", "example.test"):
+        assert private not in proof.error_detail
+        assert private not in caplog.text
+
+
+async def test_invalid_exact_source_base_is_unknown_and_diagnosable(repository):
+    repo = repository
+    request = await repo.retain(await repo.commit("one"))
+    proof = await (await repo.snapshot()).is_delivered(request, source_base="origin/main")
+    assert proof.state == DeliveryState.UNKNOWN
+    assert proof.error_detail == (
+        "source_base: ValueError: whole-source proof requires an exact base OID"
+    )
+
+
+async def test_large_historical_diff_does_not_hide_a_pending_source(repository):
+    repo = repository
+    await repo.run("checkout", "main")
+    historical_base = await repo.commit("one", "historical\n")
+    historical_head = await repo.commit("one", "historical\n" * 120_000)
+    await repo.publish()
+    await repo.run("checkout", "-B", "source", "main")
+    head = await repo.commit("one", "historical\n" * 120_000 + "new source\n")
+    request = await repo.retain(head)
+    # The source diff is small, but the same path's earlier target diff is not.
+    diff = await repo.git.arun_git_result(
+        ["diff", historical_base, historical_head, "--"], cwd=str(repo.path),
+    )
+    assert len(diff.stdout.encode()) > repo.git._MAX_STDIN_BYTES
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=historical_head)
+    assert proof.state == DeliveryState.PENDING and proof.error_detail is None
+    # Frozen batch checks consume the same complete-source proof.
+    assert await (await repo.snapshot()).contains_source("task", head, historical_head) is False
+
+
 async def test_empty_patch_ids_never_match(repository):
     repo = repository
     await repo.run("commit", "--allow-empty", "-m", "empty source")
@@ -446,3 +509,116 @@ async def test_repair_green_precedes_movement_and_rev_list_includes_merged_commi
         await commits_added(repo.git, str(repo.path), "0" * 40, head)
     with pytest.raises(GitError):
         await repo.git.atree_sha(str(repo.path), "0" * 40)
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_oversized_historical_patch_does_not_block_delivery(repository, delivered):
+    repo = repository
+    await repo.run("checkout", "main")
+    await repo.commit("seed", "historical line\n" * 80000)
+    repo.base = await repo.commit("seed", "seed\n")
+    await repo.run("checkout", "-B", "source")
+    head = await repo.commit("seed", "small intended change\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    if delivered:
+        await repo.run("merge", "--squash", "source")
+        await repo.run("commit", "-m", "squashed source")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.state == (DeliveryState.CONTAINED if delivered else DeliveryState.PENDING)
+    assert proof.reason == ("whole_source_patch" if delivered else "source_not_delivered")
+    assert await snapshot.contains_source("task", head, repo.base) is delivered
+
+
+@pytest.mark.parametrize("proof_kind", ["pending", "patch", "trailer"])
+async def test_oversized_source_patch_is_complete_and_uses_delivery_proofs(repository, proof_kind):
+    repo = repository
+    head = await repo.commit("large", "large source line\n" * 80000)
+    request = await repo.retain(head)
+    patch_id = await repo.git.apatch_id(str(repo.path), repo.base, head)
+    assert patch_id is not None and len(patch_id) == 40
+    await repo.run("checkout", "main")
+    if proof_kind == "patch":
+        await repo.run("merge", "--squash", "source")
+        await repo.run("commit", "-m", "same tree, different history")
+    elif proof_kind == "trailer":
+        await repo.commit("unrelated", message=f"delivered\n\nAQ-Source: task@{head}")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert proof.reason == {
+        "pending": "source_not_delivered", "patch": "whole_source_patch",
+        "trailer": "source_trailer",
+    }[proof_kind]
+    assert await snapshot.contains_source("task", head, repo.base) is (proof_kind != "pending")
+
+
+async def test_failed_historical_probe_does_not_hide_later_match(repository, monkeypatch):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    failed_head = await repo.commit("one", "historical content\n")
+    await repo.run("revert", "--no-edit", failed_head)
+    await repo.run("merge", "--squash", "source")
+    await repo.run("commit", "-m", "whole source")
+    await repo.commit("unrelated")
+    await repo.publish()
+    patch_id = repo.git.apatch_id
+    failures = []
+
+    async def probe(path, base, candidate):
+        if candidate == failed_head:
+            failures.append(candidate)
+            raise GitError("historical probe failed")
+        return await patch_id(path, base, candidate)
+
+    monkeypatch.setattr(repo.git, "apatch_id", probe)
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert failures
+    assert proof.reason == "whole_source_patch"
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_failed_historical_probes_require_independent_proof_and_are_not_cached(
+    repository, monkeypatch, caplog, delivered,
+):
+    repo = repository
+    _first, head, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    await repo.commit("one", "different historical content\n")
+    if delivered:
+        await repo.run("checkout", "source", "--", ".")
+        await repo.run("commit", "-am", "same tree, different history")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    patch_id = repo.git.apatch_id
+    failures = []
+
+    async def probe(path, base, candidate):
+        if candidate != head:
+            failures.append(candidate)
+            raise GitError("historical probe failed with private content")
+        return await patch_id(path, base, candidate)
+
+    monkeypatch.setattr(repo.git, "apatch_id", probe)
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert failures
+    if delivered:
+        assert proof.state == DeliveryState.CONTAINED and proof.reason == "full_tree"
+        assert proof.error_detail is None
+    else:
+        assert proof.state == DeliveryState.UNKNOWN
+        assert proof.error_detail == (
+            "whole_source_patch: GitError: Git command failed (untrusted detail omitted)"
+        )
+        assert proof.error_detail in caplog.text
+        assert "private content" not in caplog.text
+    assert await snapshot.contains_source("task", head, repo.base) is (True if delivered else None)
+    assert repo.base not in snapshot.truth._pair(snapshot.observation, head).patches
+    monkeypatch.setattr(repo.git, "apatch_id", patch_id)
+    retry = await snapshot.is_delivered(request, source_base=repo.base)
+    assert retry.state == (DeliveryState.CONTAINED if delivered else DeliveryState.PENDING)
+    assert await snapshot.contains_source("task", head, repo.base) is delivered

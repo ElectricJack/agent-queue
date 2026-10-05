@@ -64,18 +64,18 @@ export async function run(t) {
   // (The Tasks tab's own compact layout is Task 8's check.)
   await t.page.goto(t.url(`/projects/${PROJECT}/tasks`), { waitUntil: "networkidle0" });
   await t.page.click('[data-task-row="fixture-task-2"] .line-clamp-2'); // the title: a table row's centre can be its status select
-  await t.page.waitForSelector('[role=dialog][aria-label="Pane"]');
-  const paneSheet = await rect(t.page, '[role=dialog][aria-label="Pane"]');
+  await t.page.waitForSelector('[role=dialog][aria-label="Record detail"]');
+  const paneSheet = await rect(t.page, '[role=dialog][aria-label="Record detail"]');
   assert.ok(paneSheet.width >= vp.width - 1 && paneSheet.height >= vp.height - 1, "the pane is not full-screen");
   await t.shot("pane");
   if (t.isPhone) {
-    for (const target of await targets(t.page, '[aria-label="Close pane"]')) {
+    for (const target of await targets(t.page, '[aria-label="Back to list"]')) {
       assert.ok(target.width >= 44 && target.height >= 44, `Close pane is ${target.width}×${target.height}`);
     }
   }
   await t.page.goBack();
-  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Pane"]'));
-  assert.ok(t.page.url().endsWith(`/projects/${PROJECT}/tasks`), "Back left the page instead of closing the pane");
+  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Record detail"]'));
+  assert.equal(new URL(t.page.url()).pathname, `/projects/${PROJECT}/tasks-knowledge`, "Back left the page instead of closing the pane");
 
   assert.deepEqual(t.stub.statePuts(), [], "the compact shell wrote roaming preferences");
 }

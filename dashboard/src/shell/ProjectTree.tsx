@@ -27,6 +27,7 @@ import {
 } from "./navOrganization";
 import { linkClass } from "./railStyles";
 import { workspaceHref, type WorkspaceTab } from "./projectNavigation";
+import { writeRecordSelection } from "../pages/records/recordUrlState";
 
 interface Props {
   projects: readonly NavProject[];
@@ -126,6 +127,8 @@ export default function ProjectTree({
 
   const projectRow = (project: NavProject, folderId: string | null) => {
     const label = projectLabel(project);
+    const filters = writeRecordSelection(new URLSearchParams(search), null);
+    const projectSearch = activeProjectId === project.id ? search : filters.size ? `?${filters}` : "";
     return (
       <div
         key={project.id}
@@ -138,7 +141,7 @@ export default function ProjectTree({
         data-project-row={project.id}
       >
         <Link
-          to={workspaceHref(project.id, tab, search)}
+          to={workspaceHref(project.id, tab, projectSearch)}
           data-listnav="1"
           data-primary-control
           aria-current={activeProjectId === project.id ? "page" : undefined}

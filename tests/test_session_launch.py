@@ -1,8 +1,8 @@
 """The flock registration invariant, including failure and concurrent observation."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import importlib
 import time
 from collections import Counter
@@ -350,6 +350,8 @@ _PROCESS_SITES = {
     ("src/doctor/service_checks.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/stall_checks.py", "_command", "create_subprocess_exec"): 1,
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
+    # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
+    ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
     ("src/git/manager.py", "GitManager._apush_refs_with_app_auth_to_url", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_authenticated_git_once", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_git_result_unlocked", "create_subprocess_exec"): 1,

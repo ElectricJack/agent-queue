@@ -232,9 +232,12 @@ class DatabaseBatches:
                 continue
             evidence = await snapshot.is_delivered(request, source_base=base)
             if evidence.state is DeliveryState.UNKNOWN and blockers is not None:
+                detail = f"task {task_id} delivery is unknown ({evidence.reason})"
+                if evidence.error_detail:
+                    detail += f": {evidence.error_detail}"
                 blockers.append({
                     "code": evidence.reason, "ref": task_id, "task_id": task_id,
-                    "detail": f"task {task_id} delivery is unknown ({evidence.reason})",
+                    "detail": detail,
                     "repository_id": target.repository_id, "target_ref": target.target_ref,
                 })
             if evidence.satisfied:

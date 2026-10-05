@@ -84,6 +84,8 @@ export interface TaskDetailBodyProps {
   onOpenTask: (taskId: string) => void;
   /** Leave the detail: after a delete, and before a terminal or session opens. */
   onClose: () => void;
+  /** Route-owned detail leaves its URL selection in history when navigating away. */
+  onLeave?: () => void;
   /** Session links remember the task pane so Back restores it (desktop pane only). */
   fromTaskPane?: boolean;
   /** Pane-host wiring (toolbar, local shortcuts, "open full page"); the route passes none. */
@@ -94,7 +96,7 @@ export interface TaskDetailBodyProps {
  * Task detail content, shared by the right-surface pane and the focus route
  * (mobile dashboard §4.1: one component, one fetch policy).
  */
-export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {
+export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {
   const queryClient = useQueryClient();
   const { data: task, isError } = useTask(taskId);
   useEffect(() => prefetchTaskPane(queryClient, taskId), [queryClient, taskId]);
@@ -286,7 +288,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
         </div>
       </header>
 
-      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onClose} />}
+      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onLeave} />}
 
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
 
@@ -358,7 +360,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
         </section>
       )}
 
-      {task && <TaskSessions taskId={taskId} onOpenSession={onClose} fromTaskPane={fromTaskPane} />}
+      {task && <TaskSessions taskId={taskId} onOpenSession={onLeave} fromTaskPane={fromTaskPane} />}
 
       {task && <TaskSubtaskList taskId={taskId} />}
 

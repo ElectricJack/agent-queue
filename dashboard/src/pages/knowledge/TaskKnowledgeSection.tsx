@@ -6,6 +6,7 @@ import { knowledgeCreate, recordShow } from "../../api/client";
 import TaskKnowledgePanel from "../../panes/knowledge/TaskKnowledgePanel";
 import Modal from "../../components/Modal";
 import { createLiveKnowledgeAdapter } from "./liveAdapter";
+import { knowledgeSelectionHref } from "../records/recordUrlState";
 
 export default function TaskKnowledgeSection({ projectId, taskId, selectedText, children }: {
   projectId: string; taskId: string; selectedText?: string; children?: ReactNode;
@@ -43,14 +44,14 @@ export default function TaskKnowledgeSection({ projectId, taskId, selectedText, 
       if (!data?.record_id) throw new Error("No receipt");
       setFinding(null);
       await client.invalidateQueries({ queryKey: ["knowledge"] });
-      navigate(`/projects/${encodeURIComponent(projectId)}/knowledge?record=${encodeURIComponent(data.record_id)}`);
+      navigate(knowledgeSelectionHref(projectId, data.record_id));
     } catch { setError("The finding could not be saved. Your selected text is retained."); }
     finally { setPending(false); }
   }
   return <>
     {description}
     <TaskKnowledgePanel taskId={taskId} adapter={adapter} selectedText={selectedText ?? selectionText}
-      onOpenRecord={(id, revision) => navigate(`/projects/${encodeURIComponent(projectId)}/knowledge?record=${encodeURIComponent(id)}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`)}
+      onOpenRecord={(id, revision) => navigate(knowledgeSelectionHref(projectId, id, revision))}
       onSaveFinding={canSave ? ({ text }) => { observedToken.current = null; setFinding({ text, key: crypto.randomUUID() }); setTitle(""); setError(""); } : undefined} />
     <Modal open={finding !== null} onClose={() => { if (!pending) setFinding(null); }} title="Save finding">
       <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
