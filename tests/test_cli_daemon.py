@@ -8,6 +8,7 @@ are patched — nothing here touches Docker or a real process.
 
 from __future__ import annotations
 
+import gzip
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -1287,3 +1288,57 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_log_rotation_preserves_bytes_and_retains_the_newest_backups(tmp_path, monkeypatch):
+    log = tmp_path / "custom.log"
+    contents = b"log bytes including invalid UTF-8: \xff\n" * 100
+    log.write_bytes(contents)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 100)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004000004")
+    for ordinal in range(4):
+        (tmp_path / f"custom.log.2026100400000{ordinal}.gz").write_bytes(b"older")
+    unrelated = tmp_path / "other.log.20261004000000.gz"
+    unrelated.write_bytes(b"unrelated")
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == b""
+    retained = sorted(tmp_path.glob("custom.log.*.gz"))
+    assert [path.name for path in retained] == [
+        "custom.log.20261004000002.gz",
+        "custom.log.20261004000003.gz",
+        "custom.log.20261004000004.gz",
+    ]
+    with gzip.open(retained[-1], "rb") as compressed:
+        assert compressed.read() == contents
+    assert unrelated.read_bytes() == b"unrelated"
+
+
+def test_log_rotation_keeps_the_source_when_compression_fails(tmp_path, monkeypatch):
+    log = tmp_path / "daemon.log"
+    contents = b"must survive compression failure"
+    log.write_bytes(contents)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 1)
+
+    def fail_copy(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(daemon_mod.shutil, "copyfileobj", fail_copy)
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == contents
+
+
+@pytest.mark.parametrize("size", [0, 10])
+def test_log_rotation_leaves_small_logs_unchanged(tmp_path, monkeypatch, size):
+    log = tmp_path / "daemon.log"
+    contents = b"x" * size
+    log.write_bytes(contents)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 10)
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == contents
+    assert not list(tmp_path.glob("daemon.log.*.gz"))

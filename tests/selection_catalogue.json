@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:0591aa66d819e0a2d55f25dd9f339a70d274a00037a5e1ebd82afd82648920db",
+  "digest": "sha256:82aff44e7389f2c68c2bc24d929825f3b1a8da9feb34b6580ce4882a63e13371",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2116,6 +2116,7 @@
       "imports": [
         "src.integration.ci",
         "src.integration.models",
+        "src.integration.train_onboarding",
         "src.playbooks.definition",
         "src.playbooks.proposal",
         "src.playbooks.validation"
@@ -8986,6 +8987,7 @@
         "src.config",
         "src.database.tables",
         "src.jobs.artifacts",
+        "src.jobs.editor_pin",
         "src.jobs.identity",
         "src.jobs.matter",
         "src.jobs.policy",
