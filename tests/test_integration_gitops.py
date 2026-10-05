@@ -245,6 +245,34 @@ async def test_merge_replay_preserves_exact_source_ancestry_and_pins(setup):
     assert git(ops.git.remote_path, "rev-parse", "main") == base
 
 
+async def test_each_merged_member_records_one_exact_source_trailer(setup):
+    """One AQ-Source per member merge, on that member's whole head only."""
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    _db, ops, s, _fence, repo, base, head, _green = setup
+    other = commit(repo.store, {"other.txt": "other\n"}, base=base)
+    result = await ops.merge_members(s, merge_args(s, base, head, other))
+    assert result.outcome == "merged", result
+    merges = git(
+        repo.store, "rev-list", "--reverse", "--min-parents=2", f"{base}..{result.detail['head']}"
+    ).split()
+    assert len(merges) == 2
+    for sha, head_sha in zip(merges, (head, other), strict=True):
+        message = git(repo.store, "show", "-s", "--format=%B", sha)
+        task_id = "t0" if head_sha == head else "t1"
+        assert parse_source_trailers(message) == {SourceIdentity(task_id, head_sha)}
+        assert [line for line in message.splitlines() if line.startswith("AQ-Source:")] == [
+            f"AQ-Source: {task_id}@{head_sha}"
+        ]
+        assert f"Integrate {task_id} ({head_sha})" in message
+    # Neither merge names the other's member, and the subject line each
+    # recorded before this change is unchanged.
+    recorded = set().union(*(
+        parse_source_trailers(git(repo.store, "show", "-s", "--format=%B", sha)) for sha in merges
+    ))
+    assert recorded == {SourceIdentity("t0", head), SourceIdentity("t1", other)}
+
+
 async def test_real_conflict_records_partial_head_and_paths(setup):
     db, ops, s, _, repo, base, *_ = setup
     a = commit(repo.store, {"base.txt": "ours\n"}, base=base)

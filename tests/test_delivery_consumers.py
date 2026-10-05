@@ -345,6 +345,101 @@ async def test_a_retired_manifest_source_keeps_a_branchless_close_unknown(world)
     assert view.get("legacy-artifact").state is DeliveryState.NO_ARTIFACT
 
 
+async def test_exact_source_trailers_only_match_the_whole_identity(world):
+    """A trailer proves one whole generation, reachable from the fetched target.
+
+    A substring, an abbreviated SHA, one commit of a multi-commit source and the
+    previous generation of a reopened task are each a different identity, and a
+    trailer that is not reachable from the target is not delivery.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import task_completion_records
+    from src.integration.source_trailer import (
+        SourceIdentity,
+        delivered_by_source_trailer,
+        reachable_source_identities,
+    )
+
+    db, origin, _observer, _service = world
+    store = origin.clone
+    git_manager = GitManager()
+
+    async with db._engine.connect() as conn:
+        generations = (
+            await conn.execute(
+                select(task_completion_records.c.commits)
+                .where(task_completion_records.c.task_id == "reopened")
+                .order_by(task_completion_records.c.completed_at)
+            )
+        ).scalars().all()
+    old_source, new_source = (json.loads(commits)[-1] for commits in generations)
+    assert old_source != new_source
+
+    git(store, "fetch", "-q", "origin")
+    main = git(store, "rev-parse", "origin/main")
+
+    def merge_message(body):
+        return f"Integrate reopened\n\n{body}"
+
+    # The reachable merge names the task's first generation only.
+    git(store, "checkout", "-q", "-B", "aq/trailer-probe", main)
+    git(store, "merge", "-q", "--no-ff", "-m",
+        merge_message(f"AQ-Source: reopened@{old_source}"), "origin/aq/reopened")
+    probe = git(store, "rev-parse", "HEAD")
+    assert await delivered_by_source_trailer(
+        git_manager, store, "reopened", old_source, probe
+    ) is True
+    # The narrowed read and a full scan of the reachable history agree.
+    assert SourceIdentity("reopened", old_source) in await reachable_source_identities(
+        git_manager, store, probe
+    )
+    assert await reachable_source_identities(git_manager, store, main) == frozenset()
+    # The reopened task's new completion is not satisfied by its old trailer.
+    assert await delivered_by_source_trailer(
+        git_manager, store, "reopened", new_source, probe
+    ) is False
+    # Not reachable from the fetched target, so not delivered to it.
+    assert await delivered_by_source_trailer(
+        git_manager, store, "reopened", old_source, main
+    ) is False
+
+    # An abbreviated SHA and a substring of a real one are not identities.
+    git(store, "checkout", "-q", "-B", "aq/trailer-abbrev", main)
+    git(store, "merge", "-q", "--no-ff", "-m",
+        merge_message(f"AQ-Source: reopened@{old_source[:12]}"), "origin/aq/reopened")
+    abbrev = git(store, "rev-parse", "HEAD")
+    assert await delivered_by_source_trailer(
+        git_manager, store, "reopened", old_source, abbrev
+    ) is False
+    git(store, "checkout", "-q", "-B", "aq/trailer-substring", main)
+    git(store, "merge", "-q", "--no-ff", "-m",
+        merge_message(f"AQ-Source: reopened@{old_source} and more"), "origin/aq/reopened")
+    substring = git(store, "rev-parse", "HEAD")
+    assert await delivered_by_source_trailer(
+        git_manager, store, "reopened", old_source, substring
+    ) is False
+
+    # A two-commit source is named by its head: one of its commits is not it.
+    git(store, "checkout", "-q", "-B", "aq/multi", main)
+    for name in ("multi-a.txt", "multi-b.txt"):
+        (store / name).write_text(name)
+        git(store, "add", "-A")
+        git(store, "commit", "-q", "-m", f"add {name}")
+    commits = git(store, "rev-list", "--reverse", f"{main}..HEAD").split()
+    assert len(commits) == 2
+    git(store, "checkout", "-q", "-B", "aq/multi-target", main)
+    git(store, "merge", "-q", "--no-ff", "-m",
+        f"Integrate multi\n\nAQ-Source: multi@{commits[0]}", "aq/multi")
+    multi = git(store, "rev-parse", "HEAD")
+    assert await delivered_by_source_trailer(
+        git_manager, store, "multi", commits[0], multi
+    ) is True
+    assert await delivered_by_source_trailer(
+        git_manager, store, "multi", commits[1], multi
+    ) is False
+
+
 def test_no_runtime_module_reads_or_writes_a_delivery_record():
     """Retired for good: no table answers delivery and no source queries one.
 

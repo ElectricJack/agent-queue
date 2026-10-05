@@ -90,6 +90,7 @@ from src.integration.publishable_artifact import (
 from src.integration.publishable_artifact import (
     has_publishable_artifact,
 )
+from src.integration.source_trailer import source_identity, with_source_trailers
 from src.jobs.policy import JobError, presets, validate_args
 from src.models import TaskStatus
 
@@ -601,8 +602,8 @@ class DevelopmentIntegration:
     def _store_path(self, repo):
         return self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
 
-    async def merge_member(self, store, commit, policy) -> MergeOutcome:
-        """Merge *commit* into the checkout's detached HEAD.
+    async def merge_member(self, store, commit, policy, task_id=None) -> MergeOutcome:
+        """Merge *commit* into the checkout's detached HEAD, then record it.
 
         Without a ``regenerate`` policy this is a plain ``git merge``.  With one,
         files marked ``merge=aq-generated`` merge through a driver that never
@@ -612,7 +613,41 @@ class DevelopmentIntegration:
         any other file still fails the merge, as does a rebuild that fails or
         writes a file that is not generated.  A failed merge leaves HEAD and the
         tree as they were.
+
+        With ``task_id`` the completed merge records the exact
+        ``AQ-Source: <task-id>@<commit>`` identity of the applied source. Only a
+        merge that produced a commit is stamped: a fast-forward left no commit
+        message to amend, and its source is an ancestor of HEAD instead.
         """
+        outcome = await self._merged_member(store, commit, policy)
+        if outcome.ok and task_id:
+            await self._stamp_source_trailer(store, task_id, commit)
+        return outcome
+
+    async def _stamp_source_trailer(self, store, task_id, commit) -> None:
+        """Record *task_id*'s exact applied source on the merge commit just made.
+
+        ``git merge`` writes its own message, so the identity is added to the
+        merge commit it created. Only a commit that took *commit* as a parent is
+        one this merge made: a fast-forward or an already-contained source left
+        someone else's commit as HEAD, which is never rewritten. An identity the
+        message already carries is left alone, and no existing trailer is
+        rewritten or reordered.
+        """
+        fields = (await self.run_git(store, "rev-list", "--parents", "-n", "1", "HEAD")).split()
+        if len(fields) < 3 or fields[0] == commit or commit not in fields[1:]:
+            return
+        message = await self.run_git(store, "log", "-1", "--format=%B", "HEAD")
+        stamped = with_source_trailers(message, [source_identity(task_id, commit)])
+        if stamped == message:
+            return
+        identity = self.git.resolve_commit_identity()
+        await self.run_git_input(
+            store, stamped + "\n", *identity.config_args(), "commit", "--amend", "--no-verify",
+            "-F", "-",
+        )
+
+    async def _merged_member(self, store, commit, policy) -> MergeOutcome:
         before = await self.run_git(store, "rev-parse", "HEAD")
         identity = self.git.resolve_commit_identity().config_args()
         driver = list(GENERATED_MERGE_CONFIG) if policy.regenerate else []
@@ -2008,7 +2043,7 @@ class DevelopmentIntegration:
                 # Grouping by parent is not required, so one member's conflict
                 # never holds a sibling.
                 await self.run_git(store, "checkout", "--detach", "--force", head)
-                outcome = await self.merge_member(store, source, policy)
+                outcome = await self.merge_member(store, source, policy, task_id=task["id"])
                 if not outcome.ok:
                     await self.run_git(store, "checkout", "--detach", "--force", head)
                     attribution = await self._conflict_evidence(
