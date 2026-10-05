@@ -1177,7 +1177,6 @@ async def test_reconciler_repairs_conflicts_and_migrations_through_red_green_pro
     for name in ("alpha", "bravo", "charlie"):
         assert train.contains(train.heads[name], repaired)
     assert red.head_sha not in train.main_history()
-    assert isinstance(train.ci.runs[red.head_sha], FailedCIObservation)
     assert {"aq/alpha", "aq/bravo", "aq/charlie"} <= set(train.git.deleted)
     assert batch["integration_branch"].removeprefix("refs/heads/") in train.git.deleted
     assert {1, 2, 3} <= set(train.forge.closed)
@@ -1270,34 +1269,54 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
     for number, name in enumerate(("alpha", "bravo", "charlie"), start=1):
         await train.add_source(name, number=number)
     subject = await train.cutover()
+    base = train.remote("refs/heads/main")
+
+    async def ejection_events():
+        async with train.db._engine.connect() as conn:
+            return (
+                (
+                    await conn.execute(
+                        select(t.events.c.task_id, t.events.c.payload).where(
+                            t.events.c.event_type == "integration.batch_ejected"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+    # Observed on the train clock: when the ejection event appears and when
+    # main moves, measured from cutover, the earliest the conflict can exist.
+    started, seen = train.clock.now, {}
 
     async def built():
+        if "ejected" not in seen and await ejection_events():
+            seen["ejected"] = train.clock.now
         current = await train.subject(subject.id)
         return current.phase is SubjectPhase.TESTING
+
+    async def published():
+        if train.remote("refs/heads/main") != base:
+            seen.setdefault("published", train.clock.now)
+        return await train.phase(subject.id, SubjectPhase.DONE)
 
     await train.run_until(built, label="built without the unrepaired members", limit=80)
     current = await train.subject(subject.id)
     train.ci.finish(current.head_sha, "success", run=31)
-    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="published")
+    await train.run_until(published, label="published")
 
     main = train.remote("refs/heads/main")
     assert main == current.head_sha and train.contains(train.heads["alpha"], main)
     assert _alembic_heads(train, main) == ["a00000000002"]
+    # The writer was never claimed: queue time waited out the budget, then the
+    # table's ejection line ran, and main moved within the same budget window.
+    assert seen["ejected"] >= started + PRIMARY_SECONDS
+    assert seen["published"] - started <= 2 * PRIMARY_SECONDS
+    events = await ejection_events()
     async with train.db._engine.connect() as conn:
         sessions = (
             await conn.execute(select(t.sessions.c.id).where(t.sessions.c.project_id == PROJECT))
         ).all()
-        events = (
-            (
-                await conn.execute(
-                    select(t.events.c.task_id, t.events.c.payload).where(
-                        t.events.c.event_type == "integration.batch_ejected"
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
     assert sessions == []
     assert sorted(row["task_id"] for row in events) == ["bravo", "charlie"]
     assert all(

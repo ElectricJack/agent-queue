@@ -14,7 +14,7 @@ There are two kinds of evidence, and they are never confused:
 * Reconstructed cases rebuild each stall family from the spec's description and
   must settle through ordinary visits.
 * Historical cases replay operator-supplied sanitized captures from
-  ``tests/fixtures/integration_replay/captures/<case>/``. A missing capture is
+  ``tests/fixtures/integration_replay/<case>/``. A missing capture is
   an explicit GAP: the case skips with that reason, and the report lists it as a
   gap, never as a historical pass.
 
@@ -55,7 +55,7 @@ ZERO = "0" * 40
 P, R = "p", "r"
 MAIN = "refs/heads/main"
 GENERATED = "generated/"
-CAPTURES = Path(__file__).parent / "fixtures" / "integration_replay" / "captures"
+ESCALATE_AFTER = 3  # repair attempts before a new attempt is escalated
 
 # The spec's recorded stalls. Both no-progress escalations are named separately.
 HISTORICAL_STALLS = (
@@ -79,12 +79,15 @@ REMOVED_CONTROLS = frozenset({"integration_development_sweep"} | {
         "engine-transfer", "development-engine-transfer", "shadow-report",
     )
 })
+# Removed controls whose handler is already gone from this checkout. Every other
+# id must resolve to a CommandHandler method, so a misspelled id fails instead
+# of silently guarding nothing; retiring a handler moves its id here.
+RETIRED_CONTROLS = frozenset({"integration_reevaluate_repair"})
 
 
 # -- Replay report ------------------------------------------------------------
 
 CASES: dict[str, dict] = {}
-EVIDENCE: dict[str, dict] = {}  # case -> remote OIDs, task counts and command ids
 
 
 def replay_case(name: str, family: str, *assertions: str):
@@ -120,7 +123,6 @@ class Replay:
                        if "/aq-provenance/" not in ref},
             "commands": [command_id for command_id, _ in env.commands.log],
         }
-        EVIDENCE[self.key] = evidence
         if out := os.environ.get("AQ_REPLAY_EVIDENCE"):
             Path(out).mkdir(parents=True, exist_ok=True)
             (Path(out) / f"{self.key}.json").write_text(json.dumps(evidence, indent=2))
@@ -137,13 +139,16 @@ def replay(request):
 @pytest.fixture(autouse=True)
 def removed_controls_refuse(monkeypatch):
     """Any dispatch of a removed control through CommandHandler fails the case."""
+    present = {c for c in REMOVED_CONTROLS if hasattr(CommandHandler, f"_cmd_{c}")}
+    assert present | RETIRED_CONTROLS == REMOVED_CONTROLS, (
+        f"unresolved removed controls: {sorted(REMOVED_CONTROLS - present - RETIRED_CONTROLS)}")
+    assert not present & RETIRED_CONTROLS, f"retired but present: {sorted(present & RETIRED_CONTROLS)}"
     invoked: list[str] = []
-    for command_id in REMOVED_CONTROLS:
-        if hasattr(CommandHandler, f"_cmd_{command_id}"):
-            async def refuse(self, args, _id=command_id):
-                invoked.append(_id)
-                raise AssertionError(f"removed recovery control invoked: {_id}")
-            monkeypatch.setattr(CommandHandler, f"_cmd_{command_id}", refuse)
+    for command_id in present:
+        async def refuse(self, args, _id=command_id):
+            invoked.append(_id)
+            raise AssertionError(f"removed recovery control invoked: {_id}")
+        monkeypatch.setattr(CommandHandler, f"_cmd_{command_id}", refuse)
     yield invoked
     assert not invoked
 
@@ -332,16 +337,23 @@ class BatchStore:
 
     def __init__(self):
         self.batches: dict[str, Batch] = {}
-        self.generation: dict[str, int] = {}
 
     def open_for(self, target: str) -> Batch | None:
         return next((b for b in self.batches.values()
                      if b.target == target and b.state == "open"), None)
 
     def freeze(self, target: str, members: tuple[tuple[str, str], ...]) -> Batch:
-        key = json.dumps([target, self.generation.get(target, 0), members])
+        key = json.dumps([target, members])
         batch_id = hashlib.sha256(key.encode()).hexdigest()
         return self.batches.setdefault(batch_id, Batch(batch_id, target, members))
+
+    def aborted(self, target: str) -> set[tuple[str, str]]:
+        """Exact members of aborted batches: operator intent, never refrozen.
+
+        A reopened task carries a new source and is a new member.
+        """
+        return {member for b in self.batches.values()
+                if b.target == target and b.state == "aborted" for member in b.members}
 
 
 @dataclass
@@ -371,9 +383,15 @@ class Repair:
                 batch.repair_attempts = max(batch.repair_attempts, attempt)
                 return task
         attempt = batch.repair_attempts + 1
+        # The counter and the stored no-progress fact drive escalation and
+        # priority only; they never gate, and only a red head reaches them.
+        escalate = attempt > ESCALATE_AFTER or batch.no_progress
         task = Task(f"repair-{batch.id[:8]}-{attempt}", repair_key=f"{batch.id}:{attempt}")
         env.commands("task_create", task_id=task.id, reason=reason,
-                     idempotency_key=task.repair_key)
+                     idempotency_key=task.repair_key,
+                     priority="escalated" if escalate else "normal")
+        if escalate:
+            env.commands("batch_escalate", batch=batch.id, attempt=attempt)
         env.tasks[task.id] = task
         await faults("after_repair_create")
         batch.repair_attempts = attempt  # the counter moves on allocation, not per visit
@@ -601,15 +619,18 @@ class Train:
                 return "unknown"
             if proof.state == DeliveryState.PENDING:
                 pending.append((child.id, proof.source_oid))
+        aborted = env.batches.aborted(ref)
+        withheld = [member for member in pending if member in aborted]
+        pending = [member for member in pending if member not in aborted]
         batch = env.batches.open_for(ref)
         if batch is None:
             if not pending:
-                return await self._epic(view, ref)
+                return "aborted" if withheld else await self._epic(view, ref)
             batch = env.batches.freeze(ref, tuple(pending))
             if batch.state != "open":
-                # An aborted batch is never recreated; a settled one seen with
-                # pending members means this visit's snapshot predates the push.
-                return "aborted" if batch.state == "aborted" else "stale"
+                # Aborted members never reach a freeze, so this batch settled:
+                # this visit's snapshot predates the push.
+                return "stale"
             env.commands("batch_freeze", target=ref, batch=batch.id, members=batch.members)
         return await self._advance(view, ref, batch, lease, pending)
 
@@ -644,6 +665,7 @@ class Train:
                                        expected_old=observed or ZERO,
                                        replace_ref=observed is not None)
             except RemoteMoved:
+                env.lock.release(candidate_lease)
                 return "candidate_moved"
             env.commands("candidate_publish", batch=batch.id, candidate=built)
             await self.faults("after_candidate_push")  # pushed, not yet recorded
@@ -847,6 +869,7 @@ async def deliver(env: Env, train: Train | None = None, *, visits: int = 12,
 @replay_case(
     "brisk-beacon-64", "no-progress escalation on a root batch",
     "15/15 green read before any counter", "promoted despite counter and no-progress fact",
+    "green consumes no attempt and raises no escalation",
     "no repair allocated", "every child contained in main",
 )
 async def test_brisk_beacon_64_green_root_head_promotes_despite_no_progress(env, replay):
@@ -864,7 +887,9 @@ async def test_brisk_beacon_64_green_root_head_promotes_despite_no_progress(env,
     replay.check("15/15 green read before any counter",
                  outcome[MAIN] == "delivered" and env.checks.latest(batch.candidate) == ["success"] * 15)
     replay.check("promoted despite counter and no-progress fact",
-                 await env.remote_oid(MAIN) == batch.candidate and batch.no_progress)
+                 await env.remote_oid(MAIN) == batch.candidate)
+    replay.check("green consumes no attempt and raises no escalation",
+                 batch.repair_attempts == 15 and env.commands.count("batch_escalate") == 0)
     replay.check("no repair allocated", env.counts()["repairs"] == 0)
     replay.check("every child contained in main", all([await env.contains(s) for s in sources]))
     await replay.done(env)
@@ -874,7 +899,8 @@ async def test_brisk_beacon_64_green_root_head_promotes_despite_no_progress(env,
 @replay_case(
     "swift-delta-90", "no-progress escalation on an epic batch",
     "15/15 green epic candidate contains every child",
-    "promoted despite counter and no-progress fact", "epic completes and reaches main",
+    "promoted despite counter and no-progress fact",
+    "green consumes no attempt and raises no escalation", "epic completes and reaches main",
     "no repair allocated",
 )
 async def test_swift_delta_90_green_epic_head_promotes_despite_no_progress(env, replay):
@@ -894,9 +920,10 @@ async def test_swift_delta_90_green_epic_head_promotes_despite_no_progress(env, 
                  first[epic_ref] == "delivered" and all(
                      [await env.contains(s, epic_ref) for s in sources]))
     replay.check("promoted despite counter and no-progress fact",
-                 await env.remote_oid(epic_ref) == batch.candidate and batch.no_progress)
-    env.tasks["sd"].status = "IN_PROGRESS"  # the epic closes only through the train
-    await deliver(env, train)
+                 await env.remote_oid(epic_ref) == batch.candidate)
+    replay.check("green consumes no attempt and raises no escalation",
+                 batch.repair_attempts == 15 and env.commands.count("batch_escalate") == 0)
+    await deliver(env, train)  # the epic closes only through the train
     replay.check("epic completes and reaches main",
                  env.tasks["sd"].status == "COMPLETED" and all(
                      [await env.contains(s) for s in sources]))
@@ -1148,7 +1175,8 @@ async def test_green_on_repair_entry_promotes_despite_counter(env, replay):
                  train.repair_progress == [(batch.id, [fix])]
                  and repair_progress(start, fix, green=True))
     replay.check("green read before counter and no-progress fact",
-                 outcome[MAIN] == "delivered" and batch.no_progress)
+                 outcome[MAIN] == "delivered" and batch.repair_attempts == 15
+                 and env.commands.count("batch_escalate") == 0)
     replay.check("promoted with the open repair's head", await env.remote_oid(MAIN) == fix)
     replay.check("no second repair", env.counts()["repairs"] == 1)
     await replay.done(env)
@@ -1510,6 +1538,67 @@ async def test_aborted_batch_is_not_recreated_after_ref_loss(env, replay):
 
 
 @replay_case(
+    "aborted-members-not-refrozen", "cutover",
+    "a new child freezes without the aborted member", "the new child is delivered",
+    "the aborted member stays out of the target",
+)
+async def test_aborted_members_are_not_refrozen_with_a_new_child(env, replay):
+    withheld = await child(env, "an", {"src/an.py": "1\n"})
+    train = Train(env)
+    await deliver(env, train, produce=False)
+    aborted = env.batches.open_for(MAIN)
+    aborted.state = "aborted"
+    env.commands("batch_abort", batch=aborted.id)
+    fresh = await child(env, "ao", {"src/ao.py": "1\n"})
+    history = await deliver(env, train)
+    batches = list(env.batches.batches.values())
+    replay.check("a new child freezes without the aborted member",
+                 len(batches) == 2 and batches[-1].members == (("ao", fresh),))
+    replay.check("the new child is delivered",
+                 batches[-1].state == "delivered" and await env.contains(fresh))
+    replay.check("the aborted member stays out of the target",
+                 not await env.contains(withheld) and aborted.state == "aborted"
+                 and history[-1][MAIN] == "aborted")
+    await replay.done(env)
+
+
+@replay_case(
+    "escalation-never-gates", "control",
+    "a red head past the budget escalates once", "an ordinary repair is still allocated",
+    "the open repair is recovered without a second escalation",
+    "the repaired green head promotes and consumes no attempt",
+)
+async def test_counter_escalates_a_red_head_but_never_gates(env, replay):
+    """Control for the no-progress families: the counter is live, read only on red."""
+    await child(env, "eg", {"src/eg.py": "broken\n"})
+    train = Train(env)
+    await deliver(env, train, produce=False)
+    batch = env.batches.open_for(MAIN)
+    batch.repair_attempts, batch.no_progress = ESCALATE_AFTER, True
+    env.checks.report(batch.candidate, "failure")
+
+    outcome = await train.visit()
+    replay.check("a red head past the budget escalates once",
+                 env.commands.count("batch_escalate") == 1 and any(
+                     args.get("priority") == "escalated"
+                     for command_id, args in env.commands.log if command_id == "task_create"))
+    replay.check("an ordinary repair is still allocated",
+                 outcome[MAIN] == "repair" and env.counts()["repairs"] == 1
+                 and batch.repair_attempts == ESCALATE_AFTER + 1)
+    again = await train.visit()
+    replay.check("the open repair is recovered without a second escalation",
+                 again[MAIN] == "repair" and env.counts()["repairs"] == 1
+                 and env.commands.count("batch_escalate") == 1)
+    fix = await repair_push(env, batch, "repair-writer", {"src/eg.py": "fixed\n"})
+    green_all(env, fix)
+    done = await train.visit()
+    replay.check("the repaired green head promotes and consumes no attempt",
+                 done[MAIN] == "delivered" and await env.remote_oid(MAIN) == fix
+                 and batch.repair_attempts == ESCALATE_AFTER + 1)
+    await replay.done(env)
+
+
+@replay_case(
     "simultaneous-visits", "cutover",
     "a visit inside another's critical section is locked out", "each push happens once",
     "a free race between two trains still pushes once", "every child delivered",
@@ -1621,30 +1710,44 @@ async def test_unavailable_ci_blocks_one_target_while_another_advances(env, repl
 @replay_case(
     "slow-ci", "cutover",
     "a slow check run stays pending without a repair or failure",
+    "another target advances while the slow run waits",
     "the lease is released between visits, never held across the wait",
     "the late success delivers once",
 )
 async def test_slow_ci_waits_without_repair(env, replay):
-    source = await child(env, "sc", {"src/sc.py": "1\n"})
+    await env.epic("sl")
+    epic_ref = "refs/heads/epic/sl"
+    source = await child(env, "sl-1", {"src/sl.py": "1\n"}, parent="sl")
     train = Train(env)
     await deliver(env, train, produce=False)
-    candidate = env.batches.open_for(MAIN).candidate
-    outcomes = []
-    for _ in range(10):
+    batch = env.batches.open_for(epic_ref)
+    epic_head = await env.remote_oid(epic_ref)
+    waiting, roots = [], []
+    for n in range(4):
         env.advance(3600)  # hours of silence are not a failure and not no-progress
-        outcomes.append((await train.visit())[MAIN])
+        roots.append(await child(env, f"rt-{n}", {f"src/rt{n}.py": f"{n}\n"}))
+        waiting.append((await train.visit())[epic_ref])
+        producer(env, skip=lambda sha: sha == batch.candidate)  # the slow run never answers
+        waiting.append((await train.visit())[epic_ref])
     replay.check("a slow check run stays pending without a repair or failure",
-                 set(outcomes) == {"checks_pending"} and env.counts()["repairs"] == 0
-                 and await env.remote_oid(MAIN) == env.base)
-    other = env.lock.acquire(MAIN, "another-train")
+                 set(waiting) == {"checks_pending"} and env.counts()["repairs"] == 0
+                 and await env.remote_oid(epic_ref) == epic_head)
+    replay.check("another target advances while the slow run waits",
+                 all([await env.contains(root) for root in roots]))
+    other = env.lock.acquire(epic_ref, "another-train")
     replay.check("the lease is released between visits, never held across the wait",
                  other is not None)
     env.lock.release(other)
-    green_all(env, candidate)
+    green_all(env, batch.candidate)
     await deliver(env, train)
+
+    def published(command: str, **match) -> int:
+        return sum(1 for command_id, args in env.commands.log if command_id == command
+                   and all(args.get(key) == value for key, value in match.items()))
     replay.check("the late success delivers once",
-                 await env.contains(source) and env.commands.count("target_publish") == 1
-                 and env.commands.count("candidate_publish") == 1)
+                 await env.contains(source, epic_ref)
+                 and published("target_publish", target=epic_ref, candidate=batch.candidate) == 1
+                 and published("candidate_publish", batch=batch.id) == 1)
     await replay.done(env)
 
 
@@ -1701,6 +1804,7 @@ async def replay_capture(root: Path, directory: Path) -> tuple[Env, dict, list[d
 
 async def assert_capture_outcome(env: Env, data: dict, history: list[dict]) -> None:
     expect = data["expect"]
+    assert expect.get("delivered") or expect.get("outcomes"), "capture expects nothing"
     for task_id, ref in expect.get("delivered", []):
         assert await env.contains(data["sources"][task_id], ref), f"{task_id} not in {ref}"
     for ref, outcome in expect.get("outcomes", {}).items():
@@ -1756,6 +1860,7 @@ REQUIRED_SCENARIOS = HISTORICAL_STALLS + (
     "generated-conflict", "migration-conflict", "crash-restart", "crash-after-repair-create",
     "candidate-ref-loss", "aborted-after-ref-loss", "simultaneous-visits",
     "hold-and-rejection", "unavailable-ci-other-target", "slow-ci",
+    "aborted-members-not-refrozen", "escalation-never-gates",
 )
 
 
@@ -1764,9 +1869,8 @@ def replay_report() -> dict:
     return {
         "cases": [{"name": name, "family": case["family"], "test": case["test"],
                    "assertions": list(case["assertions"])} for name, case in CASES.items()],
-        "historical": {name: {"reconstructed": name in CASES, "capture": capture_status(name),
-                              "historical_pass_claimed": False if capture_status(name) == "gap"
-                              else None}
+        "historical": {name: {"reconstructed": CASES[name]["test"] if name in CASES else None,
+                              "capture": capture_status(name)}
                        for name in HISTORICAL_STALLS},
     }
 
@@ -1778,9 +1882,20 @@ def test_replay_report_lists_cases_assertions_and_gaps():
     assert all(case["assertions"] for case in report["cases"])
     for name, row in report["historical"].items():
         assert row["reconstructed"], name
-        if row["capture"] == "gap":
-            assert row["historical_pass_claimed"] is False, name
+        # A gap is reported as a gap: test_historical_capture_replays skips it.
+        assert row["capture"] in {"gap", "captured"}, name
     if out := os.environ.get("AQ_REPLAY_EVIDENCE"):
         Path(out).mkdir(parents=True, exist_ok=True)
         (Path(out) / "report.json").write_text(json.dumps(report, indent=2))
 
+
+
+async def test_removed_control_guard_fires(removed_controls_refuse):
+    """The guard is live: a removed control fails through both dispatch paths."""
+    handler = object.__new__(CommandHandler)
+    with pytest.raises(AssertionError, match="removed recovery control"):
+        await handler._cmd_integration_adopt({})
+    assert removed_controls_refuse == ["integration_adopt"]
+    removed_controls_refuse.clear()
+    with pytest.raises(AssertionError, match="removed recovery control"):
+        Commands()("integration_record_noop")
