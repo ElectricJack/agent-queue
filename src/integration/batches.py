@@ -252,9 +252,11 @@ class BatchService:
         self, store: BatchStore, gitops: GitOperations, *, publish: ManagedPublish,
         eligible: Callable[[Batch, tuple[BatchMember, ...]], Awaitable[bool]],
         gate: Callable[[Batch, str, str], Awaitable[bool]],
+        attest: Callable[[Batch, str], Awaitable[str]] | None = None,
     ):
         self.store, self.gitops = store, gitops
         self.publish, self.eligible, self.gate = publish, eligible, gate
+        self.attest = attest
 
     async def _authorized(self, batch, members):
         from src.operator_decisions import OperatorDecisions
@@ -429,6 +431,18 @@ class BatchService:
             # Explicit expected-old CAS and ancestry enforce the exact final FF.
             if not await self.gitops.is_ancestor(repo, target, candidate):
                 return BatchObservation("moved", candidate, target, tree)
+            # Provider I/O stays outside the publication fence. The final
+            # authorization still rechecks intent, candidate and cached checks.
+            attestation = "unavailable"
+            if self.attest is not None:
+                try:
+                    attestation = await self.attest(batch, candidate)
+                except Exception as exc:
+                    logger.warning("integration batch %s attestation failed: %s", batch.id, exc)
+            if attestation not in {"published", "already_published"}:
+                return BatchObservation("held", candidate, target, tree, detail={
+                    "outcome": "attestation_unavailable", "attestation_outcome": attestation,
+                })
             state = await self._transfer(batch, repo, batch.target_ref, candidate, target, authorize)
             if state == "published":
                 # The fast-forward left the target at the candidate.
