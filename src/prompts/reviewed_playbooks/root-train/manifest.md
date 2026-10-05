@@ -1,8 +1,8 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:6681dd209a52e011b7f8f49f32a6d952782ec64a5e3df68da2ab7a34a01a25cf
+artifact_sha256: sha256:1a56083121b48f032199cd7657768c874f549c70970cb6236e8a5378bcc1e1c6
 source_sha256: sha256:723b8dca06fb081ca3daf410e2eeeaa382d515bb84b6968f0a4e5fe516b2e07b
-contract_fingerprint: sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd
+contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -39,3 +39,13 @@ root publication needs the observed publisher fence, distinct from repair
 writer authority. Agent Queue retains authorized continuation; the generic
 template retains a no-default exhaustion gate. Import/activation and production
 cutover evidence remain operator-owned.
+
+## Candidate construction contract refresh (2026-10-04)
+
+Rebuilt with `scripts/rebuild-reviewed-playbook-artifacts.py` after the
+`integration_build_candidate` execution fingerprint changed. The semantic diff
+retains every rule, step, transition, capability, source hash and integration
+decision table. Only that command's compiled fingerprint and compile timestamp
+changed; the artifact digest and aggregate contract fingerprint follow them.
+No compiler questions remain. Installed activation and frozen operation pins
+are still owned by the operator and daemon.
