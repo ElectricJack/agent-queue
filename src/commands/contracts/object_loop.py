@@ -119,6 +119,8 @@ class ObjectLoopInputsValue(CommandValue):
 
 
 class ObjectLoopValue(CommandValue):
+    error: str | None = None
+    error_code: str | None = None
     object_id: str | None = None
     version: int | None = None
     state: dict[str, Any] | None = None
@@ -153,7 +155,9 @@ def register_object_loop_contracts(registry) -> None:
                 raw = await _handler().execute(name, args.model_dump())
             if not raw.get("success"):
                 return CommandResult(
-                    outcome="rejected", value=result_model.model_construct(),
+                    outcome="rejected", value=result_model(**{
+                        k: raw[k] for k in result_model.model_fields if k in raw
+                    }),
                     summary=str(raw.get("error") or "rejected"),
                 )
             return CommandResult(
@@ -169,6 +173,8 @@ def register_object_loop_contracts(registry) -> None:
                     name=name, args_model=args_model, result_model=result_model,
                     capability=name, side_effect=effect, retry_safe=True,
                     idempotency=IdempotencySpec(mode="natural"),
+                    receipt_projection=("error", "error_code")
+                    if result_model is ObjectLoopValue else (),
                     outcomes=(
                         OutcomeSpec(name="completed", classification=OutcomeClass.SUCCESS),
                         OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),

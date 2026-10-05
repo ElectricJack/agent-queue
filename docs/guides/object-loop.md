@@ -6,7 +6,7 @@ readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
 The recorded artifact is
-`sha256:8903a28f45c81dd45b3333dc35306846c20018c3e3cf4272eee37902862a7cf4`.
+`sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0`.
 Its source, canonical artifact, contract/grant manifest, compiler diagnostics
 and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
@@ -222,3 +222,18 @@ area checks cover V2 execution, formulas, graph creation, vault seeding, reviewe
 bundle validation/import, reviews, generated API contracts and test selection.
 The isolated `scripts/e2e-env.sh --reset` / `scripts/e2e-smoke.sh` kit verifies the
 swarm without an LLM or the operator database.
+
+
+## Start refusal recovery
+
+A cooked brief stays pinned to its exact revision and hash. Approving a newer
+brief does not silently repin an existing start packet: start refuses with the
+review ID, pinned revision and current revision/state. Correct the packet
+explicitly before retrying. A refusal creates no loop or finalizer.
+
+Start refusals carry `object_loop.start_refused`, persist their reason on the
+root as `object_start_refusal`, and enqueue one supervisor notice per distinct
+attempt/reason, including across timer retries and daemon restarts. Playbook
+failure receipts and failed terminal run records retain the command's reason.
+`stall.sweep` reports `object_bootstrap_stalled` when that root has failed starts,
+no registered loop, and its bootstrap gate remains open for more than 15 minutes.
