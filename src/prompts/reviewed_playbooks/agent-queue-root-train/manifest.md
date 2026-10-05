@@ -1,8 +1,8 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:387536e8e7b0a903270073ae6ce69f51a4dd4eb44ddd3cfdf50939b84d8ae6db
+artifact_sha256: sha256:0c25f12e5f16bdf28a4a320123572ade237d598899ab8571ae1c023eaf94370f
 source_sha256: sha256:fc4003fbd27f7e090bb9ea294663ded27032d960e636813e33f7b063caec6001
-contract_fingerprint: sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd
+contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -27,6 +27,14 @@ The parent route handles `already_completed` as idempotent success and `failed`
 as failure. Commands receive durable subject identities; CI trust, Git refs,
 repair budgets, and promotion authority stay server-owned. Import and activation
 require operator review. The bundle has no automatic activation.
+
+## Candidate rebuild contract refresh
+
+Refreshed the command fingerprints after the base-moved candidate rebuild fix
+and its conflict outcome correction. The source, rules, steps and decision
+table are unchanged; only the live command contract pins and derived digests
+changed. Exact candidate CI, repair authority and publication fences remain
+server-owned. Activation remains an operator action.
 
 ## Subject table handoff
 

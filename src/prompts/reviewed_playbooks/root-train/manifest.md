@@ -1,8 +1,8 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:6681dd209a52e011b7f8f49f32a6d952782ec64a5e3df68da2ab7a34a01a25cf
+artifact_sha256: sha256:f82d8f4f301f4ab6f93a30b2802c90fbeb8f0645db1ddd035e5bba72fc2f4053
 source_sha256: sha256:723b8dca06fb081ca3daf410e2eeeaa382d515bb84b6968f0a4e5fe516b2e07b
-contract_fingerprint: sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd
+contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
@@ -29,6 +29,14 @@ activation serves only projects whose frozen policy route names this playbook
 receive durable subject identities; CI trust, Git refs, repair budgets, and
 promotion authority stay server-owned. Import and activation require operator
 review. The bundle has no automatic activation.
+
+## Candidate rebuild contract refresh
+
+Refreshed the command fingerprints after the base-moved candidate rebuild fix
+and its conflict outcome correction. The source, rules, steps and decision
+table are unchanged; only the live command contract pins and derived digests
+changed. Exact candidate CI, repair authority and publication fences remain
+server-owned. Activation remains an operator action.
 
 ## Subject table handoff
 

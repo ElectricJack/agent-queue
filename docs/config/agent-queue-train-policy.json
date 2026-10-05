@@ -96,9 +96,9 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-root-train",
-        "artifact_sha256": "sha256:387536e8e7b0a903270073ae6ce69f51a4dd4eb44ddd3cfdf50939b84d8ae6db",
+        "artifact_sha256": "sha256:0c25f12e5f16bdf28a4a320123572ade237d598899ab8571ae1c023eaf94370f",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd",
+        "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
         "source_digest": "sha256:fc4003fbd27f7e090bb9ea294663ded27032d960e636813e33f7b063caec6001",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,

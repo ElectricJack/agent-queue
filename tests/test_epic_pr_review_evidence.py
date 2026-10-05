@@ -708,8 +708,9 @@ def test_conflicting_pull_request_without_checks_is_conflict_not_pending():
 
 
 @pytest.mark.parametrize("conflict_scope", ["batch", "member"])
-async def test_conflicting_source_is_admitted_under_either_conflict_scope(
-    case, conflict_scope
+@pytest.mark.parametrize("source_ci", [None, "pending", "green", "red", "cancelled", "conflict"])
+async def test_source_pr_ci_does_not_gate_candidate_admission(
+    case, conflict_scope, source_ci
 ):
     policy = await _continuous_policy(case)
     if conflict_scope == "member":
@@ -719,17 +720,18 @@ async def test_conflicting_source_is_admitted_under_either_conflict_scope(
     async with db.immediate() as conn:
         generation = (await conn.execute(select(task_integration_checkpoints.c.generation).where(
             task_integration_checkpoints.c.task_id == "e1"))).scalar_one()
-        await conn.execute(insert(integration_source_ci).values(
-            task_id="e1", repository_id="repo", source_base=case["base"],
-            source_head=case["first"], generation=generation, policy_generation=0,
-            state="conflict", evidence={}, observed_at=1000.0))
+        if source_ci is not None:
+            await conn.execute(insert(integration_source_ci).values(
+                task_id="e1", repository_id="repo", source_base=case["base"],
+                source_head=case["first"], generation=generation, policy_generation=0,
+                state=source_ci, evidence={}, observed_at=1000.0))
     assert await case["producer"].snapshot_authorized(
         "e1", reviewed_sha=case["first"], policy_generation=0)
     async with db.immediate() as conn:
         members = await TrainService(db)._eligible_members(
             conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    # Member scope must admit too: no source repair is filed for a conflict,
-    # so only candidate construction's member conflict repair can recover it.
+    # Candidate construction and CI handle conflicts and failures under either
+    # scope, including sources whose PR checks are missing or still pending.
     assert {item["task_id"] for item in members} == {"e1"}
 
 
@@ -793,7 +795,7 @@ async def _pending_repair_source(case):
 
 @pytest.mark.parametrize("original_ci", ["red", "green"])
 @pytest.mark.parametrize("delivery", ["git", "receipt"])
-async def test_green_repair_remains_eligible_after_original_delivers(case, original_ci, delivery):
+async def test_repair_remains_eligible_after_original_delivers(case, original_ci, delivery):
     await _pending_repair_source(case)
     db = case["db"]
     async with db.immediate() as conn:
@@ -804,9 +806,10 @@ async def test_green_repair_remains_eligible_after_original_delivers(case, origi
                 id="original-delivery", domain_key="original-delivery", source_task_id="e1",
                 repository_id="repo", target_branch="main", reviewed_head_sha=case["first"],
                 disposition="code", created_at=1000.0))
-        assert await TrainService(db)._eligible_members(
+        pending_members = await TrainService(db)._eligible_members(
             conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered={"e1"} if delivery == "git" else set()) == []
+            git_delivered={"e1"} if delivery == "git" else set())
+        assert {item["task_id"] for item in pending_members} == {"repair-source"}
         await conn.execute(update(integration_source_ci).where(
             integration_source_ci.c.task_id == "repair-source").values(state="green"))
         members = await TrainService(db)._eligible_members(
@@ -864,14 +867,14 @@ async def test_retired_ready_repair_cannot_reenter_train_with_old_checkpoint(cas
 @pytest.mark.parametrize("source_blocker", [
     "hold", "repair_hold", "gate", "rejected", "generation", "policy",
 ])
-async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
+async def test_repair_admits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
     await _pending_repair_source(case)
     db = case["db"]
     async def members():
         async with db.immediate() as conn:
             return await TrainService(db)._eligible_members(
                 conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    assert await members() == []
+    assert {item["task_id"] for item in await members()} == {"e1", "repair-source"}
     async with db.immediate() as conn:
         await conn.execute(update(integration_source_ci).where(
             integration_source_ci.c.task_id == "repair-source").values(state="green"))
@@ -923,7 +926,10 @@ async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(c
             else:
                 await conn.execute(update(integration_source_ci).where(
                     integration_source_ci.c.task_id == "e1").values(policy_generation=1))
-    assert await members() == []
+    # A hold on the repair or a stale repair-link policy withholds its chain;
+    # the original source still enters candidate CI on its own exact evidence.
+    expected = {"e1"} if source_blocker in {"repair_hold", "policy"} else set()
+    assert {item["task_id"] for item in await members()} == expected
     # Revocation invalidates authorization and CI tied to the older policy generation.
     async with db.immediate() as conn:
         assert await db.cas_project_integration_control_on(

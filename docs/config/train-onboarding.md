@@ -67,7 +67,7 @@ aq playbook v2-validate --path reviewed-playbooks/root-train/artifact.json
 aq playbook v2-import --path reviewed-playbooks/parent-integration
 aq playbook v2-import --path reviewed-playbooks/root-train
 aq playbook activate --playbook-id parent-integration --artifact-sha256 sha256:67a4f1e68ce35dc2c2ec53611d246c84c709bf88d48e352ff1f15105c5ddfdf0 --enabled
-aq playbook activate --playbook-id root-train --artifact-sha256 sha256:6681dd209a52e011b7f8f49f32a6d952782ec64a5e3df68da2ab7a34a01a25cf --enabled
+aq playbook activate --playbook-id root-train --artifact-sha256 sha256:f82d8f4f301f4ab6f93a30b2802c90fbeb8f0645db1ddd035e5bba72fc2f4053 --enabled
 aq playbook activation-health --playbook-id parent-integration
 aq playbook activation-health --playbook-id root-train
 ```
