@@ -43,6 +43,10 @@ TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
 TRAIN_VISIT_BLOCKERS = {
     "conflict": ("merge_conflict", "the batch does not merge onto its target"),
+    "no_regenerator": (
+        "no_regenerator",
+        "no regenerate command is configured, so generated artifacts cannot be rebuilt",
+    ),
     "held": ("held", "an explicit hold or a missing review stops publication"),
     "moved": ("target_moved", "the target moved; the next visit rebuilds the candidate"),
     "source_moved": ("source_moved", "a member's source moved since the batch froze"),

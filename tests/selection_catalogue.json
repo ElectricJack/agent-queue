@@ -1413,7 +1413,7 @@
       ]
     }
   },
-  "digest": "sha256:ba195f2c43705a121c1a84ecb4dfbed6a6b414b90f07c588ca44c391eaf5c595",
+  "digest": "sha256:f86150fd1e46fa2afd56a68f7d2fa7a3446a3903bda1d2a9ae5ac7773ef00dbd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8614,13 +8614,16 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.status",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"

@@ -36,6 +36,7 @@ from src.integration.development_policy import PinnedDevelopmentPolicy
 from src.integration.engine import RootEngineOwnership
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.ownership import BranchOwnershipError
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.subjects import (
     CleanupArgs,
     GateArgs,
@@ -1317,14 +1318,17 @@ async def development_repository(
     A worker checkout is never a delivery source: the store is the repository's
     own retained clone through the existing delivery path (created on first use
     and fetched with every head), and the regenerate command and timeout are the
-    ones the reviewed source froze.
+    ones the reviewed source froze. Regeneration is a property of the merge, not
+    of the validation mode: ``validation: none`` still rebuilds generated files.
+    An unset policy command falls back to the project's own regenerator, exactly
+    as the legacy candidate and promotion paths do.
     """
     return RetainedRepository(
         repository_id=repo.id,
         store=await primitives.store(repo),
         binding=binding,
         default_branch=repo.default_branch,
-        regenerate=settings.regenerate if settings.validation != "none" else None,
+        regenerate=settings.regenerate or DEFAULT_REGENERATE_COMMAND,
         regenerate_timeout_seconds=settings.regenerate_timeout_seconds,
     )
 

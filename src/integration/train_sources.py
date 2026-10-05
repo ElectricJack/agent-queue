@@ -37,6 +37,7 @@ from src.integration.gitops import GitOperations, RetainedRepository, SubjectGit
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.subjects import Subject
 from src.integration.train import (
     BatchSelection,
@@ -494,9 +495,12 @@ class DaemonLanes:
         if settings is not None:
             retained = await development_repository(primitives, repo_row, binding, settings)
         else:
+            # A non-development project still merges generated artifacts; the
+            # lane rebuilds them with the project's own regenerator.
             retained = RetainedRepository(
                 repository_id=target.repository_id, store=await primitives.store(repo_row),
                 binding=binding, default_branch=repo_row.default_branch,
+                regenerate=DEFAULT_REGENERATE_COMMAND,
             )
 
         async def repository(subject: Subject) -> RetainedRepository:

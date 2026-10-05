@@ -114,6 +114,7 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `repair_open` | A repair task owns the candidate | Follow the named task |
 | `merge_conflict` | The batch does not merge onto its target | Follow the repair task, or inspect publication evidence if filing was withheld |
 | `repair_target_unconfirmed` | The repair starting OID could not be confirmed on the batch ref | Inspect the visit's publication evidence; the train retries |
+| `no_regenerator` | The repository configures no regenerate command, so a generated artifact both members changed cannot be rebuilt | Configure the project's regenerate command (default `scripts/regenerate-generated.sh`); the same batch then rebuilds. No member is parked |
 | `target_moved` | The target moved | None; the next visit rebuilds |
 | `source_moved` | A member's source moved after freezing | None; the next visit refreezes |
 | `held` | Explicit hold or required review missing | Release the hold or review |
