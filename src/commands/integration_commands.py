@@ -125,6 +125,21 @@ class IntegrationCommandsMixin:
         value = await runtime.adapters.perform(self, subject, args["request"])
         return {"success": not value.is_unknown, "value": value.model_dump(mode="json")}
 
+    async def _cmd_integration_train_tick(self, args: dict) -> dict:
+        """Start one level-triggered visit per idle target (git_first: active).
+
+        Daemon-only: the integration service drives it under a service
+        principal.  The visits run in the background, so a slow target never
+        holds this command; it reports which targets started or still run.
+        """
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SERVICE:
+            return _failure("unauthorized", "only the daemon may tick the integration train")
+        train = getattr(self.orchestrator, "integration_train", None)
+        if train is None:
+            return _failure("unavailable", "the integration train is not active")
+        return {"success": True, **await train.tick(args.get("now"))}
+
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
         from pydantic import ValidationError
 

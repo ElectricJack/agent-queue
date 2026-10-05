@@ -360,3 +360,90 @@ async def test_overlapping_ticks_do_not_double_start():
 def test_visit_timeout_must_be_positive():
     with pytest.raises(ValueError):
         train(Targets(), Batches(), {}, visit_timeout_seconds=0)
+
+
+@pytest.mark.parametrize("kind", [None, "local", "session", "playbook"])
+async def test_tick_command_is_daemon_only(kind):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    class Train:
+        async def tick(self, now):
+            raise AssertionError("an untrusted caller reached the train")
+
+    handler = IntegrationCommandsMixin()
+    handler.orchestrator = SimpleNamespace(integration_train=Train())
+    if kind is None:
+        result = await handler._cmd_integration_train_tick({})
+    else:
+        principal = ExecutionPrincipal(kind=PrincipalKind(kind), policy=DENY_ALL, elevated=True)
+        with principal_context(principal):
+            result = await handler._cmd_integration_train_tick({})
+    assert result == {"success": False, "outcome": "unauthorized",
+                      "error": "only the daemon may tick the integration train"}
+
+
+async def test_tick_command_reports_an_inactive_train():
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    handler = IntegrationCommandsMixin()
+    handler.orchestrator = SimpleNamespace(integration_train=None)
+    with principal_context(ExecutionPrincipal.service("integration-train")):
+        result = await handler._cmd_integration_train_tick({"now": 5.0})
+    assert result["success"] is False and result["outcome"] == "unavailable"
+
+
+async def test_service_drives_the_train_through_the_command_as_the_daemon():
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import PrincipalKind, current_principal
+    from src.integration.train_sources import TrainCommandDriver
+
+    seen, stopped = [], []
+
+    class Train:
+        async def tick(self, now):
+            seen.append((now, current_principal().kind, current_principal().service_name))
+            return {"started": ["p/r/refs/heads/main"], "running": [], "skipped": []}
+
+        async def stop(self):
+            stopped.append(True)
+
+    class Handler(IntegrationCommandsMixin):
+        async def execute(self, name, args):
+            assert name == "integration_train_tick"
+            return await self._cmd_integration_train_tick(args)
+
+    train = Train()
+    handler = Handler()
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    driver = TrainCommandDriver(train, lambda: handler)
+
+    assert await driver.tick(7.0) == {
+        "success": True, "started": ["p/r/refs/heads/main"], "running": [], "skipped": [],
+    }
+    assert seen == [(7.0, PrincipalKind.SERVICE, "integration-train")]
+    assert current_principal() is None
+    await driver.stop()
+    assert stopped == [True]
+
+
+def test_tick_command_stays_off_every_external_surface():
+    from src.api.codegen import API_EXCLUDED
+    from src.cli.auto_commands import EXCLUDED
+    from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS, effective_tool_definitions
+    from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+    name = "integration_train_tick"
+    assert name in API_EXCLUDED and name in EXCLUDED and name in DEFAULT_EXCLUDED_COMMANDS
+    assert "now" in _FALLBACK_INPUT_SCHEMAS[name]["properties"]
+    assert name not in {tool["name"] for tool in effective_tool_definitions()}
+
+
+async def test_driver_skips_until_a_command_handler_is_attached():
+    from src.integration.train_sources import TrainCommandDriver
+
+    driver = TrainCommandDriver(SimpleNamespace(), lambda: None)
+    assert await driver.tick(1.0) == {"success": False, "outcome": "unavailable",
+                                      "error": "no command handler is attached yet"}

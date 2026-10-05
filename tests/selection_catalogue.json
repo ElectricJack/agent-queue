@@ -1409,7 +1409,7 @@
       ]
     }
   },
-  "digest": "sha256:91ef1547616bd340a802b626e179eb508ff20c9129f323f258fd1b849b04539f",
+  "digest": "sha256:2dc300a559a367dc93cdaca715a2bb9b1d1d6021a83f2776f60c069872c98153",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8474,11 +8474,19 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.codegen",
+        "src.cli.auto_commands",
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.repair",
         "src.integration.train",
-        "src.models"
+        "src.integration.train_sources",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
       ],
       "markers": [
         "parametrize"

@@ -260,10 +260,17 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
     config.worktrees.enabled = False
     config.integration.git_first = "active"
     orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    from src.commands.handler import CommandHandler
+
+    orch.set_command_handler(CommandHandler(orch, config))  # as src/main.py does
     await orch.initialize()
     try:
         service = orch.integration_service
-        assert service._train is orch.integration_train is not None
+        assert service._train.train is orch.integration_train is not None
+        # The service ticks through CommandHandler as the daemon, never directly.
+        assert await service._train.tick(1.0) == {
+            "success": True, "started": [], "running": [], "skipped": [],
+        }
         assert service._subject_runtime is None
         assert orch.parent_subject_runtime is None
         assert orch.development_subject_runtime is None

@@ -293,6 +293,9 @@
         29
       ]
     },
+    "src/api/codegen.py::API_EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/api/codegen.py::_make_route_handler": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -820,6 +823,9 @@
         465,
         465
       ]
+    },
+    "src/cli/auto_commands.py::EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_abort']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -5782,6 +5788,9 @@
         60
       ]
     },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['observe_integration_source_ci']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7719,6 +7728,9 @@
         7864,
         7911
       ]
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     }
   },
   "exclusions": {

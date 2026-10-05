@@ -1910,7 +1910,7 @@ class Orchestrator(
         from src.integration.root_runtime import root_runtime_for
         from src.integration.parent_runtime import parent_runtime_for
         from src.integration.development_runtime import development_runtime_for
-        from src.integration.train_sources import train_for
+        from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
         # git_first: active hands every target to the train; the subject
@@ -1929,7 +1929,9 @@ class Orchestrator(
             subject_runtime=None if train_active else root_runtime_for(self),
             parent_subject_runtime=self.parent_subject_runtime,
             development_subject_runtime=self.development_subject_runtime,
-            train=self.integration_train,
+            # The service drives the train through integration_train_tick.
+            train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
+            if train_active else None,
             maintenance={
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,

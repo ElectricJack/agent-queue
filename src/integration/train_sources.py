@@ -451,6 +451,30 @@ class DaemonLanes:
         return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, trust)))
 
 
+class TrainCommandDriver:
+    """Drive the train through ``integration_train_tick`` as the daemon.
+
+    Every state change goes through CommandHandler, so the integration service
+    holds this driver rather than the train itself.
+    """
+
+    def __init__(self, train: IntegrationTrain, commands: Callable[[], Any]):
+        self.train, self._commands = train, commands
+
+    async def tick(self, now: float | None = None) -> dict[str, Any]:
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        commands = self._commands()
+        if commands is None:
+            return {"success": False, "outcome": "unavailable",
+                    "error": "no command handler is attached yet"}
+        with principal_context(ExecutionPrincipal.service("integration-train")):
+            return await commands.execute("integration_train_tick", {"now": now})
+
+    async def stop(self) -> None:
+        await self.train.stop()
+
+
 def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> IntegrationTrain | None:
     """The train when ``integration.git_first`` is ``active``; otherwise None."""
     config = orchestrator.config.integration
