@@ -173,10 +173,14 @@ class AgentQuestionService:
                  harness_registry=None):
         self.db, self.bus, self.providers, self.config = db, bus, providers, config
         self._locks = _LOCKS.setdefault(db, weakref.WeakValueDictionary())
-        #: ``harness -> native store | None``; tests point it at a fixture.
-        #: The registry lets a second harness on the same CLI share its store.
+        #: ``(harness, project_id) -> native store | None``; tests point it at
+        #: a fixture.  The registry lets a second harness on the same CLI share
+        #: its store, and the project scope lets a project harness file that
+        #: shadows the id take its store with it.
         self._native_sources = native_sources or (
-            lambda harness: resolve_native_question_source(harness, registry=harness_registry)
+            lambda harness, project_id=None: resolve_native_question_source(
+                harness, registry=harness_registry, project_id=project_id
+            )
         )
         self._native_scanned: dict[str, float] = {}
 
@@ -347,15 +351,15 @@ class AgentQuestionService:
     def _lower_bound(row):
         return max(row.started_at or 0, row.claim_phase_at or 0)
 
-    def _native_source(self, harness):
+    def _native_source(self, harness, project_id=None):
         try:
-            return self._native_sources(harness)
+            return self._native_sources(harness, project_id)
         except Exception:
             logger.warning("native question source for %s failed", harness, exc_info=True)
             return None
 
     async def _native_snapshot(self, row, source=None):
-        source = source or self._native_source(row.harness)
+        source = source or self._native_source(row.harness, row.project_id)
         if source is None:
             return None
         return await asyncio.to_thread(source.snapshot, row.work_dir, self._lower_bound(row))
@@ -400,7 +404,7 @@ class AgentQuestionService:
                 or (row.lifecycle == "pool" and row.claim_phase != "active")
             ):
                 continue
-            source = self._native_source(row.harness)
+            source = self._native_source(row.harness, row.project_id)
             if source is None:
                 continue
             seen.add(row.id)

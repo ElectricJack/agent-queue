@@ -180,6 +180,10 @@ class PrimeRenderer:
                 else None,
                 registry=self.harness_registry,
                 config=self.config, session=sess, observation=observation,
+                # The task's project, which is the scope the session was
+                # launched from -- a project harness file shadows the system
+                # one (``orchestrator/execution.py``).
+                project_id=task.project_id,
             ),
             _sections.build_completion_protocol_section(
                 task_id,
