@@ -551,6 +551,7 @@
         "tests/test_integration_review_evidence.py",
         "tests/test_integration_root_authorization.py",
         "tests/test_integration_root_pull_requests.py",
+        "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_repair_checkout_refs.py"
       ]
@@ -1400,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:d28cd02ad4d0267b3704fdd1b04723abdcd5c33831398443b73b7be43f3e9686",
+  "digest": "sha256:5be6429ed119e3f17c9c2c5756980814968e41aad2dd9599882608b607d9a475",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8319,6 +8320,22 @@
       ],
       "markers": [],
       "summary": "Durable hierarchical-integration persistence contracts."
+    },
+    "tests/test_integration_stranded_children.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.stranded_children",
+        "src.models",
+        "src.orchestrator.git_ops"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A completed child of a container nothing can collect opens its own PR."
     },
     "tests/test_integration_subjects.py": {
       "areas": [
