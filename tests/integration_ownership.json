@@ -3596,6 +3596,9 @@
         332
       ]
     },
+    "src/database/queries/hierarchy_queries.py::_ordinary_repair_branch": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
     "src/database/queries/hierarchy_queries.py::_reserved_repair_branch": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3650,6 +3653,9 @@
         36,
         41
       ]
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -3892,6 +3898,9 @@
         516,
         557
       ]
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.touch_session_activity": {
+      "reason": "Imports or references an explicitly owned integration primitive."
     },
     "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, playbook_v2_runs, projects, sessions, task_session_attempts, tasks": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -4387,6 +4396,9 @@
         23,
         23
       ]
+    },
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_authorized_source_heads": {
+      "reason": "Imports or references an explicitly owned integration primitive."
     },
     "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_source_ci_inherited_oids": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -5268,6 +5280,18 @@
         187
       ]
     },
+    "src/doctor/stall_checks.py::_find_orphaned_prs": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/doctor/stall_checks.py::_find_reviewed_file_blocked_batches": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/doctor/stall_checks.py::_find_stranded_dependents": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/doctor/stall_checks.py::_find_unadmitted_parents": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
     "src/doctor/stall_checks.py::_orphaned_pr_findings": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -5380,6 +5404,9 @@
         14,
         23
       ]
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_branch_owners, messages, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/embedded_mcp.py::run_mcp_server": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -7243,6 +7270,9 @@
         179
       ]
     },
+    "src/plugins/internal/git.py::GitPlugin._push": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
     "src/plugins/internal/git.py::GitPlugin._source_ci_inherited_oids": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7441,6 +7471,21 @@
         293
       ]
     },
+    "src/sessions/obsolete.py::ObsoleteClose._refuse_unsafe": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.cleanup": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/sessions/obsolete.py::ReleaseOwner": {
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/sessions/reconciler.py::SessionReconciler._apply_provider_failover": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7594,6 +7639,9 @@
         36,
         36
       ]
+    },
+    "src/task_graph/integration_dependencies.py::import from src.database.tables import epic_dependencies, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/task_names.py::_task_identity_exists": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -12495,10 +12543,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/cancelled_collection_recovery.py::CancelledCollectionRecovery._apply_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 990,
+      "line": 988,
       "owner": "CancelledCollectionRecovery._apply_on",
       "call": "insert",
-      "owner_fingerprint": "5f6ffb0ba4c6f4ed5aba45541b9c010efa03ead4c229fcc8029832a1222e925d",
+      "owner_fingerprint": "93ffecf3a6a1cd57402c9d5f4e9ea4e7b268c8025673c156d87f165dc60a4799",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -12548,24 +12596,6 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/controls.py::IntegrationControlService.eject::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1409,
-      "owner": "IntegrationControlService.eject",
-      "call": "delete",
-      "owner_fingerprint": "1eb17429cf7e3b216b91bae63e040ce3354b19c38066b93b82bbef3f6ac80d76",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/controls.py::IntegrationControlService.eject::b67871c23227990c50463f1b3621700239a4eb204c61e89e1ea0d93e917cb124": {
-      "line": 1460,
-      "owner": "IntegrationControlService.eject",
-      "call": "log_event",
-      "owner_fingerprint": "1eb17429cf7e3b216b91bae63e040ce3354b19c38066b93b82bbef3f6ac80d76",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
     "src/integration/delegate_release.py::release_delegates_on::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 343,
       "owner": "release_delegates_on",
@@ -12593,54 +12623,54 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/development.py::DevelopmentIntegration._operation_insert::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 850,
-      "owner": "DevelopmentIntegration._operation_insert",
+    "src/integration/development.py::DevelopmentPrimitives._operation_insert::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 572,
+      "owner": "DevelopmentPrimitives._operation_insert",
       "call": "insert",
       "owner_fingerprint": "9dccb8abf0f98c1a55c1c322312ace56a3a444198b1df6ec727244f497234794",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/development.py::DevelopmentIntegration._reclaim_repair::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2371,
-      "owner": "DevelopmentIntegration._reclaim_repair",
+    "src/integration/development.py::DevelopmentPrimitives._reclaim_repair::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 605,
+      "owner": "DevelopmentPrimitives._reclaim_repair",
       "call": "delete",
       "owner_fingerprint": "0e31edcd0a97b2407157c17213a1ed629ddccfcf1404e6e6969aef952ea6e7ac",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/development.py::DevelopmentIntegration._record_branch_cleanup::ddd593ce696f5186ab814e9198ce8e1b7caedb763494a55f6a824601db607427": {
-      "line": 3183,
-      "owner": "DevelopmentIntegration._record_branch_cleanup",
+    "src/integration/development.py::DevelopmentPrimitives._record_branch_cleanup::ddd593ce696f5186ab814e9198ce8e1b7caedb763494a55f6a824601db607427": {
+      "line": 949,
+      "owner": "DevelopmentPrimitives._record_branch_cleanup",
       "call": "log_event",
       "owner_fingerprint": "bad8f59120285ea2dc4ee66d3912d0e3d2dcf6e1b57d8539ef71f0e6046853d4",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/development.py::DevelopmentIntegration.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db": {
-      "line": 4166,
-      "owner": "DevelopmentIntegration.ensure_repair",
+    "src/integration/development.py::DevelopmentPrimitives.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db": {
+      "line": 1235,
+      "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
       "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
       "integration_signal": false,
       "disposition": "retire",
       "reason": "Legacy duplicate delivery/repair-evidence metadata: REPAIR_EVIDENCE_KEY"
     },
-    "src/integration/development.py::DevelopmentIntegration.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
-      "line": 4164,
-      "owner": "DevelopmentIntegration.ensure_repair",
+    "src/integration/development.py::DevelopmentPrimitives.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
+      "line": 1233,
+      "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
       "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
       "integration_signal": false,
       "disposition": "retire",
       "reason": "Legacy duplicate delivery/repair-evidence metadata: 'development_repair_sources'"
     },
-    "src/integration/development.py::DevelopmentIntegration.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
-      "line": 3249,
-      "owner": "DevelopmentIntegration.stale_branches",
+    "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
+      "line": 1016,
+      "owner": "DevelopmentPrimitives.stale_branches",
       "call": "log_event",
       "owner_fingerprint": "024a084b28c16536d892ea4caac836da19d3189890ab0593316a54fee7180a21",
       "integration_signal": true,
@@ -12656,11 +12686,11 @@
       "disposition": "retire",
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
-    "src/integration/development_runtime.py::_transfer_on::1904ebf6e54759202c7eba653ed9cccb6aa32e4f037d521f042e14769ff8ef8c": {
-      "line": 684,
+    "src/integration/development_runtime.py::_transfer_on::771b4b7889923a8826cc42168c14721a43489f38a946872578c9ebe01d2354ea": {
+      "line": 679,
       "owner": "_transfer_on",
       "call": "append_integration_subject_journal_on",
-      "owner_fingerprint": "516f183e238d43b2edbb0a26d000c4f3de0b7144a479b8297ca36c28c673af41",
+      "owner_fingerprint": "00742f40bff850bd58b08c9cae37e4b90527680ed0bd456b90ddd03e2848e5c4",
       "integration_signal": true,
       "disposition": "retire",
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
@@ -12692,11 +12722,11 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/engine.py::RootEngineOwnership.transfer::0fdea9f8cfde22cf654adc9a7d0f4cd9b6c6b5dccb9e21fd70ecd349d78126d4": {
-      "line": 397,
+    "src/integration/engine.py::RootEngineOwnership.transfer::07681510682d1b980f297c83dd32cee6073abf45d12605fad2eca4f1fd0bb462": {
+      "line": 418,
       "owner": "RootEngineOwnership.transfer",
       "call": "append_integration_subject_journal_on",
-      "owner_fingerprint": "07d0a3ede391abad1bd6b01b7db626c584112acb85c5e2d9a39e9c2aa49f4bba",
+      "owner_fingerprint": "5a3cb74610f3695ed5d77eb9bbe4ddb90503a40d21da1a2f414179d792599313",
       "integration_signal": true,
       "disposition": "retire",
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
@@ -12737,6 +12767,24 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/integration/gates.py::RootMemberEjection.eject::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 851,
+      "owner": "RootMemberEjection.eject",
+      "call": "delete",
+      "owner_fingerprint": "48731afcce3d23853a5ef095f08f7bbc7b56d12de1ff80c5fcad90687b7003bb",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/gates.py::RootMemberEjection.eject::b67871c23227990c50463f1b3621700239a4eb204c61e89e1ea0d93e917cb124": {
+      "line": 902,
+      "owner": "RootMemberEjection.eject",
+      "call": "log_event",
+      "owner_fingerprint": "48731afcce3d23853a5ef095f08f7bbc7b56d12de1ff80c5fcad90687b7003bb",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
     "src/integration/gitops.py::SubjectGitJournal.append::159ce2f2f03560ed982a4214eec932adddaa718bf0a28e5c0fcb975d3d5b0cc4": {
       "line": 92,
       "owner": "SubjectGitJournal.append",
@@ -12770,33 +12818,6 @@
       "call": "log_event",
       "owner_fingerprint": "87eed5740ad54a0ffb5ccc2a2c9817be525d7c9059711f092de3f4fc121c661b",
       "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/obsolete_close.py::ObsoleteClose._record_cleanup::209996bd6a28d1375f335ce38b97022f3411025593a530bafa356f17b816195d": {
-      "line": 614,
-      "owner": "ObsoleteClose._record_cleanup",
-      "call": "log_event",
-      "owner_fingerprint": "656d947f41757db65487e12643cd64d3aed914c9e9fcd8e4184b3629057091b5",
-      "integration_signal": false,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/obsolete_close.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
-      "line": 238,
-      "owner": "ObsoleteClose.close",
-      "call": "log_event",
-      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
-      "integration_signal": false,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/obsolete_close.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 209,
-      "owner": "ObsoleteClose.close",
-      "call": "delete",
-      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
-      "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
@@ -12836,11 +12857,11 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/parent_engine.py::ParentEngineOwnership.transfer::8a3ec352bf3080f5b37655dd3c7e831746690c2540cd10fc6be703b8a34c62f9": {
-      "line": 223,
+    "src/integration/parent_engine.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
+      "line": 212,
       "owner": "ParentEngineOwnership.transfer",
       "call": "append_integration_subject_journal_on",
-      "owner_fingerprint": "a6300d2feb90d633c932ddffa83649ed9ad94e66cde42d7ce739276fe5effdf2",
+      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
       "integration_signal": true,
       "disposition": "retire",
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
@@ -12849,7 +12870,7 @@
       "line": 279,
       "owner": "ParentSourceReverification.run",
       "call": "insert",
-      "owner_fingerprint": "8924702358a25dee57bda6b04eaaabccddae121148f0197eba62556161b8c7dc",
+      "owner_fingerprint": "35012f84d53466d014d07f0e17d31d52a62d70fbb1479e719bb446acac85531c",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13017,10 +13038,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/stale_schedule.py::release_outstanding_request_on::277a9f66fd761af4f384602e8ee18db1170e7d23206e47d04f056a534dfe1f85": {
-      "line": 447,
+      "line": 352,
       "owner": "release_outstanding_request_on",
       "call": "log_event",
-      "owner_fingerprint": "45b9c4a3ee6f9260d4404cabed78b2ad58614baa35ae032836686271c6f5b8ef",
+      "owner_fingerprint": "1d1be6cf5f4c9df33ac456b3f945e441d042932241c330e0af0288f549491af6",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13092,7 +13113,7 @@
       "line": 252,
       "owner": "EventsMixin._check_budget_warning",
       "call": "log_event",
-      "owner_fingerprint": "475a3240cd2bbeebb654c0527c29cef37e7986ba7cc8a9771cc6c39ea3c4a906",
+      "owner_fingerprint": "d96ac23fd00f073610e3880f3b69d45be48da97775a57b480254237ea02b5a81",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13107,10 +13128,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2182,
+      "line": 2200,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "76683b73c58abde47e4993df49c96d749373f467e9662dda2f53e372321857c6",
+      "owner_fingerprint": "6303ed6475c7e9d7a7d04964e4516702c7df0b7d58a94baece9f881069bd464c",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -13393,6 +13414,33 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._record_cleanup::209996bd6a28d1375f335ce38b97022f3411025593a530bafa356f17b816195d": {
+      "line": 508,
+      "owner": "ObsoleteClose._record_cleanup",
+      "call": "log_event",
+      "owner_fingerprint": "656d947f41757db65487e12643cd64d3aed914c9e9fcd8e4184b3629057091b5",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
+      "line": 237,
+      "owner": "ObsoleteClose.close",
+      "call": "log_event",
+      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 207,
+      "owner": "ObsoleteClose.close",
+      "call": "delete",
+      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/sessions/questions.py::AgentQuestionService._native_plan::aa6c5d0c1b30091482569a6d39a2770d8640228ff9deb37a3361d0b064977889": {
       "line": 974,
