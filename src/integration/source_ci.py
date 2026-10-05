@@ -161,6 +161,8 @@ class RootAdmissionReader:
         """One open-PR listing per repository prunes stale branches before Git I/O."""
         repositories = {}
         observations = []
+        # One fetch of all heads per repository per admission pass, not per member.
+        fetched = set()
         for member in members:
             repository_id = member["repository_id"]
             if repository_id not in repositories:
@@ -184,11 +186,13 @@ class RootAdmissionReader:
             elif member["pr_url"] not in pulls:
                 result = {"reason": "pr_closed"}
             else:
-                result = await self(member, policy, pull=pulls[member["pr_url"]])
+                result = await self(member, policy, pull=pulls[member["pr_url"]],
+                                    fetched=fetched)
+                fetched.add(repository_id)
             observations.append(result)
         return observations
 
-    async def __call__(self, member, policy, *, pull=None):
+    async def __call__(self, member, policy, *, pull=None, fetched=None):
         import time
 
         from src.git.manager import RemoteRefState
@@ -214,7 +218,8 @@ class RootAdmissionReader:
             await self.promotion._ensure_retained_repository(resolved)
             store = str(resolved.retained_git_dir)
             async with git.arepository_transaction(store):
-                await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                if fetched is None or member["repository_id"] not in fetched:
+                    await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
                 remote = await git.als_remote_ref(store, member["source_branch"])
                 target = await git.als_remote_ref(store, member["default_branch"])
                 if remote.state is not RemoteRefState.PRESENT or remote.oid != member["source_head"]:
