@@ -18,6 +18,11 @@ SHA and check), widens the conclusion vocabulary with ``missing`` and
 required checks of one workflow run share its run id and attempt, so a cache
 row is unique by commit and check instead.
 
+The baseline guard makes every row append-only. Both of its triggers on this
+table move to ``integration_check_evidence_guard``, which keeps run-attempt
+rows append-only and lets a cache row be refreshed or pruned, never re-keyed
+and never moved to an older observation.
+
 Every step is guarded because the squashed baseline builds this table from
 the live ``src.database.tables.metadata``: a database created after this
 revision already carries the reshaped table.
@@ -61,6 +66,53 @@ _SUBJECT = (
     "AND parent_generation IS NULL AND parent_head_sha IS NULL AND repository_id IS NOT NULL "
     "AND sha IS NOT NULL AND check_name IS NOT NULL)"
 )
+GUARD = """
+    CREATE OR REPLACE FUNCTION integration_check_evidence_guard() RETURNS trigger AS $$
+    BEGIN
+        IF OLD.sha IS NULL THEN
+            RAISE EXCEPTION 'integration parent evidence is append-only';
+        END IF;
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        IF ROW(NEW.id, NEW.repository_id, NEW.sha, NEW.check_name, NEW.producer_id,
+               NEW.batch_id, NEW.candidate_revision, NEW.parent_task_id,
+               NEW.parent_generation, NEW.parent_head_sha) IS DISTINCT FROM
+           ROW(OLD.id, OLD.repository_id, OLD.sha, OLD.check_name, OLD.producer_id,
+               OLD.batch_id, OLD.candidate_revision, OLD.parent_task_id,
+               OLD.parent_generation, OLD.parent_head_sha)
+        THEN RAISE EXCEPTION 'exact-commit check identity is immutable'; END IF;
+        IF NEW.observed_at < OLD.observed_at THEN
+            RAISE EXCEPTION 'exact-commit check observation cannot move backwards';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+"""
+GUARDED = ("trg_integration_check_evidence_update", "trg_integration_check_evidence_delete")
+
+
+def _install_guard(bind) -> None:
+    bind.execute(sa.text(GUARD))
+    for name in GUARDED:
+        event = "UPDATE" if name.endswith("_update") else "DELETE"
+        bind.execute(sa.text(f"DROP TRIGGER IF EXISTS {name} ON {TABLE}"))
+        bind.execute(
+            sa.text(
+                f"CREATE TRIGGER {name} BEFORE {event} ON {TABLE} "
+                "FOR EACH ROW EXECUTE FUNCTION integration_check_evidence_guard()"
+            )
+        )
+
+
+def _restore_baseline_guard(bind) -> None:
+    from migrations.integration_guards import TRIGGERS
+
+    for name, table, statement in TRIGGERS:
+        if name in GUARDED:
+            bind.execute(sa.text(f"DROP TRIGGER IF EXISTS {name} ON {table}"))
+            bind.execute(sa.text(statement))
+    bind.execute(sa.text("DROP FUNCTION IF EXISTS integration_check_evidence_guard()"))
+
+
 _LEGACY_CONCLUSION = "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')"
 _CONCLUSION = (
     "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive', "
@@ -118,6 +170,7 @@ def upgrade() -> None:
         )
     _replace_check(bind, SUBJECT, _SUBJECT)
     _replace_check(bind, CONCLUSION, _CONCLUSION)
+    _install_guard(bind)
 
 
 def downgrade() -> None:
@@ -134,6 +187,7 @@ def downgrade() -> None:
             # The cache is refreshable from the trusted provider; dropping it
             # loses nothing that the next visit cannot observe again.
             bind.execute(sa.text(f'DELETE FROM "{TABLE}" WHERE sha IS NOT NULL'))
+    _restore_baseline_guard(bind)
     _replace_check(bind, CONCLUSION, _LEGACY_CONCLUSION)
     _replace_check(bind, SUBJECT, _LEGACY_SUBJECT)
     indexes = {item["name"] for item in sa.inspect(bind).get_indexes(TABLE)}

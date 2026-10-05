@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import integration_check_evidence
 from src.integration.checks import (
@@ -259,6 +262,42 @@ async def test_older_observation_never_overwrites_a_newer_one(db):
     assert (await checks.refresh(head())).state is ChecksState.RED
     provider.next.append(("success", "32", 1))
     assert (await checks.refresh(head())).green
+
+
+async def test_database_guard_keeps_run_attempt_rows_append_only(db):
+    provider = SimpleNamespace(
+        required=RequiredChecks(version="v1", names=("unit",), producer_id="p"),
+        request=None,
+        observe=AsyncMock(return_value=(row("unit", "success", producer_id="p"),)),
+    )
+    await ExactChecks(db, provider, clock=Clock()).refresh(head())
+    legacy = (
+        "INSERT INTO integration_check_evidence (id, parent_task_id, parent_generation, "
+        "parent_head_sha, producer_id, workflow_id, run_id, attempt, required_check_version, "
+        "checks, conclusion, classification, observed_at) VALUES ('legacy', 'parent', 1, "
+        f"'{HEAD}', 'p', 'w', 'r', 1, 'v1', '{{}}', 'success', 'conclusive', 1)"
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(text(legacy))
+
+    refused = [
+        ("UPDATE integration_check_evidence SET conclusion = 'failure' WHERE id = 'legacy'",
+         "append-only"),
+        ("DELETE FROM integration_check_evidence WHERE id = 'legacy'", "append-only"),
+        (f"UPDATE integration_check_evidence SET sha = '{OTHER}' WHERE sha IS NOT NULL",
+         "identity is immutable"),
+        ("UPDATE integration_check_evidence SET observed_at = 1 WHERE sha IS NOT NULL",
+         "cannot move backwards"),
+    ]
+    for statement, message in refused:
+        with pytest.raises(DBAPIError, match=message):
+            async with db._engine.begin() as conn:
+                await conn.execute(text(statement))
+
+    # A cache row can be pruned; the next refresh observes it again.
+    async with db._engine.begin() as conn:
+        await conn.execute(text("DELETE FROM integration_check_evidence WHERE sha IS NOT NULL"))
+    assert await stored(db) == []
 
 
 async def test_slow_provider_holds_no_connection_lock_or_transaction(db):
