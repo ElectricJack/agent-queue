@@ -619,6 +619,10 @@ Cutover occurs only when every enabled Markdown playbook has a ready V2 artifact
 - Execution-contract changes alter the fingerprint; presentation-only changes do not.
 - Every executable field has a canonical explanation projection, enforced by an exhaustive CI test.
 - Sensitive and unmarked fields are redacted from receipts by default.
+- A failure-class command result with an explicitly projected `error` records that
+  reason in its receipt and run snapshot. An immediately following failed terminal
+  preserves it; a handled failure ending successfully does not retain a run error.
+  Adapter summaries alone never bypass receipt projection.
 - Golden intent fixtures cover current shipped commands, including `ensure_task`.
 - Changed contracts stale affected playbooks while unrelated playbooks remain ready.
 - A missing expected plugin marks dependents unavailable; an intentional removal marks them needs-rebuild.
