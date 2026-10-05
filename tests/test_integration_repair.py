@@ -2009,6 +2009,46 @@ async def test_noop_recovery_preserves_holds_on_previous_delegates(db, hold):
     assert (await service.reevaluate("operation"))["outcome"] == "blocked"
 
 
+async def _drained_parent_holder(db):
+    """A pool worker stopped for good, its claim on the parent left behind.
+
+    Built by driving the writers that produce the live shape (fleet-delta-97):
+    ``record_holder``/``activate_claim`` write the claim record the exact-holder
+    proof now reads, then the pool's own drain — ``terminate_pool_session``
+    with the task's status — clears the session's ``task_id`` and ``claim_phase``
+    and hands the parent back ``IN_PROGRESS`` with no agent, and the teardown's
+    last statement marks the row ``stopped``/``stopped``.  A session row pointing
+    back at the parent is not what a real stop leaves, which is exactly why the
+    proof used to match nothing.
+    """
+    await db.create_agent(
+        Agent(id="drained-parent-agent", name="drained-parent-agent", profile_id="worker")
+    )
+    await db.create_session(SessionRecord(
+        id="stale-parent-holder", task_id=None, project_id="p", profile_id="worker",
+        harness="fake", provider="fake", name="drained-parent", lifecycle="pool",
+        state="running", desired_state="running", work_dir="/tmp/drained-parent",
+        epoch="epoch", instance_token="drained-instance", started_at=100.0,
+        agent_id="drained-parent-agent",
+    ))
+    async with db.immediate() as conn:
+        await db.record_holder(
+            conn, session_id="stale-parent-holder", task_id="parent", claim_epoch=1,
+            agent_id="drained-parent-agent", work_dir="/tmp/drained-parent", now=101.0,
+            agent_reserved=True,
+        )
+    assert await db.activate_claim("stale-parent-holder", "parent", epoch=1, now=102.0)
+    assert (
+        await db.terminate_pool_session(
+            "stale-parent-holder", reason="drained", task_status=TaskStatus.IN_PROGRESS
+        )
+    ).released
+    await db.update_session(
+        "stale-parent-holder", state="stopped", desired_state="stopped",
+        ended_at=120.0, end_reason="drained",
+    )
+
+
 async def _stale_parent_noop(db, *, collector_fence=True):
     """A closed green no-op parent whose stopped worker still holds its claim.
 
@@ -2021,18 +2061,13 @@ async def _stale_parent_noop(db, *, collector_fence=True):
     service, delegate, subject = await _closed_green_parent(db, escalated=True)
     await db.create_task(Task(id="terminal-child", project_id="p", title="Completed no-op", description="",
                              parent_task_id="parent", status=TaskStatus.COMPLETED))
-    await db.create_session(SessionRecord(
-        id="stale-parent-holder", task_id="parent", project_id="p", profile_id="repairer",
-        harness="fake", provider="fake", name="drained-parent", lifecycle="pool",
-        state="stopped", desired_state="stopped", claim_phase="active", last_claim_epoch=1,
-        work_dir="/tmp/drained-parent", epoch="epoch", instance_token="drained-instance",
-        started_at=100.0, ended_at=120.0, end_reason="drained",
-    ))
-    service._owner_recovery = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
     async with db.immediate() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "parent").values(
             status="IN_PROGRESS", claim_epoch=1,
         ))
+    await _drained_parent_holder(db)
+    service._owner_recovery = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    async with db.immediate() as conn:
         if collector_fence:
             await conn.execute(update(integration_branch_owners).values(
                 owner_id="operation", owner_role="collector",
@@ -2077,13 +2112,15 @@ async def test_noop_recovery_releases_exact_stopped_parent_claim_before_fresh_ve
     assert preview["outcome"] == "would_reevaluate", preview
     assert preview["planned_steps"][0] == "release_stale_parent_claim_to_paused_collection"
     assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
-    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+    # A refused proof may not have touched the claim it refused to prove.
+    assert await db.get_task_meta("parent", "claimed_by_session") == "stale-parent-holder"
     result = await _apply_noop_preview(service, preview)
     assert result["outcome"] == "reevaluated", result
     assert (await db.get_task("parent")).status is TaskStatus.PAUSED
     holder = await db.get_session("stale-parent-holder")
     assert holder.task_id is None and holder.claim_phase is None
     assert holder.state == "stopped" and holder.end_reason == "drained"
+    assert await db.get_task_meta("parent", "claimed_by_session") is None
     assert (await db.get_integration_operation("operation"))["verifier_task_id"] == "verify-operation"
     service._owner_recovery.confirm_stopped.assert_awaited()
     assert all(call.args[0]["instance_token"] == "drained-instance"
@@ -2119,7 +2156,8 @@ async def test_noop_recovery_refuses_unproved_stale_parent_claim(db, invalid):
     preview = await service.reevaluate("operation")
     assert preview["outcome"] == "blocked", preview
     assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
-    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+    # A refused proof may not have touched the claim it refused to prove.
+    assert await db.get_task_meta("parent", "claimed_by_session") == "stale-parent-holder"
     assert await _repair_stage(db, "operation", 1) == before
 
 
@@ -2134,7 +2172,8 @@ async def test_noop_apply_refuses_stale_parent_instance_movement(db):
     result = await _apply_noop_preview(service, preview)
     assert result["outcome"] == "stale", result
     assert (await db.get_task("parent")).status is TaskStatus.IN_PROGRESS
-    assert (await db.get_session("stale-parent-holder")).task_id == "parent"
+    # A refused proof may not have touched the claim it refused to prove.
+    assert await db.get_task_meta("parent", "claimed_by_session") == "stale-parent-holder"
 
 
 async def test_noop_recovery_preserves_old_verifier_and_files_a_fresh_one(db):

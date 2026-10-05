@@ -2,8 +2,12 @@
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from src.database.queries.claim_queries import (
+    CLAIM_PHASE_IN_FLIGHT,
+    CLAIMED_BY_SESSION_KEY,
+)
 from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     agents,
@@ -45,26 +49,16 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
         raise ValueError(
             "parent is not an unassigned aggregate under this operation's collector fence"
         )
-    holders = (
-        (
-            await conn.execute(
-                select(sessions).where(sessions.c.task_id == parent_id).with_for_update()
-            )
-        )
-        .mappings()
-        .all()
-    )
-    if len(holders) != 1:
-        raise ValueError("stale parent leaf claim has no unique holder")
-    holder = holders[0]
+    holder = await _stopped_claim_record_holder_on(conn, parent_id)
     if (
         holder["state"] != "stopped"
         or holder["desired_state"] != "stopped"
         or holder["lifecycle"] != "pool"
-        or holder["claim_phase"] != "active"
+        or holder["claim_phase"] in CLAIM_PHASE_IN_FLIGHT
         or not holder["instance_token"]
         or not holder["last_claim_epoch"]
         or holder["last_claim_epoch"] != parent["claim_epoch"]
+        or holder["task_id"] not in (None, parent_id)
     ):
         raise ValueError("stale parent holder is live or its exact claim epoch is unavailable")
     if await conn.scalar(
@@ -120,6 +114,61 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
         "children": [dict(row) for row in children],
         "step": "release_stale_parent_claim_to_paused_collection",
     }
+
+
+async def _stopped_claim_record_holder_on(conn, task_id: str):
+    """The one stopped session the task's own ``claimed_by_session`` record names.
+
+    The same holder :func:`src.database.queries.claim_queries._exact_stopped_pool_holder`
+    selects for the shipped stale-claim release, read the same way
+    (fleet-delta-97): a real session stop clears ``sessions.task_id`` and leaves
+    the claim record as the only statement of it, so selecting
+    ``sessions.task_id == parent_id`` finds nothing at all and the whole
+    green-noop recovery is unreachable on a live row.  The proof below is the
+    same, clause for clause, so the two repairs cannot disagree about who holds
+    the claim.
+    """
+    record = (
+        await conn.execute(
+            select(task_metadata.c.value)
+            .where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    try:
+        session_id = json.loads(record) if record is not None else None
+    except ValueError:
+        session_id = None
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("stale parent leaf claim has no recorded holder")
+    holder = (
+        (
+            await conn.execute(
+                select(sessions).where(sessions.c.id == session_id).with_for_update()
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if holder is None:
+        raise ValueError("stale parent leaf claim names a holder that is gone")
+    # The record names one holder; which of two sessions claiming the parent
+    # owns it would otherwise be a guess. A pointer a restart is about to
+    # revive is not a dead one.
+    if await conn.scalar(
+        select(sessions.c.id)
+        .where(
+            sessions.c.task_id == task_id,
+            sessions.c.id != session_id,
+            or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped"),
+        )
+        .limit(1)
+    ):
+        raise ValueError("another live session still claims the parent aggregate")
+    return holder
 
 
 def names_only_the_confirmed_head(recorded, head_sha):

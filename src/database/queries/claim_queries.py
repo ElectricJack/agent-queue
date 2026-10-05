@@ -171,39 +171,98 @@ CONTAINER_CLAIM_RELEASED = "container_claim_released"
 #: (sharp-ridge-57).
 STALE_CONTAINER_CLAIM_RELEASED = "stale_container_claim_released"
 
+#: ``task_metadata`` key naming the session a task's claim belongs to, written
+#: by :meth:`ClaimQueryMixin.record_holder` on the claim path and nowhere else.
+CLAIMED_BY_SESSION_KEY = "claimed_by_session"
+
+#: ``sessions.claim_phase`` values that mean a claim is still being taken.  A
+#: session stopped in one of them never activated the claim its record names,
+#: so that record proves nothing about a claim anybody could still act on.
+CLAIM_PHASE_IN_FLIGHT = ("claiming", "preparing")
+
+#: The task's own claim record, the session it names, and every other session
+#: row — one alias each, shared by :func:`stale_container_claim_statement`'s
+#: ``FROM`` and :func:`_exact_stopped_pool_holder`'s predicate so the candidate
+#: read and the repair it feeds cannot disagree about which row is the holder.
+_STALE_CLAIM_RECORD = task_metadata.alias("stale_container_claim")
+_STALE_CLAIM_HOLDER = sessions.alias("stale_container_holder")
+_STALE_CLAIM_OTHER = sessions.alias("stale_container_other")
+
+
+def _claim_record_names_session():
+    """Join condition: the task's claim record names the session it is joined to.
+
+    ``task_metadata.value`` is :func:`json.dumps` output, so a session id is
+    stored quoted and the comparison has to reproduce that quoting in SQL
+    rather than decode the value once per candidate row.  A row written by
+    anything else is simply not a match, which fails closed.
+    """
+    return and_(
+        _STALE_CLAIM_RECORD.c.task_id == tasks.c.id,
+        _STALE_CLAIM_RECORD.c.key == CLAIMED_BY_SESSION_KEY,
+        _STALE_CLAIM_RECORD.c.value
+        == literal('"').concat(_STALE_CLAIM_HOLDER.c.id).concat(literal('"')),
+    )
+
 
 def _exact_stopped_pool_holder():
-    """``EXISTS`` clause: one stopped pool session pins this task's claim exactly.
+    """Clause: the task's own claim record names one session that is dead for good.
 
     The exact-holder proof :func:`src.integration.noop_repair.stale_parent_claim_on`
-    introduced (sharp-glacier-30), as a predicate: the single session pointing
-    at the correlated task is a pool worker that has fully stopped — not merely
-    un-running, but ``state`` *and* ``desired_state`` both ``stopped``, so no
-    drain or restart can resurrect it — still mid-claim (``claim_phase`` is
-    ``active``), still fenced to a concrete tmux instance, and its last claim
-    epoch is still the task's current one.  A requeued or re-leased pointer
-    carries a newer epoch and therefore does not match, which is what makes
-    releasing safe for a slot that may already have been reused.
+    introduced (sharp-glacier-30), as a predicate over the holder the *task*
+    names rather than over the sessions pointing back at it.
+
+    Joining ``sessions.task_id == tasks.id`` was the bug this replaces
+    (fleet-delta-97): the real stop path does not leave that pointer behind.
+    ``release_container_claim`` — the monitoring leg the 14:05Z log shows
+    firing on every restart — runs the ordinary release, which writes the task
+    back ``IN_PROGRESS`` with no agent and clears ``sessions.task_id`` and
+    ``sessions.claim_phase``, and the drain that follows leaves the row
+    ``stopped``/``stopped``.  ``task_metadata.claimed_by_session`` is the one
+    record of the claim that survives that, so it is what identifies the
+    holder now (bold-crest-75, calm-quest-88).
+
+    What the named session must then prove:
+
+    * ``lifecycle`` ``pool``, ``state`` *and* ``desired_state`` both
+      ``stopped``, so no drain or restart can resurrect it;
+    * not mid-claim — ``claim_phase`` is what a stopped holder actually
+      keeps, either the activated claim it never gave back or ``NULL`` once it
+      did, and never ``claiming``/``preparing``, which is a claim nobody ever
+      held;
+    * a concrete tmux ``instance_token``, and a last claim epoch that is still
+      the task's current one — a requeued or re-leased claim carries a newer
+      epoch, which is what makes releasing safe for a slot that may already
+      have been reused;
+    * that it is not holding some *other* task, so clearing its row cannot
+      disturb a claim that has nothing to do with this one;
+    * and that no other live session still claims this task, because which of
+      two holders owns the claim would then be a guess.  "Live" is the same
+      test the holder itself must pass: a session a restart is about to revive
+      (``stopped`` now, ``running`` wanted) counts, so this can be no looser
+      than the one clause above.
     """
-    holder = sessions.alias("stale_container_holder")
-    other = sessions.alias("stale_container_other")
     return and_(
-        holder.c.task_id == tasks.c.id,
-        holder.c.lifecycle == "pool",
-        holder.c.state == "stopped",
-        holder.c.desired_state == "stopped",
-        holder.c.claim_phase == "active",
-        holder.c.instance_token.is_not(None),
-        holder.c.last_claim_epoch == tasks.c.claim_epoch,
-        # Exactly one: a second session pointing at the same task is not this
-        # shape, and which of the two holds the claim would then be a guess.
-        # The alias matters — the candidate statement already joins ``sessions``
-        # to ``tasks``, so an unaliased reference here would correlate to that
-        # join and read as "no session at all", never true.
+        _STALE_CLAIM_HOLDER.c.lifecycle == "pool",
+        _STALE_CLAIM_HOLDER.c.state == "stopped",
+        _STALE_CLAIM_HOLDER.c.desired_state == "stopped",
+        or_(
+            _STALE_CLAIM_HOLDER.c.claim_phase.is_(None),
+            _STALE_CLAIM_HOLDER.c.claim_phase.notin_(CLAIM_PHASE_IN_FLIGHT),
+        ),
+        _STALE_CLAIM_HOLDER.c.instance_token.is_not(None),
+        _STALE_CLAIM_HOLDER.c.last_claim_epoch == tasks.c.claim_epoch,
+        or_(
+            _STALE_CLAIM_HOLDER.c.task_id.is_(None),
+            _STALE_CLAIM_HOLDER.c.task_id == tasks.c.id,
+        ),
         ~exists(
             select(literal(1)).where(
-                other.c.task_id == tasks.c.id,
-                other.c.id != holder.c.id,
+                _STALE_CLAIM_OTHER.c.task_id == tasks.c.id,
+                or_(
+                    _STALE_CLAIM_OTHER.c.state != "stopped",
+                    _STALE_CLAIM_OTHER.c.desired_state != "stopped",
+                ),
             )
         ),
     )
@@ -244,7 +303,7 @@ def stale_container_claim_clauses() -> list:
         tasks.c.assigned_agent_id.is_(None),
         never_leaseable_container(),
         _not_manually_paused(),
-        exists(select(literal(1)).where(_exact_stopped_pool_holder())),
+        _exact_stopped_pool_holder(),
         exists(
             select(literal(1)).where(
                 task_integration_checkpoints.c.task_id == tasks.c.id,
@@ -262,18 +321,30 @@ def stale_container_claim_clauses() -> list:
 
 
 def stale_container_claim_statement(*, task_ids: Collection[str] | None = None):
-    """The candidate read for :meth:`ClaimQueryMixin.release_stale_container_claim`."""
+    """The candidate read for :meth:`ClaimQueryMixin.release_stale_container_claim`.
+
+    The holder arrives through the task's own claim record
+    (:func:`_claim_record_names_session`), which is what
+    :func:`_exact_stopped_pool_holder` then proves, so the two joins share one
+    pair of aliases and the scan and the repair always read the same row.
+    """
     stmt = (
         select(
             tasks.c.id,
             tasks.c.project_id,
-            sessions.c.id.label("session_id"),
-            sessions.c.last_claim_epoch,
+            _STALE_CLAIM_HOLDER.c.id.label("session_id"),
+            _STALE_CLAIM_HOLDER.c.last_claim_epoch,
         )
         .select_from(
-            tasks.join(sessions, sessions.c.task_id == tasks.c.id).join(
-                projects, projects.c.id == tasks.c.project_id
+            tasks.join(
+                _STALE_CLAIM_RECORD,
+                and_(
+                    _STALE_CLAIM_RECORD.c.task_id == tasks.c.id,
+                    _STALE_CLAIM_RECORD.c.key == CLAIMED_BY_SESSION_KEY,
+                ),
             )
+            .join(_STALE_CLAIM_HOLDER, _claim_record_names_session())
+            .join(projects, projects.c.id == tasks.c.project_id)
         )
         .where(*stale_container_claim_clauses())
         .where(projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES))
@@ -804,7 +875,7 @@ class ClaimQueryMixin:
                 )
                 slot = self._row_to_workspace(row) if row is not None else None
         await self._upsert_meta_many(
-            task_id, {"claimed_by_session": session_id, "work_dir": work_dir}, conn=conn
+            task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
         )
         await self._start_task_session_attempt(
             conn,
@@ -1436,7 +1507,11 @@ class ClaimQueryMixin:
         :meth:`release_historical_pool_claim`, which changes only the exact
         task and the exact session: a stopped worker's slot or agent may since
         have been reused, so its workspace lock, agent state and claim file are
-        left exactly as the successor found them.  The task lands ``PAUSED``
+        left exactly as the successor found them.  It is handed the task's own
+        ``claimed_by_session`` record as the holder's authority
+        (``claim_record_holder``), because that is all a real stop leaves
+        behind (fleet-delta-97), and clears it in the same transaction so the
+        next sweep cannot read the same claim again.  The task lands ``PAUSED``
         with no agent, which is the shape §7 settlement and the parent-episode
         readiness projection both consume.  When *conn* is supplied the caller
         owns the transaction (and the post-commit notifications); otherwise
@@ -1519,6 +1594,7 @@ class ClaimQueryMixin:
             now=now,
             context=STALE_CONTAINER_CLAIM_RELEASED,
             expected_task_status=TaskStatus.IN_PROGRESS,
+            claim_record_holder=True,
         )
         if out.released:
             await self.log_event(
@@ -1782,6 +1858,7 @@ class ClaimQueryMixin:
         now: float,
         context: str = "integration_handoff_recovery",
         expected_task_status: TaskStatus = TaskStatus.BLOCKED,
+        claim_record_holder: bool = False,
     ) -> TransitionResult:
         """Release a stopped historical claim without touching its former holder.
 
@@ -1800,6 +1877,14 @@ class ClaimQueryMixin:
         meant a stranded ``BLOCKED`` repair delegate, while
         :meth:`release_stale_container_claim` proves an ``IN_PROGRESS``
         container).
+
+        *claim_record_holder* says whose claim this is in the shape the real
+        stop path leaves (fleet-delta-97): the session's own ``task_id`` is
+        already ``NULL`` and the task's ``claimed_by_session`` record is the
+        only surviving statement of the claim, so that record — read and
+        cleared under this transaction's locks — is the authority instead of
+        the session pointer.  Every other clause is unchanged, and the other
+        callers keep the pointer as their authority.
         """
         row = (
             await conn.execute(
@@ -1809,13 +1894,32 @@ class ClaimQueryMixin:
         out = TransitionResult()
         if (
             row is None
-            or row["task_id"] != task_id
             or row["lifecycle"] != "pool"
             or row["state"] != "stopped"
             or row["desired_state"] != "stopped"
-            or row["claim_phase"] != "active"
             or row["last_claim_epoch"] != claim_epoch
         ):
+            return out
+        if claim_record_holder:
+            if row["task_id"] not in (None, task_id) or row["claim_phase"] in CLAIM_PHASE_IN_FLIGHT:
+                return out
+            record = (
+                await conn.execute(
+                    select(task_metadata.c.value)
+                    .where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            try:
+                named = json.loads(record) if record is not None else None
+            except ValueError:
+                return out
+            if named != session_id:
+                return out
+        elif row["task_id"] != task_id or row["claim_phase"] != "active":
             return out
 
         out = await self._apply_transition(
@@ -1835,18 +1939,30 @@ class ClaimQueryMixin:
         )
         if out.row is None:
             return out
-        released = await conn.execute(
-            update(sessions)
-            .where(
-                sessions.c.id == session_id,
-                sessions.c.task_id == task_id,
-                sessions.c.lifecycle == "pool",
-                sessions.c.state == "stopped",
-                sessions.c.desired_state == "stopped",
-                sessions.c.claim_phase == "active",
-                sessions.c.last_claim_epoch == claim_epoch,
+        session_fence = and_(
+            sessions.c.id == session_id,
+            sessions.c.lifecycle == "pool",
+            sessions.c.state == "stopped",
+            sessions.c.desired_state == "stopped",
+            sessions.c.last_claim_epoch == claim_epoch,
+        )
+        if claim_record_holder:
+            session_fence = and_(
+                session_fence,
+                or_(sessions.c.task_id.is_(None), sessions.c.task_id == task_id),
+                or_(
+                    sessions.c.claim_phase.is_(None),
+                    sessions.c.claim_phase.notin_(CLAIM_PHASE_IN_FLIGHT),
+                ),
             )
-            .values(
+        else:
+            session_fence = and_(
+                session_fence,
+                sessions.c.task_id == task_id,
+                sessions.c.claim_phase == "active",
+            )
+        released = await conn.execute(
+            update(sessions).where(session_fence).values(
                 task_id=None,
                 claim_phase=None,
                 claim_phase_at=None,
@@ -1858,6 +1974,18 @@ class ClaimQueryMixin:
             # A changed holder after the row was observed is not a partial
             # recovery; make the surrounding transaction roll back.
             raise RuntimeError("historical pool claim release lost its fence")
+        if claim_record_holder:
+            # The record is the claim, so releasing the claim releases it: a
+            # stale one left behind is what this whole repair exists to find.
+            cleared = await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+                    task_metadata.c.value == json.dumps(session_id),
+                )
+            )
+            if cleared.rowcount != 1:
+                raise RuntimeError("historical pool claim release lost its claim record")
         await self.finish_task_session_attempt(
             session_id,
             task_id=task_id,
