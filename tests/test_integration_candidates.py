@@ -2992,6 +2992,198 @@ async def test_completed_candidate_publication_is_adopted_after_stage_fence_adva
     assert replay.head_sha == built.head_sha
 
 
+async def _abandoned_mutation_fixture(
+    db, tmp_path, *, purpose="repair_handoff", advance_stage=False
+):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members[:1], base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    now = {"value": 100.0}
+    service = CandidateService(
+        db, data_dir=tmp_path / "data", git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(), app_client=app, clock=lambda: now["value"],
+    )
+    built = await service.build("batch")
+    state = await service._locked_state("batch")
+    mutation_id = service._mutation_id(
+        purpose=purpose, batch_id="batch", revision=0, ordinal=0, resolution_id=None,
+    )
+    identity = service._mutation_identity(
+        state, revision=0, purpose=purpose, target_branch=built.branch,
+        expected_old_sha=base, desired_sha=members[0][1], member_ordinal=0,
+        resolution_id=None, expected_role="collector",
+    )
+    if advance_stage:
+        await service.repair.expire(state["operation"]["id"], 0, now=130.0)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_candidate_ref_mutations).values(
+            id=mutation_id, **identity, nonce="abandoned-executor", state="reserved",
+            expires_at=235.0, created_at=100.0, updated_at=100.0,
+        ))
+    return service, now, built, state, await service._mutation(mutation_id), origin, work, base
+
+
+async def test_expired_stage_late_push_released_writer_resumes_without_hand_repair(db, tmp_path):
+    service, now, built, state, abandoned, origin, work, base = (
+        await _abandoned_mutation_fixture(db, tmp_path, advance_stage=True)
+    )
+    # A writer retained the candidate object, then pushed after stage expiry.
+    _git(work, "fetch", "origin", built.branch)
+    _git(origin, "update-ref", built.branch, base)
+    _git(work, "push", "--force", "origin", f"FETCH_HEAD:{built.branch}")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.ref == built.branch,
+        ).values(handoff_state="released"))
+    now["value"] = 300.0
+    async with db._engine.connect() as conn:
+        before = dict((await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == state["operation"]["id"],
+            integration_repair_stages.c.ordinal == 1,
+        ))).mappings().one())
+
+    resumed = await service.build("batch")
+
+    assert resumed.outcome == "already_built"
+    assert resumed.head_sha == built.head_sha == _git(origin, "rev-parse", built.branch)
+    retired = await service._mutation(abandoned["id"])
+    assert retired["state"] == "superseded" and retired["remote_sha"] is None
+    for field in ("desired_sha", "expected_old_sha", "operation_stage", "branch_fence_token"):
+        assert retired[field] == abandoned[field]
+    assert len(service.git.pushes) == 1  # only the original valid candidate push
+    async with db._engine.connect() as conn:
+        after = dict((await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == state["operation"]["id"],
+            integration_repair_stages.c.ordinal == 1,
+        ))).mappings().one())
+    for field in ("started_at", "deadline_at", "attempts", "starting_sha", "trigger_id"):
+        assert after[field] == before[field]
+
+
+@pytest.mark.parametrize("purpose", ("candidate_partial", "repair_handoff"))
+async def test_reclaimed_mutation_successor_is_exclusive_and_replayable(db, tmp_path, purpose):
+    service, now, built, state, abandoned, origin, _work, base = (
+        await _abandoned_mutation_fixture(db, tmp_path, purpose=purpose, advance_stage=True)
+    )
+    now["value"] = 300.0
+    current = await service._locked_state("batch")
+    observed = await service._observe_unresolved_mutations("batch", current)
+    assert not observed.has_unresolved
+    store = await service._ensure_store(await service._repository("repo"))
+
+    async def mutate():
+        return await service._mutate_ref(
+            current, revision=0, purpose=purpose, target_branch=built.branch,
+            expected_old_sha=built.head_sha, desired_sha=base, store=store, member_ordinal=0,
+        )
+
+    results = await asyncio.gather(mutate(), mutate())
+    assert any(results)
+    assert await mutate()
+    assert len(service.git.pushes) == 2
+    assert _git(origin, "rev-parse", built.branch) == base != abandoned["desired_sha"]
+    async with db._engine.connect() as conn:
+        attempts = (await conn.execute(select(integration_candidate_ref_mutations).where(
+            integration_candidate_ref_mutations.c.purpose == purpose,
+        ))).mappings().all()
+    assert len(attempts) == 2
+    assert {row["state"] for row in attempts} == {"superseded", "applied"}
+    successor = next(row for row in attempts if row["state"] == "applied")
+    assert successor["id"] != abandoned["id"]
+    assert successor["operation_stage"] == 1
+    assert successor["expected_old_sha"] == built.head_sha
+
+
+async def test_reclaimed_mutation_cannot_fork_while_successor_is_reserved(db, tmp_path):
+    from src.integration.candidates import CandidateStaleAuthority
+
+    service, now, built, _state, abandoned, _origin, _work, base = (
+        await _abandoned_mutation_fixture(db, tmp_path, advance_stage=True)
+    )
+    now["value"] = 300.0
+    current = await service._locked_state("batch")
+    assert not (await service._observe_unresolved_mutations("batch", current)).has_unresolved
+    identity = service._mutation_identity(
+        current, revision=0, purpose="repair_handoff", target_branch=built.branch,
+        expected_old_sha=built.head_sha, desired_sha=base, member_ordinal=0,
+        resolution_id=None, expected_role="collector",
+    )
+    async with db.immediate() as conn:
+        await db.lock_hierarchy_project(conn, "p")
+        successor, inserted = await service._reserve_mutation_on(
+            conn, mutation_id=abandoned["id"], identity=identity, nonce="current-executor", now=300,
+        )
+    assert inserted and successor["id"] != abandoned["id"]
+    with pytest.raises(CandidateStaleAuthority, match="candidate mutation identity changed"):
+        async with db.immediate() as conn:
+            await db.lock_hierarchy_project(conn, "p")
+            await service._reserve_mutation_on(
+                conn, mutation_id=abandoned["id"],
+                identity={**identity, "desired_sha": abandoned["desired_sha"]},
+                nonce="competing-executor", now=300,
+            )
+    assert (await service._mutation(successor["id"]))["nonce"] == "current-executor"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(
+            integration_candidate_ref_mutations
+        ).where(integration_candidate_ref_mutations.c.purpose == "repair_handoff")) == 2
+
+
+@pytest.mark.parametrize("blocker", (
+    "live_executor", "attached", "handoff_pending", "reserved_repair",
+    "nonce_changed", "stage_changed_during_observation", "expected_remote",
+))
+async def test_reclaim_never_retires_live_or_changed_authority(db, tmp_path, blocker):
+    service, now, built, state, abandoned, _origin, _work, _base = (
+        await _abandoned_mutation_fixture(
+            db, tmp_path, advance_stage=blocker != "expected_remote"
+        )
+    )
+    now["value"] = 300.0
+    if blocker != "stage_changed_during_observation":
+        state = await service._locked_state("batch")
+    async with db.immediate() as conn:
+        if blocker == "live_executor":
+            await conn.execute(update(integration_candidate_ref_mutations).where(
+                integration_candidate_ref_mutations.c.id == abandoned["id"],
+            ).values(expires_at=400.0))
+            abandoned = {**abandoned, "expires_at": 400.0}
+        elif blocker == "nonce_changed":
+            await conn.execute(update(integration_candidate_ref_mutations).where(
+                integration_candidate_ref_mutations.c.id == abandoned["id"],
+            ).values(nonce="successor-executor"))
+        elif blocker in {"attached", "handoff_pending", "reserved_repair"}:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.ref == built.branch,
+            ).values(
+                handoff_state="reserved" if blocker == "reserved_repair" else blocker,
+                owner_role="repair",
+            ))
+    remote = abandoned["expected_old_sha"] if blocker == "expected_remote" else built.head_sha
+    assert not await service._supersede_abandoned_mutation(state, abandoned, remote)
+    assert (await service._mutation(abandoned["id"]))["state"] == "reserved"
+
+
+async def test_observed_desired_tip_reconciles_instead_of_superseding(db, tmp_path):
+    service, now, _built, state, abandoned, origin, _work, _base = (
+        await _abandoned_mutation_fixture(db, tmp_path)
+    )
+    _git(origin, "update-ref", abandoned["target_branch"], abandoned["desired_sha"])
+    await service.repair.expire(state["operation"]["id"], 0, now=130.0)
+    now["value"] = 300.0
+    assert not (await service._observe_unresolved_mutations(
+        "batch", await service._locked_state("batch")
+    )).has_unresolved
+    reconciled = await service._mutation(abandoned["id"])
+    assert reconciled["state"] == "applied"
+    assert reconciled["remote_sha"] == abandoned["desired_sha"]
+
+
 def _make_divergent_source_bases(tmp_path: Path):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"

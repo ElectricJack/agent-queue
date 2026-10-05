@@ -3811,7 +3811,7 @@ integration_candidate_ref_mutations = Table(
     CheckConstraint(
         "(state = 'reserved' AND remote_sha IS NULL) OR "
         "(state = 'applied' AND remote_sha = desired_sha) OR "
-        "(state = 'superseded' AND purpose = 'root_main' AND remote_sha IS NULL)",
+        "(state = 'superseded' AND remote_sha IS NULL)",
         name="ck_integration_candidate_ref_mutations_remote",
     ),
     ForeignKeyConstraint(
