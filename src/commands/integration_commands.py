@@ -282,8 +282,24 @@ class IntegrationCommandsMixin:
                 .on_conflict_do_update(index_elements=list(key), set_=values))
             record = dict((await conn.execute(select(integration_source_ci)
                           .where(*conditions))).mappings().one())
-            if observation.state not in {"red", "cancelled"}:
-                return {"success": True, "outcome": "observed", "state": observation.state}
+            # Only a genuine failure is repairable code. Cancellation-only is
+            # infrastructure: it waits and asks for a re-run of the exact head,
+            # and it never files a repair — an agent handed it could only merge
+            # the head again and hit the same outage, which is how one outage
+            # became a chain of repairs of repairs. Every non-infra observation
+            # resets the counter, so a head that recovers costs nothing later.
+            infra = await self._record_source_ci_infrastructure(
+                conn, conditions, record, observation, policy,
+            )
+            if observation.state != "red":
+                return {
+                    "success": True, "outcome": "observed", "state": observation.state,
+                    "infra_observations": infra["infra_observations"],
+                    # The caller owns the GitHub client, so the re-run is
+                    # requested there rather than inside this transaction.
+                    "rerun_requested": infra["rerun"],
+                    **({"blocker": infra["blocker"]} if "blocker" in infra else {}),
+                }
             existing_repair = record["repair_task_id"]
             delegate_open = False
             if existing_repair:
@@ -372,6 +388,56 @@ class IntegrationCommandsMixin:
                 "repair_task_id": created["task_id"],
                 "delivery": proof.as_evidence(),
             }
+
+    async def _record_source_ci_infrastructure(
+        self, conn, conditions, record, observation, policy
+    ) -> dict:
+        """Count one infrastructure-only observation and ask for a bounded re-run.
+
+        Returns whether a re-run of the exact head is due now, so the caller
+        (which owns the GitHub client) requests it outside this transaction.
+        The counter is consecutive: any observation that is not
+        infrastructure-only resets it, so a head that recovers costs nothing
+        later.  The re-run request is rate-limited by a bounded exponential
+        backoff so an outage lasting hours cannot turn into a request per tick.
+        """
+        from sqlalchemy import update
+
+        from src.database.tables import integration_source_ci
+
+        repair = policy.root.repair
+        now = time.time()
+        infra_only = observation.state == "cancelled"
+        if not infra_only:
+            if (record["infra_observations"] or record["infra_reruns"]
+                    or record["infra_rerun_at"] is not None):
+                await conn.execute(update(integration_source_ci).where(*conditions).values(
+                    infra_observations=0, infra_rerun_at=None, infra_reruns=0))
+            return {"rerun": False, "infra_observations": 0}
+        observations = int(record["infra_observations"]) + 1
+        if observations >= repair.source_ci_infra_attempts:
+            # Bounded: stop asking and name the blocker instead of looping.
+            await conn.execute(update(integration_source_ci).where(*conditions).values(
+                infra_observations=observations, infra_rerun_at=None))
+            return {
+                "rerun": False, "infra_observations": observations,
+                "blocker": "source_ci_infrastructure", "outcome": "infra_blocked",
+            }
+        reruns = int(record["infra_reruns"])
+        due_at = record["infra_rerun_at"]
+        rerun = due_at is None or now >= due_at
+        if rerun:
+            delay = min(
+                repair.source_ci_infra_backoff_seconds * (2 ** reruns),
+                repair.source_ci_infra_backoff_max_seconds,
+            )
+            await conn.execute(update(integration_source_ci).where(*conditions).values(
+                infra_observations=observations, infra_rerun_at=now + delay,
+                infra_reruns=reruns + 1))
+        else:
+            await conn.execute(update(integration_source_ci).where(*conditions).values(
+                infra_observations=observations))
+        return {"rerun": rerun, "infra_observations": observations}
 
     async def _record_source_delivery(
         self, observation, source, proof, producer, conditions

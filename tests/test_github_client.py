@@ -1026,6 +1026,22 @@ async def test_ordinary_pr_and_ci_reads_are_repository_bound(credential_identity
 
 
 @pytest.mark.asyncio
+async def test_rerunning_checks_is_a_repository_bound_write(credential_identity):
+    """A re-run request re-checks one exact commit and can reach nothing else."""
+    runner = FakeRunner(credential_identity, [_response(201, {"id": 5})])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    assert (await client.request_check_suites("a" * 40))["id"] == 5
+    call = runner.calls[-1]
+    assert call["args"][:4] == ["api", "--include", "--method", "POST"]
+    assert "repos/acme/widgets/commits/" + "a" * 40 + "/check-suites" in call["args"]
+    # The commit path is built from a validated OID, so no caller-supplied
+    # endpoint can name another repository or a short ref.
+    for sha in ("main", "../../other/repo", "repos/other/widgets/commits/x/check-suites"):
+        with pytest.raises(ValueError, match="invalid commit OID"):
+            await client.request_check_suites(sha)
+
+
+@pytest.mark.asyncio
 async def test_ordinary_pr_payload_cannot_rebind_a_project(credential_identity):
     runner = FakeRunner(credential_identity, [
         _response(200, {

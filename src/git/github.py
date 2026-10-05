@@ -1500,6 +1500,23 @@ class GitHubClient:
             key="check_runs",
         )
 
+    async def request_check_suites(self, sha: str) -> dict[str, Any]:
+        """Ask GitHub to run this commit's check suites again.
+
+        GitHub's "re-request checks" endpoint, which is the only way to retry
+        CI for a head that has not moved.  ``checks: write`` is exactly the
+        permission it needs — narrower than ``actions: write``, which would
+        also allow dispatching arbitrary workflows.
+        """
+        if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+            raise ValueError("invalid commit OID")
+        return await self.request_json(
+            "POST",
+            f"repos/{self.repository.full_name}/commits/{sha}/check-suites",
+            json_body={},
+            expected_statuses={201},
+        )
+
     async def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
             raise ValueError("invalid Actions job ID")

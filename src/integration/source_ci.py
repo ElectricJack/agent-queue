@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from src.integration.models import HierarchicalIntegrationPolicy
+
+logger = logging.getLogger(__name__)
+
+
+#: GitHub's annotation on a job that no hosted runner ever picked up.  It
+#: names the outage; a cancellation without it is still infrastructure, so it
+#: is evidence, never the classification.
+RUNNER_NOT_ACQUIRED = "The job was not acquired by Runner of type"
 
 
 @dataclass(frozen=True)
@@ -19,6 +28,20 @@ class SourceCIObservation:
 
 def classify_source_checks(entries, *, head, required, conflicting=False):
     """Judge the latest trusted run of each required check, including cancellation.
+
+    ``cancelled`` means every non-success required check was cancelled and
+    nothing is pending: infrastructure, not a verdict on the code.  It is only
+    reached when no required check failed, so one genuine failure is still red
+    whatever else was cancelled, and a cancelled check is never success.
+
+    Every verdict here is read from the per-check conclusions of the commit's
+    own check runs, and never from a run-level conclusion: GitHub concludes a
+    *workflow run* ``failure`` whenever jobs are cancelled because no hosted
+    runner was acquired, even with zero failed jobs (the 2026-10-05 Actions
+    outage).  A run-level conclusion carried in an entry is therefore ignored —
+    jobs that only succeeded or were cancelled are infrastructure whatever the
+    run says, and a single genuinely failed job is red whatever else the run
+    says.
 
     A cancelled old run cannot supersede a newer pending/successful rerun.
     Missing, foreign-producer and mismatched-head checks never establish green.
@@ -74,6 +97,13 @@ def classify_source_checks(entries, *, head, required, conflicting=False):
         "producer_id": required.producer_id,
         "required_checks_version": required.version,
         "required_checks": list(required.names),
+        # A cancellation is infrastructure, not a verdict on the code, and
+        # this names why: an outage GitHub annotated, or an unknown cause.
+        "runner_not_acquired": any(
+            RUNNER_NOT_ACQUIRED in str((item.get("output") or {}).get("summary") or "")
+            for item in cancelled
+        ),
+        "infra_only": state == "cancelled",
         "checks": [
             {
                 "id": item.get("id"),
@@ -112,7 +142,7 @@ async def observe_source_ci(*, row, source, client, handler, pull=None):
         required=policy.root.required_checks,
         conflicting=pull_request_conflicts(pull),
     )
-    await handler(
+    recorded = await handler(
         SourceCIObservation(
             task_id=row["id"],
             source=source,
@@ -121,6 +151,17 @@ async def observe_source_ci(*, row, source, client, handler, pull=None):
             evidence=evidence,
         )
     )
+    if isinstance(recorded, dict) and recorded.get("rerun_requested"):
+        # Asked for by the recorded bounded-backoff decision, performed here
+        # because this is where the client lives.  A failed re-request is not a
+        # repair: the next observation simply asks again when its backoff is up.
+        try:
+            await client.request_check_suites(source["head"])
+        except Exception:  # an outage is the expected failure, not a defect
+            logger.warning(
+                "source CI re-run request failed for task %s at %s",
+                row["id"], source["head"][:12], exc_info=True,
+            )
 
 
 def repair_description(observation):
@@ -141,8 +182,10 @@ def repair_description(observation):
         "Work in your assigned root branch. Fetch and merge the exact source head "
         "above, preserving it as an ancestor; resolve all necessary code, test, "
         "migration and generated-artifact issues. Use the failed check links and "
-        "record concrete failures and fixes. A cancelled check requires investigation "
-        "and a fresh complete run, not fabricated success. Re-chain colliding migration "
+        "record concrete failures and fixes. A red run is repairable only because at "
+        "least one required check genuinely failed; any cancelled check listed beside "
+        "it is infrastructure and is never fixed in code or counted as success. "
+        "Re-chain colliding migration "
         "revisions and regenerate generated files. Run focused and relevant area checks "
         "with aq test, publish your assigned branch and close with exact test evidence. "
         "The delivery service observes this branch's own exact CI and queues further "
