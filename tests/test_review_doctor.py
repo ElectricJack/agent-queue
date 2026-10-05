@@ -7,9 +7,8 @@ reasons —
 * a vault file that went missing,
 * an approved review whose gate the service could not resolve (``decide``
   swallows a failed ``resolve_gate``),
-
-* a gate that was resolved or withdrawn while the review stayed in an open
-  state —
+* a withdrawn review whose gate is still open — the orphan rows written before
+  ``aq review withdraw`` closed the gate in the review's own transaction carry,
 
 while a *diverged* body is left byte-identical on purpose (spec §7).  The
 check must classify each case into the right severity and the right ``data``
@@ -269,7 +268,14 @@ async def test_diverged_vault_file_is_reported_and_never_fixed(ctx):
     assert (root / review["vault_path"]).read_bytes() == before
 
 
-async def test_withdrawn_review_with_waiters_is_reported(ctx):
+async def test_withdrawn_reviews_open_gate_is_reported_and_fixed(ctx):
+    """The orphan a withdrawal used to leave: reported, and closed by ``--fix``.
+
+    ``aq review withdraw`` now resolves the gate in the review's own
+    transaction, so this state only exists on rows written before that (or by
+    something that bypassed it).  The repair must close it the way the
+    withdrawal does — waiters held, not released onto an unapproved design.
+    """
     db = ctx.db
     root = vault_root_of(ctx.config)
     rid = await new_review(db, state="withdrawn", with_gate=True)
@@ -282,11 +288,44 @@ async def test_withdrawn_review_with_waiters_is_reported(ctx):
         await db.attach_gate_waiters(gate_id, [tid], conn=conn)
     review = await db.get_review(rid)
     write_vault_file(review, root)
+    await db.create_escalation(
+        id=f"escalation-gate-{gate_id}",
+        project_id=PROJECT,
+        task_id=None,
+        source_kind="gate",
+        source_identity=gate_id,
+        incident_key=f"gate:{gate_id}",
+        supervisor_owner=f"supervisor-{PROJECT}",
+        task_title=None,
+        task_status=None,
+        summary="Review",
+        investigation="legacy gate card",
+        decision_requested="Review",
+        choices=None,
+        severity="medium",
+        now=NOW,
+    )
 
     result = await _check(ctx)
     assert result.severity == Severity.WARN
-    assert result.data.get("withdrawn_waiters", {}).get(rid) == [tid]
-    assert not result.fixable
+    assert result.data.get("withdrawn_gate_open", {}).get(rid) == [tid]
+    assert result.fixable
+
+    fixed = await _fix(ctx)
+    assert fixed.fix_applied
+    assert fixed.data.get("closed") == [rid]
+    assert fixed.data.get("retired_escalations") == [f"escalation-gate-{gate_id}"]
+    gate = await db.get_gate(gate_id)
+    assert (gate["status"], gate["resolution"]) == ("resolved", "withdrawn")
+    assert (await db.get_task(tid)).is_blocked is False
+    assert "hold:review_withdrawn" in await db.get_task_labels(tid)
+    assert await db.get_task_meta(tid, "needs_attention") == "review_withdrawn"
+    assert (await db.get_escalation(f"escalation-gate-{gate_id}"))["state"] == "stale"
+
+    # Idempotent: a second pass finds the drift already repaired.
+    second = await _fix(ctx)
+    assert not second.fix_applied
+    assert "closed" not in second.data
 
 
 async def test_fix_is_idempotent(ctx):

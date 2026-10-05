@@ -1149,9 +1149,13 @@ async def test_dashboard_close_withdraws_over_http_and_tells_the_author(env, mon
     assert (review["state"], review["decided_by"], review["decision_note"]) == (
         "withdrawn", "human:local-operator", "superseded by v2",
     )
-    # Exactly the CLI's withdrawal: the gate stays open and its waiter is flagged.
-    assert (await db.get_gate(gate_id))["status"] == "open"
+    # Exactly the CLI's withdrawal: the gate closes with the review, and the
+    # waiter is flagged and held rather than released onto an unapproved design.
+    gate = await db.get_gate(gate_id)
+    assert (gate["status"], gate["resolution"]) == ("resolved", "withdrawn")
+    assert (await db.get_task("impl")).is_blocked is False
     assert await db.get_task_meta("impl", "needs_attention") == "review_withdrawn"
+    assert "hold:review_withdrawn" in await db.get_task_labels("impl")
 
     [comment] = (await db.list_task_comments("author"))["comments"]
     assert (comment["author_kind"], comment["author_id"]) == ("user", "local")

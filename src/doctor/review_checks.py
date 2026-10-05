@@ -11,17 +11,21 @@ ways of drifting past that guard remain and this check reconciles them:
   resolved ``approved``;
 * the review is ``approved`` but its gate is still ``open`` (``decide``
   swallows a failed ``resolve_gate`` and leaves it here, spec §10) — **fixed**
-  by resolving the gate ``approved`` through the orchestrator.
+  by resolving the gate ``approved`` through the orchestrator;
+* the review is ``withdrawn`` but its gate is still ``open`` — the orphan the
+  live path no longer produces (``withdraw`` resolves the gate in the review's
+  own transaction), so this is a row written before that, or by something that
+  bypassed it — **fixed** the same way a withdrawal closes it, waiters held and
+  escalation retired (``src.reviews.gates``).
 
 Everything else is report-only (surfaced in ``data``, never touched):
 
-* the gate was *resolved* while its review is not approved;
-* the gate was deleted altogether;
-* a task still waits on a *withdrawn* review's gate.
+* the gate was *resolved* while its review is neither approved nor withdrawn;
+* the gate was deleted altogether.
 
-``--fix`` therefore only ever (a) resolves gates for approved reviews whose
-gate is still open, and (b) rewrites vault files whose body is missing — both
-idempotent.  Diverged files are left byte-identical on purpose.
+``--fix`` therefore only ever (a) resolves gates for approved or withdrawn
+reviews whose gate is still open, and (b) rewrites vault files whose body is
+missing — both idempotent.  Diverged files are left byte-identical on purpose.
 
 ``reviews.playbook_artifacts`` covers what approving a *playbook* review is
 for.  Its revision pins a compiled Playbook V2 artifact, and approval stores
@@ -42,9 +46,15 @@ invisible here.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.reviews.gates import (
+    REVIEW_GATE_WITHDRAWN_RESOLUTION,
+    close_withdrawn_gate,
+    retire_gate_escalation,
+)
 from src.reviews.vault import (
     body_sha256,
     frontmatter_for,
@@ -60,9 +70,17 @@ PLAYBOOK_CHECK_ID = "reviews.playbook_artifacts"
 OWNER = "reviews"
 
 #: States whose gate is *meant* to stay open — a human is still to decide.
+#: ``rejected`` is here on purpose: the author resubmits into ``in_review``
+#: against the same gate, so resolving it now would release the waiters onto a
+#: design the human turned down.
 _OPENING_STATES = ("in_review", "changes_requested", "rejected")
 
 _RESOLVED_BY = "doctor:reviews.consistency"
+
+
+def _orchestrator(ctx: DoctorContext):
+    """The orchestrator a gate repair announces through, or ``None``."""
+    return getattr(getattr(ctx, "handler", None), "orchestrator", None)
 
 
 def _vault_root(ctx: DoctorContext) -> Path:
@@ -97,8 +115,8 @@ def _vault_file_state(root: Path, review: dict, current_sha256: str) -> str:
 async def _evaluate(ctx: DoctorContext, review: dict) -> dict:
     """One review's drift, keyed: gate/vault, both from ``ok``/``missing``.
 
-    gate ∈ ok, none, missing, approved_gate_open, gate_resolved_unapproved,
-         withdrawn_waiters
+    gate ∈ ok, none, missing, approved_gate_open, withdrawn_gate_open,
+         gate_resolved_unapproved
     vault ∈ ok, missing, diverged, none (no current revision to diff against)
     """
     out: dict = {"id": review["id"], "state": review["state"], "gate": "ok", "vault": "ok"}
@@ -111,13 +129,11 @@ async def _evaluate(ctx: DoctorContext, review: dict) -> dict:
             out["gate"] = "missing"
         elif review["state"] == "approved" and gate["status"] == "open":
             out["gate"] = "approved_gate_open"
+        elif review["state"] == "withdrawn" and gate["status"] == "open":
+            out["gate"] = "withdrawn_gate_open"
+            out["waiters"] = sorted(await ctx.db.get_gate_waiters(gate_id))
         elif review["state"] in _OPENING_STATES and gate["status"] == "resolved":
             out["gate"] = "gate_resolved_unapproved"
-        elif review["state"] == "withdrawn" and gate["status"] == "open":
-            waiters = sorted(await ctx.db.get_gate_waiters(gate_id))
-            if waiters:
-                out["gate"] = "withdrawn_waiters"
-                out["waiters"] = waiters
 
     current = await ctx.db.get_review_revision(review["id"], review["current_revision"])
     if current is None:
@@ -144,10 +160,11 @@ async def _check(ctx: DoctorContext) -> CheckResult:
         elif ev["gate"] == "approved_gate_open":
             data.setdefault("approved_gate_open", []).append(ev["id"])
             fixable = True
+        elif ev["gate"] == "withdrawn_gate_open":
+            data.setdefault("withdrawn_gate_open", {})[ev["id"]] = ev.get("waiters") or []
+            fixable = True
         elif ev["gate"] == "gate_resolved_unapproved":
             data.setdefault("gate_resolved_unapproved", []).append(ev["id"])
-        elif ev["gate"] == "withdrawn_waiters":
-            data.setdefault("withdrawn_waiters", {})[ev["id"]] = ev["waiters"]
         if ev["vault"] == "none":
             data.setdefault("vault_unknown", []).append(ev["id"])
         elif ev["vault"] == "missing":
@@ -183,21 +200,52 @@ async def _fix(ctx: DoctorContext) -> CheckResult:
 
     resolved: list[str] = []
     for rid, ev in pre.items():
-        if ev["gate"] != "approved_gate_open":
+        if ev["gate"] == "approved_gate_open":
+            review = by_id[rid]
+            orchestrator = _orchestrator(ctx)
+            if orchestrator is None:
+                logger.warning("doctor: no orchestrator to resolve review %s gate", rid)
+                continue
+            try:
+                await orchestrator._resolve_gate_and_emit(
+                    review["gate_id"], resolved_by=_RESOLVED_BY, resolution="approved"
+                )
+                resolved.append(rid)
+            except Exception:
+                logger.exception("doctor: resolving review %s gate failed", rid)
+
+    # An orphaned withdrawn-review gate is closed the way ``aq review
+    # withdraw`` closes one — waiters held, escalation retired — so the repair
+    # and the live path cannot disagree about what a withdrawal means.
+    closed: list[str] = []
+    retired: list[str] = []
+    for rid, ev in pre.items():
+        if ev["gate"] != "withdrawn_gate_open":
             continue
         review = by_id[rid]
-        handler = getattr(ctx, "handler", None)
-        orchestrator = getattr(handler, "orchestrator", None)
-        if orchestrator is None:
-            logger.warning("doctor: no orchestrator to resolve review %s gate", rid)
-            continue
         try:
-            await orchestrator._resolve_gate_and_emit(
-                review["gate_id"], resolved_by=_RESOLVED_BY, resolution="approved"
+            closure = await close_withdrawn_gate(
+                ctx.db, review["gate_id"], resolved_by=_RESOLVED_BY
             )
-            resolved.append(rid)
+            if not closure.resolved:
+                continue
+            await ctx.db.announce_gate_resolution(closure.resolution)
+            orchestrator = _orchestrator(ctx)
+            if orchestrator is not None:
+                await orchestrator._announce_gate_resolved(
+                    review["gate_id"],
+                    resolved_by=_RESOLVED_BY,
+                    resolution=REVIEW_GATE_WITHDRAWN_RESOLUTION,
+                    flipped=set(closure.resolution.flipped),
+                )
+            rows = await retire_gate_escalation(
+                ctx.db, review["gate_id"], now=time.time(), review_id=rid,
+                reason=f"{_RESOLVED_BY} closed the gate of a withdrawn review",
+            )
+            closed.append(rid)
+            retired.extend(str(row["id"]) for row in rows)
         except Exception:
-            logger.exception("doctor: resolving review %s gate failed", rid)
+            logger.exception("doctor: closing withdrawn review %s gate failed", rid)
 
     rewritten: list[str] = []
     for rid, ev in pre.items():
@@ -217,9 +265,13 @@ async def _fix(ctx: DoctorContext) -> CheckResult:
             logger.exception("doctor: rewriting review %s vault file failed", rid)
 
     result = await _check(ctx)
-    result.fix_applied = bool(resolved or rewritten)
+    result.fix_applied = bool(resolved or closed or rewritten)
     if resolved:
         result.data["resolved"] = resolved
+    if closed:
+        result.data["closed"] = closed
+    if retired:
+        result.data["retired_escalations"] = retired
     if rewritten:
         result.data["rewritten"] = rewritten
     return result

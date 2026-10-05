@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from sqlalchemy import and_, insert, select, update
@@ -21,10 +22,31 @@ from src.database.tables import gates, task_gates, tasks
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["GateQueriesMixin"]
+__all__ = ["GateQueriesMixin", "GateResolution"]
 
 
 _VALID_STATUSES = ("open", "resolved", "expired")
+
+
+@dataclass(frozen=True)
+class GateResolution:
+    """What one gate resolution wrote, and what its caller must announce after.
+
+    The write and the announcement are deliberately split: a resolution on a
+    caller-owned transaction (a review withdrawal resolving its own gate in the
+    same transaction as the review's state change) may only be announced once
+    that transaction commits, so the ids travel back to the caller instead of
+    being announced from inside :meth:`GateQueriesMixin.resolve_gate`.
+    """
+
+    gate_id: str
+    #: ``False`` when the gate was absent or already ``resolved`` — the write
+    #: was a no-op and there is nothing to announce.
+    resolved: bool
+    #: Task ids whose persisted ``is_blocked`` flipped as a result.
+    flipped: frozenset[str] = field(default_factory=frozenset)
+    #: ``(task_id, reason)`` pairs that entered the ready frontier.
+    ready: tuple[tuple[str, str], ...] = ()
 
 
 def _row_to_gate(row) -> dict:
@@ -324,32 +346,74 @@ class GateQueriesMixin:
         may explicitly close a timed-out gate to unblock waiters.
         """
         async with self._engine.begin() as conn:
-            row = (
-                await conn.execute(select(gates.c.status).where(gates.c.id == gate_id))
-            ).fetchone()
-            if row is None:
-                return set()
-            if row[0] == "resolved":
-                return set()
-
-            waiters = {
-                r[0]
-                for r in (
-                    await conn.execute(
-                        select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id)
-                    )
-                ).fetchall()
-            }
-            await conn.execute(
-                update(gates)
-                .where(gates.c.id == gate_id)
-                .values(status="resolved", resolved_by=resolved_by, resolution=resolution)
+            result = await self._resolve_gate_on(
+                conn, gate_id, resolved_by=resolved_by, resolution=resolution
             )
-            flipped = await self.recompute_blocked(waiters, conn=conn) if waiters else set()
-            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
-        await self.log_blocked_flips(flipped)
-        await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
-        return flipped
+        await self.announce_gate_resolution(result)
+        return set(result.flipped)
+
+    async def resolve_gate_on(
+        self,
+        gate_id: str,
+        *,
+        resolved_by: str,
+        resolution: str,
+        conn,
+    ) -> GateResolution:
+        """Resolve *gate_id* on the caller's transaction (work-graph §4.3).
+
+        Same write as :meth:`resolve_gate`, but on a transaction the caller
+        already owns — the review withdrawal resolves its gate in the same
+        transaction as the review's state change, so a withdrawal can never
+        commit with an open gate behind it.  The post-commit announcements
+        are the caller's: run :meth:`announce_gate_resolution` on the returned
+        value once *conn* has committed.
+        """
+        return await self._resolve_gate_on(
+            conn, gate_id, resolved_by=resolved_by, resolution=resolution
+        )
+
+    async def announce_gate_resolution(self, result: GateResolution) -> None:
+        """Post-commit half of a resolution: audit the flips, wake new ready work.
+
+        Safe to call with a no-op result, so a caller that resolved a gate it
+        had already read as resolved still reaches one exit.
+        """
+        if not result.resolved or not result.flipped:
+            return
+        await self.log_blocked_flips(set(result.flipped))
+        await self._notify_ready(list(result.ready))
+
+    async def _resolve_gate_on(
+        self, conn, gate_id: str, *, resolved_by: str, resolution: str
+    ) -> GateResolution:
+        row = (
+            await conn.execute(select(gates.c.status).where(gates.c.id == gate_id))
+        ).fetchone()
+        if row is None or row[0] == "resolved":
+            return GateResolution(gate_id=gate_id, resolved=False)
+
+        waiters = {
+            r[0]
+            for r in (
+                await conn.execute(
+                    select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id)
+                )
+            ).fetchall()
+        }
+        await conn.execute(
+            update(gates)
+            .where(gates.c.id == gate_id)
+            .values(status="resolved", resolved_by=resolved_by, resolution=resolution)
+        )
+        flipped = await self.recompute_blocked(waiters, conn=conn) if waiters else set()
+        ready = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+        return GateResolution(
+            gate_id=gate_id,
+            resolved=True,
+            flipped=frozenset(flipped),
+            ready=tuple((tid, "unblocked") for tid in ready),
+        )
 
     async def expire_open_gates(self, now: float) -> list[str]:
         """Mark every ``open`` gate with ``timeout_at <= now`` ``expired``.

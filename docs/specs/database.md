@@ -1128,7 +1128,7 @@ blocks progress until it is resolved (principle #5 — human judgment stays huma
 | `timeout_at` | REAL | nullable | Unix timestamp; NULL = waits indefinitely |
 | `status` | TEXT | NOT NULL DEFAULT 'open' | One of: open, resolved, expired, cancelled |
 | `resolved_by` | TEXT | nullable | Identity that resolved the gate |
-| `resolution` | TEXT | nullable | The decision recorded |
+| `resolution` | TEXT | nullable | The decision recorded. A `review` gate reads `approved` or `withdrawn`, so no reader can mistake a closed-without-a-decision gate for an approval |
 | `created_at` | REAL | NOT NULL | Set on insert |
 
 ### Table: `task_gates`

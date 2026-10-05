@@ -14058,8 +14058,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Withdraw an open review without approving its gate.",
-        "description": "Withdraw an open review without approving its gate.",
+        "summary": "Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting on it are held, not released.",
+        "description": "Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting on it are held, not released.",
         "operationId": "review_withdraw",
         "requestBody": {
           "content": {

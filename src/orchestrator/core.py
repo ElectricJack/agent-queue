@@ -3209,6 +3209,48 @@ class Orchestrator(
             except Exception:
                 logger.debug("_sweep_gates: expiry emit failed", exc_info=True)
 
+    async def _announce_gate_resolved(
+        self, gate_id: str, *, resolved_by: str, resolution: str, flipped: set[str]
+    ) -> None:
+        """Emit the audit + bus events for a gate that is *already* resolved.
+
+        The announcement half of :meth:`_resolve_gate_and_emit`, split out for
+        the one path that cannot use it: a review withdrawal resolves its own
+        gate inside the transaction that closes the review, so there is nothing
+        left to resolve by the time the commit is visible.  Every observer of a
+        gate resolution (``gate.resolved`` on the bus and in the audit log,
+        ``task.unblocked``) reads it from here, so both paths announce alike.
+        """
+        gate = await self.db.get_gate(gate_id)
+        if gate is None:
+            return
+        payload = {
+            "gate_id": gate_id,
+            "project_id": gate["project_id"],
+            "resolved_by": resolved_by,
+            "resolution": resolution,
+            "unblocked_task_ids": sorted(flipped),
+            "gate_type": gate["gate_type"],
+            "await_id": gate.get("await_id"),
+        }
+        try:
+            await self.bus.emit("gate.resolved", payload)
+        except Exception:
+            logger.debug("_announce_gate_resolved: bus emit failed", exc_info=True)
+        try:
+            await self.db.log_event(
+                "gate.resolved",
+                project_id=gate["project_id"],
+                payload=gate_id,
+            )
+        except Exception:
+            logger.debug("_announce_gate_resolved: log_event failed", exc_info=True)
+        # ``resolve_gate`` already wrote the audit rows via
+        # ``log_blocked_flips``; also emit on the bus so playbooks that
+        # subscribe to ``task.blocked``/``task.unblocked`` can fire
+        # (WG-4, work-graph §9.1 note #263).
+        await self._emit_blocked_flips(flipped, reason="gate:resolved")
+
     async def _resolve_gate_and_emit(
         self, gate_id: str, *, resolved_by: str, resolution: str = ""
     ) -> set[str]:
@@ -3228,32 +3270,9 @@ class Orchestrator(
         flipped = await self.db.resolve_gate(
             gate_id, resolved_by=resolved_by, resolution=resolution
         )
-        payload = {
-            "gate_id": gate_id,
-            "project_id": gate["project_id"],
-            "resolved_by": resolved_by,
-            "resolution": resolution,
-            "unblocked_task_ids": sorted(flipped),
-            "gate_type": gate["gate_type"],
-            "await_id": gate.get("await_id"),
-        }
-        try:
-            await self.bus.emit("gate.resolved", payload)
-        except Exception:
-            logger.debug("_sweep_gates: bus emit failed", exc_info=True)
-        try:
-            await self.db.log_event(
-                "gate.resolved",
-                project_id=gate["project_id"],
-                payload=gate_id,
-            )
-        except Exception:
-            logger.debug("_sweep_gates: log_event failed", exc_info=True)
-        # ``resolve_gate`` already wrote the audit rows via
-        # ``log_blocked_flips``; also emit on the bus so playbooks that
-        # subscribe to ``task.blocked``/``task.unblocked`` can fire
-        # (WG-4, work-graph §9.1 note #263).
-        await self._emit_blocked_flips(flipped, reason="gate:resolved")
+        await self._announce_gate_resolved(
+            gate_id, resolved_by=resolved_by, resolution=resolution, flipped=flipped
+        )
         return flipped
 
     async def _sweep_resolve_timer_gates(self, now: float) -> None:

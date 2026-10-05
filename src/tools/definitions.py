@@ -6946,7 +6946,10 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
         {
             "name": "review_withdraw",
-            "description": "Withdraw an open review without approving its gate.",
+            "description": (
+                "Withdraw an open review. Its gate is resolved 'withdrawn' (never "
+                "'approved') and the tasks waiting on it are held, not released."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {"review_id": {"type": "string"}, "reason": {"type": "string"}},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -128,8 +129,33 @@ async def test_after_review_refuses_withdrawn_and_unknown(handler, submit_review
     assert missing["error_code"] == "not_found"
 
 
-async def test_gate_resolve_refuses_review_gates(handler, submit_review):
+@pytest.mark.parametrize("decision", ["request_changes", "reject"])
+async def test_gate_resolve_refuses_a_review_gate_whose_review_can_still_decide(
+    handler, submit_review, decision
+):
+    """``in_review`` and ``changes_requested`` are live: only the review decides.
+
+    ``rejected`` is live too — the author resubmits into ``in_review`` against
+    this same gate, so resolving it here would release the waiters onto a
+    design the human turned down.
+    """
     review = await submit_review()
+    row = await handler.db.get_review(review["review_id"])
+    if decision == "reject":
+        # ``reject`` is only legal from ``in_review``; request_changes first
+        # lands the review in ``changes_requested`` with a revision task.
+        review = await submit_review()
+        await handler.execute(
+            "review_decide",
+            {
+                "review_id": review["review_id"],
+                "revision": 1,
+                "decision": "reject",
+                "note": "no",
+            },
+        )
+        row = await handler.db.get_review(review["review_id"])
+    assert row["state"] in {"in_review", "changes_requested", "rejected"}
     result = await handler.execute(
         "gate_resolve",
         {
@@ -141,6 +167,64 @@ async def test_gate_resolve_refuses_review_gates(handler, submit_review):
     assert result["success"] is False
     assert result["error_code"] == "review_gate"
     assert "aq review decide" in result["error"]
+    assert (await handler.db.get_gate(review["gate_id"]))["status"] == "open"
+
+
+async def test_gate_resolve_closes_a_withdrawn_reviews_gate_and_holds_its_waiters(
+    handler, submit_review
+):
+    """The orphan a withdrawal used to leave is what this command is for.
+
+    A review that can no longer decide leaves a gate nothing else can close.
+    ``aq gate resolve`` is the operator's control for it, and it closes the
+    gate the way the withdrawal does — resolution forced, waiters held.
+    """
+    review = await submit_review()
+    created = await handler.execute(
+        "create_task",
+        {
+            "project_id": "p",
+            "title": "Implement the approved design",
+            "after_review": review["review_id"],
+        },
+    )
+    waiter = created["task_id"]
+    # Withdraw behind the command's back, so the gate is left open: this is
+    # exactly the state the rows written before a withdrawal closed its own gate
+    # carry, and the only other state that reaches it.
+    row = await handler.db.get_review(review["review_id"])
+    async with handler.db.immediate() as conn:
+        await handler.db.transition_review(
+            review["review_id"],
+            from_states={"in_review"},
+            expected_revision=row["current_revision"],
+            values={
+                "state": "withdrawn",
+                "decided_by": "test",
+                "decided_at": time.time(),
+                "updated_at": time.time(),
+            },
+            conn=conn,
+        )
+    assert (await handler.db.get_gate(review["gate_id"]))["status"] == "open"
+
+    resolved = await handler.execute(
+        "gate_resolve",
+        {
+            "gate_id": review["gate_id"],
+            "resolved_by": "dashboard",
+            # The caller's string must not be able to make a withdrawal read as
+            # an approval: the review's own state is the authority.
+            "resolution": "approved",
+        },
+    )
+    assert resolved["success"] is True
+    assert resolved["review_id"] == review["review_id"]
+    assert resolved["resolution"] == "withdrawn"
+    assert resolved["held_task_ids"] == [waiter]
+    gate = await handler.db.get_gate(review["gate_id"])
+    assert (gate["status"], gate["resolution"]) == ("resolved", "withdrawn")
+    assert "hold:review_withdrawn" in await handler.db.get_task_labels(waiter)
 
 
 async def test_spec_approve_refuses_reviewed_file_and_allows_plain_spec(handler, submit_review):

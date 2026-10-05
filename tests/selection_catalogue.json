@@ -816,6 +816,7 @@
         "tests/test_migration_task_route_source.py",
         "tests/test_migration_test_selections.py",
         "tests/test_migration_token_cache_columns.py",
+        "tests/test_migration_withdrawn_review_gate.py",
         "tests/test_migration_workspaces_v2.py",
         "tests/test_missing_fk_migration.py",
         "tests/test_task_completion_migration.py",
@@ -1407,7 +1408,7 @@
       ]
     }
   },
-  "digest": "sha256:6aaca52f2df165cfcbaa2a2b9e8c3e70fdbb3af295ec9257b480165ae3080b01",
+  "digest": "sha256:0907899f8f5bfafd6612121d4fc16ef2ee6bbcb4cc31fd07d32632fce2a2fbab",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10511,6 +10512,18 @@
       "markers": [],
       "summary": "Token cache accounting and transcript checkpoints in the current schema."
     },
+    "tests/test_migration_withdrawn_review_gate.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "``a00000000076`` closes the gates withdrawn reviews orphaned, and holds their waiters."
+    },
     "tests/test_migration_workspaces_v2.py": {
       "areas": [
         "migrations"
@@ -13134,7 +13147,9 @@
       "imports": [
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Document-review gates on downstream task and generic approval surfaces."
     },
     "tests/test_review_keys.py": {
@@ -13245,6 +13260,7 @@
         "src.database",
         "src.models",
         "src.reviews.diff",
+        "src.reviews.gates",
         "src.reviews.service",
         "src.reviews.vault"
       ],

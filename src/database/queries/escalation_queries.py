@@ -287,6 +287,7 @@ class EscalationQueriesMixin:
         states: Sequence[str] | None = None,
         task_id: str | None = None,
         source_kind: str | None = None,
+        source_identity: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Incidents, optionally narrowed to one project or a set of them.
@@ -295,7 +296,9 @@ class EscalationQueriesMixin:
         "no project is visible" and matches nothing, which is what a scoped
         reader outside the configured selection must see.  ``None`` means the
         caller is unrestricted.  ``source_kind`` lets a core producer find its
-        own incidents wherever they were filed.
+        own incidents wherever they were filed, and ``source_identity``
+        narrows that to one exact source (``uq_escalations_source_identity``
+        makes it at most one row per project).
         """
         if limit <= 0:
             return []
@@ -310,6 +313,8 @@ class EscalationQueriesMixin:
             statement = statement.where(escalations.c.task_id == task_id)
         if source_kind is not None:
             statement = statement.where(escalations.c.source_kind == source_kind)
+        if source_identity is not None:
+            statement = statement.where(escalations.c.source_identity == source_identity)
         statement = statement.order_by(escalations.c.updated_at.desc(), escalations.c.id).limit(limit)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()

@@ -10,6 +10,14 @@ surface and the audit-event emitter.
 from __future__ import annotations
 
 import logging
+import time
+
+from src.reviews.gates import (
+    REVIEW_GATE_WITHDRAWN_RESOLUTION,
+    close_withdrawn_gate,
+    retire_gate_escalation,
+    review_gate_resolution_is_terminal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +170,92 @@ class GateCommandsMixin:
         waiters = await self.db.get_gate_waiters(str(gate_id))
         return {"success": True, "gate": gate, "waiters": sorted(waiters)}
 
+    async def _close_withdrawn_review_gate(
+        self, gate_id: str, *, review_id: str, resolved_by: str
+    ) -> dict:
+        """Resolve a withdrawn review's gate ``withdrawn``, holding its waiters.
+
+        The same domain write ``aq review withdraw`` makes
+        (:func:`src.reviews.gates.close_withdrawn_gate`), reached from the
+        operator's door for the rows the live path cannot reach — a gate
+        orphaned before this existed, or one a direct database edit left open.
+        Waiters are held, not released, for the same reason they are on the
+        withdrawal path: the document was never approved.
+        """
+        now = time.time()
+        closure = await close_withdrawn_gate(self.db, gate_id, resolved_by=resolved_by)
+        retired = await retire_gate_escalation(
+            self.db, gate_id, now=now, review_id=review_id,
+            reason=f"{resolved_by} closed the gate of a withdrawn review",
+        )
+        await self._announce_withdrawn_gate(closure, retired, resolved_by=resolved_by)
+        result = closure.resolution
+        return {
+            "success": True,
+            "gate_id": gate_id,
+            "review_id": review_id,
+            "resolution": REVIEW_GATE_WITHDRAWN_RESOLUTION,
+            "held_task_ids": list(closure.held_task_ids),
+            "unblocked_task_ids": sorted(result.flipped) if result is not None else [],
+            "retired_escalation_ids": [str(row["id"]) for row in retired],
+        }
+
+    async def _announce_withdrawn_gate(self, closure, retired, *, resolved_by: str) -> None:
+        """Post-commit announcements for a withdrawn review's gate.
+
+        The mirror of the orchestrator's ``_resolve_gate_and_emit`` for a write
+        that already committed on the caller's transaction: the blocked flips
+        and ready notifications, the ``gate.resolved`` bus + audit events, and
+        one ``escalation.updated.v1`` per retired escalation so the Discord
+        card and the dashboards collapse with the question it asked.
+        """
+        result = closure.resolution
+        if result is None or not result.resolved:
+            return
+        await self.db.announce_gate_resolution(result)
+        await self.orchestrator._announce_gate_resolved(
+            closure.gate_id,
+            resolved_by=resolved_by,
+            resolution=REVIEW_GATE_WITHDRAWN_RESOLUTION,
+            flipped=set(result.flipped),
+        )
+        for row in retired:
+            await self._emit_escalation(
+                "escalation.updated.v1",
+                {
+                    "escalation_id": row["id"],
+                    "project_id": row["project_id"],
+                    "task_id": row.get("task_id"),
+                    "state": row["state"],
+                    "revision": row["revision"],
+                    "terminal_outcome": row.get("terminal_outcome"),
+                },
+            )
+
+    async def _refuse_live_review_gate(self, gate: dict) -> dict | None:
+        """``None`` when *gate*'s review can no longer decide; the refusal otherwise.
+
+        A ``review`` gate is resolved by the review, not by the operator: while
+        the review can still be approved (``in_review``,
+        ``changes_requested``, and ``rejected`` — the author resubmits into
+        ``in_review`` against this same gate) resolving it here would release
+        its waiters onto a document nobody approved.  So the refusal names the
+        command that does decide.  Once the review is terminal the gate is an
+        orphan this command is the designated control for.
+        """
+        terminal, review_id = await review_gate_resolution_is_terminal(self.db, str(gate["id"]))
+        if terminal:
+            return None
+        return {
+            "success": False,
+            "error_code": "review_gate",
+            "error": (
+                "review gates are decided in the review: "
+                f"aq review decide --review-id {review_id or gate.get('await_id')} "
+                "--revision <n> --decision approve"
+            ),
+        }
+
     async def _cmd_gate_resolve(self, args: dict) -> dict:
         """Resolve a gate (idempotent) and report unblocked waiters.
 
@@ -170,6 +264,11 @@ class GateCommandsMixin:
         ``task.blocked``/``task.unblocked`` bus events that the sweep path
         does.  Playbooks that subscribe to blocked-flip events fire whether
         the gate is resolved by ``aq gate resolve`` or by ``_sweep_gates``.
+
+        A ``review`` gate is the one type the operator may only close once its
+        review can no longer decide (``_refuse_live_review_gate``); anything
+        else — ``routing``, an ``integration-subject:`` await — has its own
+        narrower door below.
         """
         gate_id = args.get("gate_id")
         if not gate_id:
@@ -183,14 +282,30 @@ class GateCommandsMixin:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
 
         if gate["gate_type"] == "review":
+            refusal = await self._refuse_live_review_gate(gate)
+            if refusal is not None:
+                return refusal
+            # A review that can no longer decide (withdrawn, or approved with
+            # its gate somehow still open) leaves an orphan nothing else can
+            # close, so the operator gets the one control that does.  The
+            # resolution is not the caller's to pick: the review's own state is
+            # the authority on how its gate closes, so a withdrawal can never
+            # be made to read as an approval by passing ``--resolution``.
+            review_id = str(gate.get("await_id") or "")
+            review = await self.db.get_review(review_id)
+            if str((review or {}).get("state") or "") == "withdrawn":
+                return await self._close_withdrawn_review_gate(
+                    str(gate_id), review_id=review_id, resolved_by=str(resolved_by)
+                )
+            flipped = await self.orchestrator._resolve_gate_and_emit(
+                str(gate_id), resolved_by=str(resolved_by), resolution="approved",
+            )
             return {
-                "success": False,
-                "error_code": "review_gate",
-                "error": (
-                    "review gates are decided in the review: "
-                    f"aq review decide --review-id {gate.get('await_id')} "
-                    "--revision <n> --decision approve"
-                ),
+                "success": True,
+                "gate_id": str(gate_id),
+                "review_id": review_id,
+                "resolution": "approved",
+                "unblocked_task_ids": sorted(flipped or set()),
             }
 
         # dv2 phase 1: ``routing`` gates carry a pinned cross-phase

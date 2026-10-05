@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewWithdrawRequest,
 ) -> Response[ReviewWithdrawResponse | ReviewWithdrawResponse422]:
-    """Withdraw an open review without approving its gate.
+    """Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
-     Withdraw an open review without approving its gate.
+     Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
     Args:
         body (ReviewWithdrawRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReviewWithdrawRequest,
 ) -> ReviewWithdrawResponse | ReviewWithdrawResponse422 | None:
-    """Withdraw an open review without approving its gate.
+    """Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
-     Withdraw an open review without approving its gate.
+     Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
     Args:
         body (ReviewWithdrawRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewWithdrawRequest,
 ) -> Response[ReviewWithdrawResponse | ReviewWithdrawResponse422]:
-    """Withdraw an open review without approving its gate.
+    """Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
-     Withdraw an open review without approving its gate.
+     Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
     Args:
         body (ReviewWithdrawRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReviewWithdrawRequest,
 ) -> ReviewWithdrawResponse | ReviewWithdrawResponse422 | None:
-    """Withdraw an open review without approving its gate.
+    """Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
-     Withdraw an open review without approving its gate.
+     Withdraw an open review. Its gate is resolved 'withdrawn' (never 'approved') and the tasks waiting
+    on it are held, not released.
 
     Args:
         body (ReviewWithdrawRequest):

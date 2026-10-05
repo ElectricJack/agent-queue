@@ -47,10 +47,15 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
 - `in_review` — waiting for a decision on the current revision.
 - `changes_requested` — a decision with feedback; the daemon files one new
   revision task carrying that feedback (§ What happens when you reject).
-- `approved` — the gate is resolved and dependent tasks become routable.
-- `withdrawn` — the review is closed with no decision; the gate is kept open
-  so nothing downstream is released, and the authoring task is put back to a
-  state where it can resubmit.
+- `approved` — the gate is resolved `approved` and dependent tasks become
+  routable.
+- `withdrawn` — the review is closed with no decision, and its gate is
+  resolved `withdrawn` in the same transaction, so nothing is left open asking
+  a human to approve a document that no longer exists. The tasks that were
+  waiting on the gate are **held** (label `hold:review_withdrawn`, flagged
+  `needs_attention=review_withdrawn`), never released onto a design nobody
+  approved, and the authoring task is put back to a state where it can
+  resubmit. See § Withdrawing a review below.
 
 Every transition checks the review's state and the revision it was issued
 for, so two decisions racing on different revisions cannot both succeed.
@@ -68,7 +73,7 @@ for, so two decisions racing on different revisions cannot both succeed.
 | `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
 | `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]`, so the project's router picks each reviewer's profile on another family. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
-| `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision. The gate stays open and the tasks waiting on it are flagged `needs_attention=review_withdrawn`. The reason (it may be empty) is recorded as the review's `decision_note`, with `decided_by`. When anyone but the author withdraws it, the author task gets a comment with the reason, which also wakes its live session. The dashboard's Reviews page does the same thing from the **Close** button on each open review, with an optional reason. |
+| `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision, and resolve its gate `withdrawn` in the same transaction. The tasks waiting on the gate are **held** — label `hold:review_withdrawn` and `needs_attention=review_withdrawn` — so nothing is released onto an unapproved design (§ Withdrawing a review below). Any escalation bound to the gate is retired, so its Discord card collapses instead of going on asking. The reason (it may be empty) is recorded as the review's `decision_note`, with `decided_by`. When anyone but the author withdraws it, the author task gets a comment with the reason, which also wakes its live session. The dashboard's Reviews page does the same thing from the **Close** button on each open review, with an optional reason. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
 | `aq review import-edits --review-id <id>` | yes (`local_operator_only`) | Turn your out-of-band Obsidian edit into revision N+1. Refuses if the current revision is already decided. |
 
@@ -226,6 +231,50 @@ creates **one new revision task**, whatever state the authoring task is in:
   session holding that revision task may resubmit; any other worker gets
   `not_your_task`. An authoring task still `in_review` (its worker resubmitting
   before it closes) may keep revising its own draft.
+
+## Withdrawing a review
+
+`aq review withdraw` closes a review with no decision. Three things happen in
+one transaction, and they are the reason the command is safe to run on a
+proposal you no longer want:
+
+- **The gate closes.** It is resolved `withdrawn` in the same transaction that
+  moves the review out of `in_review`. The gate used to be left open forever:
+  nothing could resolve it (`aq task gate-resolve` refused review gates, pointing at
+  a decision a withdrawn review cannot take), so its escalation stayed live and
+  went on asking you to approve a document that no longer existed. `resolution`
+  reads `withdrawn`, never `approved`, so no reader can mistake the two.
+- **The waiters are held, not released.** Resolving a gate releases the tasks
+  waiting on it, and releasing them would start work on a design nobody
+  approved. Each waiter is instead labelled `hold:review_withdrawn` and flagged
+  `needs_attention=review_withdrawn`. A held task is visible and unblocked but
+  never scheduled; `aq task explain` names the hold, and `aq project ready`
+  lists it under *withheld*. Release one when you have decided what replaces
+  the review:
+  ```bash
+  aq task set <id> --label -hold:review_withdrawn
+  ```
+- **The question is retired.** Any escalation bound to the gate is closed
+  `stale` (which reads as *obsolete* on the card), recording `gate_resolved`
+  and the withdrawal as the outcome, and its Discord post collapses.
+
+Release a *held* waiter only against a replacement review: a withdrawn review
+cannot be resubmitted, so the replacement is a new `aq review submit` and a new
+`--after-review` attachment.
+
+### Closing a gate by hand
+
+`aq task gate-resolve --gate-id <gate> --resolved-by <who>` refuses a `review`
+gate whose review can still decide (`in_review`, `changes_requested`, or
+`rejected` — a rejection is not terminal, because the author resubmits into
+`in_review` against the same gate). Once the review is `withdrawn`, or
+`approved` with its gate somehow still open, the command closes it, forcing the
+resolution from the review's own state so a `--resolution approved` on a
+withdrawal can never make it read as an approval.
+
+Rows written before this behaviour existed are repaired two ways: the
+`a00000000076` migration resolves them at upgrade, and
+`aq doctor --check reviews.consistency --fix` closes any that appear later.
 
 ## The worker's side
 
@@ -551,7 +600,7 @@ most likely to meet:
 | `invalid_responder` / `invalid_responder_class` | Responder routing on an approval, or an unknown class. | `aq system list-intelligence-classes`, then name a class that exists. |
 | `local_operator_only` | A session-scoped principal tried to `delegate` or `import-edits`, or the supervisor tried to set `review_delegate_to`. | Re-run the command as the local operator. |
 | `vault_diverged` | The vault file no longer matches the current revision's hash. | `aq review import-edits --review-id <id>` to promote your Obsidian edits, then decide. |
-| `review_gate` | The task you filed with `--after-review <id>` hit the open gate and the scheduler refused to route it. | Approve the review, or `aq review withdraw --review-id <id> --reason "…"`. |
+| `review_gate` | `aq task gate-resolve` named a review gate whose review can still decide, or a task filed with `--after-review <id>` hit the open gate and the scheduler refused to route it. | Decide the review: `aq review decide --review-id <id> --revision <n> --decision approve`, or `aq review withdraw --review-id <id> --reason "…"`. Once the review is terminal the gate resolves through `aq task gate-resolve` instead. |
 
 ## Troubleshooting
 
@@ -564,13 +613,17 @@ and the vault:
 - A diverged vault file: the check reports it, never overwrites. Use
   `aq review import-edits` if the edit is yours, or `aq review show
   --review-id <id>` to copy the approved text back into the file.
-- A resolved gate on a non-approved review, or an open gate on an approved
-  review: the check reports it and `--fix` repairs the safe direction
-  (resolving the gate on an approved review, or flagging the unresolved
-  case for you to unwind).
-- A task waiting on the gate of a withdrawn review: the check reports it;
-  either resubmit the review (new `--review-id`) or `aq task edit
-  --after-review ""` on the task to release it from the gate.
+- A resolved gate on a review that can still decide (`in_review`,
+  `changes_requested`, `rejected`), or an open gate on an approved or
+  withdrawn review: `--fix` repairs the safe direction — it resolves the gate
+  of an approved or withdrawn review (holding the waiters of a withdrawn one,
+  as a withdrawal does), and only reports the resolved-too-early case for you
+  to unwind.
+- A task held by a withdrawn review (`hold:review_withdrawn`): the check
+  reports the gate as repaired, not the hold, because the hold is the intended
+  state. Release it with `aq task set <id> --label -hold:review_withdrawn`
+  once you have a replacement review, or retire the
+  superseded work with `aq task close <id> --obsolete --reason "…"`.
 
 ## Discord, and what reviews are not
 

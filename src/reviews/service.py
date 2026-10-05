@@ -14,9 +14,13 @@ mixin owns authorization and wiring; nothing here asks who the caller is.
   edited outside the review (*diverged*, §7) is never overwritten except by
   ``revise``, which copies it aside first.
 * **The review gate** (type ``review``, ``await_id`` = review id) is created
-  with the review and resolved only by an approval.  A rejection or a
-  withdrawal leaves it open, so dependent work never starts on a design that
-  was not approved.
+  with the review and resolved by an approval or by a withdrawal.  An approval
+  resolves it ``approved``; a withdrawal resolves it ``withdrawn`` in the same
+  transaction that closes the review, so a withdrawn review never leaves an
+  open gate — and therefore never leaves a live escalation or a
+  ``gate resolve`` that is refused — behind it.  Either way the waiters are
+  never released onto a document nobody approved: a withdrawal holds them
+  (design §6, :mod:`src.reviews.gates`).
 """
 
 from __future__ import annotations
@@ -25,17 +29,29 @@ import logging
 import shutil
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
-    DOC_REVIEW_DECIDERS, DOC_REVIEW_KINDS, doc_review_revisions, doc_reviews, tasks,
+    DOC_REVIEW_DECIDERS,
+    DOC_REVIEW_KINDS,
+    doc_review_revisions,
+    doc_reviews,
+    tasks,
 )
 from src.reviews.diff import block_diff
+from src.reviews.gates import (
+    REVIEW_GATE_WITHDRAWN_RESOLUTION,
+    REVIEW_WITHDRAWN_ATTENTION,
+    WithdrawnGateClosure,
+    close_withdrawn_gate,
+    retire_gate_escalation,
+)
 from src.reviews.vault import (
     body_sha256,
     candidate_paths,
@@ -88,6 +104,12 @@ class ReviewHooks:
     resolve_gate: Callable[[str, str, str], Awaitable[set[str]]]
     #: ``(review row, decided revision, feedback text)``: hand feedback to the author.
     changes_requested: Callable[[dict, dict, str], Awaitable[None]]
+    #: ``(closure, retired_escalations)``: announce a gate the service resolved
+    #: on its own transaction — the post-commit blocked flips and ready
+    #: notifications, the ``gate.resolved`` bus + audit events, and one
+    #: ``escalation.updated.v1`` per retired escalation row.  A withdrawal is
+    #: the only caller: an approval resolves through ``resolve_gate``.
+    gate_closed: Callable[[WithdrawnGateClosure, Sequence[Mapping[str, Any]]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -545,7 +567,16 @@ class ReviewService:
     # -- withdraw ------------------------------------------------------------
 
     async def withdraw(self, *, review_id: str, reason: str, by: str) -> dict:
-        """Close the review unapproved; its gate stays open and waiters are flagged.
+        """Close the review unapproved, and close its gate with it.
+
+        One transaction moves the review to ``withdrawn`` *and* resolves its
+        gate ``withdrawn``, holding every waiter, so the two can never
+        disagree: an open gate behind a withdrawn review is an orphan nothing
+        can resolve, with a live escalation still asking the human about it
+        (:mod:`src.reviews.gates`).  The gate's escalation is retired right
+        after, and the waiters keep the ``needs_attention`` flag from before —
+        they are held, not released, so nothing starts on a document nobody
+        approved.
 
         The withdrawal is the review's last decision, so ``by`` and ``reason``
         are recorded as ``decided_by`` / ``decision_note``.
@@ -554,6 +585,7 @@ class ReviewService:
         if review["state"] not in OPEN_STATES:
             raise self._closed(review)
         current = review["current_revision"]
+        gate_id = review.get("gate_id")
         reason = (reason or "").strip()
         now = self._clock()
         async with self.db.immediate() as conn:
@@ -570,16 +602,35 @@ class ReviewService:
                 },
                 conn=conn,
             )
+            closure = (
+                await close_withdrawn_gate(self.db, gate_id, resolved_by=by, conn=conn)
+                if moved and gate_id
+                else None
+            )
         if not moved:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
         await self._rewrite_status(review)
-        flagged = (
-            sorted(await self.db.get_gate_waiters(review["gate_id"])) if review["gate_id"] else []
-        )
+        retired: list[dict] = []
+        if closure is not None and closure.resolved:
+            # After the commit: the gate is terminal, so the question it asked
+            # is obsolete.  Best-effort in the sense that a failure here is
+            # logged and left to the §5.5 ``gate_resolved`` tick, never to a
+            # live card — that tick is what used to be the only path here.
+            try:
+                retired = await retire_gate_escalation(
+                    self.db, gate_id, now=now, review_id=review_id, reason=reason,
+                )
+            except Exception:
+                logger.exception("review %s: retiring gate %s escalation failed", review_id, gate_id)
+            try:
+                await self.hooks.gate_closed(closure, retired)
+            except Exception:
+                logger.exception("review %s: announcing closed gate %s failed", review_id, gate_id)
+        flagged = sorted(await self.db.get_gate_waiters(gate_id)) if gate_id else []
         for task_id in flagged:
-            await self.db.set_task_meta(task_id, "needs_attention", "review_withdrawn")
+            await self.db.set_task_meta(task_id, "needs_attention", REVIEW_WITHDRAWN_ATTENTION)
             task = await self.db.get_task(task_id)
             await self._emit(
                 "task.needs_attention",
@@ -587,7 +638,7 @@ class ReviewService:
                     "task_id": task_id,
                     "project_id": task.project_id if task else review["project_id"],
                     "title": task.title if task else task_id,
-                    "reason": "review_withdrawn",
+                    "reason": REVIEW_WITHDRAWN_ATTENTION,
                     "review_id": review_id,
                 },
             )
@@ -598,9 +649,20 @@ class ReviewService:
                 "reason": reason,
                 "withdrawn_by": by,
                 "flagged_task_ids": flagged,
+                "gate_id": gate_id,
+                "gate_resolution": REVIEW_GATE_WITHDRAWN_RESOLUTION if closure is not None else None,
+                "held_task_ids": list(closure.held_task_ids) if closure is not None else [],
+                "retired_escalation_ids": [str(row["id"]) for row in retired],
             },
         )
-        return {"review_id": review_id, "flagged_task_ids": flagged}
+        return {
+            "review_id": review_id,
+            "flagged_task_ids": flagged,
+            "gate_id": gate_id,
+            "gate_resolution": REVIEW_GATE_WITHDRAWN_RESOLUTION if closure is not None else None,
+            "held_task_ids": list(closure.held_task_ids) if closure is not None else [],
+            "retired_escalation_ids": [str(row["id"]) for row in retired],
+        }
 
     # -- delegate ------------------------------------------------------------
 

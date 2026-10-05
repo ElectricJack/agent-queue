@@ -2167,12 +2167,17 @@ class TaskQueryMixin:
 
     # ---- task_metadata (key-value store) ----
 
-    async def set_task_meta(self, task_id: str, key: str, value) -> None:
-        """Upsert a single metadata key for a task. *value* is JSON-serialised."""
-        encoded = json.dumps(value)
-        async with self._engine.begin() as conn:
+    async def set_task_meta(self, task_id: str, key: str, value, *, conn=None) -> None:
+        """Upsert a single metadata key for a task. *value* is JSON-serialised.
+
+        ``conn`` joins a transaction the caller already owns (the review
+        withdrawal flags its waiters in the same transaction that resolves
+        their gate), matching :meth:`add_task_label`.
+        """
+        async def _write(connection) -> None:
+            encoded = json.dumps(value)
             # Try update first; if no row matched, insert.
-            result = await conn.execute(
+            result = await connection.execute(
                 update(task_metadata)
                 .where(
                     and_(
@@ -2183,9 +2188,14 @@ class TaskQueryMixin:
                 .values(value=encoded)
             )
             if result.rowcount == 0:
-                await conn.execute(
+                await connection.execute(
                     insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
                 )
+        if conn is not None:
+            await _write(conn)
+            return
+        async with self._engine.begin() as owned_conn:
+            await _write(owned_conn)
 
     async def get_task_meta(self, task_id: str, key: str):
         """Return a single metadata value (JSON-decoded), or ``None``."""

@@ -19,6 +19,7 @@ from ruamel.yaml import YAML
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.reviews.diff import block_diff
+from src.reviews.gates import REVIEW_WITHDRAWN_HOLD
 from src.reviews.service import MAX_CONTENT_BYTES, ReviewError, ReviewHooks, ReviewService
 from src.reviews.vault import body_sha256, split_frontmatter
 from tests.db_fixtures import lease_dsn
@@ -32,7 +33,7 @@ DOC = "# Doc\n\nIntro paragraph.\n\n## Scope\n\nBody.\n"
 
 class RecordingHooks:
     def __init__(self, db):
-        self.db, self.events, self.resolved, self.changes = db, [], [], []
+        self.db, self.events, self.resolved, self.changes, self.closed = db, [], [], [], []
 
     async def emit(self, event_type, payload):
         self.events.append((event_type, payload))
@@ -43,6 +44,13 @@ class RecordingHooks:
 
     async def changes_requested(self, review, revision, feedback):
         self.changes.append((review["id"], revision, feedback))
+
+    async def gate_closed(self, closure, retired):
+        """Stand in for the command layer's post-commit announcements."""
+        self.closed.append(closure)
+        if closure.resolution is not None:
+            await self.db.announce_gate_resolution(closure.resolution)
+        return [row["id"] for row in retired]
 
     def of(self, event_type: str) -> list[dict]:
         return [payload for kind, payload in self.events if kind == event_type]
@@ -84,6 +92,7 @@ def svc(db, hooks, clock, tmp_path):
             emit=hooks.emit,
             resolve_gate=hooks.resolve_gate,
             changes_requested=hooks.changes_requested,
+            gate_closed=hooks.gate_closed,
         ),
         clock=clock,
     )
@@ -605,26 +614,72 @@ async def test_a_failed_vault_write_never_fails_the_submission(svc, db, tmp_path
 # ── 9. withdraw ───────────────────────────────────────────────────────────
 
 
-async def test_withdraw_keeps_the_gate_and_flags_waiters(svc, db, hooks, tmp_path):
+async def test_withdraw_closes_the_gate_and_holds_its_waiters(svc, db, hooks, tmp_path):
     result = await submit(svc)
     review_id, gate_id = result["review_id"], result["gate_id"]
     await mktask(db, "impl")
     await mktask(db, "impl-2")
     await attach(db, gate_id, "impl", "impl-2")
+    # The gate is what asked the human: give the withdrawal one to retire.
+    await db.create_escalation(
+        id=f"escalation-gate-{gate_id}",
+        project_id=PROJECT,
+        task_id=None,
+        source_kind="gate",
+        source_identity=gate_id,
+        incident_key=f"gate:{gate_id}",
+        supervisor_owner=f"supervisor-{PROJECT}",
+        task_title=None,
+        task_status=None,
+        summary="Review spec: Document review",
+        investigation="Migrated from a pending legacy Discord gate card.",
+        decision_requested="Review spec: Document review",
+        choices=None,
+        severity="medium",
+        now=NOW - 60,
+    )
 
     withdrawn = await svc.withdraw(review_id=review_id, reason=" superseded ", by=OPERATOR)
-    assert withdrawn == {"review_id": review_id, "flagged_task_ids": ["impl", "impl-2"]}
+    assert withdrawn == {
+        "review_id": review_id,
+        "flagged_task_ids": ["impl", "impl-2"],
+        "gate_id": gate_id,
+        "gate_resolution": "withdrawn",
+        "held_task_ids": ["impl", "impl-2"],
+        "retired_escalation_ids": [f"escalation-gate-{gate_id}"],
+    }
 
     review = await db.get_review(review_id)
     assert (review["state"], review["decided_by"], review["decision_note"]) == (
         "withdrawn", OPERATOR, "superseded",
     )
     assert review["decided_at"] == review["updated_at"]
-    assert (await db.get_gate(gate_id))["status"] == "open"
+    # The gate is terminal: nothing is left asking the human, and ``aq gate
+    # resolve`` no longer has an orphan to refuse.
+    gate = await db.get_gate(gate_id)
+    assert (gate["status"], gate["resolution"], gate["resolved_by"]) == (
+        "resolved", "withdrawn", OPERATOR,
+    )
     assert hooks.resolved == []
-    assert (await db.get_task("impl")).is_blocked is True
+    assert [(c.gate_id, c.resolved_by, c.held_task_ids) for c in hooks.closed] == [
+        (gate_id, OPERATOR, ("impl", "impl-2"))
+    ]
+    # Released from the gate, held instead: visible, unblocked, unscheduled.
     for tid in ("impl", "impl-2"):
+        assert (await db.get_task(tid)).is_blocked is False
+        assert REVIEW_WITHDRAWN_HOLD in await db.get_task_labels(tid)
         assert await db.get_task_meta(tid, "needs_attention") == "review_withdrawn"
+    assert [
+        t.id for t in await db.get_ready_frontier(PROJECT)
+    ] == [], "a held waiter must not reach the ready frontier"
+
+    escalation = await db.get_escalation(f"escalation-gate-{gate_id}")
+    assert escalation["state"] == "stale"
+    assert escalation["outcome"] == "gate_resolved"
+    assert "withdrawn" in escalation["terminal_outcome"]
+    assert escalation["terminal_evidence"]["gate_id"] == gate_id
+    assert escalation["terminal_evidence"]["review_id"] == review_id
+
     flagged = hooks.of("task.needs_attention")
     assert sorted(e["task_id"] for e in flagged) == ["impl", "impl-2"]
     assert {e["reason"] for e in flagged} == {"review_withdrawn"}
@@ -634,9 +689,25 @@ async def test_withdraw_keeps_the_gate_and_flags_waiters(svc, db, hooks, tmp_pat
     [event] = hooks.of("review.withdrawn")
     assert event["reason"] == "superseded"
     assert event["flagged_task_ids"] == ["impl", "impl-2"]
+    assert event["gate_id"] == gate_id
+    assert event["gate_resolution"] == "withdrawn"
+    assert event["retired_escalation_ids"] == [f"escalation-gate-{gate_id}"]
     assert read_vault(tmp_path, result["vault_path"])[0]["status"] == "withdrawn"
 
     await raises("review_closed", svc.withdraw(review_id=review_id, reason="again", by=OPERATOR))
+
+
+async def test_withdraw_without_a_gate_still_closes_the_review(svc, db):
+    """A review whose gate row is gone is closed, not stranded by the new write."""
+    result = await submit(svc)
+    review_id, gate_id = result["review_id"], result["gate_id"]
+    await db.resolve_gate(gate_id, resolved_by=OPERATOR, resolution="approved")
+    withdrawn = await svc.withdraw(review_id=review_id, reason="", by=OPERATOR)
+    assert withdrawn["gate_id"] == gate_id
+    # Already resolved by hand: nothing to rewrite, so nothing is claimed.
+    assert withdrawn["held_task_ids"] == []
+    assert withdrawn["retired_escalation_ids"] == []
+    assert (await db.get_gate(gate_id))["resolution"] == "approved"
 
 
 async def test_withdraw_from_changes_requested(svc, db):

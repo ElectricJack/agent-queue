@@ -11,24 +11,25 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 
-from src.api.task_attachments import MAX_ATTACHMENT_BYTES, _ALLOWED_TYPES, _verify_image
-from src.api.auth import RequestScope
+from src.api.auth import RequestScope, operator_viewer_allowed
 from src.api.scope import held_task_for_session
-
+from src.api.task_attachments import _ALLOWED_TYPES, MAX_ATTACHMENT_BYTES, _verify_image
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
-from src.api.auth import operator_viewer_allowed
 from src.database.queries.pull_request_queries import (
-    list_known_pull_requests, read_pull_request_snapshot,
+    list_known_pull_requests,
+    read_pull_request_snapshot,
 )
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.github_contracts import GitHubAccessError
 from src.models import TaskStatus
+from src.reviews.gates import WithdrawnGateClosure
 from src.reviews.service import PlaybookPin, ReviewError, ReviewHooks, ReviewService
 
 logger = logging.getLogger(__name__)
@@ -167,8 +168,21 @@ class ReviewCommandsMixin:
                     gate_id, resolved_by=by, resolution=resolution
                 ),
                 changes_requested=self._on_review_changes_requested,
+                gate_closed=self._on_review_gate_closed,
             ),
         )
+
+    async def _on_review_gate_closed(
+        self, closure: WithdrawnGateClosure, retired: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Announce a review gate the service resolved on its own transaction.
+
+        The withdrawal already committed the gate's resolution and the waiters'
+        holds inside the review's transaction, so all that is left is the
+        post-commit side, and it is the same side ``aq gate resolve`` runs for
+        an orphaned withdrawn-review gate (``GateCommandsMixin``).
+        """
+        await self._announce_withdrawn_gate(closure, retired, resolved_by=str(closure.resolved_by))
 
     async def _review_attachment_access(
         self, review: dict, revision: int, *, write: bool
@@ -882,10 +896,12 @@ class ReviewCommandsMixin:
         except ReviewError as error:
             return _error(error.code, error.message)
         if not by_author:
-            await self._tell_author_review_withdrawn(review, reason, by)
+            await self._tell_author_review_withdrawn(review, reason, by, result)
         return {"success": True, **result}
 
-    async def _tell_author_review_withdrawn(self, review: dict, reason: str, by: str) -> None:
+    async def _tell_author_review_withdrawn(
+        self, review: dict, reason: str, by: str, result: Mapping[str, Any] | None = None
+    ) -> None:
         """Comment on the authoring task, which also wakes its live session.
 
         The withdrawal is already committed, so a failure here is logged and
@@ -894,13 +910,22 @@ class ReviewCommandsMixin:
         author_id = review.get("author_task_id")
         if not author_id or await self.db.get_task(author_id) is None:
             return
+        held = list((result or {}).get("held_task_ids") or [])
+        waiting = (
+            f" The {len(held)} task(s) waiting on it are held "
+            f"(label hold:review_withdrawn) and flagged "
+            f"needs_attention=review_withdrawn, so nothing starts on a document "
+            f"nobody approved."
+            if held
+            else ""
+        )
         body = "\n".join([
             f"Review {review['id']} ({review['title']}) was withdrawn by {by}.",
             f"Reason: {reason or '(none given)'}",
             (
-                "Its gate stays open, so nothing waiting on it is released, and the waiting "
-                "tasks are flagged needs_attention=review_withdrawn. The review cannot be "
-                "resubmitted; a replacement document is a new `aq review submit`."
+                f"Its gate is resolved withdrawn, so it is no longer an open question for a "
+                f"human.{waiting} The review cannot be resubmitted; a replacement document is "
+                f"a new `aq review submit`."
             ),
         ])
         try:
