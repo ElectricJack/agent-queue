@@ -80,6 +80,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
   - { paths: ["docs/**"], areas: ["docs-guards"] }
+  - { paths: ["tests/fixtures/integration_replay/**"], areas: ["epic-trains"] }
   - { paths: ["docs/reference/cli-command-inventory.json"], areas: ["cli-framework"] }
   - { paths: ["docs/reference/cli/**"], areas: ["cli-framework", "install"] }
   - { paths: ["docs/reference/configuration*"], areas: ["config"] }

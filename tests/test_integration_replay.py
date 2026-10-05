@@ -82,7 +82,16 @@ REMOVED_CONTROLS = frozenset({"integration_development_sweep"} | {
 # Removed controls whose handler is already gone from this checkout. Every other
 # id must resolve to a CommandHandler method, so a misspelled id fails instead
 # of silently guarding nothing; retiring a handler moves its id here.
-RETIRED_CONTROLS = frozenset({"integration_reevaluate_repair"})
+RETIRED_CONTROLS = frozenset({
+    "integration_adopt", "integration_adopt_legacy_deliveries",
+    "integration_bind_legacy_repositories", "integration_cancel_preserving",
+    "integration_clear_stale_request", "integration_development_sweep",
+    "integration_materialize_root", "integration_migrate_provenance",
+    "integration_rebind_reused_identity", "integration_reconcile_unmaterialized",
+    "integration_release_delegates",
+    "integration_retry_cleanup", "integration_settle_delivered_batch",
+    "integration_settle_parked", "integration_shadow_report", "integration_waive_history",
+})
 
 
 # -- Replay report ------------------------------------------------------------
@@ -1894,8 +1903,8 @@ async def test_removed_control_guard_fires(removed_controls_refuse):
     """The guard is live: a removed control fails through both dispatch paths."""
     handler = object.__new__(CommandHandler)
     with pytest.raises(AssertionError, match="removed recovery control"):
-        await handler._cmd_integration_adopt({})
-    assert removed_controls_refuse == ["integration_adopt"]
+        await handler._cmd_integration_record_noop({})
+    assert removed_controls_refuse == ["integration_record_noop"]
     removed_controls_refuse.clear()
     with pytest.raises(AssertionError, match="removed recovery control"):
-        Commands()("integration_record_noop")
+        Commands()("integration_adopt")

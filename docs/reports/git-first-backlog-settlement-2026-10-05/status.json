@@ -1,0 +1,269 @@
+{
+  "acceptance_verdict": "unmet",
+  "format": 1,
+  "historical": {
+    "brisk-beacon-64": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": "brisk-beacon-64",
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    },
+    "crisp-horizon-90": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": "crisp-horizon-90",
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    },
+    "epic-verifiers": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": null,
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    },
+    "stale-branch-owners": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": null,
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    },
+    "swift-delta-90": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": "swift-delta-90",
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    },
+    "vivid-quest-44": {
+      "candidate_oid": null,
+      "capture_status": "gap",
+      "captured_by": null,
+      "configured_mode": null,
+      "explicit_holds": null,
+      "instances": null,
+      "lease": null,
+      "live_disposition": "unavailable_input",
+      "observed_at_utc": null,
+      "raw_evidence": [],
+      "reason": "Operator current-state capture and historical replay capture not supplied.",
+      "recorded_task_id": "vivid-quest-44",
+      "required_checks": null,
+      "source_base_oid": null,
+      "source_oid": null,
+      "target_oid_after": null,
+      "target_oid_before": null,
+      "task_transition": null,
+      "tree_review": null
+    }
+  },
+  "operator_live_audit": {
+    "command_counts": null,
+    "configured_mode": null,
+    "coverage_complete": false,
+    "coverage_gaps": [
+      "No operator settlement dispatch export or window supplied."
+    ],
+    "normal_workload_observed": null,
+    "raw_exports": [],
+    "removed_invocations": null,
+    "scope": "operator_live_settlement",
+    "unparseable_rows": null,
+    "verdict": "unmet",
+    "window_end_utc": null,
+    "window_start_utc": null
+  },
+  "prepared_at_utc": "2026-10-05T07:54:34.272726+00:00",
+  "removed_command_ids": [
+    "integration_adopt",
+    "integration_adopt_legacy_deliveries",
+    "integration_authorize_root",
+    "integration_bind_legacy_repositories",
+    "integration_cancel_preserving",
+    "integration_clear_stale_request",
+    "integration_close_delivered_pr",
+    "integration_development_engine_transfer",
+    "integration_development_sweep",
+    "integration_engine_transfer",
+    "integration_materialize_root",
+    "integration_migrate_provenance",
+    "integration_rebind_detached_repair",
+    "integration_rebind_repair",
+    "integration_rebind_reused_identity",
+    "integration_reconcile_unmaterialized",
+    "integration_record_noop",
+    "integration_recover_candidate_member",
+    "integration_recover_parent_head",
+    "integration_recover_preserved_repair",
+    "integration_redrive_child",
+    "integration_redrive_root",
+    "integration_reevaluate_repair",
+    "integration_release_delegates",
+    "integration_release_held_gate",
+    "integration_release_owner",
+    "integration_release_stale_owners",
+    "integration_reopen_collection",
+    "integration_reserve_owner",
+    "integration_resolve_candidate_member",
+    "integration_retry_cleanup",
+    "integration_settle_delivered_batch",
+    "integration_settle_parked",
+    "integration_shadow_report",
+    "integration_waive_history"
+  ],
+  "removed_command_ids_sha256": "45066b34be685fb27dc61e61e42a32e4c4c9cdd418f0917b012c935e53920bc1",
+  "replay": {
+    "audit_complete_for_emitted_cases": true,
+    "command_counts": {
+      "batch_abort": 2,
+      "batch_escalate": 1,
+      "batch_freeze": 46,
+      "batch_settle": 42,
+      "candidate_publish": 49,
+      "target_publish": 42,
+      "task_close": 64,
+      "task_create": 6,
+      "task_reopen": 1
+    },
+    "emitted_case_runs": 32,
+    "production_train_replay": false,
+    "raw_evidence_path": "replay-evidence.json",
+    "removed_invocations": [],
+    "scope": "reconstructed_reference_train_with_real_disposable_git",
+    "test_passed": 35,
+    "test_skipped_missing_capture": 6
+  },
+  "resolved_live_instances": null,
+  "source": {
+    "assembled_base_oid": "adb1ff36515208fdc8d0a8d8986806e65ee1d228",
+    "main_oid": "bb674ede191fb6e150f50821120be1728d7f4342",
+    "replay_oid": "32b22c78a532a57b2ca04a2eea472dc1202be1b6",
+    "shared_train_oid": "beae1acb59449a703800bbe72e840cbfa8898c61",
+    "tested_file_hashes": {
+      "tests/selection_rules.yaml": "253b3988c83140ebc2e47e6177953b003d1ae7730bbac716dbdb2113c9ad8292",
+      "tests/test_integration_replay.py": "816a2c1c23b28b9372211cf2bf57c6cb3b36db2ab7d65c2bdbd574d403231f2e"
+    }
+  },
+  "task_id": "bright-rapids-84.13",
+  "unresolved": {
+    "explicit_holds": null,
+    "real_conflicts": null,
+    "unavailable_inputs": [
+      "Current per-instance source/candidate/target/check/review/task captures",
+      "Historical sanitized captures for all six named stalls",
+      "Configured active protocol, actual mode, installed policy and live-canary evidence",
+      "Complete structured operator settlement command audit with coverage"
+    ],
+    "unknown_categories_reason": "Unheld live tasks were not inspected by this worker."
+  },
+  "verification": [
+    {
+      "command": "AQ_REPLAY_EVIDENCE=/tmp/aq-bright-rapids-84.13-replay POSTGRES_TEST_DSN=<disposable-test-DSN> aq test tests/test_integration_replay.py -q -rs --tb=short",
+      "result": "35 passed, 6 historical-capture gaps skipped",
+      "seconds": 36.41
+    },
+    {
+      "command": "POSTGRES_TEST_DSN=<disposable-test-DSN> aq test tests/test_integration_train.py tests/test_integration_train_sources.py tests/test_integration_root_scenarios.py tests/test_selection_catalogue.py -q",
+      "result": "104 passed; 1 missing fixture ownership rule failed and was subsequently fixed",
+      "seconds": 107.1
+    },
+    {
+      "command": "POSTGRES_TEST_DSN=<disposable-test-DSN> aq test tests/test_selection_catalogue.py tests/test_docs_sync.py -q --tb=short",
+      "result": "44 passed",
+      "seconds": 15.83
+    },
+    {
+      "command": "ruff check tests/test_integration_replay.py",
+      "result": "passed"
+    },
+    {
+      "command": "scripts/regenerate-generated.sh --check",
+      "result": "all generated files current"
+    },
+    {
+      "command": "git diff --cached --check",
+      "result": "passed"
+    },
+    {
+      "command": "Offline JSON consistency check of status.json and replay-evidence.json",
+      "result": "32 traces, 253 commands, 35 removed IDs, zero removed replay invocations; missing historical/live evidence remains unmet"
+    },
+    {
+      "command": "POSTGRES_TEST_DSN=<disposable-test-DSN> aq test tests/test_selection_catalogue.py::test_rules_name_only_known_modules_and_areas_and_cover_the_tree -q --tb=short",
+      "result": "1 passed after staging all new report/checklist files",
+      "seconds": 3.67
+    }
+  ]
+}

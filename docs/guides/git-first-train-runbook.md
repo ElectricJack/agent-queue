@@ -10,6 +10,10 @@ This page is the operator procedure for switching between them. Spec:
 Only an operator changes the daemon's configuration or restarts it. A worker
 session never runs these steps.
 
+After the live canary, use the
+[backlog settlement checklist](git-first-backlog-settlement.md) to capture each
+recorded stall's Git, check, tree-review and task-transition evidence.
+
 ## What `active` changes
 
 - **One loop.** The integration service constructs no subject runtime and no second
