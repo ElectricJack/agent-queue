@@ -1263,6 +1263,7 @@ class CandidateService:
         state = await self._locked_state(reservation["batch_id"], acquire_owner=False)
         if state.get("operation") is None:
             return self._repair_result("wait", reservation)
+        await self._observe_unresolved_mutations(reservation["batch_id"], state)
         if int(state["batch"]["current_revision"]) != int(reservation["revision"]) or int(
             state["operation"]["active_stage"]
         ) != int(reservation["stage_ordinal"]):
@@ -1860,7 +1861,7 @@ class CandidateService:
                 now=now,
             )
             if inserted:
-                state["owned_mutation_nonces"] = {mutation_id: mutation["nonce"]}
+                state["owned_mutation_nonces"] = {mutation["id"]: mutation["nonce"]}
         return state
 
     async def push_repair(self, reservation_id: str, fence: Fence) -> str:
@@ -2895,6 +2896,37 @@ class CandidateService:
                 .with_for_update()
             )
         ).mappings().one_or_none()
+        # Keep each abandoned attempt's authority immutable. Replays walk the
+        # same deterministic chain and contend on one successor executor claim.
+        if row is not None and row["state"] == "superseded":
+            # A different SHA snapshot must not fork the successor chain while
+            # an earlier successor still owns this logical write.
+            current = (await conn.execute(
+                select(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.batch_id == identity["batch_id"],
+                    integration_candidate_ref_mutations.c.revision == identity["revision"],
+                    integration_candidate_ref_mutations.c.purpose == identity["purpose"],
+                    integration_candidate_ref_mutations.c.member_ordinal.is_(None)
+                    if identity["member_ordinal"] is None else
+                    integration_candidate_ref_mutations.c.member_ordinal
+                    == identity["member_ordinal"],
+                    integration_candidate_ref_mutations.c.resolution_id.is_(None)
+                    if identity["resolution_id"] is None else
+                    integration_candidate_ref_mutations.c.resolution_id == identity["resolution_id"],
+                    integration_candidate_ref_mutations.c.state != "superseded",
+                ).with_for_update()
+            )).mappings().one_or_none()
+            if current is not None:
+                mutation_id = current["id"]
+                # Re-enter the same identity/adoption checks below.
+                row = current
+            else:
+                successor_id = str(uuid.uuid5(
+                    uuid.UUID(mutation_id), json.dumps(identity, sort_keys=True)
+                ))
+                return await self._reserve_mutation_on(
+                    conn, mutation_id=successor_id, identity=identity, nonce=nonce, now=now
+                )
         inserted = False
         if row is None:
             try:
@@ -3029,6 +3061,7 @@ class CandidateService:
             row, inserted = await self._reserve_mutation_on(
                 conn, mutation_id=mutation_id, identity=identity, nonce=nonce, now=now
             )
+            mutation_id = row["id"]
             owned_nonce = state.get("owned_mutation_nonces", {}).get(mutation_id)
             owns = inserted or owned_nonce == row["nonce"]
             if owns:
@@ -3380,6 +3413,8 @@ class CandidateService:
             expected = remote == row["expected_old_sha"] or (
                 remote is None and row["expected_old_sha"] == "0" * 40
             )
+            if await self._supersede_abandoned_mutation(state, dict(row), remote):
+                continue
             if (
                 expected
                 and float(row["expires_at"]) <= self.clock()
@@ -3391,6 +3426,78 @@ class CandidateService:
         return _MutationObservation(
             blocker_ids=tuple(blockers), recoverable_ids=tuple(recoverable)
         )
+
+    async def _supersede_abandoned_mutation(self, state, row, remote) -> bool:
+        """Retire an expired attempt after remote observation and writer release.
+
+        Expiry alone never proves a writer stopped. A canonical release or a
+        detached collector with changed authority is required, and the current
+        domain authority and executor snapshot are rechecked under the hierarchy lock.
+        """
+        if (
+            row["purpose"] not in _CANDIDATE_MUTATION_PURPOSES
+            or float(row["expires_at"]) > self.clock()
+            or not state.get("operation")
+            or not state.get("lease")
+            or row["batch_id"] != state["batch"]["id"]
+            or row["repository_id"] != state["batch"]["repository_id"]
+            or row["branch"] != state["batch"]["integration_branch"]
+            or row["operation_id"] != state["operation"]["id"]
+            or row["operation_episode_id"] != state["operation"]["episode_id"]
+        ):
+            return False
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            owner = await self.ownership._locked_row(conn, BranchKey(
+                repository_id=row["repository_id"], branch=row["branch"]
+            ))
+            if (
+                owner is None
+                or owner["session_id"] is not None
+                or owner["workspace_id"] is not None
+                or not (
+                    owner["handoff_state"] == "released"
+                    or (owner["handoff_state"] == "reserved"
+                        and owner["owner_role"] == "collector")
+                )
+            ):
+                return False
+            current = {**state, "fence": Fence(
+                target=BranchKey(repository_id=row["repository_id"], branch=row["branch"]),
+                owner_id=owner["owner_id"], token=int(owner["fence_token"]),
+            )}
+            try:
+                await self._validate_authority_on(
+                    conn, current, revision=int(state["batch"]["current_revision"]),
+                    expected_role=owner["owner_role"],
+                    expected_handoff=owner["handoff_state"],
+                )
+            except CandidateStaleAuthority:
+                return False
+            authority_changed = (
+                row["revision"] != state["batch"]["current_revision"]
+                or row["operation_stage"] != state["operation"]["active_stage"]
+                or row["lease_owner_id"] != state["lease"]["owner_id"]
+                or row["lease_fence_token"] != state["lease"]["fence_token"]
+                or row["branch_owner_id"] != owner["owner_id"]
+                or row["branch_owner_role"] != owner["owner_role"]
+                or row["branch_fence_token"] != owner["fence_token"]
+                or owner["handoff_state"] == "released"
+            )
+            # Unexpected remote movement alone does not prove the old executor
+            # stopped while its domain authority remains current.
+            if remote == row["desired_sha"] or not authority_changed:
+                return False
+            changed = await conn.execute(
+                update(integration_candidate_ref_mutations).where(
+                    integration_candidate_ref_mutations.c.id == row["id"],
+                    integration_candidate_ref_mutations.c.state == "reserved",
+                    integration_candidate_ref_mutations.c.nonce == row["nonce"],
+                    integration_candidate_ref_mutations.c.expires_at == row["expires_at"],
+                    integration_candidate_ref_mutations.c.expires_at <= self.clock(),
+                ).values(state="superseded", updated_at=self.clock())
+            )
+            return changed.rowcount == 1
 
     async def _recoverable_build_mutation(self, state, row) -> bool:
         if state.get("authority_wait") or row["purpose"] not in {

@@ -1607,3 +1607,87 @@ async def test_root_remote_heads_batch_the_retained_repository_then_the_base(tmp
         (str(store), ["aq/x", "main"]),
         ("/base", ["aq/x"]),
     ]
+
+
+@pytest.mark.parametrize("previous", (
+    (), ("same",), ("same", "same"), ("different", "same"), ("merged", "same"),
+    ("same", "blocked"), ("same", "other_generation"),
+))
+async def test_merge_reports_named_blocker_after_three_identical_mutation_refusals(root, previous):
+    from src.integration.root_adapters import CANDIDATE_MUTATION_BLOCKER
+
+    db, _, subject = root
+    reason = "candidate mutation identity changed"
+    commands = SimpleNamespace(execute=AsyncMock(return_value={"outcome": "wait", "reason": reason}))
+    adapters = RootPrimitiveAdapters(
+        db, commands, SimpleNamespace(observe=AsyncMock(return_value=facts(subject)))
+    )
+    async with db._engine.connect() as conn:
+        members = (await conn.execute(select(t.integration_batch_members).where(
+            t.integration_batch_members.c.batch_id == subject.batch_id,
+        ).order_by(t.integration_batch_members.c.ordinal))).mappings().all()
+    args = SimpleNamespace(
+        primitive=Primitive.GIT_MERGE_MEMBERS, target_ref=subject.target_ref,
+        regenerate_generated=True, base_sha=BASE,
+        members=tuple(SimpleNamespace(
+            task_id=m["task_id"], head_sha=m["reviewed_head_sha"], base_sha=m["source_base_sha"]
+        ) for m in members),
+    )
+    for index, prior in enumerate(previous):
+        result = PrimitiveOutcome.unknown(
+            args.primitive, reason if prior == "same" else "different refusal"
+        ).model_dump(mode="json")
+        if prior == "merged":
+            result = {"outcome": "merged"}
+        elif prior == "blocked":
+            result = PrimitiveOutcome.unknown(
+                args.primitive, CANDIDATE_MUTATION_BLOCKER, original_reason=reason,
+                blocker=CANDIDATE_MUTATION_BLOCKER, refusals=3,
+            ).model_dump(mode="json")
+        elif prior == "other_generation":
+            result = PrimitiveOutcome.unknown(args.primitive, reason).model_dump(mode="json")
+        await db.append_integration_subject_journal({
+            "subject_id": subject.id, "entry_kind": "action", "mode": "active",
+            "idempotency_key": f"mutation-refusal:{index}",
+            "policy_artifact_sha256": PIN.artifact_sha256,
+            "subject_version": subject.version, "phase": subject.phase.value,
+            "head_sha": subject.head_sha,
+            "generation": subject.generation + 1 if prior == "other_generation" else
+            subject.generation,
+            "primitive": args.primitive.value, "outcome": result["outcome"],
+            "payload": {"result": result}, "recorded_at": 10 + index,
+        })
+    answer = await adapters.merge(subject, args)
+    assert answer.is_unknown
+    if previous in {("same", "same"), ("same", "blocked")}:
+        assert answer.reason == CANDIDATE_MUTATION_BLOCKER
+        assert answer.detail == {
+            "blocker": CANDIDATE_MUTATION_BLOCKER, "original_reason": reason, "refusals": 3,
+        }
+    else:
+        assert answer.reason == reason
+
+
+async def test_named_mutation_blocker_is_visible_in_subject_schedule(root):
+    from src.integration.reconciler import VisitTransition
+    from src.integration.root_adapters import CANDIDATE_MUTATION_BLOCKER
+    from src.integration.root_runtime import PinnedRootPolicy
+
+    _, _, subject = root
+    expected = SubjectSchedule.backoff(
+        now=100, max_wait_seconds=600, refusal_streak=2,
+        base_seconds=30, ceiling_seconds=600,
+    )
+    policy = PinnedRootPolicy(None)
+    policy.policies[PIN.artifact_sha256] = SimpleNamespace(
+        settle=AsyncMock(return_value=VisitTransition(schedule=expected))
+    )
+    refusal = PrimitiveOutcome.unknown(
+        Primitive.GIT_MERGE_MEMBERS, CANDIDATE_MUTATION_BLOCKER,
+        blocker=CANDIDATE_MUTATION_BLOCKER, original_reason="candidate mutation identity changed",
+    )
+    transition = await policy.settle(subject, None, refusal, now=100)
+    assert transition.schedule.wait_reason == CANDIDATE_MUTATION_BLOCKER
+    assert transition.schedule.next_due_at == expected.next_due_at
+    assert transition.schedule.refusal_streak == expected.refusal_streak
+    assert transition.schedule.gate_id is None

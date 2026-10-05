@@ -20,7 +20,7 @@ from src.integration.observe import (
 from src.integration.reconciler import (
     CompiledPolicyAdapter, IntegrationReconciler, ScopedIntegrationDB, VisitTransition,
 )
-from src.integration.root_adapters import RootPrimitiveAdapters
+from src.integration.root_adapters import CANDIDATE_MUTATION_BLOCKER, RootPrimitiveAdapters
 from src.integration.shadow import diagnostics_for
 from src.integration.subjects import (
     JournalMode,
@@ -50,7 +50,8 @@ class PinnedRootPolicy(CompiledPolicyAdapter):
     A WAIT visit can refresh mirrored domain identity from the observation. A
     repaired candidate is committed by existing services, so the next visit
     must adopt that exact head before CI/publication. This is bookkeeping;
-    every action and schedule still comes from the pinned decision table.
+    every action and scheduling deadline still comes from the pinned decision
+    table. Named mutation blockers refine the schedule's diagnostic reason.
     """
 
     def __init__(self, loader):
@@ -89,7 +90,10 @@ class PinnedRootPolicy(CompiledPolicyAdapter):
                     base_sha=facts.candidate.base_sha,
                     generation=facts.candidate.generation,
                 )
-        return VisitTransition(schedule=transition.schedule, values=values)
+        schedule = transition.schedule
+        if outcome.is_unknown and outcome.reason == CANDIDATE_MUTATION_BLOCKER:
+            schedule = schedule.model_copy(update={"wait_reason": CANDIDATE_MUTATION_BLOCKER})
+        return VisitTransition(schedule=schedule, values=values)
 
 
 class RootObserver(IntegrationObserver):

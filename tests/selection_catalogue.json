@@ -1413,7 +1413,7 @@
       ]
     }
   },
-  "digest": "sha256:f86150fd1e46fa2afd56a68f7d2fa7a3446a3903bda1d2a9ae5ac7773ef00dbd",
+  "digest": "sha256:eec65b3490decb010186fb0fe062798ed169afd975e7ba9971eefc80ae188ce8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8261,6 +8261,7 @@
         "src.integration.gates",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.reconciler",
         "src.integration.records",
         "src.integration.repair",
         "src.integration.root_adapters",
@@ -10146,7 +10147,8 @@
       ],
       "default_arm": false,
       "imports": [
-        "src.database"
+        "src.database",
+        "src.database.engine"
       ],
       "markers": [
         "migration"
