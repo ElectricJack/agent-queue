@@ -38,6 +38,7 @@ from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import TrainService
 from src.integration.settling import settled
+from src.integration.source_ci import RUNNER_NOT_ACQUIRED
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, TaskType
 from tests.db_fixtures import lease_dsn
 from tests.test_integration_sealing import _policy
@@ -95,8 +96,8 @@ async def test_explicit_authorization_admits_chore_without_retagging_parent(case
     ) is None
 
 
-@pytest.mark.parametrize("conclusion,state", [("failure", "red"), ("cancelled", "cancelled")])
-async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(case, tmp_path, conclusion, state):
+async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(case, tmp_path):
+    conclusion, state = "failure", "red"
     import asyncio
     from unittest.mock import AsyncMock
 
@@ -755,11 +756,454 @@ async def test_conflict_observation_files_no_source_repair(case, tmp_path):
         "e1", reviewed_sha=source["head"], policy_generation=0)
     result = await handler._cmd_observe_integration_source_ci(
         SourceCIObservation("e1", source, 0, "conflict", {"checks": [], "failing_checks": []}))
-    assert result == {"success": True, "outcome": "observed", "state": "conflict"}
+    assert result["outcome"] == "observed" and result["state"] == "conflict"
     async with case["db"].immediate() as conn:
         record = (await conn.execute(select(integration_source_ci))).mappings().one()
     assert record["state"] == "conflict" and record["repair_task_id"] is None
     handler._cmd_ensure_task.assert_not_called()
+
+
+async def _source_ci_handler(case, tmp_path):
+    """A CommandHandler whose only isolation is normal task filing.
+
+    Filing writes real tasks through the normal path, so a repair the source
+    command files is durable exactly as it is in production.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.models import Task, TaskStatus, TaskType
+    from src.orchestrator import Orchestrator
+    from src.vault import ensure_default_intelligence_classes
+
+    data = str(tmp_path / "handler-data")
+    ensure_default_intelligence_classes(data)
+    config = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
+                       database=DatabaseConfig(url=lease_dsn("source-ci.db")), data_dir=data)
+    orch = Orchestrator(config)
+    orch.db = case["db"]
+    handler = CommandHandler(orch, config)
+    filed: list[str] = []
+
+    async def ensure(args):
+        existing = await case["db"].find_task_by_dedup_key("p", args["dedup_key"])
+        if existing:
+            return {"success": True, "task_id": existing.id, "created": False}
+        task_id = f"source-repair-{len(filed)}"
+        filed.append(task_id)
+        await case["db"].create_task(Task(
+            id=task_id, project_id="p", repo_id="repo", title=args["title"],
+            description=args["description"], dedup_key=args["dedup_key"],
+            task_type=TaskType.BUGFIX, status=TaskStatus.READY))
+        return {"success": True, "task_id": task_id, "created": True}
+
+    handler._cmd_ensure_task = AsyncMock(side_effect=ensure)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    assert await case["producer"].snapshot_authorized(
+        "e1", reviewed_sha=source["head"], policy_generation=0)
+    handler.filed = filed
+    return handler, source
+
+
+def _cancelled_checks(source, required, *, annotated: bool, suite_id: int = 37367217284):
+    """Cancelled checks of one workflow run, as GitHub reports them.
+
+    Every check names the suite it belongs to, which is what a re-run of the
+    exact head is addressed to (the re-request endpoint takes a suite id).
+    """
+    summary = f"{RUNNER_NOT_ACQUIRED} hosted even after multiple attempts." if annotated else ""
+    return [{
+        "id": index + 1, "name": name, "head_sha": source["head"],
+        "app": {"id": int(required.producer_id)}, "status": "completed",
+        "conclusion": "cancelled",
+        "html_url": f"https://github.com/o/r/actions/runs/{suite_id}",
+        "check_suite": {"id": suite_id},
+        "output": {"summary": summary},
+    } for index, name in enumerate(required.names)]
+
+
+async def test_failed_workflow_run_with_only_cancelled_jobs_is_infrastructure(case, tmp_path):
+    """The real outage shape: the run concludes failure, no job ever failed.
+
+    GitHub concludes a workflow run ``failure`` whenever jobs are cancelled
+    because no hosted runner was acquired, so a run-level conclusion would
+    file a repair of a repair.  The verdict comes from the per-check
+    conclusions, which here are only success and cancelled.
+    """
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    names = list(required.names)
+    entries = [{
+        "id": index + 1, "name": name, "head_sha": source["head"],
+        "app": {"id": int(required.producer_id)}, "status": "completed",
+        "conclusion": "cancelled", "html_url": "https://github.com/o/r/actions/runs/37367217284",
+        "run_conclusion": "failure",
+        "output": {"summary": f"{RUNNER_NOT_ACQUIRED} hosted even after multiple attempts."},
+    } for index, name in enumerate(names)]
+    state, evidence = classify_source_checks(entries, head=source["head"], required=required)
+    assert state == "cancelled" and evidence["infra_only"] is True
+    assert evidence["runner_not_acquired"] is True
+    assert set(evidence["failing_checks"]) == set(names)
+
+    result = await handler._cmd_observe_integration_source_ci(
+        SourceCIObservation("e1", source, 0, state, evidence))
+    assert result["outcome"] == "observed" and result["state"] == "cancelled"
+    assert result["rerun_requested"] is True
+    handler._cmd_ensure_task.assert_not_called()
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["state"] == "cancelled" and record["repair_task_id"] is None
+
+
+@pytest.mark.parametrize("conclusions,state", [
+    (["success", "cancelled", "success"], "cancelled"),
+    (["cancelled", "cancelled", "success"], "cancelled"),
+    (["success", "failure", "cancelled"], "red"),
+    (["success", "timed_out", "cancelled"], "red"),
+    (["success", "action_required", "cancelled"], "red"),
+    (["success", "success", "success"], "green"),
+])
+def test_only_per_check_conclusions_decide_the_source_ci_verdict(conclusions, state):
+    """A failed run conclusion is never a verdict; the per-job conclusions are."""
+    from src.integration.models import RequiredCheckSet
+    from src.integration.source_ci import classify_source_checks
+
+    required = RequiredCheckSet(
+        version="v1", names=("Tests (1/3)", "Tests (2/3)", "Tests (3/3)"), producer_id="7",
+    )
+    entries = [{
+        "id": index + 1, "name": name, "head_sha": "a" * 40, "app": {"id": 7},
+        "status": "completed", "conclusion": conclusion,
+        # The workflow run itself concluded failure even where no job failed.
+        "run_conclusion": "failure",
+        "output": {"summary": f"{RUNNER_NOT_ACQUIRED} hosted." if conclusion == "cancelled" else ""},
+    } for index, (name, conclusion) in enumerate(zip(required.names, conclusions))]
+    verdict, evidence = classify_source_checks(entries, head="a" * 40, required=required)
+    assert verdict == state
+    assert evidence["infra_only"] is (state == "cancelled")
+    assert evidence["runner_not_acquired"] is ("cancelled" in conclusions)
+    # A cancelled check is never success.
+    assert all(check["conclusion"] != "cancelled" or state != "green" for check in evidence["checks"])
+
+
+@pytest.mark.parametrize("annotated", [True, False])
+async def test_cancellation_only_source_ci_is_infrastructure_and_files_no_repair(
+    case, tmp_path, annotated,
+):
+    """An Actions outage files no code repair, with or without the annotation."""
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    entries = _cancelled_checks(source, required, annotated=annotated)
+    state, evidence = classify_source_checks(entries, head=source["head"], required=required)
+    assert state == "cancelled" and evidence["infra_only"] is True
+    assert evidence["runner_not_acquired"] is annotated
+    # No required check succeeded either: a cancellation is never success.
+    assert all(check["conclusion"] == "cancelled" for check in evidence["checks"])
+
+    result = await handler._cmd_observe_integration_source_ci(
+        SourceCIObservation("e1", source, 0, state, evidence))
+    assert result["outcome"] == "observed" and result["state"] == "cancelled"
+    assert result["rerun_requested"] is True
+    handler._cmd_ensure_task.assert_not_called()
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["state"] == "cancelled" and record["repair_task_id"] is None
+    assert record["infra_observations"] == 1 and record["infra_reruns"] == 1
+    assert record["infra_rerun_at"] is not None
+
+
+async def test_source_ci_with_a_genuine_failure_is_red_despite_cancellations(case, tmp_path):
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    entries = _cancelled_checks(source, required, annotated=True)
+    entries[0] = {**entries[0], "id": 99, "conclusion": "failure",
+                  "output": {"summary": "tests/test_source.py::test_delivery failed"}}
+    state, evidence = classify_source_checks(entries, head=source["head"], required=required)
+    assert state == "red" and evidence["infra_only"] is False
+
+    result = await handler._cmd_observe_integration_source_ci(
+        SourceCIObservation("e1", source, 0, state, evidence))
+    assert result["outcome"] == "repair_created"
+    handler._cmd_ensure_task.assert_awaited_once()
+    args = handler._cmd_ensure_task.call_args.args[0]
+    assert args["title"].startswith("Repair source CI: e1")
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["state"] == "red" and record["infra_observations"] == 0
+
+
+async def test_repeated_infra_source_ci_names_a_blocker_instead_of_looping(case, tmp_path):
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    state, evidence = classify_source_checks(
+        _cancelled_checks(source, required, annotated=True),
+        head=source["head"], required=required,
+    )
+    observation = SourceCIObservation("e1", source, 0, state, evidence)
+    attempts = policy.root.repair.source_ci_infra_attempts
+    results = [
+        await handler._cmd_observe_integration_source_ci(observation) for _ in range(attempts)
+    ]
+    # Bounded backoff: only the first observation asks for a re-run.
+    assert [result["rerun_requested"] for result in results] == [
+        True] + [False] * (attempts - 1)
+    assert results[-1]["blocker"] == "source_ci_infrastructure"
+    handler._cmd_ensure_task.assert_not_called()
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["infra_observations"] == attempts and record["repair_task_id"] is None
+
+
+async def test_infrastructure_observation_reruns_the_exact_head(case):
+    """The recorded decision is what asks GitHub to re-run, once, on that head.
+
+    The re-run is addressed to the exact cancelled check suites of this head —
+    the ids GitHub itself reported for those checks — never to a commit-wide
+    path and never to a head that moved.
+    """
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+    requested = []
+    seen = []
+
+    class _CancelledClient:
+        async def commit_check_runs(self, _head):
+            return _cancelled_checks(
+                source,
+                HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks,
+                annotated=True,
+            )
+
+        async def rerequest_check_suite(self, suite_id):
+            requested.append(suite_id)
+
+    async def handler(observation):
+        seen.append(observation)
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_CancelledClient(), handler=handler)
+    # Three cancelled checks of one workflow run share one suite: it is asked
+    # for once, by id, and the head it belongs to is the observed one.
+    assert requested == [37367217284]
+    assert seen[0].state == "cancelled"
+    assert seen[0].evidence["cancelled_check_suite_ids"] == [37367217284]
+    assert seen[0].source["head"] == source["head"]
+
+    async def refusing(observation):
+        return {"success": True, "outcome": "observed", "rerun_requested": False}
+
+    await observe_source_ci(
+        row=row, source=source, client=_CancelledClient(), handler=refusing)
+    assert requested == [37367217284]
+
+
+def test_cancelled_check_suites_of_one_head_are_deduplicated_and_sorted():
+    """Exactly the suites a re-run addresses: deduped, sorted, this head only.
+
+    The cancelled checks of one workflow run share a suite, so a run with six
+    cancelled jobs is one re-request, and checks from two runs are two.  Suites
+    of other heads never appear, because only the head's own checks are read.
+    """
+    from src.integration.models import RequiredCheckSet
+    from src.integration.source_ci import classify_source_checks
+
+    required = RequiredCheckSet(
+        version="v1", names=("Tests (1/3)", "Tests (2/3)", "Tests (3/3)"), producer_id="7",
+    )
+    suites = {"Tests (1/3)": 37369341980, "Tests (2/3)": 37367217284, "Tests (3/3)": 37367217284}
+    entries = [{
+        "id": index + 1, "name": name, "head_sha": "a" * 40, "app": {"id": 7},
+        "status": "completed", "conclusion": "cancelled",
+        "check_suite": {"id": suite_id},
+        "output": {"summary": f"{RUNNER_NOT_ACQUIRED} hosted."},
+    } for index, (name, suite_id) in enumerate(suites.items())]
+    # A cancelled check on a head that moved is never read at all.
+    entries.append({**entries[0], "id": 99, "head_sha": "b" * 40})
+    state, evidence = classify_source_checks(entries, head="a" * 40, required=required)
+    assert state == "cancelled"
+    assert evidence["cancelled_check_suite_ids"] == [37367217284, 37369341980]
+
+
+async def test_failed_rerun_request_does_not_raise_into_the_poll(case):
+    """An outage is the expected re-run failure; the poll keeps observing."""
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+
+    class _OutageClient:
+        async def commit_check_runs(self, _head):
+            return _cancelled_checks(
+                source,
+                HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks,
+                annotated=True,
+            )
+
+        async def rerequest_check_suite(self, _suite_id):
+            raise GitHubAccessError("unavailable", "GitHub Actions is unavailable")
+
+    async def handler(_observation):
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_OutageClient(), handler=handler)
+
+
+async def test_a_credential_that_cannot_write_checks_only_waits(case):
+    """GitHub-App-only: a refusal is not a repair and not a poll failure.
+
+    Widening a credential is a human decision, so the observation neither
+    widens nor retries around the refusal: the bounded counter still ends at
+    the named blocker for a supervisor to rerun by hand.
+    """
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+    refusals = []
+
+    class _RefusingClient:
+        async def commit_check_runs(self, _head):
+            return _cancelled_checks(
+                source,
+                HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks,
+                annotated=True,
+            )
+
+        async def rerequest_check_suite(self, suite_id):
+            refusals.append(suite_id)
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Re-requesting a check suite requires a GitHub App credential",
+            )
+
+    async def handler(_observation):
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_RefusingClient(), handler=handler)
+    assert refusals == [37367217284]
+
+
+async def test_a_cancelled_check_without_a_suite_is_waited_not_rerun(case):
+    """No suite id means nothing to address: the observation only waits."""
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+    requested = []
+
+    class _NoSuiteClient:
+        async def commit_check_runs(self, _head):
+            required = HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks
+            return [
+                {key: value for key, value in item.items() if key != "check_suite"}
+                for item in _cancelled_checks(source, required, annotated=True)
+            ]
+
+        async def rerequest_check_suite(self, suite_id):
+            requested.append(suite_id)
+
+    async def handler(observation):
+        assert observation.evidence["cancelled_check_suite_ids"] == []
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_NoSuiteClient(), handler=handler)
+    assert requested == []
+
+
+async def test_source_ci_infra_policy_is_ordered_and_bounded():
+    from pydantic import ValidationError
+
+    from src.integration.models import RepairPolicy
+
+    policy = RepairPolicy(debug_intelligence_class="standard-high")
+    assert (policy.source_ci_infra_attempts, policy.source_ci_infra_backoff_seconds,
+            policy.source_ci_infra_backoff_max_seconds) == (3, 300.0, 3600.0)
+    with pytest.raises(ValidationError):
+        RepairPolicy(debug_intelligence_class="standard-high", source_ci_infra_attempts=0)
+    with pytest.raises(ValidationError, match="backoff_max_seconds"):
+        RepairPolicy(debug_intelligence_class="standard-high",
+                     source_ci_infra_backoff_seconds=600.0,
+                     source_ci_infra_backoff_max_seconds=300.0)
+
+
+async def test_recovered_source_ci_resets_the_infra_counter(case, tmp_path):
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import SourceCIObservation, classify_source_checks
+
+    policy = HierarchicalIntegrationPolicy.model_validate(await _continuous_policy(case))
+    handler, source = await _source_ci_handler(case, tmp_path)
+    required = policy.root.required_checks
+    infra = SourceCIObservation(
+        "e1", source, 0, "cancelled",
+        classify_source_checks(_cancelled_checks(source, required, annotated=True),
+                               head=source["head"], required=required)[1],
+    )
+    await handler._cmd_observe_integration_source_ci(infra)
+    green = SourceCIObservation(
+        "e1", source, 0, "green",
+        classify_source_checks(
+            [{**item, "conclusion": "success", "output": {"summary": ""}}
+             for item in _cancelled_checks(source, required, annotated=False)],
+            head=source["head"], required=required)[1],
+    )
+    await handler._cmd_observe_integration_source_ci(green)
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["state"] == "green"
+    assert record["infra_observations"] == 0 and record["infra_reruns"] == 0
+    assert record["infra_rerun_at"] is None
 
 
 async def _pending_repair_source(case):

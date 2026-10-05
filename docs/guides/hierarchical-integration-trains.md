@@ -198,6 +198,35 @@ Existing Subjects retain their identity, pins and scheduling. Pausing all visits
 uses `integration.reconciler_active: false`; re-enabling resumes those same
 Subjects. There is no engine rollback or automatic drain that restores old policy.
 
+## Source CI: red versus infrastructure
+
+Source CI observation of a train root's exact PR head files a repair only when
+at least one required check genuinely failed (`failure`, `timed_out`,
+`action_required`). A run whose non-success required checks are *all* cancelled
+is infrastructure — typically a GitHub Actions outage, annotated "The job was
+not acquired by Runner of type" — and it is never handed to an agent: the only
+code action available would be merging the same head again and hitting the same
+outage, which is how a single outage becomes a chain of repairs of repairs.
+
+Such an observation waits, and asks GitHub to re-run the checks for that exact
+head: one re-request per cancelled check suite id GitHub reported for it
+(`POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest`,
+[bounded](https://docs.github.com/en/rest/checks/suites#rerequest-a-check-suite)
+by `root.repair.source_ci_infra_backoff_seconds` to
+`..._backoff_max_seconds`). GitHub documents writes to checks as GitHub-App-only,
+so an existing-login credential issues no request at all and the observation only
+waits; widening a credential is a human decision, and a human can also re-run the
+workflow by hand. After `root.repair.source_ci_infra_attempts` consecutive
+infrastructure-only observations it stops asking and names
+`source_ci_infrastructure` on the source-CI row instead of looping. Any
+observation that is not infrastructure-only resets the counter, so a head that
+recovers costs nothing later. A cancelled check is never counted as success, and
+a red run stays red however many of its other checks were cancelled.
+
+The root-batch path already treated cancellation-only as infrastructure and
+waited (`observe-ci` outcome `infra`); this is the same rule applied to the
+source-CI observation path so the two agree.
+
 ## Delivery evidence
 
 `task show` and the dashboard report delivery from receipts and observed Git

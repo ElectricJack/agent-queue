@@ -106,12 +106,29 @@ class RepairPolicy(BaseModel):
     conflict_scope: Literal["member", "batch"] = "member"
     on_exhausted: Literal["human", "continue"] = "human"
     source_ci: bool = False
+    # Cancellation-only source CI is infrastructure, never a code repair: the
+    # observation waits, asks GitHub to re-run the exact head with bounded
+    # backoff, and names a blocker once this many consecutive observations have
+    # all been infrastructure.  A run with any genuine failing required check
+    # is still red, whatever else was cancelled.
+    source_ci_infra_attempts: int = Field(default=3, gt=0)
+    source_ci_infra_backoff_seconds: float = Field(default=300.0, gt=0)
+    source_ci_infra_backoff_max_seconds: float = Field(default=3600.0, gt=0)
     # Deprecated and ignored: mandatory routing files repairs with the
     # ``debug_intelligence_class`` hint only and the router writes the
     # route.  The field stays so stored ``policy_snapshot`` values naming it
     # still validate under ``extra="forbid"``; new writes naming it are
     # refused (``deprecated_route_fields``).
     debug_profile_id: str | None = None
+
+    @model_validator(mode="after")
+    def ordered_source_ci_infra_backoff(self) -> "RepairPolicy":
+        if self.source_ci_infra_backoff_max_seconds < self.source_ci_infra_backoff_seconds:
+            raise ValueError(
+                "source_ci_infra_backoff_max_seconds must be at least "
+                "source_ci_infra_backoff_seconds"
+            )
+        return self
 
 
 class ArtifactSnapshot(BaseModel):

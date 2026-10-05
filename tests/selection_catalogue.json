@@ -815,6 +815,7 @@
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
+        "tests/test_migration_source_ci_infrastructure.py",
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
@@ -1413,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:b33be42d5860d1bab6d7e90a3fe5985e5a09ee443fc732c34f53e8e3dd1eece2",
+  "digest": "sha256:cefb091da25cd89ce1c7389601721a44d095fd6bd94b3e463789b218cddfbe3a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10598,6 +10599,18 @@
         "filterwarnings"
       ],
       "summary": "The alembic revision chain must have exactly one head."
+    },
+    "tests/test_migration_source_ci_infrastructure.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "Revision a00000000079: source-CI infrastructure bookkeeping, additive."
     },
     "tests/test_migration_string_defaults.py": {
       "areas": [

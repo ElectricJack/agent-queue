@@ -1500,6 +1500,44 @@ class GitHubClient:
             key="check_runs",
         )
 
+    async def rerequest_check_suite(self, check_suite_id: int) -> dict[str, Any]:
+        """Ask GitHub to run one check suite again, without pushing code.
+
+        GitHub's documented "Rerequest a check suite" endpoint:
+        ``POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest``
+        (https://docs.github.com/en/rest/checks/suites#rerequest-a-check-suite).
+        It resets that suite to ``queued`` and clears its conclusion, which is
+        the only way to retry CI for a head that has not moved.  It is addressed
+        by suite id, so it cannot reach another repository, commit or head, and
+        it re-runs checks rather than dispatching a workflow — no ``actions:
+        write`` is involved.
+
+        GitHub documents writes to checks as GitHub-App-only: OAuth app tokens
+        and personal access tokens can read check suites and check runs but
+        cannot write them (https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks).
+        An existing-login credential therefore refuses here, before any request
+        is issued, instead of asking for one that cannot succeed; widening a
+        credential is a human decision, and the caller falls back to waiting for
+        its named infrastructure blocker.
+        """
+        if (
+            isinstance(check_suite_id, bool)
+            or not isinstance(check_suite_id, int)
+            or check_suite_id <= 0
+        ):
+            raise ValueError("invalid check suite ID")
+        if self.credential_identity.mode is not GitHubCredentialMode.APP:
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Re-requesting a check suite requires a GitHub App credential; GitHub "
+                "documents writes to checks as GitHub-App-only",
+            )
+        return await self.request_json(
+            "POST",
+            f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
+            expected_statuses={201},
+        )
+
     async def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
             raise ValueError("invalid Actions job ID")
