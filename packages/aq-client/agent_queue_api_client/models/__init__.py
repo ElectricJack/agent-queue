@@ -887,6 +887,7 @@ from .note_summary import NoteSummary
 from .object_checkpoint_read_request import ObjectCheckpointReadRequest
 from .object_checkpoint_read_response import ObjectCheckpointReadResponse
 from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
+from .object_checkpoint_read_response_evidence import ObjectCheckpointReadResponseEvidence
 from .object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
 from .object_loop_inputs_request import ObjectLoopInputsRequest
 from .object_loop_inputs_response import ObjectLoopInputsResponse
@@ -2657,6 +2658,7 @@ __all__ = (
     "ObjectCheckpointReadRequest",
     "ObjectCheckpointReadResponse",
     "ObjectCheckpointReadResponse422",
+    "ObjectCheckpointReadResponseEvidence",
     "ObjectCheckpointReadResponseState",
     "ObjectLoopInputsRequest",
     "ObjectLoopInputsResponse",

@@ -248,6 +248,59 @@ async def _review_verdict(conn, state: dict) -> bool:
 
 
 class ObjectLoopCommandsMixin:
+    async def _readable_object_loops(self, request, *, require_object: bool = True) -> list:
+        """Fence evidence reads by authenticated project and live held provenance."""
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.commands.principal import current_principal
+
+        scope = self._job_scope()
+        principal = current_principal()
+        project_id = scope.get("project_id") or (principal.project_id if principal else None)
+        if project_id and request.project_id not in (None, project_id):
+            raise ValueError("out of scope: project_id mismatch")
+        project_id = project_id or request.project_id
+        object_id = getattr(request, "object_id", None)
+        held = None
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            held = await held_task_for_session(self.db, RequestScope(
+                kind="session", project_id=scope.get("project_id"),
+                task_id=scope.get("task_id"), session_id=scope.get("session_id"),
+            ))
+            session = await self.db.get_session(scope.get("session_id")) if held else None
+            if (held is None or (scope.get("session_instance_token")
+                    and session.instance_token != scope["session_instance_token"])):
+                raise ValueError("out of scope: object evidence requires a live held task")
+            if (request.task_id not in (None, held.id)
+                    or request.session_id not in (None, scope.get("session_id"))):
+                raise ValueError("out of scope: task/session mismatch")
+            marker = await self.db.get_task_meta(held.id, "object_experiment")
+            if not isinstance(marker, dict) or not marker.get("object_id"):
+                if not require_object:
+                    return []
+                raise ValueError("out of scope: held task has no object provenance")
+            if object_id and object_id != marker["object_id"]:
+                raise ValueError("out of scope: object_id mismatch")
+            object_id = marker["object_id"]
+        query = select(object_loops)
+        if project_id:
+            query = query.where(object_loops.c.project_id == project_id)
+        if object_id:
+            query = query.where(object_loops.c.object_id == object_id)
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        if held:
+            rows = [row for row in rows if (
+                held.id == row.finalization_task_id
+                or (held.created_by_kind == "object_loop" and held.created_by_id == row.object_id
+                    and held.parent_task_id == row.epic_task_id)
+                or (marker.get("purpose") == "bootstrap"
+                    and held.parent_task_id == row.epic_task_id)
+            )]
+            if not rows and require_object:
+                raise ValueError("out of scope: held task does not belong to this object loop")
+        return rows
+
     async def _cmd_artifact_verify(self, args: dict) -> dict:
         """Resolve a durable artifact URI and re-hash the bytes it names.
 
@@ -257,10 +310,38 @@ class ObjectLoopCommandsMixin:
         or ``https://`` URI belongs to the external artifact adapter, not here.
         """
         from src.commands.contracts.object_loop import ArtifactVerifyArgs
-        from src.object_loop.artifacts import ArtifactError, verify
+        from src.object_loop.artifacts import ArtifactError, metadata, parse_uri, verify
+        from src.object_loop.evidence import artifact_digests
+        from src.commands.principal import current_principal
 
         try:
             request = ArtifactVerifyArgs.model_validate(args)
+            principal = current_principal()
+            scope = self._job_scope()
+            if scope.get("kind") == "session" or (principal and principal.enforced):
+                rows = await self._readable_object_loops(request, require_object=False)
+                digest = parse_uri(request.uri)
+                project_id = scope.get("project_id") or (
+                    principal.project_id if principal else None
+                ) or request.project_id
+                allowed = bool(scope.get("elevated") and not project_id)
+                for row in rows:
+                    if allowed:
+                        break
+                    if digest in await asyncio.to_thread(
+                        artifact_digests, self.config.data_dir, row.state,
+                    ):
+                        allowed = True
+                        break
+                if not allowed:
+                    # Captures can be verified before a score names them, and
+                    # bootstrap jobs can run before the loop row exists.
+                    retained = await asyncio.to_thread(metadata, self.config.data_dir, request.uri)
+                    job_id = ((retained or {}).get("origin") or {}).get("job_id")
+                    job = await self._job_for_scope(job_id) if job_id else None
+                    allowed = bool(job and (not project_id or job["project_id"] == project_id))
+                if not allowed:
+                    return _error("out of scope: artifact does not belong to an accessible object")
             return {"success": True, **await asyncio.to_thread(
                 verify, self.config.data_dir, request.uri, request.sha256
             )}
@@ -456,10 +537,15 @@ class ObjectLoopCommandsMixin:
                 "state": state, "created": True}
 
     async def _cmd_object_checkpoint_read(self, args: dict) -> dict:
+        from src.object_loop.evidence import final_evidence
+
         try:
             request = ObjectCheckpointReadArgs.model_validate(args)
-        except ValidationError as exc:
+            rows = await self._readable_object_loops(request)
+        except (ValidationError, ValueError) as exc:
             return _error(str(exc))
+        if not rows:
+            return _error("object loop not found in project")
         async with self.db.immediate() as conn:
             row = (await conn.execute(select(object_loops).where(
                 object_loops.c.object_id == request.object_id,
@@ -468,9 +554,10 @@ class ObjectLoopCommandsMixin:
             if row is None:
                 return _error("object loop not found in project")
             approved = await _review_verdict(conn, row.state)
-            return {"success": True, "object_id": request.object_id, "version": row.version,
-                    "approved": approved if row.state.get("checkpoint") else False,
-                    "state": row.state}
+        evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, row.state)
+        return {"success": True, "object_id": request.object_id, "version": row.version,
+                "approved": approved if row.state.get("checkpoint") else False,
+                "state": row.state, "evidence": evidence}
 
     async def _cmd_object_loop_reconcile(self, args: dict) -> dict:
         try:
@@ -556,16 +643,9 @@ class ObjectLoopCommandsMixin:
                     # The finalizer can read only its own task. Give it the
                     # retained baseline and best captures before releasing it,
                     # including after restart; never require sibling authority.
-                    evidence = {
-                        "baseline_capture_uri": ("artifact://sha256/" +
-                                                 state["incumbent_capture_sha256"]
-                                                 if state.get("incumbent_capture_sha256") else None),
-                        "mandatory_views": state["mandatory_views"],
-                        "reference_kind": state.get("reference_kind", "calibrated"),
-                        "best_receipt": state.get("best_receipt"),
-                        "stop_reason": state["stop_reason"],
-                        "spent": state["spent"],
-                    }
+                    from src.object_loop.evidence import final_evidence
+
+                    evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, state)
                     await conn.execute(update(tasks).where(
                         tasks.c.id == row.finalization_task_id,
                     ).values(description=_RESULT_HANDOFF + "\nInternal evidence (for the worker):\n"
@@ -696,6 +776,8 @@ class ObjectLoopCommandsMixin:
                 "task_id": receipt.task_id,
                 "candidate_sha256": receipt.candidate_sha256,
                 "candidate_artifact": artifact.model_dump() if artifact else None,
+                "artifacts": [a.model_dump() for a in receipt.artifacts],
+                "capture_receipts": [c.model_dump() for c in receipt.capture_receipts],
                 "branch": commits.get(receipt.task_id, {}).get("branch"),
                 "commit": commits.get(receipt.task_id, {}).get("commit"),
                 "validity": receipt.validity,

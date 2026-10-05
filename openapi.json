@@ -46271,6 +46271,30 @@
             "type": "string",
             "title": "Project Id",
             "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
           }
         },
         "type": "object",
@@ -46303,6 +46327,11 @@
           "approved": {
             "type": "boolean",
             "title": "Approved"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence"
           }
         },
         "type": "object",
@@ -46310,7 +46339,8 @@
           "object_id",
           "version",
           "state",
-          "approved"
+          "approved",
+          "evidence"
         ],
         "title": "ObjectCheckpointReadResponse"
       },

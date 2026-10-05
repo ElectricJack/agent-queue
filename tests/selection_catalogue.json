@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:d6e7096f2a03ce16b7f35e2bb8eecc65a896fc860829225443e82901b1300125",
+  "digest": "sha256:714af70702088dcebc51ce2d15a68878b4ce05268bc34353b4bb9bd3ca8b25ad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10646,6 +10646,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.auth",
         "src.api.scope",
         "src.commands.contracts.job",
         "src.commands.contracts.object_loop",
@@ -10661,7 +10662,9 @@
         "src.models",
         "src.object_loop.artifacts",
         "src.object_loop.contracts",
-        "src.object_loop.render_profile"
+        "src.object_loop.evidence",
+        "src.object_loop.render_profile",
+        "src.profiles.parser"
       ],
       "markers": [
         "parametrize"

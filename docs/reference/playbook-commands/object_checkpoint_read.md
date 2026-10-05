@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/object_loop.py`](../../../src/commands/contracts/object_loop.py) |
-| Contract fingerprint | `sha256:dd9f40f7af714c80ddca7741ace9c23c379c5efd487c5b9bdeaa8e549efb1a41` |
+| Contract fingerprint | `sha256:53a7ac8a5b8643a47ff2e227979580a459b93fa20e006849c670f2af56a74b25` |
 
 ## Parameters
 
@@ -22,6 +22,8 @@
 |---|---|---|---|---|
 | `object_id` | `string` | yes | — | — |
 | `project_id` | `string` | yes | — | — |
+| `task_id` | `string \| null` | no | `null` | — |
+| `session_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -35,6 +37,7 @@
 | `created` | `boolean \| null` | — |
 | `outcome` | `string \| null` | — |
 | `approved` | `boolean \| null` | — |
+| `evidence` | `object \| null` | — |
 
 Projected into the run receipt: `error`, `error_code`.
 
@@ -51,7 +54,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using object_id, project_id | — | always |
+| Read using object_id, project_id, task_id, session_id | — | always |
 
 <!-- aq:generated:end -->
 

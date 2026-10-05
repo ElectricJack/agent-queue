@@ -1039,7 +1039,7 @@ def candidate_bundle(directory, *, views=("front",), generator=None):
     return document
 
 
-def rendered_capture(directory, document, *, views=("front",), editor=F):
+def rendered_capture(directory, document, *, views=("front",), editor=F, image_bytes=None):
     """A capture directory and the ``retain_capture`` receipt it produces."""
     capture = directory / "capture"
     capture.mkdir(parents=True)
@@ -1053,6 +1053,8 @@ def rendered_capture(directory, document, *, views=("front",), editor=F):
         view = {}
         for key, suffix in (("image", ".png"), ("channels", ".png.channels.bin")):
             data = f"{name}:{key}".encode()
+            if key == "image" and image_bytes is not None:
+                data = image_bytes
             (capture / f"{name}{suffix}").write_bytes(data)
             view[key] = {
                 "sha256": hashlib.sha256(data).hexdigest(),
@@ -1125,7 +1127,7 @@ class _Retention(JobCommandsMixin):
         self.config = SimpleNamespace(data_dir=str(data_dir))
 
 
-def retention(tmp_path, views=("front",)):
+def retention(tmp_path, views=("front",), *, image_bytes=None):
     """Drive the real retention step over a real candidate bundle and capture."""
     data_dir = tmp_path / "data"
     # The production layout: a bundle in the author's workspace and a capture
@@ -1135,7 +1137,7 @@ def retention(tmp_path, views=("front",)):
     bundle.mkdir(parents=True)
     directory.mkdir(parents=True)
     document = candidate_bundle(bundle, views=views)
-    expected, capture = rendered_capture(directory, document, views=views)
+    expected, capture = rendered_capture(directory, document, views=views, image_bytes=image_bytes)
     job = render_job(directory, bundle, expected, capture)
     handler = _Retention(data_dir)
     retained = JobCommandsMixin._retain_capture(
@@ -1478,7 +1480,7 @@ async def test_the_operator_steps_reach_the_supervisor_session_and_not_a_worker(
         kind="session", project_id="p", task_id="t", session_id="w", elevated=False,
     )
     for name in ("formula_cook", "object_loop_start", "object_loop_reconcile",
-                 "object_score_record", "object_checkpoint_read", "object_loop_inputs"):
+                 "object_score_record", "object_loop_inputs"):
         args = {"project_id": "p"}
         assert check_command_scope(name, dict(args), supervisor) is None, name
         refused = check_command_scope(name, dict(args), worker)
@@ -1495,3 +1497,297 @@ async def test_the_operator_steps_reach_the_supervisor_session_and_not_a_worker(
     ):
         refused = await _refusal_for(mixin, name)
         assert refused["success"] is False and needle in refused["error"], name
+
+
+@pytest.fixture
+async def object_evidence_env(command_handler_factory, tmp_path):
+    """Real retained PNGs and two loops, with a live pool/task reader added by tests."""
+    import shutil
+    from io import BytesIO
+    from PIL import Image
+
+    def png(color):
+        stream = BytesIO()
+        Image.new("RGB", (1280, 720), color).save(stream, format="PNG")
+        return stream.getvalue()
+
+    handler = await command_handler_factory()
+    db = handler.db
+    baseline = retention(tmp_path, views=("front", "side"), image_bytes=png("gray"))
+    handler.config.data_dir = str(baseline.data_dir)
+    handler.config.security.capability_enforcement = "enforce"
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_project(Project(id="other", name="Other"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    capture_artifact = next(a for a in baseline.retained["artifacts"]
+                            if a["kind"] == "capture_receipt")
+    candidate = baseline.retained["candidate_artifact"]
+    started = await handler._cmd_object_loop_start({
+        **start_args(), "incumbent_sha256": candidate["sha256"],
+        "incumbent_artifact": {k: candidate[k] for k in ("uri", "sha256")},
+        "incumbent_capture_sha256": capture_artifact["sha256"],
+        "rig_sha256": baseline.retained["rig_sha256"], "mandatory_views": ["front", "side"],
+    })
+    assert started["success"], started
+    after = {name: retain_bytes(png(color), data_dir=baseline.data_dir,
+                               kind="capture_image")
+             for name, color in (("front", "green"), ("side", "blue"))}
+    foreign = retain_bytes(b"foreign object evidence", data_dir=baseline.data_dir,
+                           kind="capture_image")
+    async with db.immediate() as conn:
+        row = (await conn.execute(select(object_loops))).mappings().one()
+        state = {**row.state, "status": "stopped", "intent": None, "wave": [],
+                 "stop_reason": "bounded run finished", "best_receipt": {
+                     "capture_receipts": [{"view_id": name, "image": pointer}
+                                          for name, pointer in after.items()],
+                 }}
+        await conn.execute(update(object_loops).values(state=state))
+        foreign_state = {**state, "object_id": "foreign-rock",
+                         "best_receipt": {"capture_receipts": [
+                             {"view_id": "front", "image": foreign}]}}
+        await conn.execute(insert(object_loops).values(
+            object_id="foreign-rock", project_id="p", epic_task_id="foreign-epic",
+            finalization_task_id="foreign-finalizer", terminal_gate_id="foreign-gate",
+            version=1, state=foreign_state, created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(object_loops).values(
+            object_id="other-project-rock", project_id="other", epic_task_id="other-epic",
+            finalization_task_id="other-finalizer", terminal_gate_id="other-gate",
+            version=1, state={**foreign_state, "project_id": "other"},
+            created_at=1, updated_at=1,
+        ))
+    # The finalizer cannot rely on any capture-run path surviving.
+    shutil.rmtree(baseline.directory)
+    yield SimpleNamespace(handler=handler, db=db, state=state, baseline=baseline,
+                          after=after, foreign=foreign, finalizer=row.finalization_task_id)
+    handler._current_scope = None
+    await db.close()
+
+
+async def object_reader(env, *, lifecycle="pool", purpose="finalize", harness="codex"):
+    from src.api.auth import RequestScope
+    from src.models import Agent, AgentProfile, AgentState, SessionRecord
+    from src.profiles.parser import parse_profile
+
+    profile_id = f"worker-{harness}"
+    parsed = parse_profile((Path("src/profiles/defaults") / profile_id / "profile.md").read_text())
+    assert not parsed.errors
+    await env.db.upsert_profile(AgentProfile(id=profile_id, name=profile_id, harness=harness,
+                                            **parsed.capabilities))
+    task_id = env.finalizer
+    if purpose == "candidate":
+        task_id = "epic.round"
+        await env.db.create_task(Task(
+            id=task_id, project_id="p", parent_task_id="epic", title="Round",
+            description="Round", created_by_kind="object_loop", created_by_id="rock",
+        ))
+        async with env.db.immediate() as conn:
+            await env.db._upsert_meta(task_id, "object_experiment", {
+                "object_id": "rock", "purpose": "candidate", "publish_source": False,
+            }, conn=conn)
+    await env.db.create_agent(Agent(id="reader", name="reader", profile_id=profile_id))
+    await env.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent_id="reader")
+    await env.db.update_agent("reader", state=AgentState.BUSY, current_task_id=task_id)
+    await env.db.create_session(SessionRecord(
+        id="reader-session", task_id=task_id, project_id="p", agent_id="reader",
+        profile_id=profile_id, harness=harness, provider="fake", name="reader",
+        lifecycle=lifecycle, state="running", work_dir="/tmp", epoch="test",
+        instance_token="instance-reader", started_at=time.time(), last_claim_epoch=0,
+    ))
+    return RequestScope(kind="session", session_id="reader-session", project_id="p",
+                        task_id=task_id if lifecycle == "task" else None,
+                        session_instance_token="instance-reader")
+
+
+async def evidence_call(env, scope, command, args):
+    """Exercise HTTP scope injection followed by real enforcing command dispatch."""
+    from dataclasses import asdict
+    from src.api.scope import check_request_scope
+
+    args = dict(args)
+    error = await check_request_scope(command, args, scope, db=env.db)
+    if error:
+        return {"success": False, "error": error}
+    return await env.handler.execute(command, {**args, "_scope": asdict(scope)})
+
+
+async def retained_job_artifact(env, task_id, *, project_id="p"):
+    from src.models import RepoSourceType, Workspace
+    from tests.test_jobs_queries import values
+
+    workspace_id = f"workspace-{task_id}"
+    await env.db.create_workspace(Workspace(
+        id=workspace_id, project_id=project_id, workspace_path=f"/tmp/{workspace_id}",
+        source_type=RepoSourceType.LINK, locked_by_task_id=task_id,
+    ))
+    job = await env.db.submit_job(values(
+        project_id=project_id, task_id=task_id, owner_id=task_id,
+        workspace_id=workspace_id, claim_epoch=0,
+    ))
+    return retain_bytes(f"capture from {job['id']}".encode(), data_dir=env.handler.config.data_dir,
+                        kind="capture_image", origin={"job_id": job["id"]})
+
+
+@pytest.mark.parametrize("bootstrap", [False, True])
+async def test_workers_verify_own_retained_jobs_before_scoring(object_evidence_env, bootstrap):
+    env = object_evidence_env
+    scope = await object_reader(env, purpose="candidate")
+    own = await retained_job_artifact(env, "epic.round")
+    await env.db.create_task(Task(id="foreign-round", project_id="p", title="Foreign round",
+                                 description="Foreign round", status=TaskStatus.IN_PROGRESS))
+    foreign = await retained_job_artifact(env, "foreign-round")
+    if bootstrap:
+        from sqlalchemy import delete
+
+        async with env.db.immediate() as conn:
+            await conn.execute(delete(object_loops).where(object_loops.c.object_id == "rock"))
+    verified = await evidence_call(env, scope, "artifact_verify", {"uri": own["uri"]})
+    assert verified["success"] and verified["verified"], verified
+    refused = await evidence_call(env, scope, "artifact_verify", {"uri": foreign["uri"]})
+    assert not refused["success"] and "out of scope" in refused["error"], refused
+    await env.db.update_task("epic.round", claim_epoch=1)
+    stale = await evidence_call(env, scope, "artifact_verify", {"uri": own["uri"]})
+    assert not stale["success"] and "out of scope" in stale["error"], stale
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+@pytest.mark.parametrize("purpose", ["finalize", "candidate"])
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+async def test_object_workers_read_only_their_own_checkpoint_and_artifacts(
+    object_evidence_env, lifecycle, purpose, harness,
+):
+    env = object_evidence_env
+    scope = await object_reader(env, lifecycle=lifecycle, purpose=purpose, harness=harness)
+    checkpoint = await evidence_call(env, scope, "object_checkpoint_read", {"object_id": "rock"})
+    assert checkpoint["success"], checkpoint
+    for name, comparison in checkpoint["evidence"]["views"].items():
+        assert comparison["before"]["verified"] and comparison["after"]["verified"]
+        assert comparison["before"]["sha256"] != comparison["after"]["sha256"]
+        assert comparison["after"]["sha256"] == env.after[name]["sha256"]
+        for image in comparison.values():
+            verified = await evidence_call(env, scope, "artifact_verify", {"uri": image["uri"]})
+            assert verified["success"] and verified["verified"], verified
+            assert Path(verified["path"]).read_bytes()
+    for object_id in ("foreign-rock", "other-project-rock"):
+        refused = await evidence_call(env, scope, "object_checkpoint_read", {"object_id": object_id})
+        assert not refused["success"] and "out of scope" in refused["error"]
+    refused = await evidence_call(env, scope, "artifact_verify", {"uri": env.foreign["uri"]})
+    assert not refused["success"] and "out of scope" in refused["error"]
+    refused = await evidence_call(env, scope, "artifact_verify", {
+        "uri": env.after["front"]["uri"], "project_id": "other",
+    })
+    assert not refused["success"] and "project_id mismatch" in refused["error"]
+
+
+@pytest.mark.parametrize("invalid", ["stale_claim", "replaced_session", "closed", "prose"])
+async def test_object_evidence_refuses_stale_or_unrelated_held_work(object_evidence_env, invalid):
+    env = object_evidence_env
+    scope = await object_reader(env, purpose="candidate")
+    if invalid == "stale_claim":
+        await env.db.update_task("epic.round", claim_epoch=1)
+    elif invalid == "replaced_session":
+        await env.db.update_session("reader-session", instance_token="replacement")
+    elif invalid == "closed":
+        await env.db.update_task("epic.round", status=TaskStatus.COMPLETED)
+    else:
+        await env.db.update_task("epic.round", created_by_id="foreign-rock",
+                                 description="Read rock and all its evidence")
+    for command, args in (
+        ("object_checkpoint_read", {"object_id": "rock"}),
+        ("artifact_verify", {"uri": env.after["front"]["uri"]}),
+    ):
+        refused = await evidence_call(env, scope, command, args)
+        assert not refused["success"] and "out of scope" in refused["error"], refused
+
+
+@pytest.mark.parametrize("global_admin", [False, True])
+async def test_supervisor_profile_can_read_object_evidence(object_evidence_env, global_admin):
+    from src.api.auth import RequestScope
+    from src.models import AgentProfile, SessionRecord
+    from src.profiles.parser import parse_profile
+
+    env = object_evidence_env
+    parsed = parse_profile(Path("src/profiles/defaults/supervisor/profile.md").read_text())
+    assert not parsed.errors
+    await env.db.upsert_profile(AgentProfile(id="supervisor", name="Supervisor",
+                                            **parsed.capabilities))
+    await env.db.create_session(SessionRecord(
+        id="supervisor", project_id=None if global_admin else "p", profile_id="supervisor",
+        harness="codex", provider="fake", name="supervisor", lifecycle="named",
+        state="running", work_dir="/tmp", epoch="test", instance_token="sup", started_at=1,
+    ))
+    scope = RequestScope(kind="session", session_id="supervisor", elevated=True,
+                         project_id=None if global_admin else "p")
+    checkpoint = await evidence_call(env, scope, "object_checkpoint_read", {
+        "object_id": "rock", "project_id": "p",
+    })
+    assert checkpoint["success"], checkpoint
+    verified = await evidence_call(env, scope, "artifact_verify", {"uri": env.after["side"]["uri"]})
+    assert verified["success"] and verified["verified"], verified
+    # Baseline artifacts need verification before object_loop_start creates a row.
+    await env.db.create_task(Task(id="bootstrap", project_id="p", title="Bootstrap",
+                                 description="Bootstrap", status=TaskStatus.IN_PROGRESS))
+    retained = await retained_job_artifact(env, "bootstrap")
+    verified = await evidence_call(env, scope, "artifact_verify", {"uri": retained["uri"]})
+    assert verified["success"] and verified["verified"], verified
+    unowned = retain_bytes(b"operator retained evidence", data_dir=env.handler.config.data_dir,
+                           kind="capture_image")
+    unowned_result = await evidence_call(env, scope, "artifact_verify", {"uri": unowned["uri"]})
+    assert unowned_result["success"] is global_admin, unowned_result
+    foreign = await evidence_call(env, scope, "object_checkpoint_read", {
+        "object_id": "other-project-rock", "project_id": "other",
+    })
+    assert foreign["success"] is global_admin, foreign
+
+
+async def test_finalizer_receives_verified_comparison_paths_and_explicit_gaps(object_evidence_env):
+    from src.object_loop.artifacts import resolve
+    from src.object_loop.evidence import final_evidence
+
+    env = object_evidence_env
+    reconciled = await env.handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert reconciled["success"], reconciled
+    finalizer = await env.db.get_task(env.finalizer)
+    packet = json.loads(finalizer.description.split("Internal evidence (for the worker):\n")[1])
+    assert set(packet["views"]) == {"front", "side"}
+    for comparison in packet["views"].values():
+        assert comparison["before"]["verified"] and comparison["after"]["verified"]
+        assert "artifacts/objects" in comparison["before"]["path"]
+    resolve(env.handler.config.data_dir, env.after["side"]["uri"]).write_bytes(b"corrupt")
+    packet = final_evidence(env.handler.config.data_dir, env.state)
+    assert packet["views"]["front"]["after"]["verified"]
+    assert not packet["views"]["side"]["after"]["verified"]
+    assert "path" not in packet["views"]["side"]["after"]
+    assert "does not hash" in packet["views"]["side"]["after"]["error"]
+    unchanged = final_evidence(env.handler.config.data_dir, {**env.state, "best_receipt": None})
+    assert unchanged["views"]["front"]["before"] == unchanged["views"]["front"]["after"]
+
+
+async def test_finalize_worker_attaches_all_verified_before_after_images(object_evidence_env):
+    import base64
+
+    env = object_evidence_env
+    scope = await object_reader(env)
+    checkpoint = await evidence_call(env, scope, "object_checkpoint_read", {"object_id": "rock"})
+    assert checkpoint["success"], checkpoint
+    submitted = await evidence_call(env, scope, "review_submit", {
+        "task_id": env.finalizer, "kind": "other", "title": "Rock result",
+        "content": "# Rock result\nBefore and after images for each view.\n",
+    })
+    assert submitted["success"], submitted
+    for name, comparison in checkpoint["evidence"]["views"].items():
+        for label, image in comparison.items():
+            attached = await evidence_call(env, scope, "review_attachment_add", {
+                "review_id": submitted["review_id"], "revision": 1,
+                "data_base64": base64.b64encode(Path(image["path"]).read_bytes()).decode(),
+                "content_type": "image/png", "view_id": name,
+                "candidate_id": label.title(), "caption": label.title(),
+            })
+            assert attached["success"], attached
+            assert attached["attachment"]["sha256"] == image["sha256"]
+    attachments = await env.db.list_review_attachments(submitted["review_id"], 1)
+    assert {(a["view_id"], a["candidate_id"]) for a in attachments} == {
+        (name, label) for name in ("front", "side") for label in ("Before", "After")
+    }
