@@ -321,8 +321,10 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.tick()
     await t.drain()
     [row] = t.status()
-    assert (row["state"], row["detail"], row["running"]) == (
-        "unknown", {"reason": "visit_timeout"}, False)
+    assert (row["state"], row["running"]) == ("unknown", False)
+    assert row["detail"] == {
+        "reason": "visit_timeout", "stage": "fetch_snapshot", "timeout_seconds": 0.01,
+    }
     assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
     await t.stop()
 
@@ -481,9 +483,33 @@ def test_train_reads_no_journal_receipt_or_runtime_truth():
                 continue
             names = {alias.name for alias in node.names}
             assert node.module not in RETIRED_TRUTH, (path, node.module)
-            assert not names & RETIRED_TABLES, (path, names & RETIRED_TABLES)
+            forbidden = names & RETIRED_TABLES
+            if path == "src/integration/train_sources.py" and node.module == "src.database.tables":
+                forbidden -= {"integration_legacy_deliveries"}
+            assert not forbidden, (path, forbidden)
             if node.module in SHARED_NAMES:
                 assert names <= SHARED_NAMES[node.module], (path, names)
+
+
+def test_legacy_delivery_compatibility_is_read_only_and_confined_to_project_proof():
+    """Historical operator attestations are the only legacy read the train needs.
+
+    Scope and completion-generation fences are exercised by train_sources tests;
+    no journal, receipt or runtime becomes a train lifecycle authority.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path("src/integration/train_sources.py").read_text())
+    proof = next(node for node in tree.body
+                 if isinstance(node, ast.AsyncFunctionDef) and node.name == "project_delivered")
+    allowed = {id(node) for node in ast.walk(proof)}
+    uses = [node for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "integration_legacy_deliveries"]
+    assert uses and all(id(node) in allowed for node in uses)
+    for node in ast.walk(proof):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in {"insert", "update", "delete"}
 
 
 def test_activation_runbook_exists_before_canary():

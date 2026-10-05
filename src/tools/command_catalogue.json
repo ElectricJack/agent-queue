@@ -10030,6 +10030,35 @@
         ]
       }
     },
+    "integration_abort_batch": {
+      "name": "integration_abort_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_app_verify": {
       "name": "integration_app_verify",
       "description": "Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each.",
@@ -11951,6 +11980,48 @@
           "fence"
         ],
         "title": "IntegrationResolveConflictArgs",
+        "type": "object"
+      }
+    },
+    "integration_retire_origin": {
+      "name": "integration_retire_origin",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "origin_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Id"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRetireOriginArgs",
         "type": "object"
       }
     },

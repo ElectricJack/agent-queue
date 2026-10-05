@@ -25,6 +25,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -42,6 +43,13 @@ from src.integration.subjects import HeadIdentity
 logger = logging.getLogger(__name__)
 
 TRAIN_KINDS = ("root", "epic", "development")
+_PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
+
+
+def _progress(stage: str, **facts) -> None:
+    progress = _PROGRESS.get()
+    if progress is not None:
+        progress.update(stage=stage, **facts)
 
 
 @dataclass(frozen=True)
@@ -300,13 +308,19 @@ class IntegrationTrain:
         return rows
 
     async def _bounded(self, target: TrainTarget, lane: _Lane) -> None:
+        progress = {"stage": "lane_setup"}
+        token = _PROGRESS.set(progress)
         try:
             visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
             lane.errors += 1
-            visit = TrainVisit(target, "unknown", detail={"reason": "visit_timeout"},
+            visit = TrainVisit(target, "unknown", batch_id=progress.get("batch_id"),
+                               candidate_sha=progress.get("candidate_sha"),
+                               target_sha=progress.get("target_sha"),
+                               detail={"reason": "visit_timeout", **progress,
+                                       "timeout_seconds": self.visit_timeout_seconds},
                                observed_at=self.clock())
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
@@ -315,13 +329,17 @@ class IntegrationTrain:
                                                           "error": str(exc)[:500]},
                                observed_at=self.clock())
             logger.exception("integration train visit failed for %s", target.key)
+        finally:
+            _PROGRESS.reset(token)
         lane.visits += 1
         lane.last = visit
 
     async def visit(self, target: TrainTarget) -> TrainVisit:
         """Observe the target once and take at most one step toward delivery."""
         lane = await self.lane_for(target)
+        _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
+        _progress("select_batch", target_sha=snapshot.target_oid)
         opened = await self.batches.open_batch(target, snapshot, lane.service)
         if opened.batch is None:
             state = "blocked" if opened.blockers else "idle"
@@ -338,8 +356,12 @@ class IntegrationTrain:
         self, target: TrainTarget, lane: TrainLane, snapshot: GitTruthSnapshot,
         batch: Batch, members: tuple[BatchMember, ...],
     ) -> TrainVisit:
+        _progress("build_or_publish", batch_id=batch.id)
         observation = await lane.service.visit(batch, members, snapshot)
+        _progress("observe_candidate", candidate_sha=observation.candidate_sha,
+                  target_sha=observation.target_sha)
         if observation.state == "delivered":
+            _progress("settle_batch")
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
         if observation.state == "conflict":
@@ -348,12 +370,15 @@ class IntegrationTrain:
             # held, moved, source_moved, unknown: the next visit observes again.
             return self._visit(target, observation.state, batch, observation)
         head = candidate_head(batch, observation.candidate_sha)
+        _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
         if result is None or lane.checks.passes(result):
             # The gate now reads this verdict; publish within this visit.
+            _progress("publish_candidate")
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":
+                _progress("settle_batch")
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
@@ -362,7 +387,9 @@ class IntegrationTrain:
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:
         """Request then refresh exact-head checks, outside every lock."""
+        _progress("request_checks")
         await checks.request(head)
+        _progress("refresh_checks")
         return await checks.refresh(head)
 
     async def _repair(
@@ -374,6 +401,7 @@ class IntegrationTrain:
         head = observation.candidate_sha or observation.target_sha
         if not head:
             return self._visit(target, "unknown", batch, observation, result)
+        _progress("allocate_repair")
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open")
         return self._visit(target, "repair", batch, observation, result, repair=repair)

@@ -109,14 +109,40 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `held` | Explicit hold or required review missing | Release the hold or review |
 | `unobserved` | Git or checks could not be read | Fix the fetch or producer; evidence names the cause |
 | `batch_paused` / `batch_aborted` | Operator intent | See below |
+| `batch_inputs_delivered_to_project` | Frozen epic inputs already landed at the project root | Abort the duplicate batch before retiring origins |
+| `visit_timeout` | Visit exceeded its time budget | Inspect `evidence.stage`, target, batch and candidate; fix the named operation |
 
 ## Controls
 
 Batch intent (`open`, `paused`, `aborted`) is the only control the train reads. An
 aborted batch is never rebuilt, and its exact (task, source) inputs are withheld
-from that target until the task's source changes. The `pause`, `resume` and `abort`
-commands that set it arrive with the integration CLI consolidation node; until then
-the control is the rollback below. Do not edit `integration_batches` by hand.
+from that target until the task's source changes. A local operator or live named
+supervisor can preview and apply an abort:
+
+```bash
+aq integration abort-batch <batch-id>
+aq integration abort-batch <batch-id> --apply --reason "inputs already delivered"
+```
+
+The control refuses a promoted candidate and rechecks the target and candidate
+under the batch's publication lock. It records the principal and reason.
+
+The train excludes current completions whose exact retained source is an ancestor
+of the project's default/development ref. Scoped legacy delivery attestations also
+exclude the completion they cover; a reopened completion requires fresh evidence.
+A provenance marker locates the source and alone does not attest delivery.
+
+To retire a delivered task's live branch origin, preview it and use the returned
+`origin_id` in the apply request. Abort any open batch containing that task first:
+
+```bash
+aq integration retire-origin <task-id>
+aq integration retire-origin <task-id> --origin-id <origin-id> --apply --reason "delivered"
+```
+
+Retirement rechecks the completion, origin and delivery proof, removes the origin
+from pending train inputs, and records the principal and reason. Do not edit
+`integration_batches` or branch origins by hand.
 
 ## Roll back
 

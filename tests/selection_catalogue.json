@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
+  "digest": "sha256:84d2679ab2e875c7131cca261a7fa8f98713a0ddf03aaddb0105ed8f89a95232",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8561,12 +8561,15 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.batches",
         "src.integration.ci",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
@@ -8577,8 +8580,10 @@
         "src.integration.repair",
         "src.integration.status",
         "src.integration.train",
+        "src.integration.train_controls",
         "src.integration.train_sources",
-        "src.models"
+        "src.models",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -14755,6 +14760,7 @@
         "src.commands.contracts.models",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.batches",
         "src.models",
         "src.profiles.capabilities"
       ],

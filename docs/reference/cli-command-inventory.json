@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 501,
+    "leaf_commands": 505,
     "registration": {
-      "generated": 341,
-      "handwritten": 160
+      "generated": 343,
+      "handwritten": 162
     },
     "ownership": {
-      "core": 462,
+      "core": 466,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 500
+      "supported": 504
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 341,
-      "registration": 146
+      "dispatch": 343,
+      "registration": 148
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 441
+      "untested": 445
     }
   },
   "commands": [
@@ -3836,6 +3836,39 @@
       }
     },
     {
+      "path": "aq integration abort-batch",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_abort_batch",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "batch_id"
+        ],
+        "optional": [
+          "--reason",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration app-setup",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -4547,6 +4580,40 @@
         ],
         "optional": [
           "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration retire-origin",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_retire_origin",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id"
+        ],
+        "optional": [
+          "--origin-id",
+          "--reason",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -13083,6 +13150,42 @@
       }
     },
     {
+      "path": "aq system integration-abort-batch",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_abort_batch",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id"
+        ],
+        "optional": [
+          "--reason",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system integration-build-candidate",
       "registration": "generated",
       "owner_kind": "core",
@@ -14013,6 +14116,45 @@
           "--fence"
         ],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-retire-origin",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_retire_origin",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id"
+        ],
+        "optional": [
+          "--origin-id",
+          "--reason",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--origin-id"
+        ]
       }
     },
     {

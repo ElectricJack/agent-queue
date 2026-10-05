@@ -186,7 +186,8 @@ class BatchStore:
             ).with_for_update())).scalar_one_or_none()
             yield row == "open"
 
-    async def set_intent(self, batch_id: str, intent: str):
+    async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
+                         authorize=None, operator_id=None, reason=""):
         """Abort before intentional candidate deletion; an abort is irreversible."""
         if intent not in {"open", "paused", "aborted"}:
             raise ValueError("invalid batch intent")
@@ -197,9 +198,23 @@ class BatchStore:
             ).with_for_update())).mappings().one()
             if row["intent"] == "aborted" and intent != "aborted":
                 raise ValueError("aborted batch cannot reopen")
+            if intent == "aborted" and row["lifecycle"] == "promoted":
+                raise ValueError("promoted batch cannot be aborted")
+            if authorize is not None and not await authorize():
+                raise ValueError("batch target or candidate changed; preview again")
+            if dry_run:
+                return
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(intent=intent, updated_at=self.clock()))
+            if operator_id is not None:
+                import json
+
+                await self.db.log_event(
+                    "integration.batch_intent", project_id=row["project_id"],
+                    payload=json.dumps({"batch_id": batch_id, "intent": intent,
+                                        "operator_id": operator_id, "reason": reason}), conn=conn,
+                )
 
 
 class ManagedPublish(Protocol):

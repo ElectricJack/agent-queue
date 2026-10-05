@@ -58,6 +58,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release",
         "integration_cleanup",
         "integration_status",
+        "integration_abort_batch",
+        "integration_retire_origin",
         "integration_trust_manifest",
         "integration_app_verify",
         "integration_eject",
@@ -87,6 +89,31 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class IntegrationAbortBatchArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    reason: str = ""
+    dry_run: bool = True
+
+
+class IntegrationRetireOriginArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    origin_id: str | None = Field(default=None, min_length=1)
+    reason: str = ""
+    dry_run: bool = True
+
+
+class IntegrationTrainControlValue(CommandValue):
+    project_id: str | None = None
+    batch_id: str | None = None
+    task_id: str | None = None
+    origin_id: str | None = None
+    target_ref: str | None = None
+    candidate_sha: str | None = None
+    target_sha: str | None = None
+    intent: str | None = None
+    dry_run: bool | None = None
 
 
 class IntegrationStatusReadArgs(IntegrationStatusArgs):
@@ -2790,6 +2817,24 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    for name, args_model, applied in (
+        ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted"),
+        ("integration_retire_origin", IntegrationRetireOriginArgs, "retired"),
+    ):
+        if registry.get(name) is not None:
+            continue
+        outcomes = ("preview", applied, "refused")
+        contract = _operational_contract(
+            name, args_model, outcomes, successes=frozenset({"preview", applied}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationTrainControlValue,
+        )
+
+        async def train_control(args, ctx, command=name, outcomes=outcomes):
+            return await _hierarchy_adapter(
+                command, args, ctx, IntegrationTrainControlValue, set(outcomes),
+            )
+
+        registry.register(CommandRegistration(name, contract, train_control))
     name = "integration_release_held_gate"
     if registry.get(name) is None:
         contract = _operational_contract(
