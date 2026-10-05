@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:83d9494af94ceb48d5e57e121293ee17b6617b6a65f5ecec674d16ecb915b577",
+  "digest": "sha256:6aaca52f2df165cfcbaa2a2b9e8c3e70fdbb3af295ec9257b480165ae3080b01",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12700,7 +12700,9 @@
         "src.models",
         "src.records.identity"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Deterministic aliases and exact revision reads survive execution lifecycle."
     },
     "tests/test_record_schema.py": {

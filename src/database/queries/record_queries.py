@@ -103,7 +103,10 @@ class RecordQueryMixin:
                 scope_kind="global" if project_id is None else "project",
                 project_id=project_id,
             )
-            .on_conflict_do_nothing(index_elements=[record_scopes.c.scope_key])
+            # Concurrent inserts can conflict on either unique index. The
+            # identity check makes project_id and scope_key canonical, so
+            # either conflict means the same scope already exists.
+            .on_conflict_do_nothing()
         )
         return scope_key
 
