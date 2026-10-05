@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:1162a3a0ced8d459814ee6d10063833be85a86cddc35152d10c414de8c41afef",
+  "digest": "sha256:ade826290197e22736ac21ec8edc014c48ff82a3f1b44f2c77e6af546a4fb783",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8350,6 +8350,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.development",
         "src.integration.engine",
         "src.integration.migration_heads",
