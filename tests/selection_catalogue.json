@@ -588,6 +588,7 @@
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
+        "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
@@ -1407,7 +1408,7 @@
       ]
     }
   },
-  "digest": "sha256:5ef08b78a0fe0038f9223e37936d41a7c112345353c07bbbd5bd7d1cc5c6f9c8",
+  "digest": "sha256:4dfe8d991b2ccb33d33287b05ab01b934ac2cffae13cb640cc889ca52fd53a49",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8354,6 +8355,17 @@
       "markers": [],
       "summary": "Approvals share a bounded project integration settling window."
     },
+    "tests/test_integration_size.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
+    },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
         "integration-trains"
@@ -8489,6 +8501,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.repair",
+        "src.integration.status",
         "src.integration.train",
         "src.integration.train_sources",
         "src.models"
