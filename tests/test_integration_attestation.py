@@ -9,14 +9,14 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import (
-    integration_batches,
     integration_attestation_publications,
+    integration_batches,
     integration_candidate_publications,
     integration_candidate_revisions,
     integration_check_evidence,
+    integration_outbox,
     integration_repair_operations,
     integration_repair_stages,
-    integration_outbox,
 )
 from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialIdentity
@@ -31,7 +31,6 @@ from src.integration.ci import (
 from src.integration.main_promotion import RootAttestationSubject
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
-
 
 SHA = "a" * 40
 BASE = "0" * 40
@@ -1362,21 +1361,22 @@ async def test_two_fresh_services_reserve_one_provider_publication(attestation_d
     }
 
 
+async def _wait_until_publication_phase(phase: asyncio.Event, publication: asyncio.Task) -> None:
+    """Wait for setup without treating a busy CI worker as a publication hang."""
+    waiter = asyncio.create_task(phase.wait())
+    try:
+        await asyncio.wait({waiter, publication}, return_when=asyncio.FIRST_COMPLETED)
+        if not phase.is_set():
+            pytest.fail(f"publication ended before the expected phase: {publication.result()!r}")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
     attestation_db, tmp_path
 ):
-    async def wait_until_phase(phase: asyncio.Event, publication: asyncio.Task) -> None:
-        """Wait for setup without treating a busy CI worker as a publication hang."""
-        waiter = asyncio.create_task(phase.wait())
-        try:
-            await asyncio.wait({waiter, publication}, return_when=asyncio.FIRST_COMPLETED)
-            if not phase.is_set():
-                pytest.fail(f"publication ended before the expected phase: {publication.result()!r}")
-        finally:
-            waiter.cancel()
-            await asyncio.gather(waiter, return_exceptions=True)
-
     now = [10.0]
     old_ready = asyncio.Event()
     release_old = asyncio.Event()
@@ -1412,7 +1412,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
 
     old._finish_publication = pause_old_finalizer
     old_task = asyncio.create_task(old.publish(subject()))
-    await wait_until_phase(old_ready, old_task)
+    await _wait_until_publication_phase(old_ready, old_task)
 
     now[0] = 311.0
     successor_client = ProviderClient()
@@ -1432,7 +1432,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
         clock=lambda: now[0],
     )
     successor_task = asyncio.create_task(successor.publish(subject()))
-    await wait_until_phase(successor_prewrite, successor_task)
+    await _wait_until_publication_phase(successor_prewrite, successor_task)
 
     release_old.set()
     old_result = await asyncio.wait_for(old_task, timeout=1.0)
@@ -1545,16 +1545,22 @@ async def test_live_publication_reservation_blocks_stage_expiry(attestation_db, 
         crash_hook=pause_after_reservation,
     )
     task = asyncio.create_task(publisher.publish(subject()))
-    await asyncio.wait_for(reserved.wait(), timeout=1.0)
+    try:
+        # Bound a deadlock across the scenario, not PostgreSQL setup latency.
+        async with asyncio.timeout(60):
+            await _wait_until_publication_phase(reserved, task)
 
-    result = await RepairService(attestation_db, clock=lambda: 1001.0).expire(
-        "root-op", 0, now=1001.0
-    )
+            result = await RepairService(attestation_db, clock=lambda: 1001.0).expire(
+                "root-op", 0, now=1001.0
+            )
 
-    assert result["outcome"] == "not_due"
-    assert result["action"] == "wait"
-    release.set()
-    assert (await asyncio.wait_for(task, timeout=1.0)).outcome == "published"
+            assert result["outcome"] == "not_due"
+            assert result["action"] == "wait"
+            release.set()
+            assert (await task).outcome == "published"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.fixture(autouse=True)
