@@ -75,6 +75,7 @@ class TrainVisit:
     batch_id: str | None = None
     candidate_sha: str | None = None
     target_sha: str | None = None
+    tree_sha: str | None = None
     checks: str | None = None
     repair: dict | None = None
     detail: dict | None = None
@@ -90,6 +91,7 @@ class TrainVisit:
             "batch_id": self.batch_id,
             "candidate_sha": self.candidate_sha,
             "target_sha": self.target_sha,
+            "tree_sha": self.tree_sha,
             "checks": self.checks,
             "repair": self.repair,
             "detail": self.detail,
@@ -358,6 +360,7 @@ class IntegrationTrain:
             batch_id=batch.id if batch else None,
             candidate_sha=observation.candidate_sha if observation else None,
             target_sha=target_sha,
+            tree_sha=observation.tree_sha if observation else None,
             checks=str(result.state) if result else None,
             repair=repair,
             detail=observation.detail if observation else None,

@@ -816,7 +816,11 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         from src.integration.status import IntegrationStatusService
 
-        service = IntegrationStatusService(self.db)
+        service = IntegrationStatusService(
+            self.db,
+            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            train=getattr(self.orchestrator, "integration_train", None),
+        )
         status = await (service.control_status(project_id) if args.get("control_only")
                         else service.status(project_id))
         return {"outcome": "not_found", "project_id": project_id} if status is None else {

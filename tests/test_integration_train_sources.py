@@ -25,6 +25,7 @@ from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchBusy
 from src.integration.repair import OrdinaryRepairService
+from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 from src.integration.train_sources import (
     DatabaseBatches,
@@ -284,3 +285,49 @@ async def test_train_runs_only_when_git_first_is_active(world):
 
     assert train_for(orchestrator("shadow")) is None
     assert isinstance(train_for(orchestrator("active")), IntegrationTrain)
+
+
+async def test_active_status_projects_the_train_not_subjects(world):
+    db, origin = world.db, world.origin
+    await completed(world, "a")
+    await completed(world, "b", needs=("a",))
+    train, _, _ = lane(world, LocalGit(Path(origin.url)))
+    await train.tick()
+    await train.drain()
+    status = IntegrationStatusService(db, git_first="active", train=train)
+
+    project = await status.control_status("p")
+    assert project["projection_kind"] == "train"
+    assert "subjects" not in project and "journal" not in project
+    [target] = project["targets"]
+    assert (target["state"], target["checks"]) == ("testing", "pending")
+    [batch] = project["batches"]
+    assert batch["id"] == target["batch_id"]
+    assert [m["task_id"] for m in batch["members"]] == ["a", "b"]
+    assert [b["code"] for b in project["blockers"]] == ["checks_pending"]
+    assert project["blockers"][0]["candidate_sha"] == target["candidate_sha"]
+    assert await status.status("p") == project
+
+    task = await status.task_blockers("b")
+    assert task["projection_kind"] == "train"
+    assert [b["code"] for b in task["blockers"]] == ["checks_pending"]
+
+    await BatchStore(db).set_intent(batch["id"], "paused")
+    paused = await status.control_status("p")
+    assert [b["code"] for b in paused["blockers"]] == ["batch_paused"]
+
+    # A restarted daemon has not visited yet; status still names the batch.
+    fresh = await IntegrationStatusService(db, git_first="active").control_status("p")
+    assert fresh["targets"] == []
+    assert [b["code"] for b in fresh["blockers"]] == ["batch_paused"]
+    await BatchStore(db).set_intent(batch["id"], "open")
+    fresh = await IntegrationStatusService(db, git_first="active").control_status("p")
+    assert [b["code"] for b in fresh["blockers"]] == ["awaiting_visit"]
+
+
+async def test_shadow_status_keeps_the_subject_projection(world):
+    await completed(world, "a")
+    project = await IntegrationStatusService(world.db).control_status("p")
+    assert project.get("projection_kind") != "train"
+    assert await IntegrationStatusService(world.db, git_first="active").control_status(
+        "missing") is None
