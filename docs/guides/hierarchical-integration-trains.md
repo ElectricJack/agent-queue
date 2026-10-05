@@ -767,8 +767,9 @@ aq integration authorize-root TASK_ID --apply --head HEAD_SHA --reason "..."
 The row in `integration_root_authorizations` pins the root's exact base, head and
 checkpoint generation and stands in for the kind allowlist only. Policy,
 generation, task type, active batches and their frozen snapshots are untouched.
-Holds, open gates, a rejected review, `reviewed` admission and source CI still
-bind, unrelated roots stay refused, and a moved head needs a new authorization.
+Holds, open gates, a rejected review and `reviewed` admission still bind,
+unrelated roots stay refused, and a moved head needs a new authorization.
+Source PR CI does not gate admission; the batch candidate's exact green CI does.
 Missing legacy root checkpoints still
 require the audited `integration materialize-root` proof; branches without task
 provenance remain outside admission.
@@ -788,12 +789,13 @@ Failed and terminally cancelled source checks file deduplicated repair roots wit
 exact source identity and actionable check links. A newer pending/successful
 rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
 `pull_request` CI; with no required check on its head it is recorded as
-`conflict`, and under `repair.conflict_scope: batch` it enters the train so the
-batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
-when a repaired source is green, both it and its covered original source can
+`conflict`. Every otherwise eligible reviewed source enters the train regardless
+of its PR CI state, including missing checks. The batch repair resolves conflicts
+and the candidate's CI gates delivery. Repair branches preserve source ancestry;
+both a completed reviewed repair and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. If the original
 already reached the default branch through another route, that delivery satisfies
-the repair's ancestry requirement and the completed green repair can enter alone.
+the repair's ancestry requirement and the completed reviewed repair can enter alone.
 Every final candidate still requires its own exact authenticated green CI.
 
 Before filing a repair, AQ asks canonical delivery truth the same way root
