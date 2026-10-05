@@ -60,6 +60,7 @@ class IntegrationPolicyFacts(SubjectFacts):
     """
 
     publisher_fence: Fence | None = None
+    competing_lease: bool = False
 
 
 class OutcomeSchedule(V2Base):
@@ -363,6 +364,7 @@ class CompiledIntegrationPolicy:
         table = self.policy.tables[subject.kind]
         binding = facts.binding()
         binding.setdefault("publisher_fence", None)
+        binding.setdefault("competing_lease", False)
         publisher = binding["publisher_fence"]
         if publisher is not None and publisher["target"] != {
             "repository_id": subject.repository_id,
