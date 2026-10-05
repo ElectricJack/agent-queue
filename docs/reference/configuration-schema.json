@@ -1771,6 +1771,7 @@
         "enabled": true,
         "max_inject_per_prompt": 10,
         "reply_timeout": 120.0,
+        "reply_window_multiplier": 3.0,
         "transcript_tail_fallback": true
       },
       "properties": {
@@ -1788,6 +1789,10 @@
         },
         "reply_timeout": {
           "default": 120.0,
+          "type": "number"
+        },
+        "reply_window_multiplier": {
+          "default": 3.0,
           "type": "number"
         },
         "transcript_tail_fallback": {

@@ -68,6 +68,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
 
 ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
+  - { paths: ["scripts/integration-cutover-evidence.py"], areas: ["integration-trains"] }
   - { paths: ["src/knowledge/__init__.py", "src/knowledge/imports/**", "tests/fixtures/knowledge/**"], areas: ["knowledge-inventory"] }
   - { paths: ["src/records/**", "src/knowledge/**", "src/database/queries/record_queries.py", "src/database/queries/knowledge_queries.py", "tests/record_helpers.py"], areas: ["knowledge-records"] }
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }
@@ -80,6 +81,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
   - { paths: ["docs/**"], areas: ["docs-guards"] }
+  - { paths: ["tests/fixtures/integration_replay/**"], areas: ["epic-trains"] }
   - { paths: ["docs/reference/cli-command-inventory.json"], areas: ["cli-framework"] }
   - { paths: ["docs/reference/cli/**"], areas: ["cli-framework", "install"] }
   - { paths: ["docs/reference/configuration*"], areas: ["config"] }
@@ -138,6 +140,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
   - { paths: ["tests/fixtures/app_mode/**"], areas: ["integration-controls"] }
   - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }
+  - { paths: ["tests/fixtures/integration_replay/**"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
   - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
   - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }

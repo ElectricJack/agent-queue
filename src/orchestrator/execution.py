@@ -1949,8 +1949,15 @@ class ExecutionMixin:
         # (bright-rapids-84.1/.2/.3/.4/.7/.9, pr_url NULL).  Open it to the
         # default branch instead.  Best-effort like the root leg above: a
         # GitHub failure must not undo a committed COMPLETED, and the
-        # ``stranded_child`` line of ``stall.sweep`` says so out loud.
-        if hier_child_leaf and new_status == TaskStatus.COMPLETED:
+        # ``stranded_child`` line of ``stall.sweep`` says so out loud.  Under
+        # ``git_first: active`` the train is every child's collector (its lane
+        # for the parent branch) and no parent Subject runs, so this leg would
+        # read every child as ``no_consumer`` and open it around the train.
+        if (
+            hier_child_leaf
+            and new_status == TaskStatus.COMPLETED
+            and getattr(self.config.integration, "git_first", "shadow") != "active"
+        ):
             from src.integration.stranded_children import (
                 open_stranded_child_pull_request,
             )

@@ -75,6 +75,11 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
+S5, S18 and both S19 fixture claims retry `no_ready_work` within the convergence
+deadline: PostgreSQL `SKIP LOCKED` can skip a READY fixture while another
+transaction holds its row. Other claim outcomes and claims of an unexpected
+task fail immediately. A timeout reports the last claim and the fixture state.
+
 CI covers all 18 scenarios as **19 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
 S17), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
@@ -741,6 +746,31 @@ Assertions must go through a public surface — `aq …` with `--json`, or
 `POST /api/execute`. Reading the database directly would let the kit pass
 while the surface an agent actually uses is broken, which is the whole thing
 it exists to prevent.
+
+## Running the kit with the git-first protocol active
+
+The cutover smoke runs the same kit with `integration.git_first: active`, so the
+reduced train — not the subject runtime — is the delivery path the daemon
+builds. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment verbatim, so
+no script needs to know about the selector:
+
+```bash
+printf 'integration:\n  git_first: active\n' > /tmp/aq-e2e-git-first.yaml
+AQ_E2E_EXTRA_CONFIG=/tmp/aq-e2e-git-first.yaml scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+```
+
+`--reset` drops the database, so it cannot be combined with `--register`;
+`scripts/e2e-daemon.sh start` registers the projects for you. The daemon must
+report `projection_kind: train` from `aq integration status`; if it does not,
+the selector did not take effect and the run proves nothing about the cutover.
+
+This run is a prerequisite of the operator canary in
+[the git-first cutover runbook](git-first-cutover-runbook.md), together with
+`aq test tests/test_integration*.py tests/test_config.py`. Both must be green
+before `active` is selected on a real install. A development-mode delivery here
+does not prove hosted-train operation, and vice versa: the project's actual
+configured mode is proven only by the live canary.
 
 ## The App-mode train proof
 

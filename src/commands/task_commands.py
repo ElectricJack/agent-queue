@@ -5421,7 +5421,11 @@ class TaskCommandsMixin:
         # first so enabling observation cannot hide why work is unscheduled.
         from src.integration.status import IntegrationStatusService
 
-        integration = await IntegrationStatusService(self.db).task_blockers(str(task_id))
+        integration = await IntegrationStatusService(
+            self.db,
+            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            train=getattr(self.orchestrator, "integration_train", None),
+        ).task_blockers(str(task_id))
         if integration is not None and integration["integration_active"]:
             reasons.extend(
                 Reason(code=item["code"], detail=item["detail"], ref=item.get("ref"))

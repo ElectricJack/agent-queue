@@ -90,6 +90,8 @@ class ObjectScoreRecordArgs(CommandArgs):
 class ObjectCheckpointReadArgs(CommandArgs):
     object_id: str = Field(min_length=1, max_length=128, pattern=IDENTIFIER)
     project_id: str
+    task_id: str | None = None
+    session_id: str | None = None
 
 
 class ArtifactVerifyArgs(CommandArgs):
@@ -97,6 +99,9 @@ class ArtifactVerifyArgs(CommandArgs):
 
     uri: str = Field(min_length=1, max_length=2048)
     sha256: str | None = Field(default=None, pattern=SHA256)
+    project_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
 
 
 class ArtifactVerifyValue(CommandValue):
@@ -129,6 +134,10 @@ class ObjectLoopValue(CommandValue):
     approved: bool | None = None
 
 
+class ObjectCheckpointReadValue(ObjectLoopValue):
+    evidence: dict[str, Any] | None = None
+
+
 def register_object_loop_contracts(registry) -> None:
     loop = "Coordinate a bounded, durable object evaluation round."
     definitions = (
@@ -137,7 +146,7 @@ def register_object_loop_contracts(registry) -> None:
          SideEffectClass.COMPOSITE, loop),
         ("object_score_record", ObjectScoreRecordArgs, ObjectLoopValue,
          SideEffectClass.UPDATE, loop),
-        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectLoopValue,
+        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectCheckpointReadValue,
          SideEffectClass.READ, loop),
         ("object_loop_inputs", ObjectLoopInputsArgs, ObjectLoopInputsValue,
          SideEffectClass.READ, loop),
@@ -174,7 +183,7 @@ def register_object_loop_contracts(registry) -> None:
                     capability=name, side_effect=effect, retry_safe=True,
                     idempotency=IdempotencySpec(mode="natural"),
                     receipt_projection=("error", "error_code")
-                    if result_model is ObjectLoopValue else (),
+                    if issubclass(result_model, ObjectLoopValue) else (),
                     outcomes=(
                         OutcomeSpec(name="completed", classification=OutcomeClass.SUCCESS),
                         OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),

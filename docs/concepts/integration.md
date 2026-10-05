@@ -53,6 +53,23 @@ The project's `hierarchical_integration_mode` selects development, hierarchy,
 train or disabled integration. All active modes use the reconciler. This setting
 is distinct from the task's direct or pull-request delivery preference.
 
+## Git-first train
+
+The daemon-wide `integration.git_first` selector chooses the protocol. `shadow`,
+the default, runs the Subject runtimes above and logs Git-first comparisons
+beside them. `active` replaces every Subject runtime with one train: each target
+branch (a project default branch, a parent branch, or an open batch's target) is
+visited by its own bounded task. A visit fetches once, freezes completed sources
+that Git does not yet contain into a batch, merges them onto the target, pushes
+the candidate under `aq/batches/`, requires the exact candidate's checks and
+reviews, and fast-forwards the target with an expected-old push under the
+target's branch lease. A red or conflicting candidate files one ordinary repair
+task. No journal, outbox event or continuation carries progress: Git, cached
+check and review evidence, and batch intent are read again on every visit, so a
+restart or missed notification costs one visit. Status reports `projection_kind:
+train` with per-target visits, open batches and blockers. See the
+[activation runbook](../guides/git-first-train-runbook.md).
+
 Configure reviewed policy routes through the existing project configuration
 command with its expected generation and operator reason. Repository changes are
 refused while a live Subject owns that repository; changing configuration does
@@ -121,6 +138,9 @@ its next claim. See [Git commit identity](../specs/git-identity.md).
 * [Root runtime](../../src/integration/root_runtime.py),
   [parent runtime](../../src/integration/parent_runtime.py) and
   [development runtime](../../src/integration/development_runtime.py).
+* [Git-first train](../../src/integration/train.py), its
+  [database sources](../../src/integration/train_sources.py) and
+  [batches](../../src/integration/batches.py).
 * [Git delivery observer](../../src/integration/delivery_observer.py) and
   [shared receipt records](../../src/integration/records.py).
 * [Integration troubleshooting](../guides/integration-troubleshooting.md).

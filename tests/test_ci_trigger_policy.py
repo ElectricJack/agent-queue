@@ -16,10 +16,12 @@ import pytest
 import yaml
 from _pytest.mark.expression import Expression
 
+from src.integration.batches import candidate_ref
 from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUPS
 
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
+BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
 
 
 def workflow(name='tests.yml'):
@@ -92,6 +94,7 @@ def _pull_request(head_ref, *, head_repository='acme/widgets', draft=False):
     ('main', False),
     ('aq/parent/example/0123/1/' + 'a' * 40, True),
     (CANDIDATE_REF, True),
+    (BATCH_REF, True),
     ('aq/sound-current', False),
     ('aq/feature/example', False),
     ('aq/example', False),
@@ -195,7 +198,9 @@ def test_manual_ci_is_available_without_unused_merge_queue_runs():
 def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     tests = workflow()
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
-    assert tests['on']['push']['branches'] == ['aq/parent/**', 'aq/integration/**']
+    assert tests['on']['push']['branches'] == [
+        'aq/parent/**', 'aq/integration/**', 'aq/batches/**',
+    ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
     assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
     assert tests['jobs']['test']['name'] == 'Tests (${{ matrix.suite.name }})'
@@ -289,6 +294,16 @@ def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, at
 ])
 def test_test_job_runs_once_per_head(job, event_name, pull_request, expected):
     assert _runs(event_name, pull_request, job=job) is expected
+
+
+def test_a_git_first_batch_candidate_is_tested_and_marked_for_main():
+    # `main` accepts only commits carrying `aq-train/candidate`, which the gate
+    # posts after a Tests push run; a batch candidate the train cannot get
+    # marked would wait on checks that never start, then be refused by `main`.
+    assert _pushed(workflow()['on'], BATCH_REF)
+    gate = workflow('train-candidate.yml')['on']['workflow_run']
+    assert gate['workflows'] == ['Tests']
+    assert any(fnmatchcase(BATCH_REF, pattern) for pattern in gate['branches'])
 
 
 def test_skipped_integration_pr_heads_are_covered_by_the_push_trigger():

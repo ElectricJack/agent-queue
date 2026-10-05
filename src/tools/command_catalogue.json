@@ -12048,6 +12048,22 @@
         "type": "object"
       }
     },
+    "integration_train_tick": {
+      "name": "integration_train_tick",
+      "description": "Start one level-triggered visit per idle target (git_first: active).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "integration_transfer_owner": {
       "name": "integration_transfer_owner",
       "description": "Stop and detach the current branch writer before granting a fresh fence.",
@@ -12481,6 +12497,30 @@
           "project_id": {
             "title": "Project Id",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "required": [

@@ -45,6 +45,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "job_result",
         "job_logs",
         "job_retain",
+        # Handlers derive the live held object's provenance and admit only its
+        # checkpoint and retained evidence, independently of profile grants.
+        "artifact_verify",
+        "object_checkpoint_read",
         "wait_register",
         "wait_get",
         "wait_list",

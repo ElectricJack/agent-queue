@@ -293,6 +293,9 @@
         29
       ]
     },
+    "src/api/codegen.py::API_EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/api/codegen.py::_make_route_handler": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -820,6 +823,9 @@
         465,
         465
       ]
+    },
+    "src/cli/auto_commands.py::EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     },
     "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_abort']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -1778,6 +1784,9 @@
     },
     "src/commands/job_commands.py::import from src.object_loop.artifacts import ArtifactError, retain_document, retain_file": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_artifact_verify": {
+      "reason": "Scoped retained-artifact verification command; uses shared job artifacts and object provenance to authorize evidence reads."
     },
     "src/commands/playbook_commands.py::PlaybookCommandsMixin._cmd_update_playbook_source": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -5917,6 +5926,9 @@
         60
       ]
     },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['observe_integration_source_ci']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6125,17 +6137,44 @@
     "src/object_loop/artifacts.py::_write_object": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
+    "src/object_loop/artifacts.py::artifact_uri": {
+      "reason": "Content-addressed URI construction used by the shared retained-artifact store."
+    },
     "src/object_loop/artifacts.py::import from src.jobs.artifacts import atomic_json, open_artifact, read_json": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/object_loop/artifacts.py::metadata": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
+    "src/object_loop/artifacts.py::parse_uri": {
+      "reason": "Digest validation for content-addressed URIs used by the shared retained-artifact store."
+    },
+    "src/object_loop/artifacts.py::resolve": {
+      "reason": "Digest-validated retained-artifact path resolution used by shared job evidence verification."
+    },
     "src/object_loop/artifacts.py::retain_document": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/object_loop/artifacts.py::retain_file": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::verify": {
+      "reason": "Re-hashes retained evidence bytes through the shared job artifact reader."
+    },
+    "src/object_loop/evidence.py::artifact_digests": {
+      "reason": "Derives authorized retained-artifact identities from object state and verified baseline evidence for the shared verification command."
+    },
+    "src/object_loop/evidence.py::baseline_images": {
+      "reason": "Reads verified baseline captures through the shared artifact store to resolve durable evidence pointers."
+    },
+    "src/object_loop/evidence.py::final_evidence": {
+      "reason": "Builds the final Before/After evidence packet by resolving and verifying retained artifacts through the shared store."
+    },
+    "src/object_loop/evidence.py::import from src.jobs.artifacts import open_artifact": {
+      "reason": "Imports the shared job artifact reader for retained baseline evidence."
+    },
+    "src/object_loop/evidence.py::import from src.object_loop.artifacts import ArtifactError, artifact_uri, resolve, verify": {
+      "reason": "Imports shared retained-artifact resolution and verification primitives for object evidence packets."
     },
     "src/orchestrator/context.py::ContextMixin._build_task_context_with_prompt_builder": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -7974,6 +8013,9 @@
         7864,
         7911
       ]
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
     }
   },
   "exclusions": {
@@ -8000,6 +8042,8 @@
     "src/collaboration.py::CLOSE_REASONS['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/commands/escalation_commands.py::EscalationCommandsMixin._cmd_escalation_list": "Generic escalation list; delivery_status refers to notification delivery.",
     "src/commands/escalation_commands.py::EscalationCommandsMixin.emit_escalation_delivery_status": "Notification transport delivery event, not code delivery.",
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_object_checkpoint_read": "Object-loop checkpoint and visual-evidence read only; no Git integration authority or integration storage. The shared retained-artifact primitives it calls remain charged independently.",
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_object_loop_reconcile": "Artifact-only object-loop task/gate scheduling and finalizer evidence handoff; no Git delivery or integration lifecycle. Shared retained-artifact primitives remain charged independently.",
     "src/commands/object_loop_commands.py::_TERMINAL['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -13509,10 +13553,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2243,
+      "line": 2250,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "45a48a62165513e81f3dd939aee37d733d9c1c95a655af7107c8a3b3c73a2617",
+      "owner_fingerprint": "23dc10638046295a15d0cb6e77d260a31b5d88870c765078827ffe1188bcaad1",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"

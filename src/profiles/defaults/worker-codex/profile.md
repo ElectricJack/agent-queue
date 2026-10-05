@@ -67,6 +67,9 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "artifact_verify",
+    "object_checkpoint_read",
+    "job_retain",
     "knowledge_create",
     "knowledge_create_task",
     "knowledge_list",

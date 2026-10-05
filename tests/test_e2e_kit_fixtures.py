@@ -633,6 +633,141 @@ def test_s18_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s18_surfac
         assert detail in str(error.value)
 
 
+@pytest.fixture
+def s19_claim_surfaces(monkeypatch, tmp_path):
+    """Exercise both S19 claims up to the checklist, without a live daemon."""
+    smoke = _load_smoke()
+    planner = smoke.Worker(session_id="planner", token="planner-token")
+    worker = smoke.Worker(session_id="child-worker", token="child-token")
+    workers = {"planner": planner, "child": worker}
+    responses = {
+        stage: [{"result": "claimed", "task": {"id": f"{stage}-task"}, "claim_epoch": 7}]
+        for stage in workers
+    }
+    claims = []
+    created = False
+
+    def refusal(message):
+        return {"_error": smoke.CliError({"error": {"message": message}}, "")}
+
+    def fake_aq(*args, **kwargs):
+        nonlocal created
+        if args[:2] == ("task", "claim"):
+            stage = "planner" if kwargs["token"] == planner.token else "child"
+            claims.append(stage)
+            replies = responses[stage]
+            return replies.pop(0) if len(replies) > 1 else replies[0]
+        if args[:2] == ("task", "deps"):
+            return {"provenance": [{"id": "planner-task", "dep_type": "discovered-from"}]}
+        assert args[:2] == ("task", "create")
+        if "--parent" in args:
+            return refusal("hierarchy.parent_out_of_scope")
+        if smoke.OTHER_PROJECT in args:
+            return refusal("project_id mismatch")
+        if "--root" in args:
+            return refusal("graph.root_needs_parent")
+        if "--dry-run" in args:
+            return {"parent_id": "planner-task"}
+        created = True
+        return {"created": True, "request_id": "graph-request",
+                "nodes": [{"task_id": "child-task"}]}
+
+    def fake_api(command, _args, **_kwargs):
+        if command == "task_children":
+            return {"count": int(created)}
+        assert command == "create_task_graph"
+        return {"code": "graph.root_needs_parent"}
+
+    class ChecklistReached(Exception):
+        pass
+
+    def stop_at_checklist(*args, **_kwargs):
+        assert args == ("prime",)
+        raise ChecklistReached
+
+    monkeypatch.setenv("AQ_E2E_HOME", str(tmp_path))
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api", fake_api)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [worker])
+    monkeypatch.setattr(smoke, "create_task", lambda _title, **kwargs:
+                        "foreign-task" if kwargs.get("project_id") == smoke.OTHER_PROJECT
+                        else "planner-task")
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda *_args, **_kwargs:
+                        {"id": planner.session_id})
+    monkeypatch.setattr(smoke.Worker, "adopt", lambda _session_id: planner)
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "parent_task_id": "planner-task",
+        "profile_id": smoke.PLANNER_PROFILE if task_id == "planner-task" else smoke.POOL_PROFILE,
+        "route_source": "router", "is_blocked": False,
+    })
+    monkeypatch.setattr(smoke, "override_route", lambda *_args: None)
+    monkeypatch.setattr(smoke, "run_aq", stop_at_checklist)
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, workers, responses, claims, clock, ChecklistReached
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s19_retries_empty_claims_before_checking_the_graph_checklist(
+    s19_claim_surfaces, stage, empty_attempts
+):
+    smoke, workers, responses, claims, _clock, reached = s19_claim_surfaces
+    responses[stage][:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    with pytest.raises(reached):
+        smoke.s19_scoped_planner_graph({})
+
+    assert claims.count(stage) == empty_attempts + 1
+    for name, worker in workers.items():
+        assert worker.task_id == f"{name}-task"
+        assert worker.claim_epoch == 7
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s19_does_not_retry_other_claim_failures(s19_claim_surfaces, stage, result):
+    smoke, _workers, responses, claims, clock, _reached = s19_claim_surfaces
+    responses[stage][:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s19_scoped_planner_graph({})
+
+    assert claims.count(stage) == 1
+    assert clock.now == 0
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+def test_s19_rejects_a_claim_of_a_different_task(s19_claim_surfaces, stage):
+    smoke, _workers, responses, claims, _clock, _reached = s19_claim_surfaces
+    responses[stage][0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="leftover-task") as error:
+        smoke.s19_scoped_planner_graph({})
+
+    assert f"{stage}-task" in str(error.value)
+    assert claims.count(stage) == 1
+
+
+@pytest.mark.parametrize("stage", ["planner", "child"])
+def test_s19_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s19_claim_surfaces, stage):
+    smoke, workers, responses, claims, clock, _reached = s19_claim_surfaces
+    responses[stage][:] = [{"result": "no_ready_work", "session": {"id": workers[stage].session_id}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.now == 1
+    assert claims.count(stage) > 1
+    for detail in (f"{stage}-task", "no_ready_work", workers[stage].session_id, "READY", "router"):
+        assert detail in str(error.value)
+
+
 def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(monkeypatch):
     smoke = _load_smoke()
     monkeypatch.setenv("AQ_E2E_HOME", "/tmp/aq-e2e-owned")
