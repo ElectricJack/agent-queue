@@ -278,7 +278,7 @@ class RootPrimitiveAdapters:
                             exclusions=result.get("exclusions", []))
 
     async def merge(self, subject, args):
-        batch, _, members, _ = await self._rows(subject)
+        batch, _, members, operation = await self._rows(subject)
         if args.target_ref != subject.target_ref or not args.regenerate_generated:
             return PrimitiveOutcome.unknown(args.primitive, "construction_target_mismatch")
         expected = [(m["task_id"], m["reviewed_head_sha"], m["source_base_sha"]) for m in members]
@@ -333,6 +333,11 @@ class RootPrimitiveAdapters:
             member = next((m for m in members if m["ordinal"] == ordinal), None)
             if member:
                 return self._answer(args, "conflict", member=member["task_id"], files=[])
+            if await self._frozen_rebuild_conflict(subject, operation):
+                # A rebuild onto a moved main can conflict with the frozen
+                # candidate as a whole. The repair stage owns that exact
+                # main/candidate pair and names no member of the batch.
+                return self._answer(args, "conflict", member=None, files=[])
         if code == "source_moved":
             ordinal = result.get("member_ordinal")
             member = next((m for m in members if m["ordinal"] == ordinal), None)
@@ -340,7 +345,89 @@ class RootPrimitiveAdapters:
                 return self._answer(args, "source_moved", member=member["task_id"])
         if code == "base_moved":
             return self._answer(args, "base_moved")
+        # A rebuild of a stale candidate onto a moved main can supersede the
+        # subject's revision and file a repair before it answers ``built``; the
+        # command then reports the revision change, not a construction outcome.
+        # The filed repair is the durable fact, so answer ``conflict`` (the route
+        # to ``repairing``) and adopt the revision the rebuild left behind.
+        # Otherwise the subject stays in ``testing`` while the batch repairs,
+        # and every later visit is unknown on a moved generation.
+        rebuilt = await self._rebuild_conflict(subject, members)
+        if rebuilt is not None:
+            return self._answer(
+                args,
+                "conflict",
+                member=rebuilt["member"],
+                files=[],
+                subject_values=rebuilt["subject_values"],
+            )
         return self._unknown(args, result)
+
+    async def _frozen_rebuild_conflict(self, subject, operation) -> bool:
+        """Whether the active repair stage froze this rebuild's exact conflict."""
+        if operation is None:
+            return False
+        async with self.db._engine.connect() as conn:
+            dossier = (
+                await conn.execute(
+                    select(t.integration_repair_stages.c.dossier).where(
+                        t.integration_repair_stages.c.operation_id == operation["id"],
+                        t.integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                )
+            ).scalar_one_or_none()
+        return (dossier or {}).get("candidate_rebuild_conflict") is not None
+
+    async def _rebuild_conflict(self, subject, members) -> dict | None:
+        """The member conflict a rebuild filed on the revision it superseded.
+
+        ``integration_build_candidate`` rebuilds a candidate whose construction
+        base is no longer main, and reports ``stale_revision`` when that rebuild
+        advanced the batch before answering ``built``.  The conflicting member
+        result on the batch's current revision is the only durable record of the
+        repair the rebuild dispatched, and the subject must adopt that revision
+        to stay answerable at all.
+        """
+        batch = await self.db.get_integration_batch(subject.batch_id)
+        if batch is None or int(batch["current_revision"]) <= subject.generation:
+            return None
+        generation = int(batch["current_revision"])
+        async with self.db._engine.connect() as conn:
+            revision = (
+                (
+                    await conn.execute(
+                        select(t.integration_candidate_revisions).where(
+                            t.integration_candidate_revisions.c.batch_id == subject.batch_id,
+                            t.integration_candidate_revisions.c.revision == generation,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            ordinal = (
+                await conn.execute(
+                    select(t.integration_candidate_member_results.c.member_ordinal)
+                    .where(
+                        t.integration_candidate_member_results.c.batch_id == subject.batch_id,
+                        t.integration_candidate_member_results.c.revision == generation,
+                        t.integration_candidate_member_results.c.result == "conflict",
+                    )
+                    .order_by(t.integration_candidate_member_results.c.member_ordinal)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        member = next((m for m in members if m["ordinal"] == ordinal), None)
+        if revision is None or member is None:
+            return None
+        return {
+            "member": member["task_id"],
+            "subject_values": {
+                "head_sha": revision["head_sha"],
+                "base_sha": revision["construction_base_sha"],
+                "generation": generation,
+            },
+        }
 
     async def publish(self, subject, args):
         batch, revision, _, _ = await self._rows(subject)
