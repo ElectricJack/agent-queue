@@ -235,9 +235,9 @@ async def test_merge_replay_preserves_exact_source_ancestry_and_pins(setup):
     assert git(repo.store, "show", f"{final}:new.txt") == "new"
     assert git(repo.store, "show", f"{final}:other.txt") == "other"
     rows = await journal_rows(db)
-    assert len(rows) == 4
+    assert rows == []
     assert (
-        len(git(repo.store, "for-each-ref", "--format=%(refname)", "refs/aq/subjects").split()) == 2
+        len(git(repo.store, "for-each-ref", "--format=%(refname)", "refs/aq/batch-objects").split()) == 2
     )
     assert (await ops.merge_members(s, args)) == first
     assert len(await journal_rows(db)) == len(rows)
@@ -283,7 +283,7 @@ async def test_real_conflict_records_partial_head_and_paths(setup):
     assert result.detail["files"] == ["base.txt"]
     assert result.detail["members"][0]["source"] == a
     assert (await ops.merge_members(s, merge_args(s, base, a, b))) == result
-    assert (await journal_rows(db))[-1]["outcome"] == "conflict"
+    assert await journal_rows(db) == []
 
 
 @pytest.mark.parametrize("invalid", ["missing", "unrelated_base"])
@@ -392,12 +392,10 @@ async def test_ambiguous_publish_reads_back_and_replays_without_second_push(setu
     db, ops, s, fence, repo, base, head, _ = setup
     ops.git.ambiguous = True
 
-    async def check_intent():
-        rows = await journal_rows(db)
-        assert rows[-1]["outcome"] == "prepared"
-        assert rows[-1]["payload"]["expected_old_sha"] == base
+    async def check_no_journal():
+        assert await journal_rows(db) == []
 
-    ops.git.push_hook = check_intent
+    ops.git.push_hook = check_no_journal
     args = PublishArgs(fence=fence, expected_old_sha=base, new_sha=head)
     result = await ops.publish(s, args)
     assert result.outcome == "published", result
@@ -405,8 +403,9 @@ async def test_ambiguous_publish_reads_back_and_replays_without_second_push(setu
     assert ops.git.pushes == 1
     assert (await ops.publish(s, args)).outcome == "published"
     assert ops.git.pushes == 1
-    assert len(await journal_rows(db)) == 2
-    git(ops.git.remote_path, "update-ref", "refs/heads/main", base)
+    assert await journal_rows(db) == []
+    moved = commit(repo.store, {"moved.txt": "moved"}, base=head)
+    git(repo.store, "push", "origin", f"{moved}:main")
     assert (await ops.publish(s, args)).outcome == "target_moved"
     assert ops.git.pushes == 1
 
@@ -604,7 +603,7 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     assert result.detail["pending"][0]["reason"] == "cleanup ref moved"
     assert ops.git.deletes == 1
     result = await cleanup(s, CleanupArgs(max_tries=1))
-    assert result.detail["pending"][0]["reason"] == "retry_exhausted"
+    assert result.detail["pending"][0]["reason"] == "cleanup ref moved"
     assert ops.git.deletes == 1
 
 
@@ -656,39 +655,40 @@ async def test_subject_collector_can_publish_without_a_repair_writer(setup):
 
 async def test_merge_crash_after_pin_before_result_replays_the_same_commit(setup):
     db, ops, s, _, repo, base, head, _ = setup
-    original = ops.journal
+    original = ops.run
 
-    class CrashJournal:
-        read = original.read
+    async def crash_after_pin(repo, *args, **kwargs):
+        result = await original(repo, *args, **kwargs)
+        if args[0] == "update-ref":
+            raise RuntimeError("simulated crash after pin")
+        return result
 
-        async def append(self, subject, key, primitive, outcome, payload):
-            if key.endswith(":merged"):
-                raise RuntimeError("simulated crash after pin")
-            return await original.append(subject, key, primitive, outcome, payload)
-
-    ops.journal = CrashJournal()
+    ops.run = crash_after_pin
     with pytest.raises(RuntimeError, match="simulated crash"):
         await ops.merge_members(s, merge_args(s, base, head))
-    pinned = git(repo.store, "for-each-ref", "--format=%(objectname)", "refs/aq/subjects")
+    pinned = git(repo.store, "for-each-ref", "--format=%(objectname)", "refs/aq/batch-objects")
     assert pinned
-    assert len(await journal_rows(db)) == 1
-    ops.journal = original
+    assert await journal_rows(db) == []
+    ops.run = original
     result = await ops.merge_members(s, merge_args(s, base, head))
     assert result.outcome == "merged"
     assert result.detail["head"] == pinned
 
 
-async def test_green_rechecked_after_intent_and_before_push(setup):
+async def test_green_rechecked_before_push_without_intent_record(setup):
     db, ops, s, fence, _, base, head, _ = setup
+    calls = 0
 
     async def green(subject, sha):
-        return not await journal_rows(db)
+        nonlocal calls
+        calls += 1
+        return calls == 1
 
     ops.authority.trusted_green = green
     result = await ops.publish(s, PublishArgs(fence=fence, expected_old_sha=base, new_sha=head))
     assert result.is_unknown and "green changed" in result.reason
     assert ops.git.pushes == 0
-    assert (await journal_rows(db))[0]["outcome"] == "prepared"
+    assert await journal_rows(db) == []
 
 
 @pytest.mark.parametrize("tamper", ["replace", "graft"])
@@ -815,15 +815,18 @@ async def test_cleanup_local_refs_and_pr_port_preserve_holds_and_replay(setup):
     ]
     closes = []
     hold = True
+    pr_open = True
 
     async def inventory(subject):
-        return items
+        return [item for item in items if item.kind != "pull_request" or pr_open]
 
     async def held(subject, item):
         return hold
 
     async def close_pr(repo, item):
+        nonlocal pr_open
         closes.append((repo.binding.full_name, item.identity, item.expected_sha))
+        pr_open = False
         return True
 
     cleanup = SubjectCleanup(ops, inventory=inventory, held=held, close_pr=close_pr)

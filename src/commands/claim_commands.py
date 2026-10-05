@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 
 # Re-exported for backwards compatibility: the claim-file helpers moved to the
 # leaf module ``src.claim_file`` so ``src.sessions.reconciler`` can use them
@@ -591,6 +592,16 @@ class ClaimCommandsMixin:
                 return self._simple(
                     ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
                 )
+        prerequisite_view = None
+        observer = getattr(self.db, "_delivery_observer", None)
+        if (hierarchy_mode and hierarchy_mode.hierarchical and observer is not None
+                and getattr(observer, "truth", None) is not None):
+            prerequisite_view = await observer.prerequisite_view(project.id, task_id=want_id)
+            if not await prerequisite_view.fresh():
+                return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)
+            hierarchy_mode = replace(hierarchy_mode, delivered_prerequisite_ids=frozenset(
+                tid for tid, proof in prerequisite_view.evidence.items() if proof.satisfied
+            ))
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -676,6 +687,20 @@ class ClaimCommandsMixin:
                     return self._simple(
                         ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
                     )
+                if prerequisite_view is not None:
+                    from sqlalchemy import select
+
+                    from src.database.tables import tasks
+
+                    proof_ids = sorted(prerequisite_view.evidence)
+                    if proof_ids:
+                        await conn.execute(select(tasks.c.id).where(
+                            tasks.c.id.in_(proof_ids),
+                        ).order_by(tasks.c.id).with_for_update())
+                    verified = await prerequisite_view.verified_on(conn, proof_ids)
+                    hierarchy_mode = replace(hierarchy_mode, delivered_prerequisite_ids=frozenset(
+                        tid for tid, proof in verified.items() if proof.satisfied
+                    ))
                 tid = await self.db.select_ready_for_profile(
                     conn,
                     project_id=session.project_id,

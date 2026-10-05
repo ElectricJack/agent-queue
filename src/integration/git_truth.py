@@ -109,7 +109,7 @@ class GitTruthSnapshot:
         )
         return replace(self, observation=replace(
             observation, target_ref=target_ref, target_oid=oid,
-            error=observation.error if self.retry_at is not None else (
+            error=observation.error if observation.error not in {None, "missing_target"} else (
                 None if is_valid_git_oid(oid) else "missing_target"
             ),
         ))
@@ -118,6 +118,56 @@ class GitTruthSnapshot:
         self, request: DeliveryRequest, *, source_base: str | None = None
     ) -> GitDeliveryEvidence:
         return await is_delivered(self, request, source_base=source_base)
+
+    async def evaluate_many(self, requests):
+        return {request.task_id: await self.is_delivered(request) for request in requests}
+
+    async def is_fresh(self, **kwargs):
+        return await self.observation.is_fresh(**kwargs)
+
+    @property
+    def error(self):
+        return self.observation.error
+
+    async def contains_source(self, task_id: str, source_oid: str, source_base: str) -> bool | None:
+        """Whole frozen input proof, for batches without a mutable task projection.
+
+        The caller separately revalidates ordinary identity and authorization.
+        None is an unavailable observation and never permission to collect.
+        """
+        observed = self.observation
+        if observed.error or not all(is_valid_git_oid(oid) for oid in (
+            source_oid, source_base, observed.target_oid,
+        )):
+            return None
+        try:
+            facts = self.truth._pair(observed, source_oid)
+            if facts.ancestor is None:
+                facts.ancestor = await observed.git.ais_ancestor(
+                    observed.store, source_oid, observed.target_oid, strict=True,
+                )
+            if facts.ancestor is None:
+                return None
+            if facts.ancestor:
+                return True
+            identity = f"{task_id}@{source_oid}"
+            if identity not in facts.trailers:
+                facts.trailers[identity] = bool(await observed.git.alog_grep_trailer(
+                    observed.store, observed.target_oid, "AQ-Source", identity,
+                ))
+            if facts.trailers[identity]:
+                return True
+            if source_base not in facts.patches:
+                facts.patches[source_base] = await _whole_patch(
+                    observed, source_oid, source_base, observed.target_oid,
+                )
+            if facts.patches[source_base]:
+                return True
+            if facts.equal_tree is None:
+                facts.equal_tree = await _equal_tree(observed, source_oid, observed.target_oid)
+            return facts.equal_tree
+        except (GitError, OSError, ValueError):
+            return None
 
     async def usable(
         self, evidence: GitDeliveryEvidence, current_request: DeliveryRequest,

@@ -4797,6 +4797,7 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
         "src.integration.source_trailer",
