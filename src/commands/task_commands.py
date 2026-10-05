@@ -90,6 +90,15 @@ _STANDING_PARENT_LOCK_BUDGET_SECONDS = 10.0
 #: Upper bound of the jittered sleep between attempts.
 _STANDING_PARENT_LOCK_POLL_SECONDS = 0.05
 
+#: Non-IN_PROGRESS statuses from which ``aq task restart`` re-establishes an
+#: integration branch reservation before the task becomes READY.  Both are
+#: where a stopped writer leaves its task: an integration repair delegate
+#: (``src/integration/repair.py`` dispatches PAUSED, a died session's claim
+#: reconciliation lands BLOCKED), and a managed producer whose writer was
+#: stopped.  A READY task already holds the frontier; a terminal one is not
+#: restartable work at all.
+_RESTART_RESERVATION_STATUSES = frozenset({TaskStatus.BLOCKED, TaskStatus.PAUSED})
+
 
 class _StandingParentBusy(Exception):
     """The standing-parent lock stayed held for the whole retry budget."""
@@ -4375,17 +4384,27 @@ class TaskCommandsMixin:
         if task.status == TaskStatus.IN_PROGRESS:
             return {"error": "Task is currently in progress. Stop it first."}
         project = await self.db.get_project(task.project_id)
-        if (
-            task.status == TaskStatus.BLOCKED
-            and project is not None
+        managed = (
+            project is not None
             and project.hierarchical_integration_mode in {"hierarchy", "train"}
-            and await self.db.get_integration_checkpoint(task.id)
-        ):
-            from src.integration.canonical_reservation import reserve_canonical_task_branch
+        )
+        if managed and task.status in _RESTART_RESERVATION_STATUSES:
+            # A repair delegate owns no branch origin of its own: the claim
+            # frontier admits it only on the exact reserved ``repair`` fence of
+            # its operation's branch, so it restarts through that handoff
+            # rather than through a bare status flip.
+            if task.created_by_kind == "integration_repair":
+                return await self._restart_repair_delegate(task)
+            if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
+                task.id
+            ):
+                from src.integration.canonical_reservation import (
+                    reserve_canonical_task_branch,
+                )
 
-            reservation = await reserve_canonical_task_branch(self.db, task.id)
-            if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                return {"error": f"Cannot restart integration task: {reservation['reason']}"}
+                reservation = await reserve_canonical_task_branch(self.db, task.id)
+                if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                    return {"error": f"Cannot restart integration task: {reservation['reason']}"}
         old_status = task.status.value
         await self.db.transition_task(
             args["task_id"],
@@ -4399,6 +4418,80 @@ class TaskCommandsMixin:
             "title": task.title,
             "previous_status": old_status,
         }
+
+    async def _restart_repair_delegate(self, task) -> dict:
+        """Restart an integration repair delegate through its own reservation.
+
+        The pool claim frontier admits a repair delegate only on the exact
+        reserved ``repair`` fence its operation holds on the operation's
+        branch (:func:`src.database.queries.hierarchy_queries._reserved_repair_branch`),
+        never through a branch origin of its own, so a restart that only moved
+        the row to READY stranded a task no worker could ever claim. The fence
+        is re-established here with the same fenced handoff ``aq integration
+        reserve-owner`` uses -- which also restores the operation's preserved
+        repair progress -- and a handoff that cannot prove the branch is back
+        leaves the task exactly as the restart found it.
+
+        The READY write comes first because the fenced handoff only admits a
+        dispatchable writer, so a refused handoff is undone rather than left
+        behind. A claim waiter woken by that READY re-reads the row and skips
+        it; nothing claims a READY delegate whose fence was never restored.
+        """
+        previous = (task.status, task.retry_count, task.assigned_agent_id)
+        await self.db.transition_task(
+            task.id,
+            TaskStatus.READY,
+            context="restart_task",
+            retry_count=0,
+            assigned_agent_id=None,
+        )
+        reservation = await self._integration_repair_service().reserve_delegate(task.id)
+        if reservation["outcome"] in {"acquired", "already_reserved"}:
+            return {
+                "restarted": task.id,
+                "title": task.title,
+                "previous_status": previous[0].value,
+                "reservation": reservation["outcome"],
+            }
+        await self._undo_refused_restart(task, previous)
+        detail = reservation.get("dispatch", {}).get("reason") or reservation.get("reason")
+        return {
+            "error": (
+                f"Cannot restart integration task {task.id}: its repair operation "
+                f"did not hand the branch back to this delegate ({detail}). Run "
+                f"`aq integration reserve-owner --task-id {task.id}`; if the fence is "
+                f"still held by the stopped writer, free it first with "
+                f"`aq integration release-owner --task-id {task.id}`."
+            )
+        }
+
+    async def _undo_refused_restart(self, task, previous) -> None:
+        """Put a refused repair restart back where it found *task*.
+
+        ``READY -> BLOCKED`` is not a state-machine edge, so the restore is
+        forced: it is a rollback, not a new disposition, and it must not stamp
+        ``blocked_terminal``. A manual pause taken while the handoff ran keeps
+        its hold and refuses the write; the task is then PAUSED, which is
+        equally off the claim frontier, so a refusal never strands it.
+        """
+        from src.database.queries.task_queries import StaleClaim
+
+        try:
+            await self.db.transition_task(
+                task.id,
+                previous[0],
+                context="restart_task_refused",
+                force=True,
+                retry_count=previous[1],
+                assigned_agent_id=previous[2],
+            )
+        except StaleClaim as exc:
+            logger.warning(
+                "restart_task: could not restore %s after a refused repair "
+                "restart (%s); it is held, not claimable",
+                task.id,
+                exc,
+            )
 
     async def _cmd_reopen_with_feedback(self, args: dict) -> dict:
         """Reopen a completed/failed task with feedback appended to its description.
