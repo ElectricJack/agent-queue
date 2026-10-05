@@ -158,6 +158,47 @@ async def file_and_lease(env, subject):
     return await current(env, subject), Fence.model_validate(result.detail["fence"])
 
 
+async def test_managed_writer_expiry_allows_successor_without_stop_or_workspace_proof(env):
+    from src.integration.lock import BranchLock
+
+    env.writers.managed_leases = True
+    subject, fence = await file_and_lease(env, await make_subject(env))
+    async with env.db.immediate() as conn:
+        # Stranded compatibility bindings are not managed eligibility proofs.
+        await conn.execute(
+            update(integration_branch_owners).values(
+                handoff_state="handoff_pending", workspace_id="stranded", session_id="dead"
+            )
+        )
+    env.now += 61
+    assert (await env.writers.lease(subject, leasing(subject))).outcome == "stale"
+    successor = await BranchLock(env.db, clock=lambda: env.now).acquire(
+        fence.target, "successor", role="repair"
+    )
+    assert successor.token > fence.token
+    with pytest.raises(StaleFence):
+        await env.writers.ownership.assert_current(fence)
+    env.probe.assert_not_awaited()
+
+
+async def test_managed_writer_refuses_legacy_stop_saga_and_releases_by_identity(env):
+    from src.integration.lock import BranchLock
+
+    env.writers.managed_leases = True
+    subject, fence = await file_and_lease(env, await make_subject(env))
+    result = await env.writers.stop_proof(
+        subject, WriterStopProofArgs(task_id=fence.owner_id, fence_token=fence.token)
+    )
+    assert result.outcome == "unknown"
+    assert result.reason == "managed_ref_uses_lease_release"
+    env.probe.assert_not_awaited()
+    lock = BranchLock(env.db, clock=lambda: env.now)
+    assert await lock.release(fence)
+    successor = await lock.acquire(fence.target, "successor")
+    assert not await lock.release(fence)
+    assert (await lock.get(fence.target)).grant() == successor
+
+
 @pytest.mark.parametrize(
     "kind,role",
     [

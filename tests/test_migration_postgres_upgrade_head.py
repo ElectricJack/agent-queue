@@ -949,3 +949,57 @@ async def test_upgrade_repairs_guards_on_original_squashed_database():
         assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
     finally:
         await conn.close()
+
+
+async def test_ref_lease_upgrade_preserves_legacy_shadow_owner_and_constraints():
+    """Stage 2 adds fields on an old install without rewriting live ownership."""
+    dsn = await create_scratch_database("reflease72")
+    before = _alembic_pg(dsn, "upgrade", "a00000000071")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The baseline uses live metadata; reproduce the actual prior shape.
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP CONSTRAINT ck_integration_branch_owners_lease_binding"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP CONSTRAINT ck_integration_branch_owners_lease_fence"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP COLUMN holder, DROP COLUMN fence"
+        )
+        await conn.execute(
+            "INSERT INTO integration_branch_owners "
+            "(id, repository_id, ref, owner_id, owner_role, fence_token, handoff_state, "
+            "session_id, workspace_id, confirmed_workspace_id, expires_at, created_at, updated_at) "
+            "VALUES ('legacy', 'r', 'aq/epic', 'worker', 'repair', 41, 'handoff_pending', "
+            "'session', 'workspace', 'confirmed', NULL, 1, 2)"
+        )
+        original = dict(
+            await conn.fetchrow("SELECT * FROM integration_branch_owners WHERE id='legacy'")
+        )
+        constraints = set(
+            await conn.fetch(
+                "SELECT conname FROM pg_constraint WHERE conrelid='integration_branch_owners'::regclass"
+            )
+        )
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        row = dict(await conn.fetchrow("SELECT * FROM integration_branch_owners WHERE id='legacy'"))
+        assert row.pop("holder") is None
+        assert row.pop("fence") is None
+        assert row == original
+        installed = set(
+            await conn.fetch(
+                "SELECT conname FROM pg_constraint WHERE conrelid='integration_branch_owners'::regclass"
+            )
+        )
+        assert constraints <= installed
+    finally:
+        await conn.close()
+    # Fresh baseline already contains the new columns/constraints: upgrade is
+    # inspect-guarded and idempotent for that path too (the parity test above).

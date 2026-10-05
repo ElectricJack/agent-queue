@@ -533,6 +533,7 @@
         "tests/test_integration_eject.py",
         "tests/test_integration_finished_owners.py",
         "tests/test_integration_identity_rebind.py",
+        "tests/test_integration_lock.py",
         "tests/test_integration_owner_recovery.py",
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
@@ -1416,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:0237102f2fb939cfe59ad49f577ae406a1fdbb0c46f18ad5e77b75dec75078a1",
+  "digest": "sha256:3b9205ce70b446d3f3cc7e840291f8a97df9ebebc2bde57a065ba2509cd3f8a2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7861,6 +7862,26 @@
       "markers": [],
       "summary": "Evidence and dry-run behavior for terminal legacy repository binding."
     },
+    "tests/test_integration_lock.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
+    },
     "tests/test_integration_main_promotion.py": {
       "areas": [
         "integration-promotion"
@@ -8883,6 +8904,7 @@
       "imports": [
         "src.database.tables",
         "src.git.manager",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
@@ -15422,7 +15444,11 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership"
+      ],
       "markers": [],
       "summary": "Pool launch/exit metadata using fake providers and disposable workspaces."
     },
