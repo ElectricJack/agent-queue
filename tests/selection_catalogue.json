@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:6aaca52f2df165cfcbaa2a2b9e8c3e70fdbb3af295ec9257b480165ae3080b01",
+  "digest": "sha256:d6e7096f2a03ce16b7f35e2bb8eecc65a896fc860829225443e82901b1300125",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8079,6 +8079,7 @@
         "src.integration.hierarchy",
         "src.integration.lock",
         "src.integration.models",
+        "src.integration.noop_repair",
         "src.integration.outbox",
         "src.integration.owner_recovery",
         "src.integration.ownership",
