@@ -1,5 +1,6 @@
 """Shared selection, access rechecks, exact pins and conservative budgets."""
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -321,6 +322,95 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
             assert provider.starts == []
     if launch == "success":
         assert provider.starts[0].prompt.endswith(worker_bundle.to_markdown())
+
+
+async def test_prime_degrades_to_the_document_when_the_profile_cannot_read_the_corpus(
+    command_handler_factory, caplog,
+):
+    """``aq prime`` is a delivery path: the corpus is an optional extra.
+
+    A profile without the ``knowledge_show`` grant — the shipped
+    ``worker-opencode`` template shape — used to get
+    ``Error: Command 'prime' failed: record.forbidden`` and therefore no role,
+    rules, deliverables or completion protocol. It gets the whole document
+    minus the knowledge section, and the refusal is logged, not returned.
+    """
+    from src.commands.principal import principal_context
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    config.knowledge.context.discovery_max_tokens = 4000
+    # ``worker_principal`` seeds the project record scope the corpus writes into.
+    ungranted = await worker_principal(db, "ungranted", grants=["prime"])
+    granted = await worker_principal(db, "granted", grants=[
+        "prime", "knowledge_show", "knowledge_search", "knowledge_context_deliver",
+    ])
+    created = await KnowledgeService(db, config.knowledge).create(
+        principal=TRUSTED_LOCAL, project_id="p", idempotency_key="prime-record",
+        snapshot=snapshot(title="Held task", summary="Common retained knowledge"),
+    )
+
+    def scope_for(principal):
+        return {"kind": "session", "session_id": principal.session_id, "project_id": "p",
+                "session_instance_token": principal.session_instance_token,
+                "task_id": None, "elevated": False}
+
+    with (caplog.at_level(logging.WARNING, logger="src.commands.surface_commands"),
+          principal_context(replace(ungranted, task_id=None))):
+        refused = await handler.execute("prime", {"_scope": scope_for(ungranted)})
+    assert refused["success"], refused
+    assert "context_bundle" not in refused and "context_state" not in refused
+    # The document is intact: same section set as a granted prime, and the
+    # withheld evidence appears nowhere in it.
+    assert [s["key"] for s in refused["sections"]]
+    assert next(s for s in refused["sections"] if s["key"] == "l2_context")["body"] == ""
+    assert created["record_id"] not in refused["body"]
+    assert "Common retained knowledge" not in refused["body"]
+    assert "Held task" in refused["body"]
+    logged = [r for r in caplog.records if r.name == "src.commands.surface_commands"]
+    assert len(logged) == 1
+    assert "record.forbidden" in logged[0].getMessage()
+    assert "knowledge_show" in logged[0].getMessage()
+    assert f"profile={ungranted.profile_id}" in logged[0].getMessage()
+
+    with principal_context(replace(granted, task_id=None)):
+        served = await handler.execute("prime", {"_scope": scope_for(granted)})
+    assert served["success"], served
+    assert served["context_state"] == "prepared"
+    assert [s["key"] for s in served["sections"]] == [s["key"] for s in refused["sections"]]
+    assert "Common retained knowledge" in served["body"]
+
+
+async def test_prime_still_fails_a_malformed_bundle_request_or_a_claim_fence(
+    command_handler_factory, monkeypatch,
+):
+    """Degrading is for corpus refusals only — not for a fence on the claim."""
+    from src.records.models import RecordError
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    worker = await worker_principal(db, "fenced", grants=[
+        "prime", "knowledge_show", "knowledge_search",
+    ])
+    worker = replace(worker, task_id=None)
+    scope = {"kind": "session", "session_id": worker.session_id, "project_id": "p",
+             "session_instance_token": worker.session_instance_token, "task_id": None,
+             "elevated": False}
+
+    from src.commands.principal import principal_context
+
+    class Refusing:
+        async def prepare(self, **kwargs):
+            raise RecordError("record.stale_claim")
+
+    monkeypatch.setattr(handler, "_knowledge_context_service", lambda: Refusing())
+    with principal_context(worker):
+        refused = await handler.execute("prime", {"_scope": scope})
+    assert refused["error_code"] == "record.stale_claim", refused
 
 
 async def test_prime_command_returns_prepared_bundle_and_delivery_command_records_usage(

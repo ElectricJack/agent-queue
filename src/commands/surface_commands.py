@@ -29,6 +29,27 @@ import time
 
 logger = logging.getLogger(__name__)
 
+#: ``prime`` is a delivery path, not a knowledge command: the startup document
+#: is the deliverable and the context bundle is an optional section on it. So a
+#: refusal that only means "this principal cannot read the corpus" — no
+#: ``knowledge_show`` grant, a project the corpus does not carry, no live
+#: attempt to own a bundle — degrades to the document alone and is logged
+#: instead of returned. Every other refusal is real: a malformed request
+#: (``record.invalid_*``) or a fence on the caller's claim
+#: (``record.stale_claim``) fails the command, and so does a bundle that was
+#: prepared and then refused at attach time by ``with_context``.
+_OPTIONAL_CONTEXT_REFUSALS = frozenset({
+    "record.forbidden",
+    "record.not_found",
+    "context.disabled",
+    "knowledge.disabled",
+    "context.execution_unavailable",
+})
+
+#: What a project-scoped bundle costs the profile that may prepare one. Named in
+#: the refusal log line so an operator can see which grant to add.
+_CONTEXT_BUNDLE_COMMANDS = ("knowledge_show", "knowledge_search")
+
 
 class SurfaceCommandsMixin:
     """Surface command methods mixed into CommandHandler."""
@@ -328,6 +349,10 @@ class SurfaceCommandsMixin:
         scope so callers don't need a flag once session-runtime starts
         setting that variable; the daemon side of that contract is S2's to
         build, this command only accepts whatever ``task_id`` it's given.
+
+        The knowledge-context bundle is an optional extra on the document: a
+        principal the corpus refuses still gets prime (see
+        ``_OPTIONAL_CONTEXT_REFUSALS``).
         """
         task_id = args.get("task_id")
         scope = getattr(self, "_current_scope", None) or {}
@@ -383,14 +408,31 @@ class SurfaceCommandsMixin:
         # Disabled context leaves prime's reads unchanged.
         task = await self.db.get_task(task_id) if context_enabled(self.config) else None
         if task is not None and task.project_id in self.config.knowledge.enabled_projects:
+            principal = current_principal()
             try:
                 bundle = await self._knowledge_context_service().prepare(
-                    principal=current_principal(), required=doc.to_markdown(),
+                    principal=principal, required=doc.to_markdown(),
                     query=task.title, project_ids=[task.project_id], claim_epoch=task.claim_epoch,
                     task_id=task.id,
                 )
+            except RecordError as exc:
+                if exc.code not in _OPTIONAL_CONTEXT_REFUSALS:
+                    return exc.result()
+                # ``prepare`` is one transaction, so a refusal left nothing
+                # partial to discard: the document stands on its own.
+                logger.warning(
+                    "prime: knowledge context unavailable (%s); rendering the startup "
+                    "document without it. task=%s project=%s profile=%s needs the "
+                    "aq_commands %s granted to it",
+                    exc.code, task.id, task.project_id, getattr(principal, "profile_id", None),
+                    ", ".join(_CONTEXT_BUNDLE_COMMANDS),
+                )
+        if bundle is not None:
+            try:
                 doc = renderer.with_context(doc, bundle)
             except RecordError as exc:
+                # The bundle exists but the budget refuses it; that is an
+                # operator-visible misconfiguration, not an optional section.
                 return exc.result()
         result = {
             "success": True,
