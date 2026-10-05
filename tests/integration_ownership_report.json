@@ -6438,6 +6438,9 @@
         243
       ]
     },
+    "src/doctor/stall_checks.py::_stranded_child_findings": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/doctor/stall_checks.py::_subject_unknown_findings": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "baseline_span": [

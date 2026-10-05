@@ -5367,6 +5367,9 @@
         243
       ]
     },
+    "src/doctor/stall_checks.py::_stranded_child_findings": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/doctor/stall_checks.py::_subject_unknown_findings": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "baseline_span": [
@@ -13506,10 +13509,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2200,
+      "line": 2243,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "6303ed6475c7e9d7a7d04964e4516702c7df0b7d58a94baece9f881069bd464c",
+      "owner_fingerprint": "45a48a62165513e81f3dd939aee37d733d9c1c95a655af7107c8a3b3c73a2617",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
