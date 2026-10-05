@@ -158,9 +158,11 @@ def test_malformed_tables_rejected(raw_policy, mutation, match):
     elif mutation == "overdue_false":
         table["cases"][-1]["when"]["right"]["value"] = False
     elif mutation == "unknown_binding":
-        table["cases"][1]["when"]["value"]["binding"] = "invented"
+        case = next(case for case in table["cases"] if case["rule"] == "unknown-facts")
+        case["when"]["value"]["binding"] = "invented"
     elif mutation == "unknown_path":
-        table["cases"][1]["when"]["value"]["path"] = "invented"
+        case = next(case for case in table["cases"] if case["rule"] == "unknown-facts")
+        case["when"]["value"]["path"] = "invented"
     elif mutation == "missing_argument":
         del actions["build"]["inputs"]["members"]
     elif mutation == "unbounded_default":
@@ -357,7 +359,9 @@ def test_publication_never_infers_publisher_fence_from_repair_writer(artifact):
     writer = WriterLease(status=WriterStatus.WORKING, task_id="repair", fence_token=7)
     subject = make_subject(artifact, SubjectPhase.PROMOTABLE, writer=writer)
     facts = make_facts(subject, ci=(CIEvidence(head_sha=HEAD, state=CIState.GREEN),))
-    plain = SubjectFacts.model_validate(facts.model_dump(exclude={"publisher_fence"}))
+    plain = SubjectFacts.model_validate(
+        facts.model_dump(exclude={"publisher_fence", "competing_lease"})
+    )
     decision = CompiledIntegrationPolicy(artifact).evaluate(subject, plain)
     assert decision.rule == "publisher-fence-unavailable"
     assert decision.primitive == Primitive.WAIT

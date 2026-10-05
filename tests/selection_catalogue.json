@@ -6616,6 +6616,8 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.parent_adapters",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7642,8 +7644,10 @@
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
       ],
       "markers": [
         "parametrize"
@@ -8007,6 +8011,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.owner_recovery",
@@ -8015,6 +8020,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.plugins.internal.git",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler",
@@ -13198,11 +13204,13 @@
         "src.git.github_app",
         "src.integration.candidates",
         "src.integration.main_promotion",
+        "src.integration.models",
         "src.integration.release",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [],

@@ -1,7 +1,13 @@
-"""Durable bounded repair stages for parent and root integration operations."""
+"""Ordinary git-first repair tasks and the temporary shadow protocol.
+
+OrdinaryRepairService is the reduced train's allocation port. RepairService
+below remains legacy compatibility until the protocol retirement; active
+callers never create its stages or invoke its delegate-close proof.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -38,6 +44,7 @@ from src.database.tables import (
     project_integration_leases,
     projects,
     sessions,
+    task_context,
     task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
@@ -46,8 +53,6 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.engine import root_engine_guard
-from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
-
 from src.integration.green_continuation import (
     enqueue_green_continuation_on,
     promotion_fingerprint,
@@ -55,10 +60,196 @@ from src.integration.green_continuation import (
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.models import Task, TaskStatus
+from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
+from src.models import Task, TaskStatus, TaskType
 from src.playbooks.artifact_ref import ArtifactRef
 
 logger = logging.getLogger(__name__)
+
+
+def ordinary_repair_id(batch_id: str, attempt: int) -> str:
+    """An ordinary filing identity, independent of visits and daemon lifetime."""
+    if not batch_id or attempt < 1:
+        raise ValueError("repair requires a batch and positive allocation number")
+    return "repair-" + hashlib.sha256(f"{batch_id}:{attempt}".encode()).hexdigest()
+
+
+class OrdinaryRepairService:
+    """Allocate once under the batch/target locks, through CommandHandler.
+
+    The train supplies a freshly observed head and trusted exact green SHA.
+    Attempts guide policy/priority; they never limit allocation or green.
+    Ordinary routing, claims, workspace recovery and task close own the worker
+    lifecycle. The immutable task input is not a publication/recovery journal.
+    """
+
+    def __init__(self, db, *, locks=None, clock=time.time, routing_policy=None):
+        from src.integration.lock import BranchLock
+
+        self.db, self.clock, self.routing_policy = db, clock, routing_policy
+        self.locks = locks or BranchLock(db, clock=clock)
+
+    async def allocate(
+        self, batch_id: str, *, target_ref: str, head_sha: str,
+        green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
+        intelligence_class: str | None = None, priority: int = 100,
+        brief: str = "", ttl_seconds: float = 480,
+    ) -> dict:
+        from src.integration.batches import candidate_ref
+
+        if not target_ref.startswith("refs/heads/") or not is_valid_git_oid(head_sha):
+            raise ValueError("repair requires a full target ref and exact observed head")
+        # Same order as BatchStore.publication: batch intent, then managed ref.
+        async with self.db.immediate() as conn:
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch_id,
+                integration_batches.c.target_ref.is_not(None),
+            ).with_for_update())).mappings().one_or_none()
+            if batch is None:
+                return {"success": False, "outcome": "missing_batch"}
+            if target_ref not in {candidate_ref(batch_id), batch["target_ref"]}:
+                raise ValueError("repair target is not this batch's candidate or epic ref")
+            attempt = batch["repair_attempt_count"]
+
+            def answer(outcome, **detail):
+                return {"success": True, "outcome": outcome, "batch_id": batch_id,
+                        "attempt_count": attempt, **detail}
+
+            if batch["intent"] != "open":
+                return answer(batch["intent"])
+            if held or review_rejected:
+                return answer("held" if held else "rejected")
+            target = BranchKey(repository_id=batch["repository_id"], branch=target_ref)
+            owner = await self.locks.lock_on(conn, target)
+            live_lease = bool(owner and owner.get("holder")
+                              and owner.get("fence") is not None
+                              and owner.get("expires_at") is not None
+                              and owner["expires_at"] > self.clock())
+            # Green is settled before querying tasks, counters or stop proofs.
+            if green_sha == head_sha:
+                return answer("busy" if live_lease else "green")
+
+            current = None
+            if attempt:
+                current_id = ordinary_repair_id(batch_id, attempt)
+                for table in (tasks, archived_tasks):
+                    current = (await conn.execute(select(
+                        table.c.id, table.c.status, table.c.dedup_key,
+                        table.c.retry_count, table.c.max_retries,
+                    ).where(
+                        table.c.id == current_id,
+                    ))).mappings().one_or_none()
+                    if current is not None:
+                        break
+                if current and current["dedup_key"] != f"repair:{batch_id}:{attempt}":
+                    raise ValueError("ordinary repair filing identity collision")
+                terminal = bool(current and (
+                    current["status"] == "COMPLETED"
+                    or current["status"] == "FAILED"
+                    and current["retry_count"] >= current["max_retries"]
+                ))
+                if current and current["status"] == "BLOCKED":
+                    from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+
+                    terminal = bool((await conn.execute(select(task_metadata.c.value).where(
+                        task_metadata.c.task_id == current["id"],
+                        task_metadata.c.key == TERMINAL_BLOCKED_META_KEY,
+                    ))).scalar_one_or_none())
+                if current and not terminal:
+                    original = (await conn.execute(select(task_context.c.content).where(
+                        task_context.c.id == current_id,
+                        task_context.c.label == "Repair input",
+                    ))).scalar_one()
+                    if json.loads(original)["target_ref"] != target_ref:
+                        return answer("exists", task_id=current_id, target_changed=True)
+                    # Never grant a running expired worker a new fence. Its
+                    # ordinary claim recovery owns requeue/retry and unsaved work.
+                    if live_lease and owner["holder"] != current_id:
+                        return answer("busy")
+                    return answer("exists", task_id=current_id,
+                                  lease_expired=not live_lease)
+            if live_lease:
+                return answer("busy")
+            attempt += 1
+            task_id = ordinary_repair_id(batch_id, attempt)
+            repair_input = {"batch_id": batch_id, "attempt": attempt,
+                            "repository_id": batch["repository_id"], "target_ref": target_ref,
+                            "starting_sha": head_sha}
+            fence = await self.locks.acquire_on(
+                conn, target, task_id, ttl_seconds=ttl_seconds, role="repair",
+            )
+            await self.db.create_task(Task(
+                id=task_id, project_id=batch["project_id"], repo_id=batch["repository_id"],
+                title=f"Repair {batch_id} (attempt {attempt})",
+                description=(f"{brief}\n\nRepair the observed head on {target_ref}. Publish with "
+                             "the managed lease and close with ordinary publication evidence. "
+                             "The train observes the current head and exact checks.\n\n"
+                             + json.dumps(repair_input, sort_keys=True)),
+                task_type=TaskType.BUGFIX, priority=priority,
+                branch_name=target_ref.removeprefix("refs/heads/"),
+                class_hint=intelligence_class, created_by_kind="system", created_by_id=batch_id,
+                dedup_key=f"repair:{batch_id}:{attempt}",
+            ), conn=conn, routing_policy=self.routing_policy)
+            await conn.execute(insert(task_context).values(
+                id=task_id, task_id=task_id, type="snippet", label="Repair input",
+                content=json.dumps(repair_input, sort_keys=True), created_at=self.clock(),
+            ))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_id,
+            ).values(repair_attempt_count=attempt, updated_at=self.clock()))
+            return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
+
+    async def input(self, task_id: str) -> dict | None:
+        """Read the immutable ordinary task input for workspace/managed push ports."""
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(task_context.c.content).where(
+                task_context.c.task_id == task_id, task_context.c.id == task_id,
+                task_context.c.label == "Repair input",
+            ))).scalar_one_or_none()
+        if row is None:
+            return None
+        value = json.loads(row)
+        if ordinary_repair_id(value["batch_id"], value["attempt"]) != task_id:
+            raise ValueError("ordinary repair input does not match filing identity")
+        return value
+
+    @staticmethod
+    def progress(start_sha: str | None, head_sha: str | None, *, green: bool) -> bool:
+        from src.integration.git_truth import repair_progress
+
+        return repair_progress(start_sha, head_sha, green=green)
+
+    async def added_commits(self, task_id: str, git, checkout: str, head_sha: str) -> list[str]:
+        """Derive the delta from Git, never append to a cumulative commit list."""
+        from src.integration.git_truth import commits_added
+
+        original = await self.input(task_id)
+        if original is None:
+            raise ValueError("task has no ordinary repair input")
+        return await commits_added(git, checkout, original["starting_sha"], head_sha)
+
+    @asynccontextmanager
+    async def publication(self, task_id: str, *, branch: str):
+        """Fence the ordinary worker push, including expiry during transport."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS
+
+        original = await self.input(task_id)
+        if original is None:
+            yield
+            return
+        if branch.removeprefix("refs/heads/") != original["target_ref"].removeprefix("refs/heads/"):
+            raise GitError("ordinary repair may publish only its allocated ref")
+        target = BranchKey(repository_id=original["repository_id"], branch=original["target_ref"])
+        lease = await self.locks.get(target)
+        if lease is None or lease.holder != task_id:
+            raise GitError("ordinary repair ref lease is no longer held")
+        try:
+            async with self.locks.exclusion(lease.grant()) as owner:
+                remaining = min(CRITICAL_SECTION_SECONDS, owner["expires_at"] - self.clock())
+                async with asyncio.timeout(remaining):
+                    yield
+        except (StaleFence, BranchBusy, TimeoutError) as exc:
+            raise GitError(f"ordinary repair publication refused: {exc}") from exc
 
 
 def repair_subject_sha(subject: dict[str, Any] | None) -> str:
@@ -4535,7 +4726,9 @@ class RepairService:
             )
             if commit_proof is not None and previous_sha != head_sha:
                 from src.integration.parent_repair_heads import (
-                    EXTENSIONS, advance_checkpoint_on, extension,
+                    EXTENSIONS,
+                    advance_checkpoint_on,
+                    extension,
                 )
 
                 owner = (await conn.execute(select(integration_branch_owners).where(
