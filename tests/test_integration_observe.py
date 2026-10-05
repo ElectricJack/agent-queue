@@ -1351,6 +1351,7 @@ async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkey
     }])
     service = SimpleNamespace(_load_trust=AsyncMock(return_value=(trust, client)))
     owner = SimpleNamespace(
+        config=SimpleNamespace(integration=SimpleNamespace(git_first="shadow")),
         db=SimpleNamespace(get_repo=AsyncMock(return_value=object())),
         github_repository_binding_resolver=AsyncMock(
             return_value=GitHubRepositoryBinding(123, "acme/widgets")),
