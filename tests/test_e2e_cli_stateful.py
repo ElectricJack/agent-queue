@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 E2E_TEST_TIMEOUT_SECONDS = 540
 SCENARIO_GROUPS = {
     "claims": ("S1", "S2", "S3", "S7", "S19"),
-    "cli": ("S5", "S8", "S9", "S12", "S17"),
+    "cli": ("S5", "S8", "S9", "S12", "S17", "S20"),
     "graphs": ("S10", "S16b", "S18", "S6"),
     "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
 }
@@ -126,7 +126,9 @@ class World:
                     }), "tasks")
                     for task in rows:
                         if not task.get("parent_task_id"):
-                            smoke.api("delete_task", {"task_id": task["id"], "cascade": True})
+                            smoke.api("delete_task", {
+                                "task_id": task["id"], "cascade": True, "branches": "delete",
+                            })
                     remaining.extend(smoke.collection_rows(smoke.api_checked("list_tasks", {
                         "project_id": project["id"], "include_completed": True,
                     }), "tasks"))
@@ -203,6 +205,12 @@ def start_cli_server(world):
 
 @contextmanager
 def disposable_world(group, env):
+    if group == "cli":
+        # S20 must prove publication by the active train. Keep the selector
+        # in this shard's isolated config, never the operator's install.
+        fragment = Path(env["AQ_E2E_HOME"]).with_suffix(".yaml")
+        fragment.write_text("integration:\n  git_first: active\n")
+        env["AQ_E2E_EXTRA_CONFIG"] = str(fragment)
     world = World(group, env)
     try:
         for stage, script, args in (

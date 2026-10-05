@@ -1345,13 +1345,30 @@ class TestEndToEndOnFakeProvider:
         real_orch.git = git
         return wd, git, base
 
-    async def test_development_close_binds_final_source_and_reopen_gets_new_generation(
-        self, db, real_orch, real_handler, tmp_path
+    @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
+    async def test_train_mode_close_binds_final_source_and_reopen_gets_new_generation(
+        self, db, real_orch, real_handler, tmp_path, mode
     ):
         from pathlib import Path
+        from sqlalchemy import insert
+        from src.database.tables import task_branch_origins
+        from src.integration.batches import BatchService, BatchStore
+        from src.integration.git_truth import GitTruth
+        from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+        from src.integration.train import TrainTarget
+        from src.integration.train_sources import DatabaseBatches, LeasedPublish, _never_trusted
+        from tests.test_integration_gitops import LocalGit
 
-        wd, git, _base = await self._setup_development_git(db, real_orch, tmp_path)
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
+        real_orch.config.integration.git_first = "active"
+        await db.update_project("p1", hierarchical_integration_mode=mode)
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
         args = {"task_id": "t1", "outcome": "pass", "summary": "all changes"}
         final = await git.arev_parse(wd, "HEAD")
         close = await real_handler.execute("task_close", args)
@@ -1365,6 +1382,17 @@ class TestEndToEndOnFakeProvider:
         store = GitProvenance(git, wd, repository_url=repo.url)
         identity = CompletionIdentity("p1", "repo", "t1", first.id)
         assert (await store.read_completion(identity))["source_oid"] == final
+        snapshot = await GitTruth(git).snapshot(
+            wd, project_id="p1", repository_id="repo", repository_url=repo.url,
+            target_ref="refs/heads/main",
+        )
+        members, requests, dependencies = await DatabaseBatches(db).pending(
+            TrainTarget("p1", "repo", "refs/heads/main"), snapshot,
+        )
+        assert [(m.task_id, m.source_sha, m.source_base_sha) for m in members] == [
+            ("t1", final, base),
+        ]
+        assert set(requests) == {"t1"} and dependencies == {"t1": set()}
         repeated = await real_handler.execute("task_close", args)
         assert not repeated["success"]
         assert len(await db.get_task_completions("t1")) == 1
@@ -1379,15 +1407,43 @@ class TestEndToEndOnFakeProvider:
         assert second.id != first.id and second.commits != first.commits
         assert not await store.contained(CompletedSource(
             CompletionIdentity("p1", "repo", "t1", second.id), second.commits[0]), final)
+        transport = LocalGit(Path(repo.url))
 
+        async def repository(_batch):
+            return RetainedRepository("repo", Path(wd), None, "main")
+
+        async def gate(_batch, _sha, _tree):
+            return False
+
+        batches = DatabaseBatches(db)
+        service = BatchService(
+            BatchStore(db), GitOperations(
+                db, git=transport, repository=repository,
+                authority=SubjectGitAuthority(db, trusted_green=_never_trusted),
+            ),
+            publish=LeasedPublish(db, transport), eligible=batches.eligible, gate=gate,
+        )
+        snapshot = await GitTruth(git).snapshot(
+            wd, project_id="p1", repository_id="repo", repository_url=repo.url,
+            target_ref="refs/heads/main",
+        )
+        opened = await batches.open_batch(TrainTarget("p1", "repo", "refs/heads/main"), snapshot, service)
+        assert opened.batch is not None and opened.blockers == ()
+        assert await service.store.members(opened.batch.id) == opened.members
+        assert [(m.task_id, m.source_sha, m.source_base_sha) for m in opened.members] == [
+            ("t1", second.commits[0], base),
+        ]
+
+    @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
     @pytest.mark.parametrize("failure", ["old_commit", "unpublished_provenance", "moved_source", "branchless_artifact"])
     async def test_development_provenance_refusal_retains_claim_and_completion_history(
-        self, db, real_orch, real_handler, tmp_path, monkeypatch, failure
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, failure, mode
     ):
         from src.git.manager import GitError
         from src.integration.provenance import GitProvenance
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode=mode)
         session = await _make_session(db, real_orch.session_providers.create("fake"))
         args = {"task_id": "t1", "session_id": session.id, "outcome": "pass", "summary": "work"}
         if failure == "old_commit":
@@ -2714,6 +2770,11 @@ class TestEndToEndOnFakeProvider:
         session = await db.get_session_for_task("t1")
         head = "b" * 40
         monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        # This test supplies synthetic Git OIDs to isolate checkpoint/ownership
+        # advancement. Real completion publication is covered for every mode
+        # by test_train_mode_close_binds_final_source_and_reopen_gets_new_generation.
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
 
         async def git_run(args, *, cwd):
             assert cwd == wd
@@ -2747,6 +2808,7 @@ class TestEndToEndOnFakeProvider:
         )
 
         assert close["success"] is True
+        record_completion.assert_awaited_once()
         assert close["status"] == "COMPLETED"
         assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
         origin = await db.get_task_branch_origin_for_promotion("t1", "repo")
@@ -2791,6 +2853,8 @@ class TestEndToEndOnFakeProvider:
         session = await db.get_session_for_task("t1")
         head = "b" * 40
         monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
 
         async def git_run(args, *, cwd):
             assert cwd == wd
@@ -2828,6 +2892,7 @@ class TestEndToEndOnFakeProvider:
         )
 
         assert close["success"] is True
+        record_completion.assert_awaited_once()
         assert close["status"] == "COMPLETED"
         assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
         real_orch.git.acreate_pr.assert_awaited_once()
@@ -2865,6 +2930,8 @@ class TestEndToEndOnFakeProvider:
         )
         session = await db.get_session_for_task("t1")
         head = "b" * 40
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
         monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
 
         async def git_run(args, *, cwd):
@@ -2901,6 +2968,7 @@ class TestEndToEndOnFakeProvider:
         )
 
         assert close["success"] is True
+        record_completion.assert_awaited_once()
         assert close["status"] == "COMPLETED"
         assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
         assert (await db.get_task("t1")).pr_url is None

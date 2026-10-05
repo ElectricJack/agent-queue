@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:46095201351707b40abe252ed31ec56e2feabc7edf4bd1f86702d33ff52916de",
+  "digest": "sha256:74f79f11f217288756c7b750a085dee7b1a64b019198c33f58ca375996270fb9",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5478,6 +5478,7 @@
       "default_arm": true,
       "imports": [
         "src.config",
+        "src.git.manager",
         "src.jobs.adapters",
         "src.jobs.policy",
         "src.profiles.parser",
@@ -8568,6 +8569,7 @@
         "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.provenance",
         "src.integration.repair",
         "src.integration.status",
         "src.integration.train",
@@ -13925,12 +13927,17 @@
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.development",
+        "src.integration.git_truth",
+        "src.integration.gitops",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.records",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.intelligence_classes",
         "src.mcp_registration",
         "src.models",

@@ -34,6 +34,8 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
     S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
     S18 failure triage         durable task.failed playbook dispatch and supervisor notice
+    S19 scoped planner graph   authenticated graph filing and checklist settlement
+    S20 train delivery         ordinary close provenance and git-first batch publication
 """
 
 from __future__ import annotations
@@ -684,7 +686,7 @@ def fresh_workers(
         project_id=project_id,
     )
     for task_id in fillers:
-        api_checked("delete_task", {"task_id": task_id, "cascade": True})
+        api_checked("delete_task", {"task_id": task_id, "cascade": True, "branches": "delete"})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -709,7 +711,7 @@ def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        api("delete_task", {"task_id": task["id"], "cascade": True})
+        api("delete_task", {"task_id": task["id"], "cascade": True, "branches": "delete"})
 
 
 def idle_worker() -> Worker:
@@ -2342,13 +2344,15 @@ def s16b_provider_recovery(state: dict) -> str:
     return _run_failover_phase(state, _prepare_failover_recovery)
 
 
-def _ensure_phased_development_project() -> tuple[str, Path, Path]:
-    """Create the disposable development project S17 needs, once per e2e home."""
-    project_id = "e2e-phased"
+def _ensure_phased_development_project(
+    project_id: str = "e2e-phased", *, fixture_name: str = "phased-graph",
+    validation: str = "focused",
+) -> tuple[str, Path, Path]:
+    """Bind a disposable local repository and configure its validation settings."""
     home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
     root = home / "onboarding"
-    remote = root / "phased-graph.git"
-    source = root / "phased-graph-source"
+    remote = root / f"{fixture_name}.git"
+    source = root / f"{fixture_name}-source"
     root.mkdir(parents=True, exist_ok=True)
 
     if not remote.exists():
@@ -2374,7 +2378,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
             "project",
             "onboard",
             "--request-id",
-            "e2e-phased-graph",
+            project_id,
             "--source-mode",
             "link",
             "--root-id",
@@ -2382,7 +2386,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
             "--relative-path",
             source.name,
             "--project-name",
-            "Phased graph",
+            fixture_name,
             "--project-id",
             project_id,
         )
@@ -2393,14 +2397,146 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
         "hierarchical_integration_mode": "development",
         "integration_repository": {"id": project_id + "-repo", "url": str(remote),
                                    "default_branch": "main"},
-        "hierarchical_integration_policy": {"validation": "focused",
-                                            "commands": [DEVELOPMENT_VALIDATION_COMMAND],
+        "hierarchical_integration_policy": {"validation": validation,
+                                            "commands": [DEVELOPMENT_VALIDATION_COMMAND]
+                                                        if validation != "none" else [],
                                             "interval_seconds": 86400},
         "expected_integration_generation": status["generation"],
         "reason": "isolated phased-graph acceptance",
     })
     check(configured.get("outcome") == "configured", f"development configuration: {configured}")
     return project_id, home, source
+
+
+def _pin_train_validation(project_id: str, home: Path) -> dict:
+    """Import a deterministic local-checks artifact through the public command."""
+    from src.integration.development import DevelopmentPolicy
+    from src.integration.development_policy import render_development_policy
+    from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION
+    from src.playbooks.definition import (
+        ProjectScope, artifact_sha256, canonical_bytes, load_definition_json,
+        referenced_profile_ids, source_digest,
+    )
+    from src.playbooks.integration_policy import policy_from_markdown
+
+    settings = DevelopmentPolicy(validation="none", commands=[], interval_seconds=86400)
+    source = render_development_policy(project_id, settings)
+    definition = load_definition_json(Path(
+        REPO_ROOT, "src/prompts/reviewed_playbooks/root-train/artifact.json",
+    ).read_text()).model_copy(update={
+        "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
+        "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
+    })
+    digest = artifact_sha256(definition)
+    bundle = home / "vault" / "e2e-bundles" / definition.id
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "artifact.json").write_bytes(canonical_bytes(definition))
+    (bundle / "artifact.sha256").write_text(digest + "\n")
+    (bundle / "source.md").write_text(source)
+    manifest = {
+        "playbook_id": definition.id, "artifact_sha256": digest,
+        "source_sha256": definition.source_hash,
+        "contract_fingerprint": definition.contract_fingerprint(),
+        "profiles_referenced": list(referenced_profile_ids(definition)),
+    }
+    (bundle / "manifest.md").write_text("---\n" + json.dumps(manifest) + "\n---\n")
+    imported = api_checked("playbook_v2_import", {"path": str(bundle)})
+    check(imported.get("success") is True, f"S20 policy import failed: {imported}")
+    return {
+        **settings.model_dump(mode="json"),
+        "development": {"route": {
+            "playbook_id": definition.id, "scope": "project", "scope_identifier": project_id,
+            "artifact": {
+                "playbook_id": definition.id, "artifact_sha256": digest,
+                "contract_fingerprint": definition.contract_fingerprint(),
+                "schema_generation": ARTIFACT_SCHEMA_GENERATION,
+                "source_digest": definition.source_hash, "compiler_build": definition.compiler_build,
+                "compiled_at": str(definition.compiled_at), "version": definition.version,
+            },
+        }},
+    }
+
+
+def s20_train_delivery(state: dict) -> str:
+    """Close ordinary train work through the daemon, then observe actual Git delivery.
+
+    Pin local validation first, then select train mode through the configuration
+    CAS. This exercises a non-development completion and the real train without
+    needing GitHub or an LLM. Hosted exact-candidate checks have their own tests.
+    """
+    project_id, home, _source = _ensure_phased_development_project(
+        "e2e-train", fixture_name="train-delivery", validation="none",
+    )
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id,
+        "hierarchical_integration_policy": _pin_train_validation(project_id, home),
+        "expected_integration_generation": status["generation"],
+        "reason": "S20 pinned disposable local-checks artifact",
+    })
+    check(configured.get("outcome") == "configured", f"S20 validation pin: {configured}")
+    worker = fresh_workers(
+        1, project_id=project_id, cleanup_projects=(PROJECT, OTHER_PROJECT, project_id),
+    )[0]
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id, "hierarchical_integration_mode": "train",
+        "expected_integration_generation": status["generation"],
+        "reason": "S20 ordinary train-mode completion with pinned local validation",
+    })
+    check(configured.get("outcome") == "configured", f"train configuration: {configured}")
+    task_id = create_task("S20 ordinary train source", project_id=project_id, profile=POOL_PROFILE)
+    claim_fixture(worker, task_id, what="S20 worker to claim its ordinary source")
+    task = task_show(task_id)
+    check(task["parent_task_id"] is None, f"S20 source must be an ordinary root: {task}")
+    prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
+    check(prime.returncode == 0, f"S20 prime failed: {prime}")
+    rows = collection_rows(api_checked("list_workspaces", {"project_id": project_id}), "workspaces")
+    held = next((row for row in rows if row.get("locked_by_task_id") == task_id), None)
+    check(held is not None, f"S20 task has no held workspace: {rows}")
+    checkout = Path(held["workspace_path"])
+    _git_text(str(checkout), "config", "user.name", "AQ E2E")
+    _git_text(str(checkout), "config", "user.email", "e2e@example.test")
+    artifact = f"{task_id}.txt"
+    (checkout / artifact).write_text("ordinary train delivery\n")
+    _git_text(str(checkout), "add", artifact)
+    _git_text(str(checkout), "commit", "-m", f"S20 train work\n\nAQ-Task: {task_id}")
+    head = _git_text(str(checkout), "rev-parse", "HEAD")
+    _git_text(str(checkout), "push", "-u", "origin", "HEAD")
+    remote = Path(os.environ["AQ_E2E_HOME"]) / "onboarding" / "train-delivery.git"
+    before = _git_text(str(remote), "rev-parse", "refs/heads/main")
+    closed = worker.aq("task", "close", "--claim-epoch", str(worker.claim_epoch),
+                       "--outcome", "pass", "--commit", head,
+                       "--summary", "S20 ordinary train source published")
+    check(closed.get("success") is not False, f"S20 source close: {closed}")
+    shown = task_show(task_id)
+    check(shown["status"] == "COMPLETED", f"S20 source did not complete: {shown}")
+    completion = shown.get("completion") or {}
+    check(completion.get("commits") == [head], f"S20 final source was not recorded: {completion}")
+    refs = _git_text(str(remote), "for-each-ref", "--format=%(refname)",
+                     "refs/heads/aq-provenance/completions/").splitlines()
+    check(refs, "S20 ordinary train close published no completion provenance")
+    records = [json.loads(_git_text(str(remote), "show", "-s", "--format=%B", ref)) for ref in refs]
+    check(any(record.get("source_oid") == head and
+              record.get("identity", {}).get("generation") == completion.get("id")
+              for record in records), f"S20 provenance does not bind the immutable close: {records}")
+    status = aq("integration", "status", project_id)
+    check(status["effective_mode"] == "train", f"S20 project is not in train mode: {status}")
+    if status.get("projection_kind") != "train":
+        return "train-mode close retained its source; delivery explicitly untested (git_first needs active)"
+
+    def delivered():
+        tip = _git_text(str(remote), "rev-parse", "refs/heads/main")
+        if tip == before:
+            return None
+        _git_text(str(remote), "merge-base", "--is-ancestor", head, tip)
+        return tip
+
+    tip = wait_for(delivered, what="S20 train to publish its ordinary completion",
+                   diagnostic=lambda: str(aq("integration", "status", project_id)))
+    check(_git_text(str(remote), "show", f"{tip}:{artifact}") == "ordinary train delivery",
+          "S20 delivered target lost the source artifact")
+    return f"ordinary train-mode close {task_id}@{head} retained and delivered to main@{tip}"
 
 
 def s17_phased_graph(state: dict) -> str:
@@ -2934,10 +3070,11 @@ SCENARIOS: list[Scenario] = [
     Scenario("S17", "phased graph", s17_phased_graph, ("task graph/phases/subtasks",)),
     Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
     Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
+    Scenario("S20", "train-mode delivery", s20_train_delivery, ("integration/train/provenance",)),
 ]
 
 # Selecting these IDs replaces S16's serial transcript with independent worlds.
-# The default developer run still executes the original nineteen scenarios.
+# The default developer run executes all twenty scenarios.
 FAILOVER_PHASES = [
     Scenario("S16a", "provider outage and rerouting", s16a_provider_outage, ("provider availability/failover",)),
     Scenario("S16b", "provider recovery and all-down", s16b_provider_recovery, ("provider availability/failover",)),

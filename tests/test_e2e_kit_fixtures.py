@@ -1,7 +1,8 @@
 """The swarm e2e kit's Tier-1 stand-ins must close the way a real agent would.
 
 Under ``sessions.provider: fake`` nothing is spawned: ``scripts/e2e/smoke.py``
-*is* the session, and it produces no commits.  The e2e remote is a bare
+*is* the session. Most scenarios produce no commits; S20 exercises real Git
+delivery with a credential adapter limited to the disposable home. The e2e remote is a bare
 local repository, so no pull request can ever exist for a task branch there.
 Two things follow, and each is pinned here because losing either one turns
 S4 into "close refused: No open PR found" (task solid-forge-63):
@@ -1063,8 +1064,8 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider, so the docs and runner stay synchronized.
-    assert set(by_key) == {f"S{number}" for number in range(1, 20)}
+    # filing under the fake provider; S20 proves ordinary train delivery.
+    assert set(by_key) == {f"S{number}" for number in range(1, 21)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -1076,6 +1077,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
+    assert by_key["S20"].families == ("integration/train/provenance",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():
@@ -1445,6 +1447,65 @@ def test_s16_restoration_failure_is_a_failure_and_still_restores_policy(monkeypa
     with pytest.raises(RuntimeError, match="provider cleanup failed"):
         smoke.s16_provider_failover({})
     assert restored == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_local_train_transport_keeps_real_git_leases_and_disposable_scope(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from scripts.e2e.daemon import install_local_git_transport
+    from src.git.manager import GitError, GitManager
+    from tests.test_integration_gitops import git as run_git
+
+    home = tmp_path / "e2e"
+    home.mkdir()
+    (home / ".aq-e2e").touch()
+    remote, checkout = home / "remote.git", home / "checkout"
+    run_git(home, "init", "--bare", str(remote))
+    run_git(home, "clone", str(remote), str(checkout))
+    run_git(checkout, "config", "user.name", "AQ E2E")
+    run_git(checkout, "config", "user.email", "e2e@example.test")
+    run_git(checkout, "commit", "--allow-empty", "-m", "base")
+    oid = run_git(checkout, "rev-parse", "HEAD")
+    git = GitManager()
+    resolver = AsyncMock(return_value="original")
+    orch = SimpleNamespace(git=git, github_repository_binding_resolver=resolver)
+    original_head, original_push = git.aremote_branch_head, git.apush_repository_oid
+    restore = install_local_git_transport(orch, home)
+    try:
+        binding = await orch.github_repository_binding_resolver(SimpleNamespace(url=str(remote)))
+        assert await git.aremote_branch_head(repository=binding, branch="main") is None
+        await git.apush_repository_oid(
+            str(checkout), repository=binding, tip_oid=oid, branch="main", expected_old_oid="0" * 40,
+        )
+        assert await git.aremote_branch_head(repository=binding, branch="main") == oid
+        observed = await git.als_remote_ref(
+            str(checkout), "main", repository_url=f"https://github.com/{binding.full_name}.git",
+        )
+        assert observed.oid == oid
+        run_git(checkout, "commit", "--allow-empty", "-m", "next")
+        next_oid = run_git(checkout, "rev-parse", "HEAD")
+        with pytest.raises(GitError, match="authority expired"):
+            await git.apush_repository_oid(
+                str(checkout), repository=binding, tip_oid=next_oid, branch="main",
+                expected_old_oid=oid, authority_deadline=asyncio.get_running_loop().time() - 1,
+            )
+        with pytest.raises(GitError):
+            await git.apush_repository_oid(
+                str(checkout), repository=binding, tip_oid=next_oid, branch="main",
+                expected_old_oid="0" * 40,
+            )
+        assert await git.aremote_branch_head(repository=binding, branch="main") == oid
+        outside = SimpleNamespace(url=str(tmp_path))
+        assert await orch.github_repository_binding_resolver(outside) == "original"
+        resolver.assert_awaited_once_with(outside)
+    finally:
+        restore()
+    assert orch.github_repository_binding_resolver is resolver
+    assert git.aremote_branch_head == original_head and git.apush_repository_oid == original_push
+    with pytest.raises(ValueError, match="marked disposable"):
+        install_local_git_transport(orch, tmp_path)
 
 
 @pytest.mark.asyncio

@@ -619,6 +619,7 @@ class IntegrationStatusService:
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
+        blockers.extend(self._train_source_blockers(visits))
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -656,6 +657,7 @@ class IntegrationStatusService:
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
+        blockers.extend(self._train_source_blockers(visits, task_id=task_id))
         return {
             "task_id": task_id,
             "project_id": row["project_id"],
@@ -753,6 +755,18 @@ class IntegrationStatusService:
                 )
             found[key] = facts
         return found
+
+    @staticmethod
+    def _train_source_blockers(
+        visits: dict[tuple[str, str], dict[str, Any]], *, task_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Unknown completions can block a target before any batch exists."""
+        return [
+            blocker
+            for visit in visits.values()
+            for blocker in (visit.get("detail") or {}).get("blockers", [])
+            if task_id is None or blocker.get("task_id") == task_id
+        ]
 
     @staticmethod
     def _train_batch_blockers(
