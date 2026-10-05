@@ -112,8 +112,8 @@ every refusal write nothing. Nothing is ever updated or deleted.
   reviewer rejected this exact head, or root admission is not `authorized`.
   Report it; the grant never overrides these.
 - `not_eligible`: the task is not a COMPLETED train root with a PR on the
-  designated repository and a verified exact source. `aq integration
-  materialize-root` covers a legacy root with no checkpoint.
+  designated repository and a verified exact source. Missing original identity
+  remains ineligible; authorization never reconstructs a historical checkpoint.
 - `changed`: the head moved after the dry run. Dry-run again and review the new
   head.
 - `already_authorized`: `authorized_by` says why (`policy_kind`,

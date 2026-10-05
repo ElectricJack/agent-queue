@@ -13,9 +13,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 
-from src.database.tables import integration_branch_owners, integration_subjects
+from src.database.tables import integration_branch_owners
 from src.integration.ci_adapters import CIAdapters
 from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan, digest
 from src.integration.development_policy import PinnedDevelopmentPolicy
@@ -32,7 +32,6 @@ from src.integration.subjects import (
     PrimitivePorts,
     SealArgs,
     Subject,
-    SubjectEngine,
     SubjectFacts,
     SubjectKind,
     SubjectPhase,
@@ -114,32 +113,6 @@ def ordered_development_members(frontier: DevelopmentFrontier, limit: int) -> tu
     return tuple(ordered)
 
 
-async def development_subject_owns_target(db, project_id: str, repository_id: str, target: str) -> bool:
-    """A shadow/unowned subject cannot disable legacy publication.
-
-    An expired or handoff-pending writer is still a writer. Only a proved
-    release/engine rollback makes the legacy path eligible again. Call under
-    the existing repository publisher exclusion before any legacy mutation.
-    """
-    s, o = integration_subjects, integration_branch_owners
-    async with db._engine.connect() as conn:
-        return bool(await conn.scalar(select(s.c.id).select_from(s.join(o, and_(
-            s.c.repository_id == o.c.repository_id,
-            s.c.target_ref == o.c.ref,
-            or_(
-                and_(o.c.owner_role == "collector", or_(
-                    o.c.owner_id == s.c.id, o.c.owner_id == s.c.batch_id,
-                )),
-                and_(o.c.owner_id == s.c.writer_task_id,
-                     o.c.fence_token == s.c.writer_fence_token),
-            ),
-        ))).where(
-            s.c.project_id == project_id, s.c.repository_id == repository_id,
-            s.c.target_ref == target, s.c.engine == SubjectEngine.RECONCILER.value,
-            s.c.kind == SubjectKind.ROOT_BATCH.value,
-            s.c.phase != SubjectPhase.DONE.value,
-            o.c.handoff_state != "released",
-        ).limit(1)))
 
 
 PolicyLoader = Callable[[str], Awaitable[PinnedDevelopmentPolicy]]

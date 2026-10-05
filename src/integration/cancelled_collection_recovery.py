@@ -1,8 +1,8 @@
 """Reopen a parent collection that ``cancel-preserving`` stopped mid-episode.
 
-``aq integration cancel-preserving`` ends a repair operation.  When the
+Historical cancellation ended a repair operation. When the
 operation is a parent's *collection* operation -- the one
-``ParentCompletion.reserve_episode_on`` created for the parent's current
+``ParentEpisodeRecords.reserve_episode_on`` created for the parent's current
 episode -- nothing collects that parent any more.  Its checkpoint still says
 ``awaiting_children`` in the original episode, its completed children's
 receipts are bound to ``(operation, episode)``, the collector's reservation is
@@ -11,10 +11,8 @@ calm-grove-25 and azure-vault-92):
 
 * the collector and ``aq integration redrive-child`` need an ``active`` or
   ``escalated`` operation for the episode;
-* ``ParentCompletion.reserve_episode_on`` returns the episode's existing
+* ``ParentEpisodeRecords.reserve_episode_on`` returns the episode's existing
   (cancelled) operation, and one operation per episode is a unique index;
-* ``aq integration resume`` needs ``human_required`` and the stage's delegate
-  in ``tasks``, but the cancellation archived it;
 * a later child's conflict cannot open a repair, because
   ``RepairService.start`` continues only a live stage whose delegate is still
   inside its deadline.
@@ -41,12 +39,12 @@ reason, and within one transaction under the project lock:
   dispatch then files a *new* delegate ``repair-<operation>-<stage>``: archived
   delegates are never restored and their cancelled stages stay cancelled;
 * returns a parent the exhausted repair terminally BLOCKED to PAUSED, exactly as
-  ``aq integration resume`` would.
+  the shared parent transition requires.
 
 With no conflict waiting, the operation resumes with its cancelled stage still
 active; ``RepairService.start`` gives the next conflict a fresh stage past it.
-The orchestrator's continuation sweep retries a reopened stage whose dispatch
-failed, whatever the frozen policy's ``on_exhausted``.
+The durable Subject retries a reopened stage whose dispatch failed, whatever
+the frozen policy's ``on_exhausted``.
 
 Gates, manual holds and the root's human review are never touched; open human
 gates on the parent are reported.  Every apply writes an
@@ -101,7 +99,7 @@ logger = logging.getLogger(__name__)
 REOPEN_EVENT = "integration.collection_reopened"
 
 #: What settles a stage delegate the cancellation left unsettled.
-SETTLE_DELEGATES_COMMAND = "aq doctor --check integration.stranded_delegates --fix"
+SETTLE_DELEGATES_COMMAND = "automatic delegate cleanup"
 
 MANAGED_MODES = ("hierarchy", "train")
 _TERMINAL_STAGE_STATES = ("passed", "failed", "expired", "cancelled")
@@ -375,7 +373,7 @@ class CancelledCollectionRecovery:
         if operation["state"] == "human_required":
             return refused(
                 "not_eligible",
-                f"the operation awaits a human: `aq integration resume {operation['id']}`",
+                "the operation awaits a human decision; inspect the owning Subject and its gate",
             )
         if operation["state"] != "cancelled" and not no_progress:
             return refused("not_eligible", f"the collection operation is {operation['state']}")
@@ -555,9 +553,9 @@ class CancelledCollectionRecovery:
                 return refused("blocked", "confirmed parent workspace is unavailable")
 
         # No external mutation whose outcome is unknown.
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
-        blockers = await IntegrationRecoveryControls._ambiguous_writes_on(
+        blockers = await OperationSafety._ambiguous_writes_on(
             conn, operation, allowed_writer_id=owner["id"] if no_progress else None
         )
         target_promotion = (
@@ -899,7 +897,7 @@ class CancelledCollectionRecovery:
         operator_id: str | None,
     ) -> tuple[Any | None, dict[str, Any]]:
         from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
         operation = facts["operation"]
         owner = facts["owner"]
@@ -929,8 +927,8 @@ class CancelledCollectionRecovery:
 
         transition = None
         if facts["restore_parent"]:
-            transition, refusal = await IntegrationRecoveryControls(
-                self.db, clock=self.clock
+            transition, refusal = await OperationSafety(
+                self.db
             )._restore_parent_collection_on(conn, operation, allow_paused=False)
             if refusal is not None:
                 raise _Changed()

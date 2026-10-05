@@ -128,56 +128,8 @@ class TestShippedProfile:
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
 
-def test_supervisor_holds_every_operator_integration_control():
-    """An operator control the supervisor lacks is one it is told to run but cannot.
-
-    ``integration_clear_stale_request`` is the fleet-apex control for a train
-    whose schedule still names a request nothing will end; the supervisor
-    profile tells it to run that control when a flush keeps coalescing.
-    """
-    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
-
-    granted = set(_parsed("supervisor").capabilities["aq_commands"])
-    assert "integration_clear_stale_request" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_clear_stale_request" in granted
-    # The dry-run-first handle on a completed train root with no PR
-    # (noble-harbor-74); the profile tells the supervisor when to run it.
-    assert "integration_redrive_root" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_redrive_root" in granted
-    assert "integration_materialize_root" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_materialize_root" in granted
-    # The exact per-root authorization of a user-authorized source while the
-    # train keeps running (keen-beacon-16).
-    assert "integration_authorize_root" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_authorize_root" in granted
-    # Its twin for a completed child its parent never assembled (vivid-ridge).
-    assert "integration_redrive_child" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_redrive_child" in granted
-    # Reopening a parent collection cancel-preserving stopped (agile-harbor).
-    assert "integration_reopen_collection" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_reopen_collection" in granted
-    # Closing an open PR only on Git proof that its work landed (fresh-willow-73).
-    assert "integration_close_delivered_pr" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_close_delivered_pr" in granted
-    assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
 
 
-def test_supervisor_can_rebind_a_reused_task_identity():
-    """amber-harbor: the supervisor runs the rebind control after deploy.
-
-    The profile tells it to dry-run ``aq integration rebind-reused-identity``
-    for each task the doctor reports and to leave ``--discard-tip`` -- the one
-    decision that abandons an unproven commit -- to the user.
-    """
-    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
-
-    parsed = _parsed("supervisor")
-    text = (DEFAULTS_DIR / "supervisor" / "profile.md").read_text(encoding="utf-8")
-    assert "integration_rebind_reused_identity" in OPERATOR_INTEGRATION_CONTROLS
-    assert "integration_rebind_reused_identity" in parsed.capabilities["aq_commands"]
-    assert "aq integration rebind-reused-identity --task-id" in text
-    confirm_first = text[text.index("**Explain before acting.**"):]
-    assert "`aq integration rebind-reused-identity --discard-tip`" in confirm_first
 
 
 def test_supervisor_inbox_grants_exclude_internal_intake():

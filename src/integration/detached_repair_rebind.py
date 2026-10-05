@@ -31,7 +31,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.promotion import PromotionError
-from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.writers import OperationSafety
 from src.integration.repair import RepairService, _RepairInvariant
 from src.models import TaskStatus
 
@@ -147,12 +147,12 @@ class DetachedRepairRebind:
         if hint["target_kind"] != "parent":
             return self._blocked(base, "only a parent repair operation can be rebound")
         try:
-            project_id = await IntegrationRecoveryControls._project_id_on(conn, dict(hint))
+            project_id = await OperationSafety._project_id_on(conn, dict(hint))
         except ValueError as exc:
             return self._blocked(base, str(exc))
         # Match collection and repair-start: project before operation.
         await self.db.lock_hierarchy_project(conn, project_id)
-        operation = await IntegrationRecoveryControls._locked_operation_on(conn, operation_id)
+        operation = await OperationSafety._locked_operation_on(conn, operation_id)
         if operation is None:
             return {"outcome": "not_found", "operation_id": operation_id}
         base["project_id"] = project_id
@@ -162,7 +162,7 @@ class DetachedRepairRebind:
                 f"operation is {operation['state']}; human decisions stay with "
                 "integration resume or abort",
             )
-        stage = await IntegrationRecoveryControls._locked_stage_on(conn, operation)
+        stage = await OperationSafety._locked_stage_on(conn, operation)
         if stage is None:
             return self._blocked(base, "operation has no active stage row")
         ordinal = int(stage["ordinal"])
@@ -362,7 +362,7 @@ class DetachedRepairRebind:
         ).scalar_one_or_none()
         if open_gate is not None:
             return self._blocked(base, f"open gate {open_gate} holds the repair")
-        blockers = await IntegrationRecoveryControls._ambiguous_writes_on(
+        blockers = await OperationSafety._ambiguous_writes_on(
             conn, operation, allow_reserved_delegate=True
         )
         if blockers:

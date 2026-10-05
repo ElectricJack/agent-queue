@@ -19,7 +19,7 @@ from src.database.queries.integration_train_queries import (
 from src.integration.cancelled_collection_recovery import CancelledCollectionRecovery
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.ownership import BranchOwnership
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 from src.integration.parent_engine import parent_engine_guard
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.models import TaskStatus
@@ -220,7 +220,7 @@ class ParentSourceReverification:
                 assigned_agent_id=None,
                 _manual_pause_control=True,
             )
-            completion = ParentCompletion(self.db, clock=self.clock)
+            completion = ParentEpisodeRecords(self.db, clock=self.clock)
             new_checkpoint = checkpoint | {
                 "episode_id": None,
                 "generation": source["generation"] + 1,

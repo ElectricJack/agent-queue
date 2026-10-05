@@ -382,9 +382,9 @@ def _producer(ctx: AppModeContext) -> AppModeItem:
             '(GitHub Actions is "15368")',
             observed=observed,
             fix=(
-                f"aq integration onboard-train {shlex.quote(ctx.project_id)} --write-policy "
-                "FILE renders the numeric producer; review and rebind it "
-                "(runbook §9.3 step 5)"
+                f"Review the numeric producer in the policy, then use aq project set "
+                f"{shlex.quote(ctx.project_id)} integration-policy POLICY_JSON "
+                "--expected-integration-generation GENERATION --reason REASON"
             ),
         )
     return AppModeItem("producer", OK, expected=str(producer), observed=observed)

@@ -22,8 +22,8 @@ from src.integration.subjects import (
     AdmissionPredicate,
     CIEvidence,
     CIObserveArgs,
-    CIState,
     CIRequestArgs,
+    CIState,
     CleanupArgs,
     Decision,
     EjectArgs,
@@ -34,18 +34,18 @@ from src.integration.subjects import (
     PrimitiveOutcome,
     PrimitivePorts,
     PublishArgs,
+    ReceiptKind,
     RecordAttemptArgs,
     RecordDecisionArgs,
     RecordReceiptArgs,
-    ReceiptKind,
     SealArgs,
     Subject,
     SubjectKind,
     SubjectPhase,
     SubjectSchedule,
     WriterBudget,
-    WriterLease,
     WriterFileArgs,
+    WriterLease,
     WriterRole,
     WriterStatus,
 )
@@ -58,6 +58,8 @@ from tests.test_integration_main_promotion import (
     FakeAppClient,
     PushGit,
     RootPromotionService,
+)
+from tests.test_integration_main_promotion import (
     prepared_db as prepared_fixture,
 )
 
@@ -170,7 +172,7 @@ async def prewrite(db, subject, request):
     )
 
 
-async def test_policy_ejection_admits_only_the_exact_task_local_command(root):
+async def test_policy_ejection_admits_only_the_exact_task_local_command(root, monkeypatch):
     db, _, subject = root
     subject = await activate(db, subject)
     args = EjectArgs(member_task_id="root-0", reason="budget exhausted")
@@ -189,7 +191,8 @@ async def test_policy_ejection_admits_only_the_exact_task_local_command(root):
         return {"outcome": "ejected"}
 
     control = SimpleNamespace(eject=AsyncMock(side_effect=eject))
-    handler._integration_control_service = lambda: control
+    from src.integration.gates import RootMemberEjection
+    monkeypatch.setattr(RootMemberEjection, "eject", control.eject)
 
     async def execute(name, payload):
         assert name == "integration_eject"
@@ -232,7 +235,7 @@ async def test_policy_ejection_admits_only_the_exact_task_local_command(root):
 
 
 @pytest.mark.parametrize("changed", ["version", "engine", "generation", "rule", "artifact"])
-async def test_policy_ejection_rechecks_durable_authority_in_its_transaction(root, changed):
+async def test_policy_ejection_rechecks_durable_authority_in_its_transaction(root, changed, monkeypatch):
     db, _, subject = root
     subject = await activate(db, subject)
     args = EjectArgs(member_task_id="root-0", reason="budget exhausted")
@@ -269,7 +272,8 @@ async def test_policy_ejection_rechecks_durable_authority_in_its_transaction(roo
             )
         pytest.fail("changed policy authority must refuse before mutation/audit")
 
-    handler._integration_control_service = lambda: SimpleNamespace(eject=eject)
+    from src.integration.gates import RootMemberEjection
+    monkeypatch.setattr(RootMemberEjection, "eject", AsyncMock(side_effect=eject))
 
     async def execute(name, payload):
         return await handler._cmd_integration_eject(payload)
@@ -291,50 +295,6 @@ def publish_args(subject):
     return PublishArgs(fence=facts(subject).publisher_fence, expected_old_sha=BASE, new_sha=HEAD)
 
 
-async def test_activation_excludes_legacy_and_rollback_retains_every_journal(root):
-    db, _, subject = root
-    subject = await activate(db, subject)
-    with pytest.raises(EngineRefused, match="belongs to the reconciler"):
-        async with RootEngineOwnership(db).operation("repo"):
-            pytest.fail("legacy entered")
-    async with RootEngineOwnership(db).operation("repo", subject=subject):
-        # Fresh instances/restarts consult the same durable ownership.
-        async with RootEngineOwnership(db).operation("repo"):
-            pass
-    before = await db.list_integration_subject_journal(subject.id)
-    await RootEngineOwnership(db).transfer(
-        "repo",
-        engine="legacy",
-        reason="feature-off rollback",
-        expected_versions={subject.id: subject.version},
-    )
-    after = await db.list_integration_subject_journal(subject.id)
-    assert after[: len(before)] == before
-    async with db._engine.connect() as conn:
-        reservation = (
-            (
-                await conn.execute(
-                    select(t.integration_branch_owners).where(
-                        t.integration_branch_owners.c.ref == "refs/heads/main"
-                    )
-                )
-            )
-            .mappings()
-            .one()
-        )
-    assert reservation["handoff_state"] == "released" and reservation["fence_token"] == 1
-    async with RootEngineOwnership(db).operation("repo"):
-        pass
-    reverted = Subject.from_row(await db.get_integration_subject(subject.id))
-    reactivated = await activate(db, reverted)
-    assert reactivated.engine.value == "reconciler"
-    async with db._engine.connect() as conn:
-        token = await conn.scalar(
-            select(t.integration_branch_owners.c.fence_token).where(
-                t.integration_branch_owners.c.ref == "refs/heads/main"
-            )
-        )
-    assert token == 2
 
 
 async def test_transfer_preview_is_read_only_and_requires_no_active_loop(root):
@@ -345,7 +305,7 @@ async def test_transfer_preview_is_read_only_and_requires_no_active_loop(root):
     )
     assert result["outcome"] == "preview"
     assert result["expected_versions"] == {subject.id: subject.version}
-    assert result["current_engines"] == {subject.id: "legacy"}
+    assert result["current_engines"] == {subject.id: "reconciler"}
     assert await db.get_integration_subject(subject.id) == before
     assert await db.list_integration_subject_journal(subject.id) == []
 
@@ -563,21 +523,21 @@ async def test_shared_ci_registration_keeps_the_root_exclusion_and_prewrite(root
     called.assert_awaited_once_with(subject, args)
 
 
-async def test_activation_waits_for_inflight_legacy_operation(root):
+async def test_activation_waits_for_inflight_reconciler_operation(root):
     db, _, subject = root
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def legacy():
-        async with RootEngineOwnership(db).operation("repo"):
+    async def current_operation():
+        async with RootEngineOwnership(db).operation("repo", subject=subject):
             entered.set()
             await release.wait()
 
-    operation = asyncio.create_task(legacy())
+    operation = asyncio.create_task(current_operation())
     await entered.wait()
     transfer = asyncio.create_task(activate(db, subject))
     await asyncio.sleep(0.03)
     assert not transfer.done()
-    assert (await db.get_integration_subject(subject.id))["engine"] == "legacy"
+    assert (await db.get_integration_subject(subject.id))["engine"] == "reconciler"
     release.set()
     await asyncio.wait_for(asyncio.gather(operation, transfer), 3)
 
@@ -589,7 +549,7 @@ async def test_preflights_share_guard_but_main_publishers_refuse_contention_and_
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def publisher():
-        async with RootEngineOwnership(db).operation("repo", publisher=True):
+        async with RootEngineOwnership(db).operation("repo", subject=subject, publisher=True):
             entered.set()
             await release.wait()
 
@@ -597,23 +557,23 @@ async def test_preflights_share_guard_but_main_publishers_refuse_contention_and_
     first = asyncio.create_task(publisher())
     try:
         await asyncio.wait_for(entered.wait(), 30)
-        async with RootEngineOwnership(db).operation("repo"):
-            pass  # another legacy preflight may run while a main push is live
+        async with RootEngineOwnership(db).operation("repo", subject=subject):
+            pass  # read-only preflights may share the engine lock during a main push
         with pytest.raises(EngineRefused, match="another repository publisher"):
-            async with RootEngineOwnership(db).operation("repo", publisher=True):
+            async with RootEngineOwnership(db).operation("repo", subject=subject, publisher=True):
                 pytest.fail("second publisher entered")
     finally:
         first.cancel()
         with pytest.raises(asyncio.CancelledError):
             await first
     # Cancellation releases both session locks, including before a cutover.
-    async with RootEngineOwnership(db).operation("repo", publisher=True):
+    async with RootEngineOwnership(db).operation("repo", subject=subject, publisher=True):
         pass
     await asyncio.wait_for(activate(db, subject), 30)
 
 
-async def test_development_publisher_shares_cutover_exclusion_and_cannot_enter_afterwards(root):
-    from src.integration.development import DevelopmentBusy, publisher_exclusion
+async def test_shared_cleanup_serializes_with_transfer_without_granting_root_authority(root):
+    from src.integration.development import publisher_exclusion
 
     db, _, subject = root
     entered, release = asyncio.Event(), asyncio.Event()
@@ -630,18 +590,20 @@ async def test_development_publisher_shares_cutover_exclusion_and_cannot_enter_a
     assert not transfer.done()
     release.set()
     await asyncio.wait_for(asyncio.gather(task, transfer), 3)
-    with pytest.raises(DevelopmentBusy, match="belongs to the reconciler"):
-        async with publisher_exclusion(db, "repo"):
-            pytest.fail("development entered")
+    async with publisher_exclusion(db, "repo"):
+        pass  # Cleanup remains independent of root mutation authority.
+    with pytest.raises(EngineRefused, match="active reconciler subject"):
+        async with RootEngineOwnership(db).operation("repo"):
+            pytest.fail("cleanup granted root authority")
 
 
 async def test_ambiguous_development_publication_requires_existing_recovery_before_cutover(root):
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
 
     db, _, subject = root
     async with db.immediate() as conn:
         await conn.execute(
-            DevelopmentIntegration._operation_insert(
+            DevelopmentPrimitives._operation_insert(
                 id="dev-push",
                 project_id="p",
                 repository_id="repo",
@@ -652,7 +614,7 @@ async def test_ambiguous_development_publication_requires_existing_recovery_befo
         )
     with pytest.raises(EngineRefused, match="unresolved development publication"):
         await activate(db, subject)
-    assert (await db.get_integration_subject(subject.id))["engine"] == "legacy"
+    assert (await db.get_integration_subject(subject.id))["engine"] == "reconciler"
 
 
 async def test_legacy_repair_observation_refusal_preserves_the_existing_closed_contract(root):
@@ -678,33 +640,6 @@ async def test_legacy_repair_observation_refusal_preserves_the_existing_closed_c
         )
 
 
-async def test_rollback_waits_for_inflight_active_and_stale_visit_cannot_act(root):
-    db, _, subject = root
-    subject = await activate(db, subject)
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def active():
-        async with RootEngineOwnership(db).operation("repo", subject=subject):
-            entered.set()
-            await release.wait()
-
-    operation = asyncio.create_task(active())
-    await entered.wait()
-    transfer = asyncio.create_task(
-        RootEngineOwnership(db).transfer(
-            "repo",
-            engine="legacy",
-            expected_versions={subject.id: subject.version},
-            reason="rollback",
-        )
-    )
-    await asyncio.sleep(0.03)
-    assert not transfer.done()
-    release.set()
-    await asyncio.wait_for(asyncio.gather(operation, transfer), 3)
-    with pytest.raises(EngineRefused, match="engine/version"):
-        async with RootEngineOwnership(db).operation("repo", subject=subject):
-            pytest.fail("stale active visit entered")
 
 
 async def test_spawned_task_cannot_inherit_publisher_exclusion(root):
@@ -713,7 +648,7 @@ async def test_spawned_task_cannot_inherit_publisher_exclusion(root):
     async with RootEngineOwnership(db).operation("repo", subject=subject):
 
         async def escaped():
-            async with RootEngineOwnership(db).operation("repo"):
+            async with RootEngineOwnership(db).operation("repo", subject=subject):
                 pass
 
         with pytest.raises(EngineRefused, match="escaped"):
@@ -735,7 +670,7 @@ async def test_transfer_requires_complete_exact_versions_and_cutover_evidence(ro
             reason="go",
             evidence=("approved",),
         )
-    assert (await db.get_integration_subject(subject.id))["engine"] == "legacy"
+    assert (await db.get_integration_subject(subject.id))["engine"] == "reconciler"
 
 
 async def test_green_exact_publication_keeps_real_fence_and_prewrite(root):
@@ -942,11 +877,12 @@ async def test_cancelled_infra_and_untrusted_observations_are_not_attempts(
     assert not await db.list_integration_subject_journal(subject.id, entry_kinds=["attempt"])
 
 
-def test_wiring_is_default_off_and_transfer_is_registered():
+def test_wiring_defaults_to_active_and_pausing_keeps_transfer_registered():
     from src.config import IntegrationConfig
 
     config = IntegrationConfig()
-    assert not config.reconciler_active and not config.reconciler_shadow
+    assert config.reconciler_active and not config.reconciler_shadow
+    config.reconciler_active = False
     assert root_runtime_for(SimpleNamespace(config=SimpleNamespace(integration=config))) is None
     registry = ContractRegistry()
     register_integration_contracts(registry)
@@ -956,25 +892,6 @@ def test_wiring_is_default_off_and_transfer_is_registered():
     assert {Primitive.GIT_PUBLISH, Primitive.RECORD_ATTEMPT, Primitive.SEAL} <= ports.bound
 
 
-async def test_shadow_and_active_loops_have_disjoint_ownership(root):
-    db, _, _ = root
-    runtime = RootSubjectRuntime(
-        db,
-        SimpleNamespace(observe=AsyncMock()),
-        object(),
-        PrimitivePorts(),
-        shadow=True,
-        active=True,
-    )
-    assert [loop._mode for loop in runtime.loops] == [JournalMode.ACTIVE, JournalMode.SHADOW]
-    rows = await runtime.loops[1]._db.due_integration_subject_page(
-        now=10, after=None, limit=10, engine=None
-    )
-    assert len(rows) == 1
-    await activate(db, Subject.from_row(rows[0]))
-    assert not await runtime.loops[1]._db.due_integration_subject_page(
-        now=10, after=None, limit=10, engine=None
-    )
 
 
 async def test_runtime_seeds_the_next_request_with_durable_repository_ownership(root):
@@ -1248,10 +1165,10 @@ async def test_counted_attempt_replays_once_and_survives_uncommitted_projection(
     assert (await db.get_integration_subject(subject.id))["budget_attempts"] == 0
 
 
-async def _legacy_writer_facts(db, subject, status=WriterStatus.UNKNOWN):
+async def _writer_facts(db, subject, status=WriterStatus.UNKNOWN):
     observed = facts(subject, writer=WriterLease(status=status, task_id="writer", fence_token=6))
     observed = observed.model_copy(update={"unknown": ("writer_stop_unproven:writer",)})
-    return await RootObserver(db, None)._legacy_writer(subject, observed)
+    return await RootObserver(db, None)._writer_facts(subject, observed)
 
 
 async def _writer_task(db, status, *, session_state=None):
@@ -1285,7 +1202,7 @@ async def test_writer_holding_its_fenced_ref_is_never_projected(root):
             .where(t.integration_branch_owners.c.id == "branch-owner-row")
             .values(owner_id="writer", owner_role="repair")
         )
-    projected = await _legacy_writer_facts(db, subject)
+    projected = await _writer_facts(db, subject)
     assert projected.writer.status is WriterStatus.UNKNOWN
     assert projected.unknown == ("writer_stop_unproven:writer",)
 
@@ -1315,7 +1232,7 @@ async def test_accepted_handoff_stops_the_writer_whose_fence_moved_to_the_collec
                 created_at=8, updated_at=9,
             )
         )
-    projected = await _legacy_writer_facts(db, subject, WriterStatus.WORKING)
+    projected = await _writer_facts(db, subject, WriterStatus.WORKING)
     assert projected.writer.status is WriterStatus.STOPPED and projected.unknown == ()
     proof = projected.writer.stop_proof["stop_proof"]
     assert (proof["kind"], proof["successor_owner_id"], proof["successor_fence_token"]) == (
@@ -1330,7 +1247,7 @@ async def test_accepted_handoff_stops_the_writer_whose_fence_moved_to_the_collec
             .where(t.integration_branch_owners.c.id == "branch-owner-row")
             .values(owner_id="someone-else")
         )
-    assert (await _legacy_writer_facts(db, subject)).writer.status is WriterStatus.UNKNOWN
+    assert (await _writer_facts(db, subject)).writer.status is WriterStatus.UNKNOWN
 
 
 @pytest.mark.parametrize("session", ["writer-session", "older-session"])
@@ -1348,7 +1265,7 @@ async def test_close_receipt_stops_only_the_latest_stopped_writer_session(root, 
                 available_at=9, created_at=9,
             )
         )
-    projected = await _legacy_writer_facts(db, subject)
+    projected = await _writer_facts(db, subject)
     if session == "writer-session":
         assert projected.writer.status is WriterStatus.STOPPED
         assert projected.writer.stop_proof["stop_proof"]["kind"] == "delegate_close"
@@ -1360,18 +1277,18 @@ async def test_never_claimed_retired_and_consumed_writers_are_no_longer_the_subj
     db, _, subject = root
     subject = await activate(db, subject)
     await _writer_task(db, "FAILED")
-    projected = await _legacy_writer_facts(db, subject)
+    projected = await _writer_facts(db, subject)
     assert projected.writer == WriterLease() and projected.unknown == ()
     # A writer that was ever claimed may hold unpushed work: stop proof only.
     async with db.immediate() as conn:
         await conn.execute(update(t.tasks).where(t.tasks.c.id == "writer").values(claim_epoch=1))
-    projected = await _legacy_writer_facts(db, subject)
+    projected = await _writer_facts(db, subject)
     assert projected.writer.status is WriterStatus.UNKNOWN and projected.unknown
     async with db.immediate() as conn:
         await conn.execute(
             update(t.tasks).where(t.tasks.c.id == "writer").values(status="IN_PROGRESS")
         )
-    assert (await _legacy_writer_facts(db, subject)).writer.task_id == "writer"
+    assert (await _writer_facts(db, subject)).writer.task_id == "writer"
     stopped = {"writer": {"task_id": "writer"}, "writer_status": "stopped"}
     for kind, outcome in (("decision", None), ("action", "merged")):
         await db.append_integration_subject_journal(
@@ -1386,7 +1303,7 @@ async def test_never_claimed_retired_and_consumed_writers_are_no_longer_the_subj
                 "recorded_at": 10,
             }
         )
-    assert (await _legacy_writer_facts(db, subject)).writer == WriterLease()
+    assert (await _writer_facts(db, subject)).writer == WriterLease()
 
 
 async def test_superseded_head_is_not_an_attempt(root):
@@ -1404,16 +1321,6 @@ async def test_superseded_head_is_not_an_attempt(root):
     assert not await db.list_integration_subject_journal(subject.id, entry_kinds=["attempt"])
 
 
-async def test_shadow_reads_current_legacy_phase_without_writing_domain_columns(root):
-    db, _, subject = root
-    runtime = RootSubjectRuntime(
-        db, SimpleNamespace(observe=AsyncMock()), object(), PrimitivePorts(), shadow=True
-    )
-    virtual = Subject.from_row(await runtime.loops[0]._db.get_integration_subject(subject.id))
-    assert virtual.phase is SubjectPhase.TESTING
-    observed = await RootObserver(db, None).observe(virtual)
-    assert observed.phase is SubjectPhase.TESTING and observed.candidate.sha == HEAD
-    assert (await db.get_integration_subject(subject.id))["phase"] == "promotable"
 
 
 async def test_service_owns_root_runtime_remote_pass_and_shutdown():
@@ -1441,8 +1348,6 @@ async def test_service_owns_root_runtime_remote_pass_and_shutdown():
     )
     service = IntegrationService(
         db,
-        object(),
-        object(),
         SimpleNamespace(dispatch_due=AsyncMock()),
         subject_runtime=runtime,
         clock=lambda: 10,
@@ -1457,6 +1362,136 @@ async def test_service_owns_root_runtime_remote_pass_and_shutdown():
     runtime.stop.assert_awaited_once()
 
 
+async def test_policy_activation_uses_generation_cas_and_preserves_subject_pin(root):
+    from src.integration.records import PolicyActivation
+    from tests.test_integration_sealing import _policy
+
+    db, _, subject = root
+    activation = PolicyActivation(db)
+    policy = _policy()
+    for boundary in (policy["parent"], policy["root"]):
+        boundary.pop("primary_profile_id", None)
+        boundary.pop("verifier_profile_id", None)
+        boundary["repair"].pop("debug_profile_id", None)
+    response = await activation.configure(
+        "p", updates={"hierarchical_integration_policy": policy},
+        expected_generation=0, reason="reviewed next policy", operator_id="operator",
+    )
+    assert response["outcome"] == "configured" and response["generation"] == 1
+    assert Subject.from_row(await db.get_integration_subject(subject.id)) == subject
+    stale = await activation.configure(
+        "p", updates={"hierarchical_integration_mode": "disabled"},
+        expected_generation=0, reason="stale preview", operator_id="operator",
+    )
+    assert stale["outcome"] == "stale" and stale["generation"] == 1
+    assert (await db.get_project("p")).hierarchical_integration_mode == "train"
+
+
+async def test_policy_activation_refuses_repository_rebinding_with_a_live_subject(root):
+    from src.integration.records import PolicyActivation
+    from src.models import RepoConfig, RepoSourceType
+
+    db, _, subject = root
+    await db.create_repo(RepoConfig(id="other", project_id="p", source_type=RepoSourceType.CLONE,
+                                   url="https://github.com/acme/other.git", default_branch="main"))
+    result = await PolicyActivation(db).configure(
+        "p", updates={"integration_repository_id": "other"},
+        expected_generation=0, reason="change repository", operator_id="operator",
+    )
+    assert result["outcome"] == "busy"
+    assert (await db.get_project("p")).integration_repository_id == "repo"
+    assert Subject.from_row(await db.get_integration_subject(subject.id)) == subject
+
+
+async def test_development_policy_activation_accepts_scoped_reviewed_route(root):
+    from src.integration.development_runtime import project_development_pin
+    from src.integration.records import PolicyActivation
+    from tests.test_integration_sealing import _policy
+
+    db, _, subject = root
+    route = _policy()["root"]["route"]
+    policy = {"validation": "none", "development": {"route": route}}
+    result = await PolicyActivation(db).configure(
+        "p", updates={"hierarchical_integration_mode": "development",
+                      "hierarchical_integration_policy": policy},
+        expected_generation=0, reason="reviewed development policy", operator_id="operator",
+    )
+    assert result["outcome"] == "configured"
+    project = await db.get_project("p")
+    pin = project_development_pin({"hierarchical_integration_policy":
+                                  project.hierarchical_integration_policy})
+    assert pin.artifact_sha256 == route["artifact"]["artifact_sha256"]
+    assert Subject.from_row(await db.get_integration_subject(subject.id)) == subject
+
+
+async def test_status_and_doctor_project_recorded_subject_facts_without_advancing(root, monkeypatch):
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+    from src.integration.status import IntegrationStatusService
+
+    db, _, subject = root
+    import importlib
+    checks = importlib.import_module("src.doctor.integration_checks")
+    monkeypatch.setattr(checks.time, "time", lambda: 1000)
+    async with db.immediate() as conn:
+        await conn.execute(update(t.integration_subjects).where(
+            t.integration_subjects.c.id == subject.id).values(next_due_at=1, due_set_at=1))
+    before = await db.get_integration_subject(subject.id)
+    status = await IntegrationStatusService(db, delivery=AsyncMock()).status("p")
+    assert status["projection_kind"] == "subjects"
+    assert status["subjects"][0]["id"] == subject.id
+    overdue = await run_check(db, "integration.subjects_overdue")
+    assert overdue.severity == Severity.WARN
+    assert [row["id"] for row in overdue.data["subjects"]] == [subject.id]
+    assert await db.get_integration_subject(subject.id) == before
+    async with db.immediate() as conn:
+        await conn.execute(update(t.integration_subjects).where(
+            t.integration_subjects.c.id == subject.id).values(
+                next_due_at=None, wait_reason=None, gate_id="held-gate"))
+    held_before = await db.get_integration_subject(subject.id)
+    held = await run_check(db, "integration.subjects_held")
+    assert held.severity == Severity.WARN
+    assert held.data["subjects"][0]["gate_id"] == "held-gate"
+    assert await db.get_integration_subject(subject.id) == held_before
+
+
+async def test_development_configuration_binds_local_project_repository(reuse_database, tmp_path):
+    from src.integration.records import PolicyActivation
+    from src.models import Project
+
+    db = await reuse_database("local-development-activation.db")
+    remote = str(tmp_path / "remote.git")
+    await db.create_project(Project(id="local", name="local", repo_url=remote,
+                                   repo_default_branch="main"))
+    result = await PolicyActivation(db).configure(
+        "local", updates={"hierarchical_integration_mode": "development",
+                          "integration_repository": {"id": "local-repo", "url": remote,
+                                                     "default_branch": "main"},
+                          "hierarchical_integration_policy": {"validation": "none"}},
+        expected_generation=0, reason="configure disposable local project", operator_id="operator",
+    )
+    assert result["outcome"] == "configured"
+    repository = await db.get_repo("local-repo")
+    assert repository.project_id == "local" and repository.url == remote
+    assert (await db.get_project("local")).integration_repository_id == "local-repo"
+
+
+async def test_policy_activation_refuses_in_place_repository_change_with_live_subject(root):
+    from src.integration.records import PolicyActivation
+
+    db, _, subject = root
+    await db.update_project("p", repo_url="https://github.com/acme/replacement.git",
+                            repo_default_branch="release")
+    before = await db.get_repo("repo")
+    result = await PolicyActivation(db).configure(
+        "p", updates={"integration_repository": {
+            "id": "repo", "url": "https://github.com/acme/replacement.git",
+            "default_branch": "release",
+        }}, expected_generation=0, reason="retarget repository", operator_id="operator",
+    )
+    assert result["outcome"] == "busy"
+    assert await db.get_repo("repo") == before
+    assert Subject.from_row(await db.get_integration_subject(subject.id)) == subject
 async def test_root_ancestry_uses_retained_objects_and_falls_back_before_construction():
     from src.integration.root_runtime import RootGitObservationReader
     from unittest.mock import AsyncMock

@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import insert
 
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
-    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
@@ -27,9 +25,7 @@ from src.integration.models import (
     HierarchicalIntegrationPolicy,
     integration_max_wait_seconds,
 )
-from src.integration.scheduler import IntegrationScheduler
 from src.integration.service import IntegrationService as _IntegrationService
-from src.integration.settling import note_approval
 
 
 class IntegrationService(_IntegrationService):
@@ -51,67 +47,12 @@ async def db(tmp_path, reuse_database):
     yield database
 
 
-async def test_tick_retires_terminal_delegates_without_a_new_completion_event(db):
-    repair = SimpleNamespace(retire_terminal_delegates=AsyncMock(return_value=[]))
-    service = IntegrationService(
-        db, SimpleNamespace(), repair, SimpleNamespace(dispatch_due=AsyncMock()),
-    )
-    await service.tick(100.0)
-    repair.retire_terminal_delegates.assert_awaited_once_with(100.0)
 
 
-async def test_remote_reconciliation_sweeps_prs_and_backfills_aborted_cleanup(db):
-    proof = AsyncMock(side_effect=RuntimeError("temporary GitHub failure"))
-    aborted = AsyncMock()
-    cleanup = AsyncMock()
-    service = IntegrationService(
-        db, SimpleNamespace(), SimpleNamespace(), SimpleNamespace(dispatch_due=AsyncMock()),
-        pr_cleanup_handler=proof, aborted_cleanup_handler=aborted, cleanup_handler=cleanup,
-    )
-    service._tick_cleanup = cleanup
-    await service._reconcile()
-    proof.assert_awaited_once()
-    aborted.assert_awaited_once()
-    # A failed proof sweep does not stop independent durable cleanup.
-    cleanup.assert_awaited_once()
 
 
-async def test_tick_retries_repair_reservations_after_owner_recovery(db):
-    calls = []
-
-    async def recovered(now):
-        calls.append(("recovery", now))
-
-    async def reserved(now):
-        calls.append(("reservation", now))
-
-    service = IntegrationService(
-        db, SimpleNamespace(), SimpleNamespace(reconcile_delegate_reservations=reserved),
-        SimpleNamespace(dispatch_due=AsyncMock()), owner_recovery_handler=recovered,
-    )
-    await service.tick(100.0)
-    assert calls == [("recovery", 100.0), ("reservation", 100.0)]
 
 
-async def test_tick_runs_green_continuation_before_outbox_dispatch(db):
-    """A continuation enqueued this tick is delivered by the same tick."""
-    calls = []
-
-    async def reserved(now):
-        calls.append(("reservation", now))
-
-    async def green(now):
-        calls.append(("green", now))
-
-    async def dispatch(now):
-        calls.append(("outbox", now))
-
-    service = IntegrationService(
-        db, SimpleNamespace(), SimpleNamespace(reconcile_delegate_reservations=reserved),
-        SimpleNamespace(dispatch_due=dispatch), green_promotion_handler=green,
-    )
-    await service.tick(100.0)
-    assert calls == [("reservation", 100.0), ("green", 100.0), ("outbox", 100.0)]
 
 
 async def test_due_schedule_keyset_pages_every_row_once_past_two_hundred(db):
@@ -629,356 +570,22 @@ async def test_all_reconciliation_keysets_page_past_two_hundred_rows(db):
     assert len({row["id"] for row in intent_rows}) == count
 
 
-async def test_tick_is_bounded_nonoverlapping_and_isolates_sources():
-    entered = asyncio.Event()
-    release = asyncio.Event()
 
-    class FakeDB:
-        async def due_integration_schedule_page(self, **kwargs):
-            return [{"project_id": "p", "next_due_at": 1.0}]
 
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return [{"operation_id": "op", "stage": 0, "deadline_at": 1.0}]
 
-        async def pending_candidate_ci_page(self, **kwargs):
-            return []
 
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
 
-    scheduler = SimpleNamespace(mark_due=AsyncMock())
 
-    async def expire(*args, **kwargs):
-        entered.set()
-        await release.wait()
 
-    repair = SimpleNamespace(expire=AsyncMock(side_effect=expire))
-    outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
-    drain = AsyncMock(return_value=())
-    materialize = AsyncMock(side_effect=RuntimeError("temporary Git outage"))
-    collect = AsyncMock()
-    service = IntegrationService(
-        FakeDB(), scheduler, repair, outbox, drain_handler=drain,
-        branch_materialization_handler=materialize, collection_handler=collect, page_size=1
-    )
 
-    first = asyncio.create_task(service.tick(10.0))
-    await entered.wait()
-    await service.tick(10.0)
-    release.set()
-    await first
 
-    materialize.assert_awaited_once_with(10.0)
-    collect.assert_awaited_once_with(10.0)
-    scheduler.mark_due.assert_awaited_once_with("p", 10.0, "periodic")
-    repair.expire.assert_awaited_once_with("op", 0, now=10.0)
-    drain.assert_awaited_once_with(10.0)
-    outbox.dispatch_due.assert_awaited_once_with(10.0)
 
 
-async def test_tick_keeps_work_without_later_phase_handlers_retryable():
-    class FakeDB:
-        async def due_integration_schedule_page(self, **kwargs):
-            return []
 
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return []
-
-        async def pending_candidate_ci_page(self, **kwargs):
-            return [{"batch_id": "b", "revision": 1, "updated_at": 1.0}]
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return [{"id": "i", "intent_kind": "root", "updated_at": 1.0}]
-
-    outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
-    service = IntegrationService(
-        FakeDB(),
-        SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=AsyncMock()),
-        outbox,
-        page_size=2,
-    )
-
-    await service.tick(10.0)
-
-    outbox.dispatch_due.assert_awaited_once_with(10.0)
-
-
-async def test_tick_observes_candidate_ci_before_expiring_a_due_repair_stage():
-    """A conclusive exact CI result at the deadline must get first observation."""
-    events = []
-
-    class FakeDB:
-        async def due_integration_schedule_page(self, **kwargs):
-            return []
-
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return [{"operation_id": "op", "stage": 0, "deadline_at": 10.0}]
-
-        async def pending_candidate_ci_page(self, **kwargs):
-            return [{"batch_id": "batch", "revision": 1, "updated_at": 1.0}]
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
-
-    async def observe(row, now):
-        events.append(("candidate", row["batch_id"], now))
-
-    async def expire(operation_id, stage, *, now):
-        events.append(("deadline", operation_id, stage, now))
-
-    service = IntegrationService(
-        FakeDB(),
-        SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=expire),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        candidate_ci_handler=observe,
-    )
-
-    await service.tick(10.0)
-
-    assert events == [("candidate", "batch", 10.0), ("deadline", "op", 0, 10.0)]
-
-
-async def test_tick_isolates_item_failure_but_propagates_cancellation():
-    class FakeDB:
-        async def due_integration_schedule_page(self, **kwargs):
-            return [{"project_id": "p", "next_due_at": 1.0}]
-
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return [{"operation_id": "op", "stage": 0, "deadline_at": 1.0}]
-
-        async def pending_candidate_ci_page(self, **kwargs):
-            return [{"batch_id": "b", "revision": 0, "updated_at": 1.0}]
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
-
-    repair = SimpleNamespace(expire=AsyncMock())
-    outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
-    service = IntegrationService(
-        FakeDB(),
-        SimpleNamespace(mark_due=AsyncMock(side_effect=RuntimeError("schedule failed"))),
-        repair,
-        outbox,
-        candidate_ci_handler=AsyncMock(side_effect=asyncio.CancelledError),
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await service.tick(10.0)
-
-    # Cancellation during CI observation precedes deadline processing.
-    repair.expire.assert_not_awaited()
-    outbox.dispatch_due.assert_not_awaited()
-
-
-async def test_two_services_coalesce_the_same_durable_schedule(db):
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(projects).values(
-                id="p",
-                name="Project",
-                status="ACTIVE",
-                hierarchical_integration_mode="train",
-                created_at=1.0,
-            )
-        )
-        await conn.execute(
-            insert(project_integration_schedules).values(
-                project_id="p",
-                enabled=True,
-                interval_seconds=30,
-                next_due_at=1.0,
-                updated_at=1.0,
-            )
-        )
-        await note_approval(conn, project_id="p", now=1.0)
-
-    scheduler = IntegrationScheduler(db)
-    entered = 0
-    both_entered = asyncio.Event()
-
-    class CoordinatedScheduler:
-        async def mark_due(self, project_id, now, trigger):
-            nonlocal entered
-            entered += 1
-            if entered == 2:
-                both_entered.set()
-            await asyncio.wait_for(both_entered.wait(), timeout=1.0)
-            return await scheduler.mark_due(project_id, now, trigger)
-
-    empty_repair = SimpleNamespace(expire=AsyncMock())
-    empty_outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
-    first = IntegrationService(db, CoordinatedScheduler(), empty_repair, empty_outbox)
-    second = IntegrationService(db, CoordinatedScheduler(), empty_repair, empty_outbox)
-
-    await asyncio.gather(first.tick(301.0), second.tick(301.0))
-
-    async with db._engine.connect() as conn:
-        assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 1
-
-
-async def test_service_start_and_stop_owns_one_named_loop():
-    class EmptyDB:
-        async def due_integration_schedule_page(self, **kwargs):
-            return []
-
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return []
-
-        async def pending_candidate_ci_page(self, **kwargs):
-            return []
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
-
-    service = IntegrationService(
-        EmptyDB(),
-        SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=AsyncMock()),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        interval_seconds=60.0,
-    )
-
-    service.start()
-    first_task = service._task
-    service.start()
-    assert service._task is first_task
-    assert first_task is not None
-    assert first_task.get_name() == "integration-reconciliation-service"
-    await asyncio.sleep(0)
-    await service.stop()
-    assert service._task is None
-    assert first_task.done()
-
-
-@pytest.mark.parametrize("handler_kind", ("missing", "declining"))
-async def test_tick_advances_persistent_source_cursor_and_wraps_fairly(handler_kind):
-    rows = [
-        {"batch_id": name, "revision": 0, "updated_at": 1.0}
-        for name in ("a", "b", "c", "d", "e")
-    ]
-
-    class PagingDB:
-        def __init__(self):
-            self.scanned = []
-
-        async def due_integration_schedule_page(self, **kwargs):
-            return []
-
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return []
-
-        async def pending_candidate_ci_page(self, *, after, limit):
-            start = 0
-            if after is not None:
-                start = next(
-                    index + 1
-                    for index, row in enumerate(rows)
-                    if (row["updated_at"], row["batch_id"], row["revision"]) == after
-                )
-            page = rows[start : start + limit]
-            self.scanned.append([row["batch_id"] for row in page])
-            return page
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
-
-    database = PagingDB()
-    handler = None if handler_kind == "missing" else AsyncMock(return_value=False)
-    service = IntegrationService(
-        database,
-        SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=AsyncMock()),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        candidate_ci_handler=handler,
-        page_size=2,
-    )
-
-    for now in (1.0, 2.0, 3.0, 4.0):
-        await service.tick(now)
-
-    assert database.scanned == [["a", "b"], ["c", "d"], ["e"], [], ["a", "b"]]
-    if handler is not None:
-        assert [call.args[0]["batch_id"] for call in handler.await_args_list] == [
-            "a",
-            "b",
-            "c",
-            "d",
-            "e",
-            "a",
-            "b",
-        ]
-
-
-async def test_selector_failure_isolates_source_and_background_loop_recovers_cleanly():
-    two_outbox_ticks = asyncio.Event()
-
-    class OneShotFailureDB:
-        def __init__(self):
-            self.schedule_calls = 0
-
-        async def due_integration_schedule_page(self, **kwargs):
-            self.schedule_calls += 1
-            if self.schedule_calls == 1:
-                raise RuntimeError("one-shot schedule selector failure")
-            return [{"project_id": "p", "next_due_at": 1.0}]
-
-        async def due_integration_repair_stage_page(self, **kwargs):
-            return [{"operation_id": "op", "stage": 0, "deadline_at": 1.0}]
-
-        async def pending_candidate_ci_page(self, **kwargs):
-            return []
-
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return []
-
-    outbox_calls = 0
-
-    async def dispatch_due(now):
-        nonlocal outbox_calls
-        outbox_calls += 1
-        if outbox_calls == 2:
-            two_outbox_ticks.set()
-        return 0
-
-    scheduler = SimpleNamespace(mark_due=AsyncMock())
-    repair = SimpleNamespace(expire=AsyncMock())
-    service = IntegrationService(
-        OneShotFailureDB(),
-        scheduler,
-        repair,
-        SimpleNamespace(dispatch_due=AsyncMock(side_effect=dispatch_due)),
-        interval_seconds=0.01,
-    )
-
-    service.start()
-    await asyncio.wait_for(two_outbox_ticks.wait(), timeout=1.0)
-    await service.stop()
-
-    assert repair.expire.await_count == 2
-    assert scheduler.mark_due.await_count == 1
-    assert scheduler.mark_due.await_args.args[0] == "p"
-    assert scheduler.mark_due.await_args.args[2] == "periodic"
-    assert outbox_calls == 2
-
-
-async def test_each_item_observes_clock_after_prior_slow_handler():
-    now = [10.0]
-    observed = []
-    service = IntegrationService(
-        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
-        clock=lambda: now[0],
-    )
-
-    async def slow(row, observed_at):
-        observed.append((row["project_id"], observed_at))
-        now[0] += 180
-
-    await service._run_optional(
-        "candidate CI", [{"project_id": "p"}, {"project_id": "q"}], slow, 10,
-    )
-    assert observed == [("p", 10), ("q", 190)]
+
+
+
+
 
 
 # --- Bounded sources and items (phase-0 item 8) -----------------------------
@@ -998,132 +605,14 @@ class _QuietDB:
         return []
 
 
-async def test_hung_source_is_cancelled_and_every_other_source_still_runs():
-    """One hung GitHub call no longer stops CI, deadlines, intents and drains."""
-    cancelled = asyncio.Event()
-
-    async def hung_review_poll(now):
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    collect = AsyncMock()
-    drain = AsyncMock()
-    outbox = SimpleNamespace(dispatch_due=AsyncMock(return_value=0))
-    service = IntegrationService(
-        _QuietDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(), outbox,
-        review_handler=hung_review_poll, collection_handler=collect, drain_handler=drain,
-        source_timeouts={"GitHub PR reviews": 0.05},
-    )
-
-    await asyncio.wait_for(service.tick(10.0), timeout=5.0)
-
-    assert cancelled.is_set()
-    collect.assert_awaited_once_with(10.0)
-    drain.assert_awaited_once_with(10.0)
-    outbox.dispatch_due.assert_awaited_once_with(10.0)
 
 
-async def test_tick_level_hung_outbox_is_bounded_too():
-    async def hung_dispatch(now):
-        await asyncio.Event().wait()
-
-    scheduler = SimpleNamespace(mark_due=AsyncMock())
-    service = IntegrationService(
-        _QuietDB(), scheduler, SimpleNamespace(),
-        SimpleNamespace(dispatch_due=hung_dispatch),
-        source_timeouts={"integration outbox": 0.05},
-    )
-    await asyncio.wait_for(service.tick(10.0), timeout=5.0)
-    # The next tick is not refused by a lock the hung call still holds.
-    await asyncio.wait_for(service.tick(11.0), timeout=5.0)
-    assert not service._tick_lock.locked()
 
 
-async def test_uncancellable_source_is_skipped_until_it_unwinds(monkeypatch):
-    """A call that ignores cancellation never runs twice and never holds the pass."""
-    import src.integration.service as service_module
-
-    monkeypatch.setattr(service_module, "CANCEL_GRACE_SECONDS", 0.01)
-    release = asyncio.Event()
-    calls = 0
-
-    async def stubborn(now):
-        nonlocal calls
-        calls += 1
-        while True:
-            try:
-                await release.wait()
-                return
-            except asyncio.CancelledError:
-                continue  # swallow every cancellation until released
-
-    collect = AsyncMock()
-    service = IntegrationService(
-        _QuietDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        review_handler=stubborn, collection_handler=collect,
-        source_timeouts={"GitHub PR reviews": 0.02},
-    )
-
-    await asyncio.wait_for(service.tick(1.0), timeout=5.0)
-    await asyncio.wait_for(service.tick(2.0), timeout=5.0)
-    assert calls == 1  # still unwinding: skipped, not started a second time
-    assert collect.await_count == 2  # later sources ran on both passes
-
-    release.set()
-    for _ in range(20):
-        await asyncio.sleep(0)
-    await asyncio.wait_for(service.tick(3.0), timeout=5.0)
-    assert calls == 2
-    assert not service._unwinding
 
 
-async def test_hung_item_is_cancelled_and_later_items_of_the_page_still_run():
-    seen = []
-
-    class PageDB(_QuietDB):
-        async def pending_candidate_ci_page(self, **kwargs):
-            return [
-                {"batch_id": name, "revision": 0, "updated_at": 1.0} for name in ("a", "b")
-            ]
-
-    async def observe(row, now):
-        if row["batch_id"] == "a":
-            await asyncio.Event().wait()
-        seen.append(row["batch_id"])
-
-    expire = AsyncMock()
-    service = IntegrationService(
-        PageDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(expire=expire),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        candidate_ci_handler=observe, item_timeout_seconds=0.05,
-    )
-    await asyncio.wait_for(service.tick(10.0), timeout=5.0)
-    assert seen == ["b"]
 
 
-async def test_stop_cancels_a_running_bounded_source():
-    entered = asyncio.Event()
-    cancelled = asyncio.Event()
-
-    async def slow(now):
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    service = IntegrationService(
-        _QuietDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        review_handler=slow, interval_seconds=60.0,
-    )
-    service.start()
-    await asyncio.wait_for(entered.wait(), timeout=5.0)
-    await asyncio.wait_for(service.stop(), timeout=5.0)
-    assert cancelled.is_set()
 
 
 @pytest.mark.parametrize(
@@ -1137,7 +626,7 @@ async def test_stop_cancels_a_running_bounded_source():
 )
 def test_service_refuses_nonpositive_budgets(kwargs):
     with pytest.raises(ValueError, match="timeout must be positive"):
-        _IntegrationService(None, None, None, None, **kwargs)
+        _IntegrationService(None, None, **kwargs)
 
 
 def test_integration_config_validates_and_loads_service_budgets(tmp_path):
@@ -1190,147 +679,16 @@ class _DispatchDB(_QuietDB):
         return [dict(row) for row in rows[:limit]]
 
 
-def _dispatch_service(db, dispatcher, clock, **kwargs):
-    return _IntegrationService(
-        db, SimpleNamespace(mark_due=AsyncMock()), kwargs.pop("repair", SimpleNamespace()),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        repair_dispatcher=dispatcher, clock=clock, **kwargs,
-    )
 
 
-async def test_refused_dispatch_is_retried_with_backoff_until_it_dispatches():
-    """busy, stale and unknown refusals are revisited without any new event."""
-    import src.integration.service as service_module
-
-    row = {
-        "operation_id": "op", "ordinal": 1, "repair_task_id": None,
-        "writer_kind": None, "task_status": None,
-    }
-    db = _DispatchDB([row])
-    answers = iter(["busy", "stale", "unknown", "dispatched"])
-    attempts = []
-    now = [100.0]
-
-    async def dispatch(selected):
-        attempts.append(now[0])
-        outcome = next(answers)
-        if outcome == "dispatched":
-            db.rows = []  # the launched writer leaves the selection
-        return {"success": outcome == "dispatched", "outcome": outcome}
-
-    service = _dispatch_service(db, dispatch, lambda: now[0])
-    base = service_module.DISPATCH_RETRY_BASE_SECONDS
-    for at in (100.0, 110.0, 100.0 + base, 100.0 + base + 1, 100.0 + 3 * base,
-               100.0 + 7 * base, 100.0 + 8 * base):
-        now[0] = at
-        await service.tick(at)
-
-    assert attempts == [100.0, 100.0 + base, 100.0 + 3 * base, 100.0 + 7 * base]
-    assert ("op", 1) not in service._dispatch_backoff
 
 
-async def test_dispatch_backoff_is_capped_and_resets_when_the_writer_changes():
-    import src.integration.service as service_module
-
-    row = {
-        "operation_id": "op", "ordinal": 0, "repair_task_id": "repair-op-0",
-        "writer_kind": "repair_delegate", "task_status": "PAUSED",
-    }
-    db = _DispatchDB([row])
-    attempts = []
-    now = [0.0]
-
-    async def dispatch(selected):
-        attempts.append((now[0], selected["repair_task_id"]))
-        return {"success": False, "outcome": "busy"}
-
-    service = _dispatch_service(db, dispatch, lambda: now[0])
-    ceiling = service_module.DISPATCH_RETRY_MAX_SECONDS
-    for _ in range(400):
-        await service.tick(now[0])
-        now[0] += 10.0
-    gaps = [b[0] - a[0] for a, b in itertools.pairwise(attempts)]
-    assert max(gaps) <= ceiling + 10.0 and gaps[-1] >= ceiling
-    count = len(attempts)
-
-    db.rows = [{**row, "repair_task_id": "repair-op-0-r1"}]  # a refiled delegate
-    await service.tick(now[0])
-    assert len(attempts) == count + 1 and attempts[-1][1] == "repair-op-0-r1"
 
 
-async def test_refused_dispatch_that_links_its_first_delegate_keeps_its_pacing():
-    """Dispatch links a PAUSED delegate before ownership refuses it; that is not progress."""
-    row = {
-        "operation_id": "op", "ordinal": 1, "repair_task_id": None,
-        "writer_kind": None, "task_status": None,
-    }
-    db = _DispatchDB([row])
-    attempts = []
-    now = [0.0]
-
-    async def dispatch(selected):
-        attempts.append(now[0])
-        db.rows = [{**row, "repair_task_id": "repair-op-1", "writer_kind": "repair_delegate",
-                    "task_status": "PAUSED"}]
-        return {"success": False, "outcome": "busy"}
-
-    service = _dispatch_service(db, dispatch, lambda: now[0])
-    for at in (0.0, 1.0, 2.0):
-        now[0] = at
-        await service.tick(at)
-    assert attempts == [0.0]
 
 
-async def test_repair_continuations_and_refusals_share_one_paced_dispatch():
-    """pending_dispatches keeps its semantics; a stage selected twice dispatches once."""
-    shared = {
-        "operation_id": "op-a", "ordinal": 2, "repair_task_id": None,
-        "writer_kind": None, "task_status": None,
-    }
-    db = _DispatchDB([shared])
-    pending = AsyncMock(return_value=[
-        {"operation_id": "op-a", "ordinal": 2},
-        {"operation_id": "op-b", "ordinal": 0},
-    ])
-    dispatched = []
-
-    async def dispatch(selected):
-        dispatched.append((selected["operation_id"], selected["ordinal"]))
-        return {"success": True, "outcome": "already_dispatched"}
-
-    service = _dispatch_service(
-        db, dispatch, lambda: 50.0, repair=SimpleNamespace(pending_dispatches=pending),
-    )
-    await service.tick(50.0)
-    await service.tick(51.0)  # both still selected, both paced
-
-    assert sorted(dispatched) == [("op-a", 2), ("op-b", 0)]
-    pending.assert_awaited()
 
 
-async def test_failed_or_hung_dispatch_counts_as_an_attempt_and_is_retried():
-    row = {
-        "operation_id": "op", "ordinal": 1, "repair_task_id": None,
-        "writer_kind": None, "task_status": None,
-    }
-    calls = []
-    now = [0.0]
-
-    async def dispatch(selected):
-        calls.append(now[0])
-        if len(calls) == 1:
-            raise RuntimeError("dispatch transaction failed")
-        if len(calls) == 2:
-            await asyncio.Event().wait()
-        return {"success": True, "outcome": "dispatched"}
-
-    service = _dispatch_service(
-        _DispatchDB([row]), dispatch, lambda: now[0], item_timeout_seconds=0.05
-    )
-    for at in (0.0, 30.0, 90.0):
-        now[0] = at
-        await asyncio.wait_for(service.tick(at), timeout=5.0)
-    assert calls == [0.0, 30.0, 90.0]
 
 
 async def test_refused_dispatch_page_selects_unlaunched_writers_under_any_policy(db):
@@ -1399,31 +757,104 @@ async def test_refused_dispatch_page_selects_unlaunched_writers_under_any_policy
     assert selected["op-paused"]["repair_task_id"] == "task-op-paused"
 
 
-async def test_intent_pass_routes_parent_intents_to_their_own_reconciler():
-    class IntentDB(_QuietDB):
-        async def unresolved_integration_intent_page(self, **kwargs):
-            return [
-                {"id": "child", "intent_kind": "child", "updated_at": 1.0},
-                {"id": "root", "intent_kind": "root", "updated_at": 2.0},
-            ]
 
-    root = AsyncMock(return_value={"outcome": "applied"})
-    parent = AsyncMock(return_value={"outcome": "promoted"})
-    service = IntegrationService(
-        IntentDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        unresolved_intent_handler=root, parent_intent_handler=parent,
-    )
-    await service.tick(10.0)
-    assert [call.args[0]["id"] for call in parent.await_args_list] == ["child"]
-    assert [call.args[0]["id"] for call in root.await_args_list] == ["root"]
 
-    # Without a parent reconciler every row still reaches the root handler.
-    legacy = AsyncMock(return_value={"outcome": "declined"})
+async def test_subject_pass_runs_each_runtime_and_isolates_failed_maintenance():
+    calls = []
+
+    def runtime(name):
+        async def tick(now):
+            calls.append((name, now))
+        return SimpleNamespace(tick=tick, stop=AsyncMock())
+
+    async def failed(now):
+        calls.append(("failed", now))
+        raise RuntimeError("temporary failure")
+
+    async def later(now):
+        calls.append(("later", now))
+
+    async def dispatch(now):
+        calls.append(("outbox", now))
+
     service = IntegrationService(
-        IntentDB(), SimpleNamespace(mark_due=AsyncMock()), SimpleNamespace(),
-        SimpleNamespace(dispatch_due=AsyncMock(return_value=0)),
-        unresolved_intent_handler=legacy,
+        object(), SimpleNamespace(dispatch_due=dispatch),
+        subject_runtime=runtime("root"), parent_subject_runtime=runtime("parent"),
+        development_subject_runtime=runtime("development"),
+        maintenance={"failed": failed, "later": later}, clock=lambda: 100,
     )
-    await service.tick(10.0)
-    assert [call.args[0]["id"] for call in legacy.await_args_list] == ["child", "root"]
+    await service.tick(100)
+    assert calls == [(name, 100) for name in
+                     ("root", "parent", "development", "failed", "later", "outbox")]
+
+
+async def test_background_subject_pass_does_not_overlap_and_stop_cancels_it():
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def tick(now):
+        calls.append(now)
+        entered.set()
+        await release.wait()
+
+    runtime = SimpleNamespace(tick=tick, stop=AsyncMock())
+    service = IntegrationService(
+        object(), SimpleNamespace(dispatch_due=AsyncMock()),
+        subject_runtime=runtime, clock=lambda: 100,
+    )
+    await service.tick(100, background=True)
+    await entered.wait()
+    await service.tick(101, background=True)
+    assert calls == [100]
+    await service.stop()
+    runtime.stop.assert_awaited_once()
+    assert service._reconciliation_task is None
+
+
+async def test_timed_out_subject_does_not_starve_other_subject_kinds():
+    cancelled = asyncio.Event()
+
+    async def hung(now):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    later = SimpleNamespace(tick=AsyncMock(), stop=AsyncMock())
+    service = IntegrationService(
+        object(), SimpleNamespace(dispatch_due=AsyncMock()),
+        subject_runtime=SimpleNamespace(tick=hung, stop=AsyncMock()),
+        parent_subject_runtime=later, source_timeout_seconds=0.01,
+    )
+    await service.tick(100)
+    assert cancelled.is_set()
+    later.tick.assert_awaited_once()
+    service._outbox.dispatch_due.assert_awaited_once()
+
+
+async def test_uncancellable_maintenance_is_not_started_twice(monkeypatch):
+    from src.integration import service as module
+    monkeypatch.setattr(module, "CANCEL_GRACE_SECONDS", 0.01)
+    release = asyncio.Event()
+    calls = []
+
+    async def stubborn(now):
+        calls.append(now)
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    service = IntegrationService(
+        object(), SimpleNamespace(dispatch_due=AsyncMock()),
+        maintenance={"stubborn": stubborn}, source_timeout_seconds=0.01,
+    )
+    await service.tick(100)
+    await service.tick(101)
+    assert len(calls) == 1
+    release.set()
+    for task in tuple(service._unwinding["stubborn"]):
+        await task
+    await service.tick(102)
+    assert len(calls) == 2
+    await service.stop()

@@ -91,7 +91,6 @@ class SubjectState(StrEnum):
 class SubjectEngine(StrEnum):
     """Which engine owns a subject's mutations; exactly one at a time."""
 
-    LEGACY = "legacy"
     RECONCILER = "reconciler"
 
 
@@ -453,7 +452,7 @@ class Subject(_Frozen):
     repository_id: str = Field(min_length=1)
     kind: SubjectKind
     subject_key: str = Field(min_length=1)
-    engine: SubjectEngine = SubjectEngine.LEGACY
+    engine: SubjectEngine = SubjectEngine.RECONCILER
     phase: SubjectPhase
     policy: PolicyArtifactPin
     task_id: str | None = Field(default=None, min_length=1)
@@ -540,7 +539,7 @@ class Subject(_Frozen):
             repository_id=row["repository_id"],
             kind=row["kind"],
             subject_key=row["subject_key"],
-            engine=row.get("engine") or SubjectEngine.LEGACY,
+            engine=row.get("engine") or SubjectEngine.RECONCILER,
             phase=row["phase"],
             policy=PolicyArtifactPin(
                 playbook_id=row["policy_playbook_id"],

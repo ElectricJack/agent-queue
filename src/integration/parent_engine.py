@@ -14,7 +14,6 @@ from sqlalchemy import select, text
 
 from src.database import tables as t
 from src.integration.engine import EngineRefused
-from src.integration.records import journal_entry_on
 from src.integration.subjects import Subject, SubjectEngine, SubjectKind
 
 _scope: ContextVar[tuple | None] = ContextVar("parent_engine_scope", default=None)
@@ -41,7 +40,7 @@ def active_parent_scope(db, task_id):
     )
 
 
-async def legacy_parent_allowed_on(conn, db, task_id):
+async def parent_checkpoint_allowed_on(conn, db, task_id):
     """For transactional lifecycle hooks which cannot open another transaction."""
     if active_parent_scope(db, task_id):
         return True
@@ -58,22 +57,12 @@ async def legacy_parent_allowed_on(conn, db, task_id):
             )
         ).mappings().all()
     )
-    return await _legacy_refusal_on(conn, rows) is None
+    return await _unowned_refusal_on(conn, rows) is None
 
 
-async def _legacy_refusal_on(conn, rows):
-    if any(row["engine"] == "reconciler" for row in rows):
-        return "parent belongs to the reconciler"
-    for row in rows:
-        gate_id = row["gate_id"]
-        if not gate_id:
-            continue
-        # Rollback keeps the current gate and its immutable answer. The legacy
-        # dashboard projection (including expiry) cannot authorize mutation.
-        answer = await journal_entry_on(conn, row["id"], f"gate-answer:{gate_id}")
-        choice = answer["payload"].get("choice") if answer else None
-        if not choice or choice in {"hold", "reject", "abort"}:
-            return "parent has a binding human gate"
+async def _unowned_refusal_on(conn, rows):
+    if rows:
+        return "parent has a durable subject; reconciler authority is required"
     return None
 
 
@@ -88,7 +77,7 @@ class ParentEngineOwnership:
             if scope[3] is not asyncio.current_task():
                 raise EngineRefused("parent mutation escaped its engine exclusion")
             if subject and scope[2] != "reconciler":
-                raise EngineRefused("parent mutation belongs to legacy")
+                raise EngineRefused("parent mutation belongs to checkpoint bootstrap")
             yield
             return
         async with self.db._engine.connect() as conn:
@@ -109,7 +98,7 @@ class ParentEngineOwnership:
                     .mappings()
                     .all()
                 )
-                if subject is None and (refusal := await _legacy_refusal_on(conn, rows)):
+                if subject is None and (refusal := await _unowned_refusal_on(conn, rows)):
                     raise EngineRefused(refusal)
                 if subject is not None and (
                     subject.kind is not SubjectKind.PARENT_EPISODE
@@ -126,7 +115,7 @@ class ParentEngineOwnership:
                     (
                         self.db,
                         task_id,
-                        "reconciler" if subject else "legacy",
+                        "reconciler" if subject else "bootstrap",
                         asyncio.current_task(),
                     )
                 )
@@ -219,7 +208,7 @@ class ParentEngineOwnership:
                     raise EngineRefused("unresolved parent write prevents engine transfer")
             now = self.clock()
             for row in rows:
-                subject = Subject.from_row(row)
+                subject = Subject.from_row({**row, "engine": "reconciler"})
                 await self.db.append_integration_subject_journal_on(
                     conn,
                     {
@@ -236,7 +225,7 @@ class ParentEngineOwnership:
                         "outcome": "recorded",
                         "recorded_at": now,
                         "payload": {
-                            "from": subject.engine.value,
+                            "from": row["engine"],
                             "to": engine.value,
                             "reason": reason,
                             "evidence": list(evidence),
@@ -268,7 +257,7 @@ class ParentEngineOwnership:
 
 
 def parent_engine_guard(resource="task", *, outcome="waiting", result_model=None, refusal=None):
-    """Block legacy mutations even after feature-off/restart; nested ports reuse authority."""
+    """Keep checkpoint bootstrap outside subject authority; nested ports reuse authority."""
 
     def decorate(method):
         signature = inspect.signature(method)

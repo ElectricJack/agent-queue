@@ -8,21 +8,19 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, select
 
-from src.commands.task_commands import TaskCommandsMixin
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import (
     ExecutionPrincipal,
     PrincipalKind,
     principal_context,
 )
+from src.commands.task_commands import TaskCommandsMixin
 from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     task_branch_origins,
     task_integration_checkpoints,
 )
-from src.doctor.integration_checks import run_check
-from src.doctor.models import Severity
 from src.integration.canonical_reservation import reserve_canonical_task_branch
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
@@ -125,18 +123,6 @@ async def test_restart_refuses_a_competing_owner_and_keeps_task_blocked(db):
     assert "another or unresolved owner" in result["error"]
     assert (await db.get_task("producer")).status is TaskStatus.BLOCKED
     assert (await _owner(db))["owner_id"] == "other-task"
-
-
-async def test_doctor_reports_missing_owner_then_clears_after_reservation(db):
-    missing = await run_check(db, "integration.missing_canonical_owners")
-    assert missing.severity is Severity.WARN
-    assert missing.data["tasks"][0]["id"] == "producer"
-    assert missing.data["tasks"][0]["handoff_state"] is None
-
-    assert (await reserve_canonical_task_branch(db, "producer"))["outcome"] == "acquired"
-
-    recovered = await run_check(db, "integration.missing_canonical_owners")
-    assert recovered.severity is Severity.OK
 
 
 async def test_released_row_is_reacquired_with_a_new_fence(db):

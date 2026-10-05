@@ -15,20 +15,16 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import insert, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import events, projects, tasks
-from src.doctor.integration_checks import run_check
-from src.doctor.models import Severity
 from src.git.manager import GitManager
-from src.integration.controls import IntegrationControlService
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.delivery_truth import DeliveryState
-from src.integration.development import DevelopmentIntegration
+from src.integration.development import DevelopmentPrimitives
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
@@ -164,7 +160,7 @@ async def world(tmp_path):
                 event_type=event_type, project_id="p", payload=json.dumps(payload),
                 timestamp=now,
             ))
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
+    service = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=GitManager())
     yield db, origin, observer, service
     await db.close()
 
@@ -201,8 +197,7 @@ async def test_status_and_explanations_agree_with_git(world):
         (item["ref"], item["cause"]) for item in status["blockers"]
         if item["code"] == "delivery_unknown"
     } == {("wrong", "scope_mismatch"), ("missing", "missing_git_provenance")}
-    # Readiness still means "no publication in flight"; nothing is persisted.
-    assert status["ready"] is True
+    assert status["projection_kind"] == "subjects"
 
     for tid in CHILDREN:
         projection = await IntegrationStatusService(db).task_blockers(tid)
@@ -213,22 +208,6 @@ async def test_status_and_explanations_agree_with_git(world):
         assert delivery_blockers == ([UNDELIVERED[tid]] if tid in UNDELIVERED else [])
 
 
-async def test_doctor_reports_the_same_unknown_work(world):
-    db, _origin, _observer, _service = world
-    handler = MagicMock()
-
-    async def execute(command, args):
-        assert command == "integration_status"
-        return await IntegrationControlService(db).status(args["project_id"])
-
-    handler.execute = AsyncMock(side_effect=execute)
-    result = await run_check(db, "integration.operational", handler=handler)
-
-    assert result.severity is Severity.WARN
-    project = next(item for item in result.data["projects"] if item["project_id"] == "p")
-    assert {
-        item["ref"] for item in project["blockers"] if item["code"] == "delivery_unknown"
-    } == {"wrong", "missing"}
 
 
 async def test_branch_cleanup_holds_what_git_cannot_prove(world):

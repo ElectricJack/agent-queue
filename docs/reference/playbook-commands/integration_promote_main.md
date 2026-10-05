@@ -180,7 +180,7 @@ replaying the command.
 | `ci_missing` | The snapshot has no authenticated green evidence for this exact revision. | [`integration_ci_evidence`](integration_ci_evidence.md) must land first. |
 | `non_fast_forward` | The candidate is not a fast-forward of the remote tip. | Rebuild; `main` moved in a way the batch did not incorporate. |
 | `configuration_blocked` | No attestation resolves, no App client, or the attestation changed between prepare and push. | Check the GitHub App / attestation wiring reported by `aq integration status`. |
-| `reconciliation_blocked` | A prewrite marker exists with no proof either way. | Human decision; see [the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication). |
+| `reconciliation_blocked` | A prewrite marker exists with no proof either way. | Human decision; see [the remote moved under a publication](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery). |
 | `stale` | The batch or revision snapshot no longer validates. | — |
 | `runtime_error` | Malformed request, unknown batch, or a canonical-identity invariant violation. | `aq doctor --check integration.operational` |
 

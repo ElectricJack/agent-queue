@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
 
 from pydantic import Field, StrictInt, field_validator, model_validator
 
 from src.commands.contracts.models import (
-    ClausePredicate,
     CommandArgs,
     CommandContract,
     CommandPresentation,
     CommandResult,
     CommandValue,
-    CreateClause,
     CreateOrReuseClause,
     EffectSubject,
     ExecutionContract,
@@ -63,39 +60,19 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_status",
         "integration_trust_manifest",
         "integration_app_verify",
-        "integration_flush",
         "integration_eject",
-        "integration_enable",
-        "integration_reconcile_unmaterialized",
-        "integration_waive_history",
-        "integration_resume",
         "integration_reevaluate_repair",
-        "integration_abort",
-        "integration_develop",
-        "integration_adopt",
-        "integration_migrate_provenance",
-        "integration_development_sweep",
-        "integration_cancel_preserving",
-        "integration_settle_parked",
-        "integration_retry_cleanup",
-        "integration_release_delegates",
         "integration_release_owner",
         "integration_reserve_owner",
         "integration_release_stale_owners",
-        "integration_clear_stale_request",
         "integration_redrive_root",
-        "integration_materialize_root",
         "integration_authorize_root",
         "integration_redrive_child",
         "integration_reopen_collection",
-        "integration_rebind_reused_identity",
         "integration_rebind_repair",
         "integration_rebind_detached_repair",
         "integration_recover_preserved_repair",
         "integration_recover_parent_head",
-        "integration_settle_delivered_batch",
-        "integration_adopt_legacy_deliveries",
-        "integration_bind_legacy_repositories",
         "integration_close_delivered_pr",
         "integration_resolve_candidate_member",
     }
@@ -167,43 +144,6 @@ class IntegrationEjectArgs(CommandArgs):
     reason: str = Field(min_length=1)
 
 
-class IntegrationEnableArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    mode: Literal["disabled", "observe", "hierarchy", "train"]
-    expected_generation: int = Field(ge=0)
-    reason: str = Field(min_length=1)
-    waiver_id: str | None = Field(default=None, min_length=1)
-    interval_seconds: int | None = Field(default=None, gt=0, strict=True)
-
-
-class IntegrationReconcileUnmaterializedArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    expected_generation: int = Field(ge=0)
-    reason: str = Field(min_length=1)
-
-
-class IntegrationWaiveHistoryArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    blocker_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-
-
-class IntegrationOperationControlArgs(CommandArgs):
-    operation_id: str = Field(min_length=1)
-
-
-class IntegrationReleaseDelegatesArgs(IntegrationOperationControlArgs):
-    archive_obsolete: bool = False
-
-
-class IntegrationAbortArgs(IntegrationOperationControlArgs):
-    reason: str = Field(min_length=1)
-
-
-class IntegrationRetryCleanupArgs(CommandArgs):
-    batch_id: str = Field(min_length=1)
-
-
 class IntegrationReleaseOwnerArgs(CommandArgs):
     task_id: str | None = Field(default=None, min_length=1)
     owner_row_id: str | None = Field(default=None, min_length=1)
@@ -237,22 +177,6 @@ class IntegrationReleaseStaleOwnersArgs(CommandArgs):
         return value
 
 
-class IntegrationClearStaleRequestArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    #: Classify only.  Applying needs the request the dry run reported and a reason.
-    dry_run: bool = True
-    expected_request_id: str | None = Field(default=None, min_length=1)
-    reason: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def applying_names_the_request_and_a_reason(self) -> IntegrationClearStaleRequestArgs:
-        if not self.dry_run and (
-            self.expected_request_id is None or self.reason is None or not self.reason.strip()
-        ):
-            raise ValueError("applying requires expected_request_id and reason")
-        return self
-
-
 class IntegrationRedriveRootArgs(CommandArgs):
     task_id: str = Field(min_length=1)
     #: Diagnose only.  Applying needs the head the dry run reported and a reason.
@@ -276,8 +200,6 @@ class IntegrationRedriveRootArgs(CommandArgs):
         return self
 
 
-class IntegrationMaterializeRootArgs(IntegrationRedriveRootArgs):
-    """The same dry-run/head/reason fence used by root redrive."""
 
 
 class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
@@ -311,70 +233,8 @@ class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
 
 
-class IntegrationRebindReusedIdentityArgs(CommandArgs):
-    task_id: str = Field(min_length=1)
-    #: Prove only.  Applying needs every inherited origin the dry run reported
-    #: and a reason.
-    dry_run: bool = True
-    expected_origin_ids: tuple[str, ...] = ()
-    #: Unproven predecessor commits the operator explicitly abandons, exactly.
-    discard_tips: tuple[str, ...] = ()
-    reason: str | None = Field(default=None, min_length=1)
-
-    @field_validator("discard_tips")
-    @classmethod
-    def discard_tips_are_exact_commits(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        for sha in value:
-            if not re.fullmatch(r"[0-9a-f]{40}", sha):
-                raise ValueError("a discarded tip is a full 40-character commit id")
-        return value
-
-    @model_validator(mode="after")
-    def applying_names_the_origins_and_a_reason(self) -> IntegrationRebindReusedIdentityArgs:
-        if not self.dry_run and (
-            not self.expected_origin_ids or self.reason is None or not self.reason.strip()
-        ):
-            raise ValueError("applying requires expected_origin_ids and reason")
-        return self
 
 
-class IntegrationSettleDeliveredBatchArgs(CommandArgs):
-    batch_id: str = Field(min_length=1)
-    dry_run: bool = True
-    expected_candidate_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    expected_target_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    expected_snapshot_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    reason: str | None = None
-
-    @model_validator(mode="after")
-    def apply_requires_preview(self) -> IntegrationSettleDeliveredBatchArgs:
-        if not self.dry_run and (
-            not self.expected_candidate_sha or not self.expected_target_sha
-            or not self.expected_snapshot_digest or not (self.reason or "").strip()
-        ):
-            raise ValueError("apply requires exact candidate, target, snapshot and reason")
-        return self
-
-
-class IntegrationSettleDeliveredBatchValue(CommandValue):
-    batch_id: str | None = None
-    project_id: str | None = None
-    operation_id: str | None = None
-    revision: int | None = None
-    candidate_sha: str | None = None
-    target_ref: str | None = None
-    target_sha: str | None = None
-    snapshot_digest: str | None = None
-    member_count: int | None = None
-    validation: str | None = None
-    apply_command: str | None = None
-    reason: str | None = None
-    release: dict[str, Any] | None = None
-    operator_id: str | None = None
-    settled_at: float | None = None
-    members: tuple[dict[str, Any], ...] = ()
-    repair_completion_ids: tuple[str, ...] = ()
-    repair_stage_state: str | None = None
 
 
 class IntegrationRebindRepairArgs(CommandArgs):
@@ -528,44 +388,6 @@ class IntegrationRebindDetachedRepairValue(CommandValue):
     next_step: str | None = None
 
 
-class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    dry_run: bool = False
-    #: Children to record as operator-accepted when no proof reaches them.
-    accept: tuple[str, ...] = ()
-    #: Children whose work was abandoned: recorded as retired, nothing deleted.
-    retire: tuple[str, ...] = ()
-    #: Child -> the commit on the default branch that re-delivered its work.
-    supersede: dict[str, str] = Field(default_factory=dict)
-    reason: str | None = Field(default=None, min_length=1)
-
-    @field_validator("supersede")
-    @classmethod
-    def supersede_names_commits(cls, value: dict[str, str]) -> dict[str, str]:
-        for task_id, sha in value.items():
-            if not task_id or not re.fullmatch(r"[0-9a-f]{7,40}", sha):
-                raise ValueError("supersede maps a task id to a hexadecimal commit id")
-        return value
-
-    @model_validator(mode="after")
-    def decisions_need_reason(self):
-        if (self.accept or self.retire or self.supersede) and self.reason is None:
-            raise ValueError("accept, retire and supersede require a reason")
-        return self
-
-
-class IntegrationBindLegacyRepositoriesArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    dry_run: bool = True
-    reason: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def apply_needs_reason(self):
-        if not self.dry_run and self.reason is None:
-            raise ValueError("apply requires a reason")
-        return self
-
-
 class IntegrationCloseDeliveredPrArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     pr_number: int = Field(gt=0)
@@ -599,89 +421,6 @@ class IntegrationRecoverCandidateMemberValue(CommandValue):
     revision: int | None = None
     member_ordinal: int | None = None
     invariant: str | None = None
-
-
-class IntegrationDevelopArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    policy: dict[str, Any]
-    reason: str = Field(min_length=1)
-
-
-class IntegrationAdoptArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    task_ids: list[str] = Field(min_length=1)
-    target_ref: str = Field(min_length=1)
-    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    accept_equivalent: bool = False
-    settle_delivered_children: bool = False
-    dry_run: bool = False
-    reason: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def delivered_children_names_one_parent(self):
-        if self.settle_delivered_children and len(set(self.task_ids)) != 1:
-            raise ValueError("delivered-child adoption requires exactly one parent")
-        if self.dry_run and not self.settle_delivered_children:
-            raise ValueError("dry-run requires settle_delivered_children")
-        return self
-
-
-class IntegrationMigrateProvenanceArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    apply: bool = False
-    limit: int = Field(default=500, ge=1, le=1000)
-    offset: int = Field(default=0, ge=0)
-    # Only the source generations this (held) task's close needs.
-    task_id: str | None = Field(default=None, min_length=1)
-    # Operator attestation of task_id's current completion source, for a
-    # legacy close that retained no source Git can verify.
-    source: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    no_artifact: bool = False
-    reason: str | None = Field(default=None, min_length=1)
-
-
-class IntegrationMigrateProvenanceValue(CommandValue):
-    project_id: str | None = None
-    repository_id: str | None = None
-    inventory: list[dict[str, Any]] = Field(default_factory=list)
-    repairs: list[dict[str, Any]] = Field(default_factory=list)
-    ambiguous: list[dict[str, Any]] = Field(default_factory=list)
-    fallback_generations: list[dict[str, Any]] = Field(default_factory=list)
-    fallback_count: int = Field(default=0, ge=0)
-    zero_fallback: bool = False
-    operations: list[dict[str, Any]] = Field(default_factory=list)
-    legacy_heads: list[dict[str, Any]] = Field(default_factory=list)
-    # Per-page totals, and whether the page stopped at its time budget.
-    counts: dict[str, int] = Field(default_factory=dict)
-    budget_exhausted: bool = False
-    next_offset: int | None = None
-
-
-class IntegrationDevelopmentSweepArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    retry: bool = False
-    recover_child: str | None = Field(default=None, min_length=1)
-
-
-class IntegrationSettleParkedArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    #: A ``parked`` row of ``aq integration status``.
-    operation_id: str = Field(min_length=1)
-    #: Only withdraw the park; its sources are merged again on the next sweep.
-    dismiss: bool = False
-    reason: str = Field(min_length=1)
-
-
-class IntegrationSettleParkedValue(CommandValue):
-    id: str | None = None
-    target_ref: str | None = None
-    state: str | None = None
-    members: list[str] = Field(default_factory=list)
-    #: Tasks recorded as not owed to ``target_ref`` (members and their repairs).
-    settled: list[str] = Field(default_factory=list)
-    repairs: list[dict[str, Any]] = Field(default_factory=list)
-    #: Repairs still being worked on; retire one with ``aq task close --obsolete``.
-    open_repairs: list[str] = Field(default_factory=list)
 
 
 class IntegrationOperationalValue(CommandValue):
@@ -749,7 +488,8 @@ class IntegrationOperationalValue(CommandValue):
 
 
 class IntegrationStatusValue(IntegrationOperationalValue):
-    projection_kind: Literal["control"] | None = None
+    projection_kind: Literal["subjects"] | None = None
+    subjects: tuple[dict[str, Any], ...] = ()
     drain_blockers: tuple[dict[str, Any], ...] = ()
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
@@ -773,14 +513,6 @@ class IntegrationRedriveRootValue(CommandValue):
     reason: str | None = None
 
 
-class IntegrationMaterializeRootValue(CommandValue):
-    task_id: str | None = None
-    project_id: str | None = None
-    branch: str | None = None
-    pr_url: str | None = None
-    head_sha: str | None = None
-    base_sha: str | None = None
-    reason: str | None = None
 
 
 class IntegrationCloseDeliveredPrValue(CommandValue):
@@ -1298,16 +1030,6 @@ def _operational_contract(
     )
 
 
-RETRY_CLEANUP_OUTCOMES = (
-    "requeued",
-    "materialized",
-    "ambiguous",
-    "nothing_to_retry",
-    "not_materializable",
-    "not_found",
-)
-
-
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
     IntegrationStatusReadArgs,
@@ -1379,48 +1101,12 @@ INTEGRATION_APP_VERIFY = INTEGRATION_APP_VERIFY.model_copy(update={
         ),
     }),
 })
-INTEGRATION_FLUSH = _operational_contract(
-    "integration_flush",
-    IntegrationStatusArgs,
-    ("due", "not_due", "coalesced", "disabled", "draining", "eligibility", "not_found"),
-    successes=frozenset({"due", "not_due", "coalesced", "eligibility"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
 INTEGRATION_EJECT = _operational_contract(
     "integration_eject",
     IntegrationEjectArgs,
     ("ejected", "unknown_batch", "not_a_member", "invalid_state"),
     successes=frozenset({"ejected"}),
     side_effect=SideEffectClass.COMPOSITE,
-)
-INTEGRATION_ENABLE = _operational_contract(
-    "integration_enable",
-    IntegrationEnableArgs,
-    ("enabled", "disabled", "draining", "blocked", "stale", "not_found"),
-    successes=frozenset({"enabled", "disabled", "draining"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
-INTEGRATION_RECONCILE_UNMATERIALIZED = _operational_contract(
-    "integration_reconcile_unmaterialized",
-    IntegrationReconcileUnmaterializedArgs,
-    (
-        "reconciled",
-        "nothing_to_reconcile",
-        "blocked",
-        "stale",
-        "not_found",
-        "hierarchy.invalid",
-        "hierarchy.busy",
-    ),
-    successes=frozenset({"reconciled", "nothing_to_reconcile"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
-INTEGRATION_WAIVE_HISTORY = _operational_contract(
-    "integration_waive_history",
-    IntegrationWaiveHistoryArgs,
-    ("waived", "stale", "not_waivable", "not_found"),
-    successes=frozenset({"waived"}),
-    side_effect=SideEffectClass.CREATE,
 )
 class IntegrationReevaluateRepairArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
@@ -1476,35 +1162,7 @@ INTEGRATION_REEVALUATE_REPAIR = _operational_contract(
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationReevaluateRepairValue,
 )
-INTEGRATION_RESUME = _operational_contract(
-    "integration_resume",
-    IntegrationOperationControlArgs,
-    ("resumed", "ambiguous", "invalid_state", "not_found"),
-    successes=frozenset({"resumed"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
-INTEGRATION_ABORT = _operational_contract(
-    "integration_abort",
-    IntegrationAbortArgs,
-    ("aborted", "ambiguous", "invalid_state", "not_found"),
-    successes=frozenset({"aborted"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
-INTEGRATION_RETRY_CLEANUP = _operational_contract(
-    "integration_retry_cleanup",
-    IntegrationRetryCleanupArgs,
-    RETRY_CLEANUP_OUTCOMES,
-    successes=frozenset({"requeued", "materialized", "nothing_to_retry"}),
-    side_effect=SideEffectClass.UPDATE,
-)
 
-INTEGRATION_RELEASE_DELEGATES = _operational_contract(
-    "integration_release_delegates",
-    IntegrationReleaseDelegatesArgs,
-    ("released", "nothing_to_release", "invalid_state", "not_found"),
-    successes=frozenset({"released", "nothing_to_release"}),
-    side_effect=SideEffectClass.UPDATE,
-)
 
 INTEGRATION_RELEASE_OWNER = _operational_contract(
     "integration_release_owner",
@@ -1532,23 +1190,6 @@ INTEGRATION_RELEASE_STALE_OWNERS = _operational_contract(
     side_effect=SideEffectClass.UPDATE,
 )
 
-CLEAR_STALE_REQUEST_OUTCOMES = (
-    "cleared",
-    "would_clear",
-    "nothing_to_clear",
-    "blocked",
-    "changed",
-    "invalid",
-    "not_found",
-)
-
-INTEGRATION_CLEAR_STALE_REQUEST = _operational_contract(
-    "integration_clear_stale_request",
-    IntegrationClearStaleRequestArgs,
-    CLEAR_STALE_REQUEST_OUTCOMES,
-    successes=frozenset({"cleared", "would_clear", "nothing_to_clear"}),
-    side_effect=SideEffectClass.UPDATE,
-)
 
 REDRIVE_ROOT_OUTCOMES = (
     "would_open",
@@ -1570,17 +1211,6 @@ INTEGRATION_REDRIVE_ROOT = _operational_contract(
     successes=frozenset({"would_open", "opened", "would_collect", "collecting", "nothing_to_redrive"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRedriveRootValue,
-)
-
-MATERIALIZE_ROOT_OUTCOMES = (
-    "would_materialize", "materialized", "changed", "blocked", "not_eligible", "not_found",
-    "invalid",
-)
-
-INTEGRATION_MATERIALIZE_ROOT = _operational_contract(
-    "integration_materialize_root", IntegrationMaterializeRootArgs, MATERIALIZE_ROOT_OUTCOMES,
-    successes=frozenset({"would_materialize", "materialized"}),
-    side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationMaterializeRootValue,
 )
 
 AUTHORIZE_ROOT_OUTCOMES = (
@@ -1635,33 +1265,7 @@ INTEGRATION_REOPEN_COLLECTION = _operational_contract(
     result_model=IntegrationReopenCollectionValue,
 )
 
-REBIND_REUSED_IDENTITY_OUTCOMES = (
-    "rebound",
-    "would_rebind",
-    "nothing_to_rebind",
-    "unproven",
-    "blocked",
-    "changed",
-    "invalid",
-    "not_found",
-)
 
-INTEGRATION_REBIND_REUSED_IDENTITY = _operational_contract(
-    "integration_rebind_reused_identity",
-    IntegrationRebindReusedIdentityArgs,
-    REBIND_REUSED_IDENTITY_OUTCOMES,
-    successes=frozenset({"rebound", "would_rebind", "nothing_to_rebind"}),
-    side_effect=SideEffectClass.UPDATE,
-)
-
-INTEGRATION_SETTLE_DELIVERED_BATCH = _operational_contract(
-    "integration_settle_delivered_batch",
-    IntegrationSettleDeliveredBatchArgs,
-    ("would_settle", "settled", "already_settled", "changed", "blocked"),
-    successes=frozenset({"would_settle", "settled", "already_settled"}),
-    side_effect=SideEffectClass.COMPOSITE,
-    result_model=IntegrationSettleDeliveredBatchValue,
-)
 
 INTEGRATION_REBIND_REPAIR = _operational_contract(
     "integration_rebind_repair",
@@ -1712,29 +1316,6 @@ INTEGRATION_REBIND_DETACHED_REPAIR = _operational_contract(
     result_model=IntegrationRebindDetachedRepairValue,
 )
 
-ADOPT_LEGACY_DELIVERIES_OUTCOMES = (
-    "adopted",
-    "nothing_to_adopt",
-    "blocked",
-    "invalid",
-    "not_found",
-)
-
-INTEGRATION_ADOPT_LEGACY_DELIVERIES = _operational_contract(
-    "integration_adopt_legacy_deliveries",
-    IntegrationAdoptLegacyDeliveriesArgs,
-    ADOPT_LEGACY_DELIVERIES_OUTCOMES,
-    successes=frozenset({"adopted", "nothing_to_adopt"}),
-    side_effect=SideEffectClass.CREATE,
-)
-
-INTEGRATION_BIND_LEGACY_REPOSITORIES = _operational_contract(
-    "integration_bind_legacy_repositories",
-    IntegrationBindLegacyRepositoriesArgs,
-    ("bound", "nothing_to_bind", "invalid", "not_found"),
-    successes=frozenset({"bound", "nothing_to_bind"}),
-    side_effect=SideEffectClass.COMPOSITE,
-)
 
 CLOSE_DELIVERED_PR_OUTCOMES = (
     "would_close",
@@ -2513,7 +2094,7 @@ INTEGRATION_COMPLETE_PARENT = _parent_contract(
     "integration_complete_parent",
     IntegrationCompleteParentArgs,
     IntegrationCompleteParentValue,
-    # ``ParentCompletion.complete_parent`` answers ``already_completed`` on the
+    # ``ParentEpisodeRecords.complete_parent`` answers ``already_completed`` on the
     # crash-retry replay path, and returns the readiness projection verbatim when
     # the parent is not ready, which is ``waiting`` or ``failed``.  Each is a
     # state a playbook must be able to route, not a wiring bug.
@@ -3045,16 +2626,6 @@ async def _app_verify_adapter(args: IntegrationAppVerifyArgs, ctx: CommandContex
     )
 
 
-async def _flush_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_flush",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"due", "not_due", "coalesced", "disabled", "draining", "eligibility", "not_found"},
-    )
-
-
 async def _eject_adapter(args: IntegrationEjectArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_eject",
@@ -3065,100 +2636,12 @@ async def _eject_adapter(args: IntegrationEjectArgs, ctx: CommandContext | None)
     )
 
 
-async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_enable",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"enabled", "disabled", "draining", "blocked", "stale", "not_found"},
-    )
-
-
-async def _reconcile_unmaterialized_adapter(
-    args: IntegrationReconcileUnmaterializedArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_reconcile_unmaterialized",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {
-            "reconciled",
-            "nothing_to_reconcile",
-            "blocked",
-            "stale",
-            "not_found",
-            "hierarchy.invalid",
-            "hierarchy.busy",
-        },
-    )
-
-
-async def _waive_history_adapter(
-    args: IntegrationWaiveHistoryArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_waive_history",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"waived", "stale", "not_waivable", "not_found"},
-    )
-
-
-async def _resume_adapter(
-    args: IntegrationOperationControlArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_resume",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"resumed", "ambiguous", "invalid_state", "not_found"},
-    )
-
-
 async def _reevaluate_repair_adapter(
     args: IntegrationReevaluateRepairArgs, ctx: CommandContext | None
 ):
     return await _hierarchy_adapter(
         "integration_reevaluate_repair", args, ctx, IntegrationReevaluateRepairValue,
         set(REEVALUATE_REPAIR_OUTCOMES),
-    )
-
-
-async def _abort_adapter(args: IntegrationAbortArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_abort",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"aborted", "ambiguous", "invalid_state", "not_found"},
-    )
-
-
-async def _retry_cleanup_adapter(
-    args: IntegrationRetryCleanupArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_retry_cleanup",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(RETRY_CLEANUP_OUTCOMES),
-    )
-
-
-async def _release_delegates_adapter(
-    args: IntegrationReleaseDelegatesArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_release_delegates",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"released", "nothing_to_release", "invalid_state", "not_found"},
     )
 
 
@@ -3194,18 +2677,6 @@ async def _release_stale_owners_adapter(
     )
 
 
-async def _clear_stale_request_adapter(
-    args: IntegrationClearStaleRequestArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_clear_stale_request",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(CLEAR_STALE_REQUEST_OUTCOMES),
-    )
-
-
 async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_redrive_root",
@@ -3216,13 +2687,6 @@ async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandCo
     )
 
 
-async def _materialize_root_adapter(
-    args: IntegrationMaterializeRootArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_materialize_root", args, ctx,
-        IntegrationMaterializeRootValue, set(MATERIALIZE_ROOT_OUTCOMES),
-    )
 
 
 async def _authorize_root_adapter(
@@ -3256,25 +2720,6 @@ async def _reopen_collection_adapter(
     )
 
 
-async def _rebind_reused_identity_adapter(
-    args: IntegrationRebindReusedIdentityArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_rebind_reused_identity",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(REBIND_REUSED_IDENTITY_OUTCOMES),
-    )
-
-
-async def _settle_delivered_batch_adapter(
-    args: IntegrationSettleDeliveredBatchArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_settle_delivered_batch", args, ctx, IntegrationSettleDeliveredBatchValue,
-        {"would_settle", "settled", "already_settled", "changed", "blocked"},
-    )
 
 
 async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):
@@ -3317,33 +2762,12 @@ async def _rebind_detached_repair_adapter(
     )
 
 
-async def _adopt_legacy_deliveries_adapter(
-    args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_adopt_legacy_deliveries",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(ADOPT_LEGACY_DELIVERIES_OUTCOMES),
-    )
-
-
 async def _close_delivered_pr_adapter(
     args: IntegrationCloseDeliveredPrArgs, ctx: CommandContext | None
 ):
     return await _hierarchy_adapter(
         "integration_close_delivered_pr", args, ctx,
         IntegrationCloseDeliveredPrValue, set(CLOSE_DELIVERED_PR_OUTCOMES),
-    )
-
-
-async def _bind_legacy_repositories_adapter(
-    args: IntegrationBindLegacyRepositoriesArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_bind_legacy_repositories", args, ctx,
-        IntegrationOperationalValue, {"bound", "nothing_to_bind", "invalid", "not_found"},
     )
 
 
@@ -3357,23 +2781,6 @@ async def _recover_candidate_member_adapter(
         IntegrationRecoverCandidateMemberValue,
         {"accepted", "already_accepted", "rejected", "stale", "wait"},
     )
-
-
-_DEVELOPMENT_CONTRACT_ARGS = (
-    ("integration_develop", IntegrationDevelopArgs),
-    ("integration_adopt", IntegrationAdoptArgs),
-    ("integration_development_sweep", IntegrationDevelopmentSweepArgs),
-    ("integration_cancel_preserving", IntegrationAbortArgs),
-)
-_DEVELOPMENT_OUTCOMES = ("configured", "adopted", "would_adopt_parent", "delivered", "idle", "parked", "base_moved",
-                         "cancelled", "already_terminal", "blocked")
-
-
-def _development_adapter(name):
-    async def invoke(args, ctx):
-        return await _hierarchy_adapter(name, args, ctx, IntegrationOperationalValue,
-                                        set(_DEVELOPMENT_OUTCOMES))
-    return invoke
 
 
 def register_integration_contracts(registry: ContractRegistry) -> None:
@@ -3427,7 +2834,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                 "title": "Development engine transfer",
                 "summary": (
                     "Preview or transfer every Development subject of one project "
-                    "between the legacy publisher and the reconciler, at the exact "
+                    "to the reconciler, at the exact "
                     "previewed versions; the same command rolls it back."
                 ),
             }),
@@ -3441,73 +2848,6 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             )
 
         registry.register(CommandRegistration(name, contract, transfer_development))
-    name = "integration_shadow_report"
-    if registry.get(name) is None:
-        contract = _operational_contract(name, IntegrationShadowReportArgs,
-            ("report", "refused"), successes=frozenset({"report"}),
-            side_effect=SideEffectClass.READ, result_model=IntegrationShadowReportValue)
-        contract = contract.model_copy(update={
-            "presentation": contract.presentation.model_copy(update={
-                "title": "Shadow comparison report",
-                "summary": (
-                    "Compare the shadow loop's journalled decisions against the legacy "
-                    "decisions of one explicit window and name every gate still open."
-                ),
-            }),
-        })
-
-        async def shadow_report(args, ctx):
-            return await _hierarchy_adapter("integration_shadow_report", args, ctx,
-                                           IntegrationShadowReportValue,
-                                           {"report", "refused"})
-
-        registry.register(CommandRegistration(name, contract, shadow_report))
-    name = "integration_migrate_provenance"
-    if registry.get(name) is None:
-        contract = _operational_contract(name, IntegrationMigrateProvenanceArgs,
-            ("inventory", "migrated", "blocked"), successes=frozenset({"inventory", "migrated"}),
-            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationMigrateProvenanceValue)
-        contract = contract.model_copy(update={
-            "execution": contract.execution.model_copy(update={"effects": (
-                ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
-                CreateClause(subject=EffectSubject.DELIVERY_EVIDENCE,
-                             when=ClausePredicate(arg_equals=("apply", True))),
-            )}),
-            "presentation": contract.presentation.model_copy(update={
-                "summary": "Inventory exact legacy completions; optionally retain verified Git provenance.",
-            }),
-        })
-
-        async def migrate(args, ctx):
-            return await _hierarchy_adapter("integration_migrate_provenance", args, ctx, IntegrationMigrateProvenanceValue,
-                                             {"inventory", "migrated", "blocked"})
-
-        registry.register(CommandRegistration(name, contract, migrate))
-    name = "integration_settle_parked"
-    if registry.get(name) is None:
-        contract = _operational_contract(name, IntegrationSettleParkedArgs,
-            ("settled", "dismissed", "already_terminal", "blocked"),
-            successes=frozenset({"settled", "dismissed", "already_terminal"}),
-            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationSettleParkedValue)
-        contract = contract.model_copy(update={
-            "presentation": contract.presentation.model_copy(update={
-                "summary": "Settle a parked development delivery as not owed, or dismiss it.",
-            }),
-        })
-
-        async def settle_parked(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_settle_parked", args, ctx, IntegrationSettleParkedValue,
-                {"settled", "dismissed", "already_terminal", "blocked"},
-            )
-
-        registry.register(CommandRegistration(name, contract, settle_parked))
-    for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
-        if registry.get(name) is None:
-            contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,
-                successes=frozenset({"configured", "adopted", "would_adopt_parent", "delivered", "idle", "cancelled", "already_terminal"}),
-                side_effect=SideEffectClass.COMPOSITE)
-            registry.register(CommandRegistration(name, contract, _development_adapter(name)))
     if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:
         registry.register(
             CommandRegistration(
@@ -3520,33 +2860,19 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_STATUS, _status_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_APP_VERIFY, _app_verify_adapter),
-        (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_EJECT, _eject_adapter),
-        (INTEGRATION_ENABLE, _enable_adapter),
-        (INTEGRATION_RECONCILE_UNMATERIALIZED, _reconcile_unmaterialized_adapter),
-        (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),
-        (INTEGRATION_RESUME, _resume_adapter),
         (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
-        (INTEGRATION_ABORT, _abort_adapter),
-        (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
-        (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
-        (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
-        (INTEGRATION_MATERIALIZE_ROOT, _materialize_root_adapter),
         (INTEGRATION_AUTHORIZE_ROOT, _authorize_root_adapter),
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REOPEN_COLLECTION, _reopen_collection_adapter),
-        (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
-        (INTEGRATION_SETTLE_DELIVERED_BATCH, _settle_delivered_batch_adapter),
         (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
         (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
         (INTEGRATION_RECOVER_PARENT_HEAD, _recover_parent_head_adapter),
-        (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
-        (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
@@ -3592,13 +2918,13 @@ class IntegrationReleaseHeldGateValue(CommandValue):
     gate_id: str | None = None
     expected_version: int | None = None
     subject_version: int | None = None
-    engine: Literal["legacy", "reconciler"] | None = None
+    engine: Literal["reconciler"] | None = None
 
 
 class IntegrationEngineTransferArgs(CommandArgs):
     parent_task_id: str | None = Field(default=None, min_length=1)
     repository_id: str = Field(min_length=1)
-    engine: Literal["legacy", "reconciler"]
+    engine: Literal["reconciler"]
     expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
     reason: str = ""
     evidence: tuple[str, ...] = ()
@@ -3614,25 +2940,25 @@ class IntegrationEngineTransferArgs(CommandArgs):
 
 class IntegrationEngineTransferValue(CommandValue):
     repository_id: str | None = None
-    engine: Literal["legacy", "reconciler"] | None = None
+    engine: Literal["reconciler"] | None = None
     subject_ids: tuple[str, ...] = ()
     expected_versions: dict[str, int] = Field(default_factory=dict)
-    current_engines: dict[str, Literal["legacy", "reconciler"]] = Field(default_factory=dict)
+    current_engines: dict[str, str] = Field(default_factory=dict)
     reason: str | None = None
 
 
 class IntegrationDevelopmentEngineTransferArgs(CommandArgs):
-    """The audited per-project Development engine cutover and its rollback.
+    """The audited per-project forward Development engine transfer.
 
     ``expected_versions`` is the exact subject-version set the preview named, so
     an apply is a CAS over the whole Development subject set rather than a
     partial move. ``reason`` is required for an apply and ``evidence`` for a
-    reconciler take-over; rollback to ``legacy`` needs only a reason, because
+    reconciler activation; disabling visits preserves ownership, because
     it never adopts a write the old publisher left ambiguous.
     """
 
     project_id: str = Field(min_length=1)
-    engine: Literal["legacy", "reconciler"]
+    engine: Literal["reconciler"]
     expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
     reason: str = ""
     evidence: tuple[str, ...] = ()
@@ -3648,63 +2974,10 @@ class IntegrationDevelopmentEngineTransferArgs(CommandArgs):
 
 class IntegrationDevelopmentEngineTransferValue(CommandValue):
     project_id: str | None = None
-    engine: Literal["legacy", "reconciler"] | None = None
+    engine: Literal["reconciler"] | None = None
     subject_ids: tuple[str, ...] = ()
     expected_versions: dict[str, int] = Field(default_factory=dict)
-    current_engines: dict[str, Literal["legacy", "reconciler"]] = Field(default_factory=dict)
-
-
-class IntegrationShadowReportArgs(CommandArgs):
-    """One explicit evidence window for the shadow-versus-legacy comparison.
-
-    The window is supplied, never inferred: ``since``/``until`` are epoch
-    seconds and a window shorter than the required observation period is
-    reported incomplete rather than rounded up. ``acknowledge_unknown`` names
-    exact journal sequences an operator has reviewed; unknown is never a
-    successful action, so an unacknowledged one blocks.
-    """
-
-    project_id: str = Field(min_length=1)
-    since: float
-    until: float
-    acknowledge_unknown: tuple[int, ...] = ()
-
-    @field_validator("until")
-    @classmethod
-    def ordered_window(cls, value, info):
-        since = info.data.get("since")
-        if since is not None and value <= since:
-            raise ValueError("until must be after since")
-        return value
-
-    @field_validator("acknowledge_unknown")
-    @classmethod
-    def nonnegative_sequences(cls, value):
-        if any(isinstance(seq, bool) or seq < 0 for seq in value):
-            raise ValueError("acknowledge_unknown must name nonnegative journal sequences")
-        return value
-
-
-class IntegrationShadowReportValue(CommandValue):
-    digest: str = ""
-    window_start: float = 0.0
-    window_end: float = 0.0
-    window_complete: bool = False
-    observed_span_seconds: float = 0.0
-    policy_artifacts: tuple[str, ...] = ()
-    legacy_decisions: int = 0
-    agreements: int = 0
-    divergences: int = 0
-    missing_comparisons: int = 0
-    unrouted_decisions: int = 0
-    unexplained_batches: tuple[str, ...] = ()
-    unknown_observations: int = 0
-    blocking_reasons: tuple[str, ...] = ()
-    cleared_for_review: bool = False
-    operator_commands: tuple[str, ...] = ()
-    rollback_commands: tuple[str, ...] = ()
-    report: dict[str, Any] = Field(default_factory=dict)
-    markdown: str = ""
+    current_engines: dict[str, str] = Field(default_factory=dict)
 
 
 class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):

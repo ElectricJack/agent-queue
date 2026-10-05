@@ -1,5 +1,11 @@
 # Development integration
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 Turn on AQ's batched delivery for a project, watch a batch reach your default
 branch, and read the journal it leaves behind.
 
@@ -113,7 +119,7 @@ so ignored `node_modules` survives between them. A retry uses a fresh snapshot.
 > (`slot_wait_seconds`, default 600). A timeout is recorded as exit code 124
 > and, like any validation that verified nothing, defers the batch rather
 > than parking it — see
-> [Validation could not finish](integration-troubleshooting.md#validation-could-not-finish-deferred).
+> [Validation could not finish](integration-troubleshooting.md#a-passed-task-blocked-at-delivery).
 
 Existing policies containing commands outside this list must be reconfigured
 by the local operator. AQ does not rewrite a stored policy during an upgrade;
@@ -491,7 +497,7 @@ recorded in its `development_publisher_skip` task metadata: an undelivered
 dependency, a source ref that is gone before its work reached `main`, a
 dependency cycle, a parked source. A skip is an observation, not a failure —
 but one that repeats forever is a stall, so it has a bounded life
-([`src/integration/development_stalls.py`](../../src/integration/development_stalls.py)):
+(`src/integration/development_stalls.py` (retired)):
 
 * Each evaluation is fingerprinted: task, latest completion, reason, related
   task, the configured target (repository and ref) and the git evidence that
@@ -617,7 +623,7 @@ Retargeting a development project — `aq integration enable --mode disabled`,
 `aq project set … integration-repository` with a new `default_branch`, then
 `aq integration develop` — makes the publisher deliver somewhere new. Three
 things about the old target are not carried over
-([`src/integration/development_settlement.py`](../../src/integration/development_settlement.py)):
+(`src/integration/development_settlement.py` (retired)):
 
 * **Work the old target already has.** A generation completed before the
   retarget whose source the old target contains is settled as not owed to the new
@@ -841,9 +847,9 @@ catalogue or rule regeneration was required.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 skip stalls in
-[`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
+`src/integration/development_stalls.py` (retired),
 retargets and settlements in
-[`src/integration/development_settlement.py`](../../src/integration/development_settlement.py),
+`src/integration/development_settlement.py` (retired),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).

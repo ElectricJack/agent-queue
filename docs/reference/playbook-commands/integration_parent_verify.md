@@ -99,16 +99,16 @@ on `verified`, and fails on `stale_generation`, `stale_head` and
    (`src/integration/hierarchy.py:244`), which inspects the real workspace: a
    dirty tree, an unpushed head or a head that is not the one claimed all
    produce `stale_head`. The caller's `head_sha` is never trusted on its own.
-3. **Locked context** — `ParentCompletion.verify_parent`
-   (`src/integration/parent_completion.py:799`) opens an immediate transaction
-   and `_locked_context_on` (`src/integration/parent_completion.py:1177`) locks
+3. **Locked context** — `ParentEpisodeRecords.verify_parent`
+   (`src/integration/records.py:799`) opens an immediate transaction
+   and `_locked_context_on` (`src/integration/records.py:1177`) locks
    the parent task, project, checkpoint and integration operation together.
 4. **Generation fence** — the checkpoint's `generation` must equal the caller's
    `generation`, or the outcome is `stale_generation`. This is what makes
    hierarchy mutation safe: filing a child or reparenting bumps the generation
    and invalidates every verification attempt pinned to the old one.
 5. **Readiness** — `readiness_on`
-   (`src/integration/parent_completion.py:370`) is re-run inside the lock. A
+   (`src/integration/records.py:370`) is re-run inside the lock. A
    parent that is not `ready` returns that readiness projection directly, and
    a `ready` projection whose `head_sha` differs from the caller's is
    `stale_head`.

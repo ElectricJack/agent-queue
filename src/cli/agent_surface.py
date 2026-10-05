@@ -432,7 +432,7 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
     is_flag=True,
     help=(
         "Operator/supervisor: retire superseded work instead of closing it with an outcome. "
-        "Releases its branch owners and parked development batches; needs TASK_ID and --reason."
+        "Releases safe branch owners; needs TASK_ID and --reason."
     ),
 )
 @click.option("--reason", default=None, help="Why the task is obsolete (with --obsolete).")
@@ -514,8 +514,8 @@ def task_close(
     ``--obsolete --reason "..."`` is the operator/supervisor form for work that
     was superseded: no outcome, no completion pipeline, nothing published.
     The task goes to COMPLETED as abandoned, its branch owners are released
-    through the release-owner safety proof, and it leaves any parked
-    development batch, so ``aq task delete`` works afterwards.
+    through the release-owner safety proof. A live integration Subject must
+    settle before retirement.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     if obsolete:

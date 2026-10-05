@@ -3,7 +3,7 @@
 ``scripts/regenerate-generated.sh`` rebuilds every committed generated artifact,
 and ``.gitattributes`` marks the same set ``merge=aq-generated`` so that the
 development publisher merges them without conflicting and rebuilds them after
-the merge (``DevelopmentIntegration.merge_member``).  These tests keep the two
+the merge (``DevelopmentPrimitives.merge_member``).  These tests keep the two
 lists in step, show the attributes do what the publisher relies on for the real
 paths, and run the drift check itself.
 """

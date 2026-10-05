@@ -29,15 +29,15 @@ LEGACY_PROVENANCE_EVENT = "development.legacy_provenance"
 
 
 class ProvenanceMigrationRequired(ValueError):
-    """Legacy repair evidence needs an authorized operator migration."""
+    """Historical repair evidence lacks the required completion identity."""
 
     def __init__(self, detail: str, project_id: str, *, task_id: str | None = None):
-        # A held task's refusal names the migration scoped to what it needs.
-        scope = f" --task-id {task_id}" if task_id else ""
+        # Name a read-only diagnostic scoped to the missing identity evidence.
+        remedy = f"aq task show {task_id}" if task_id else f"aq integration status {project_id}"
         self.context = {
             "fixable_by": "operator",
             "precondition": "provenance_migration",
-            "remedy": f"aq integration migrate-provenance {project_id}{scope} --apply",
+            "remedy": remedy,
         }
         super().__init__(detail)
 

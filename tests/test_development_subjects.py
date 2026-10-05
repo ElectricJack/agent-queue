@@ -7,23 +7,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select
 
 from src.database import Database
 from src.database.tables import (
-    integration_branch_owners,
     integration_subjects,
     playbook_artifacts,
     projects,
     repos,
 )
 from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
-from src.integration.development import DevelopmentIntegration, DevelopmentPolicy
+from src.integration.development import DevelopmentPolicy
 from src.integration.development_adapter import (
     DevelopmentFrontier,
     DevelopmentIntegrationAdapter,
     DevelopmentMember,
-    development_subject_owns_target,
     ordered_development_members,
 )
 from src.integration.development_policy import PinnedDevelopmentPolicy, render_development_policy
@@ -461,61 +459,10 @@ async def test_infrastructure_retry_has_new_job_identity_without_repair_generati
     file_writer.assert_not_awaited()
 
 
-@pytest.mark.parametrize("engine,owned,ref,expired,expected", [
-    ("legacy", True, "refs/heads/main", False, False),
-    ("reconciler", False, "refs/heads/main", False, False),
-    ("reconciler", True, "refs/heads/other", False, False),
-    ("reconciler", True, "refs/heads/main", False, True),
-    ("reconciler", True, "refs/heads/main", True, True),
-])
-async def test_only_matching_subject_writer_disables_legacy(db, engine, owned, ref, expired, expected):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.BUILDING, engine=SubjectEngine(engine))
-    await store_subject(db, s, pinned)
-    if owned:
-        await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=ref), s.id,
-                                          "collector")
-        if expired:
-            async with db.immediate() as conn:
-                await conn.execute(update(integration_branch_owners).values(expires_at=1))
-    assert await development_subject_owns_target(db, "p", "repo", s.target_ref) is expected
-    assert not await development_subject_owns_target(db, "other", "repo", s.target_ref)
 
 
-async def test_legacy_sweep_yields_before_any_mutation_when_subject_owns_target(db, tmp_path):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.BUILDING)
-    await store_subject(db, s, pinned)
-    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
-                                     s.id, "collector")
-    project = SimpleNamespace(id="p", hierarchical_integration_policy={"validation": "none"},
-                              integration_repository_id="repo")
-    repo = SimpleNamespace(id="repo", default_branch="main")
-    db.get_repo = AsyncMock(return_value=repo)
-    legacy = DevelopmentIntegration(db, data_dir=tmp_path, git=AsyncMock())
-    legacy.rebind_foreign_repositories = AsyncMock()
-    legacy.refresh_dependencies = AsyncMock()
-    legacy.store = AsyncMock()
-    result = await legacy._sweep(project, retry=False, recover_child_id=None, _moved=None)
-    assert result["outcome"] == "subject_owned"
-    legacy.rebind_foreign_repositories.assert_not_awaited()
-    legacy.refresh_dependencies.assert_not_awaited()
-    legacy.store.assert_not_awaited()
 
 
-async def test_legacy_publication_rechecks_late_subject_takeover_before_journaling(db, tmp_path):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.BUILDING)
-    await store_subject(db, s, pinned)
-    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
-                                     s.id, "collector")
-    legacy = DevelopmentIntegration(db, data_dir=tmp_path, git=AsyncMock())
-    legacy.save = AsyncMock()
-    result = await legacy.publish(SimpleNamespace(id="repo", project_id="p", default_branch="main"),
-                                  "/unused", s.target_ref, B, BASE, [], {}, "late batch")
-    assert result["outcome"] == "subject_owned"
-    legacy.save.assert_not_awaited()
-    legacy.git.apush_validated_ref.assert_not_awaited()
 
 
 def test_local_producer_preserves_installed_zero_queue_budget():
@@ -547,7 +494,7 @@ async def development(db):
     """One seeded Development project whose root subject is still ``legacy``."""
     await seed_project(db)
     pinned = pinned_policy()
-    seeded = subject(pinned, engine=SubjectEngine.LEGACY)
+    seeded = subject(pinned, engine=SubjectEngine.RECONCILER)
     await store_subject(db, seeded, pinned)
     return db, seeded
 
@@ -626,7 +573,7 @@ async def test_development_transfer_preview_is_read_only_and_names_exact_version
     assert preview["success"] is True and preview["outcome"] == "preview"
     assert preview["subject_ids"] == [seeded.id]
     assert preview["expected_versions"] == {seeded.id: seeded.version}
-    assert preview["current_engines"] == {seeded.id: "legacy"}
+    assert preview["current_engines"] == {seeded.id: "reconciler"}
     assert await db.get_integration_subject(seeded.id) == before
     assert not await db.list_integration_subject_journal(seeded.id)
 
@@ -644,7 +591,7 @@ async def test_development_transfer_applies_at_exact_versions_and_audits_the_ope
         "outcome": "refused",
         "error": "enable the active loop before transferring development subjects",
     }
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.LEGACY
+    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
     assert not await db.list_integration_subject_journal(seeded.id)
 
     applied = await transfer_handler(db, reconciler_active=True) \
@@ -658,7 +605,7 @@ async def test_development_transfer_applies_at_exact_versions_and_audits_the_ope
     assert journal[0]["primitive"] == "record_decision"
     assert journal[0]["outcome"] == "recorded"
     payload = journal[0]["payload"]
-    assert (payload["from"], payload["to"]) == ("legacy", "reconciler")
+    assert (payload["from"], payload["to"]) == ("reconciler", "reconciler")
     assert payload["operator_id"] == "human:local-operator"
     assert payload["reason"] == "reviewed development cutover"
     assert payload["evidence"] == ["shadow-week", "development-scenarios", "operator approval"]
@@ -682,7 +629,7 @@ async def test_development_transfer_refuses_wrong_versions_and_a_partial_subject
     assert (await handler._cmd_integration_development_engine_transfer(
         {"project_id": "p", "engine": "legacy", "dry_run": False,
          "expected_versions": {}, "reason": "rollback"}))["outcome"] == "refused"
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.LEGACY
+    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
     assert not await db.list_integration_subject_journal(seeded.id)
 
 
@@ -694,13 +641,13 @@ async def test_development_transfer_refuses_an_unresolved_publication_in_both_di
 
     # Neither engine may take ownership over an ambiguous write: the reconciler
     # must not adopt one and the old publisher must not resume one.
-    for engine in ("reconciler", "legacy"):
+    for engine in ("reconciler",):
         refused = await handler._cmd_integration_development_engine_transfer(
             cutover_args(live, engine=engine)
         )
         assert refused["outcome"] == "refused", engine
         assert "unresolved development publication" in refused["error"], engine
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.LEGACY
+    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
 
     # A confirmation settles only the intent it names; a later prepare stays open.
     await publish_intent(db, live, intent="git:first-intent", outcome="applied")
@@ -713,38 +660,6 @@ async def test_development_transfer_refuses_an_unresolved_publication_in_both_di
     assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
 
 
-async def test_development_transfer_rolls_back_and_keeps_every_durable_row(development):
-    db, seeded = development
-    handler = transfer_handler(db, reconciler_active=True)
-    await handler._cmd_integration_development_engine_transfer(
-        cutover_args(await live_subject(db, seeded))
-    )
-    live = await live_subject(db, seeded)
-    assert live.engine is SubjectEngine.RECONCILER
-    before = await db.list_integration_subject_journal(seeded.id)
-
-    # Rollback is the same command to legacy at the then-current versions, and
-    # needs no cutover evidence: it never adopts an ambiguous write.
-    rolled = await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "p", "engine": "legacy", "dry_run": False,
-         "expected_versions": {live.id: live.version},
-         "reason": "rollback after the cutover week"}
-    )
-    assert rolled["outcome"] == "transferred"
-    after = await live_subject(db, seeded)
-    assert after.engine is SubjectEngine.LEGACY
-    # The old engine resumes the same durable state: only ownership moved.
-    assert after.phase is live.phase and after.head_sha == live.head_sha
-    assert after.version == live.version + 1
-    journal = await db.list_integration_subject_journal(seeded.id)
-    assert len(journal) == len(before) + 1
-    assert (journal[0]["payload"]["from"], journal[0]["payload"]["to"]) == (
-        "legacy", "reconciler",
-    )
-    assert (journal[-1]["payload"]["from"], journal[-1]["payload"]["to"]) == (
-        "reconciler", "legacy",
-    )
-    assert journal[-1]["payload"]["operator_id"] == "human:local-operator"
 
 
 async def test_development_transfer_requires_an_operator_and_a_real_project(development):
@@ -753,15 +668,15 @@ async def test_development_transfer_requires_an_operator_and_a_real_project(deve
     db, seeded = development
     handler = transfer_handler(db, reconciler_active=True)
     assert (await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "missing", "engine": "legacy"}))["error"] == "project does not exist"
+        {"project_id": "missing", "engine": "reconciler"}))["error"] == "project does not exist"
     with principal_context(ExecutionPrincipal.service("development transfer")):
         refused = await handler._cmd_integration_development_engine_transfer(
-            {"project_id": "p", "engine": "legacy"}
+            {"project_id": "p", "engine": "reconciler"}
         )
     assert refused["outcome"] == "unauthorized"
     assert "operator" in refused["error"]
     invalid = await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "p", "engine": "legacy", "expected_versions": {"root": -1}}
+        {"project_id": "p", "engine": "reconciler", "expected_versions": {"root": -1}}
     )
     assert invalid["outcome"] == "refused"
     assert not await db.list_integration_subject_journal(seeded.id)
@@ -772,7 +687,7 @@ async def test_development_transfer_waits_for_a_publisher_instead_of_racing_it(d
 
     The route is only as safe as the mechanism behind it: a publisher holding
     the shared engine lock must block the transfer exactly as it blocks the
-    Python helper, in both directions.
+    Python helper during forward transfer.
     """
     from src.integration.development import publisher_exclusion
 
@@ -793,7 +708,7 @@ async def test_development_transfer_waits_for_a_publisher_instead_of_racing_it(d
     )
     await asyncio.sleep(0.5)
     assert not transfer.done(), "the transfer raced a publisher holding the fence"
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.LEGACY
+    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
     release.set()
     assert (await transfer)["outcome"] == "transferred"
     await publisher

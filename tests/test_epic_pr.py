@@ -15,8 +15,8 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.integration.epic_pr import EpicPullRequestService, render_body
-from src.integration.parent_completion import ParentCompletion
+from src.integration.root_pull_requests import EpicPullRequestService, render_body
+from src.integration.records import ParentEpisodeRecords
 from src.models import Project, RepoConfig, RepoSourceType
 from tests.db_fixtures import lease_dsn
 
@@ -212,7 +212,7 @@ async def test_open_refuses_non_train_or_nested_parent(db):
 async def test_parent_completion_retries_pr_after_github_failure(db):
     git = AsyncMock()
     git.acreate_pr.side_effect = [RuntimeError("temporary GitHub failure"), "https://github.com/o/r/pull/7"]
-    completion = ParentCompletion(db, git_manager=git)
+    completion = ParentEpisodeRecords(db, git_manager=git)
     completion._complete_parent_transition = AsyncMock(
         side_effect=[
             {"outcome": "completed", "task_id": "e1"},

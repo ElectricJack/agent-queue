@@ -30,7 +30,7 @@ from src.database.tables import (
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, StaleFence
-from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.writers import OperationSafety
 
 RECOVERY_EVENT = "integration.parent_collector_recovered"
 
@@ -206,7 +206,7 @@ class SuspendedParentRecovery:
             or not owner["confirmed_workspace_id"]
         ):
             return refuse("the current producer lacks a durable confirmed workspace detach proof")
-        blockers = await IntegrationRecoveryControls._ambiguous_writes_on(conn, operation)
+        blockers = await OperationSafety._ambiguous_writes_on(conn, operation)
         pending = await conn.scalar(
             select(integration_promotion_intents.c.id)
             .where(

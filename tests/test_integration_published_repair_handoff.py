@@ -59,7 +59,10 @@ class LocalForge(_AppClient, _AuditForge):
 
 
 @pytest.fixture
-async def repair(command_handler_factory, tmp_path, request):
+async def repair(command_handler_factory, tmp_path, request, monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)
     handler = await command_handler_factory()
     db, orchestrator = handler.db, handler.orchestrator
     await db.create_profile(AgentProfile(id="repairer", name="Repairer", lifecycle="pool"))

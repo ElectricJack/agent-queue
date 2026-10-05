@@ -429,7 +429,7 @@ def _reserved_repair_branch(repository_id: str | None = None):
 def _reserved_verifier_branch(repository_id: str | None = None):
     """A parent verifier checks the parent's branch, not a new task origin.
 
-    ``ParentCompletion`` files the delegate on the parent's checkpoint branch
+    ``ParentEpisodeRecords`` files the delegate on the parent's checkpoint branch
     and binds it as ``verifier_task_id``; the handoff then reserves that
     branch's fence to it.  Admit exactly that: the bound delegate of a live
     parent operation, holding the unattached ``verifier`` fence on the
@@ -1744,7 +1744,7 @@ class HierarchyQueryMixin:
         if not pending or depth > MAX_STRUCTURAL_DEPTH:
             return result
 
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         for parent_id in sorted(pending):
             has_episode = (
@@ -1763,7 +1763,7 @@ class HierarchyQueryMixin:
                 )
             ).first()
             if has_episode:
-                await ParentCompletion(self).mark_ready_on(conn, parent_id)
+                await ParentEpisodeRecords(self).mark_ready_on(conn, parent_id)
 
         stmt = (
             select(tasks.c.id)

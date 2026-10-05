@@ -27,7 +27,6 @@ from src.database.tables import (
     projects,
     task_delivery_receipts,
 )
-from src.integration.outbox import enqueue_integration_event
 from src.integration.scheduler import empty_seal_request, request_ended_without_batch_on
 from src.integration.stale_schedule import (
     ENDED_LIFECYCLES,
@@ -326,16 +325,6 @@ class IntegrationReleaseService:
                     released_at=now,
                 )
             )
-            if catchup_request_id is not None:
-                await enqueue_integration_event(
-                    conn,
-                    event_id=catchup_request_id,
-                    dedup_key=catchup_request_id,
-                    project_id=project_id,
-                    event_type="integration.sweep_due",
-                    payload={"project_id": project_id, "operation_id": catchup_request_id},
-                    available_at=now,
-                )
             return self._result(
                 "released", batch, operation_id, catchup_request_id
             )

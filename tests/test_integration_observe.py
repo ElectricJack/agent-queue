@@ -1324,11 +1324,14 @@ async def test_live_candidate_checks_cannot_answer_another_sha_or_use_stale_gree
         assert facts.ci_state is CIState.INFRA
 
 
-async def test_shadow_candidate_keeps_snapshot_evidence_without_remote_ci():
-    data = snapshot(engine="legacy")
+async def test_reconciler_without_current_candidate_does_not_probe_remote_ci():
+    data = with_rows(
+        snapshot(engine="reconciler"), integration_candidate_revisions=[]
+    )
     live = AsyncMock()
-    await IntegrationObserver(Reader(data), Git(), candidate_ci=live).observe(data.subject)
+    facts = await IntegrationObserver(Reader(data), Git(), candidate_ci=live).observe(data.subject)
     live.assert_not_awaited()
+    assert facts.ci_state is CIState.NONE
 
 
 async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkeypatch):

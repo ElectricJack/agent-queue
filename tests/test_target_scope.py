@@ -490,7 +490,7 @@ async def test_reserve_owner_on_a_foreign_task_is_refused_at_the_scope_layer(db)
 _FOREIGN_TARGETS = [
     ("integration_reserve_owner", {"task_id": "foreign"}),
     ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
-    ("integration_abort", {"operation_id": "op-other", "reason": "stop"}),
+    ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
     ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
@@ -501,7 +501,7 @@ _FOREIGN_TARGETS = [
 _OWN_TARGETS = [
     ("integration_reserve_owner", {"task_id": "own"}),
     ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
-    ("integration_abort", {"operation_id": "op-p", "reason": "stop"}),
+    ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
     ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
@@ -564,7 +564,6 @@ def test_the_derivation_is_not_vacuously_small():
     assert {
         "integration_reserve_owner",
         "integration_release_owner",
-        "integration_settle_delivered_batch",
         "integration_reopen_collection",
     } <= derived
     assert len(derived) > 40
@@ -851,17 +850,6 @@ async def test_a_missing_target_names_no_target_for_every_resolver(db, argument)
     assert f"{argument} 'gone' match no row" in error
 
 
-@pytest.mark.parametrize(
-    ("command", "args"),
-    [
-        ("integration_release_owner", {"owner_row_id": "owner-missing-repo"}),
-        ("integration_abort", {"operation_id": "op-missing-batch"}),
-    ],
-)
-async def test_an_existing_target_with_a_missing_indirect_owner_is_refused(db, command, args):
-    assert await check_request_scope(command, args, _scope("p"), db=db) == (
-        f"out of scope: {command} targets a row owned by no project"
-    )
 
 
 async def test_a_missing_task_reaches_the_handler_and_returns_not_found(

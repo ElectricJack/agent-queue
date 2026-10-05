@@ -6,7 +6,7 @@ adds to a shipped profile never reaches a vault copy that already exists
 grant list is the operator's to curate, and ``profiles.system_drift`` names
 the gap.  The supervisor is the exception.  It is the operator's own control
 plane and the operator decided it should be able to do basically anything,
-yet every control a release added for it (``integration_eject``,
+yet every control a release added for it (``integration_redrive_root``,
 ``review_dispatch``, ``integration_release_stale_owners`` …) was denied as
 ``capability denied`` until someone hand-edited the vault copy.
 

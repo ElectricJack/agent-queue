@@ -7,7 +7,7 @@ from sqlalchemy import insert
 
 from src.database import Database
 from src.database.tables import epic_dependencies
-from src.integration.epic_dependencies import declare, dependencies_for, order_members
+from src.task_graph.integration_dependencies import declare, dependencies_for, order_members
 from tests.db_fixtures import lease_dsn
 
 

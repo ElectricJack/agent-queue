@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict
-from src.integration.development_result_parser import PARSER_VERSION, PytestReport, classify_report
+from src.jobs.pytest_output import PARSER_VERSION, PytestReport, classify_report
 
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 

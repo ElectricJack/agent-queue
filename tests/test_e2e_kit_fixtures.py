@@ -835,7 +835,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S12"].families == ("MCP registry CRUD",)
     assert by_key["S13"].families == ("plugin extension startup",)
     assert by_key["S14"].families == ("graph/vault",)
-    assert by_key["S15"].families == ("integration",)
+    assert by_key["S15"].families == ("integration/CLI",)
     assert by_key["S16"].families == ("provider availability/failover",)
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)

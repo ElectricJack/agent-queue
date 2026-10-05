@@ -9,7 +9,6 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any, Literal
-from uuid import uuid4
 
 from sqlalchemy import case, cast, delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -38,13 +37,12 @@ from src.database.tables import (
 from src.git.manager import GitError, _validate_ref
 from src.integration.engine import root_engine_guard
 
-from src.integration.epic_dependencies import dependencies_for, order_members
+from src.task_graph.integration_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
 from src.integration.settling import clear as clear_settling_window, settled
 from src.integration.stale_schedule import (
-    OrphanGrace,
     classify_outstanding_request_on,
     release_outstanding_request_on,
 )
@@ -123,13 +121,9 @@ class IntegrationScheduler:
         db: Any,
         *,
         clock: Callable[[], float] = time.time,
-        orphan_grace: OrphanGrace | None = None,
     ):
         self.db = db
         self._clock = clock
-        #: ``None`` keeps the full seal grace; the daemon passes the boundary of
-        #: its own start so a request a dead process accepted is freed now.
-        self._orphan_grace = orphan_grace
 
     async def maintain_lease(self, project_id: str) -> None:
         """Refresh only the outstanding batch's exact authority before dispatch."""
@@ -310,15 +304,6 @@ class IntegrationScheduler:
                     "updated_at": now,
                 },
             )
-            await enqueue_integration_event(
-                conn,
-                event_id=request_id,
-                dedup_key=request_id,
-                project_id=project_id,
-                event_type="integration.sweep_due",
-                payload={"project_id": project_id, "operation_id": request_id},
-                available_at=now,
-            )
             return self._result("due", project_id, schedule)
 
     async def _release_stale_request_on(self, conn, project_id, schedule, now, trigger):
@@ -335,7 +320,6 @@ class IntegrationScheduler:
             schedule,
             now=now,
             lock=True,
-            orphan_grace=self._orphan_grace,
         )
         if state.verdict != "stale":
             return schedule, False
@@ -636,18 +620,6 @@ class TrainService:
                 if saved:
                     result["exclusions"] = json.loads(saved)["exclusions"]
                 return result
-        async with self.db.immediate() as conn:
-            await self.db.lock_hierarchy_project(conn, project_id)
-            event_id = f"integration-seal-retry:{request_id}:{uuid4().hex}"
-            await enqueue_integration_event(
-                conn,
-                event_id=event_id,
-                dedup_key=event_id,
-                project_id=project_id,
-                event_type="integration.sweep_due",
-                available_at=now + 5,
-                payload={"operation_id": request_id},
-            )
         return self._result("busy", project_id, request_id, None, None)
 
     async def _seal_once(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:

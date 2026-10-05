@@ -2237,7 +2237,7 @@ async def development_admission(handler, db, tmp_path):
     """Actual remote ancestry, no publisher receipt or live incident tasks."""
     import subprocess
     from src.git.manager import GitManager
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
     from src.models import TaskCompletion
 
     def git(path, *args):
@@ -2291,7 +2291,7 @@ async def development_admission(handler, db, tmp_path):
         CompletedSource(CompletionIdentity(PROJECT_ID, "repo", "prerequisite", "close-1"), head)
     )
     handler.orchestrator.git = GitManager()
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "truth", git=handler.orchestrator.git)
+    service = DevelopmentPrimitives(db, data_dir=tmp_path / "truth", git=handler.orchestrator.git)
     handler.orchestrator.development_integration = service
     await mktask(db, "dependent", profile_id="worker", repo_id="repo")
     await db.add_dependency("dependent", "prerequisite")

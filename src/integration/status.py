@@ -7,38 +7,24 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
-    integration_batch_members,
-    integration_batches,
+    integration_subjects,
+    integration_subject_journal,
     integration_branch_owners,
-    integration_candidate_revisions,
-    integration_check_evidence,
-    integration_cleanup_items,
     integration_legacy_deliveries,
-    integration_legacy_suppression,
-    integration_promotion_intents,
-    integration_release_results,
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
-    project_integration_leases,
-    project_integration_schedules,
     projects,
-    task_branch_origins,
     task_integration_checkpoints,
     tasks,
 )
 from src.integration.delivery_truth import DeliveryState
-from src.integration.drain_owners import terminal_reservation_clause
-from src.integration.legacy_deliveries import (
-    NO_PARENT_COLLECTION,
-    legacy_delivered_children_on,
-)
 from src.integration.models import RepairPolicy
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 
 ACTIVE_BATCH_STATES = (
     "sealing",
@@ -53,7 +39,9 @@ ACTIVE_BATCH_STATES = (
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 
 
-def _blocker(code: str, detail: str, ref: str | None = None, **facts: Any) -> dict[str, Any]:
+def _blocker(
+    code: str, detail: str, ref: str | None = None, **facts: Any
+) -> dict[str, Any]:
     item: dict[str, Any] = {"code": code, "detail": detail, "ref": ref}
     item.update(facts)
     return item
@@ -77,8 +65,10 @@ class IntegrationStatusService:
         self.clock = clock
         # Git delivery truth (a DeliveryObserver).  The daemon registers one
         # on its database; without it nothing is claimed about delivery.
-        self.delivery = delivery if delivery is not None else getattr(
-            db, "_delivery_observer", None
+        self.delivery = (
+            delivery
+            if delivery is not None
+            else getattr(db, "_delivery_observer", None)
         )
 
     async def _observe(self, candidates) -> Any:
@@ -110,7 +100,9 @@ class IntegrationStatusService:
         async with self.db._engine.connect() as conn:
             if task_id is not None:
                 row = (
-                    await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
+                    await conn.execute(
+                        select(tasks.c.status).where(tasks.c.id == task_id)
+                    )
                 ).one_or_none()
                 if row is None:
                     return set()
@@ -136,13 +128,17 @@ class IntegrationStatusService:
                 # Inactive integration reports no train readiness to prove.
                 return set()
             parent = tasks.alias("delivery_candidate_parent")
-            recorded = select(integration_legacy_deliveries.c.task_id).where(
-                integration_legacy_deliveries.c.task_id == tasks.c.id
-            ).exists()
+            recorded = (
+                select(integration_legacy_deliveries.c.task_id)
+                .where(integration_legacy_deliveries.c.task_id == tasks.c.id)
+                .exists()
+            )
             rows = (
                 await conn.execute(
                     select(tasks.c.id)
-                    .select_from(tasks.join(parent, parent.c.id == tasks.c.parent_task_id))
+                    .select_from(
+                        tasks.join(parent, parent.c.id == tasks.c.parent_task_id)
+                    )
                     .where(
                         tasks.c.project_id == project_id,
                         tasks.c.status == "COMPLETED",
@@ -159,7 +155,8 @@ class IntegrationStatusService:
     async def _completed_children(conn: AsyncConnection, parent_ids) -> set[str]:
         rows = await conn.execute(
             select(tasks.c.id).where(
-                tasks.c.parent_task_id.in_(sorted(parent_ids)), tasks.c.status == "COMPLETED"
+                tasks.c.parent_task_id.in_(sorted(parent_ids)),
+                tasks.c.status == "COMPLETED",
             )
         )
         return set(rows.scalars())
@@ -178,8 +175,12 @@ class IntegrationStatusService:
 
         ids, total = await gating_delivery_ids(conn, project_id)
         summary: dict[str, Any] = {
-            "available": self.delivery is not None, "evaluated": 0, "total": total,
-            "targets": [], "pending": [], "unknown": [],
+            "available": self.delivery is not None,
+            "evaluated": 0,
+            "total": total,
+            "targets": [],
+            "pending": [],
+            "unknown": [],
         }
         if view is None or not ids:
             return summary, []
@@ -187,8 +188,12 @@ class IntegrationStatusService:
         summary["evaluated"] = len(ids)
         summary["targets"] = sorted(
             (
-                {"repository_id": snapshot.repository_id, "target_ref": snapshot.target_ref,
-                 "target_oid": snapshot.target_oid, "error": snapshot.error}
+                {
+                    "repository_id": snapshot.repository_id,
+                    "target_ref": snapshot.target_ref,
+                    "target_oid": snapshot.target_oid,
+                    "error": snapshot.error,
+                }
                 for snapshot in view.snapshots
             ),
             key=lambda item: (item["repository_id"], item["target_ref"]),
@@ -200,10 +205,14 @@ class IntegrationStatusService:
             if evidence is not None and evidence.state is DeliveryState.PENDING:
                 summary["pending"].append(task_id)
                 continue
-            summary["unknown"].append({
-                "task_id": task_id,
-                "reason": evidence.reason if evidence is not None else "changed_during_observation",
-            })
+            summary["unknown"].append(
+                {
+                    "task_id": task_id,
+                    "reason": evidence.reason
+                    if evidence is not None
+                    else "changed_during_observation",
+                }
+            )
         blockers = [
             _blocker(
                 "delivery_unknown",
@@ -232,395 +241,57 @@ class IntegrationStatusService:
             await conn.close()
 
     async def control_status(self, project_id: str) -> dict[str, Any] | None:
-        """Read durable control state without delivery or readiness observations."""
+        """Current project inputs and subject schedules, without remote I/O."""
         async with self._consistent_snapshot() as conn:
-            project = await self._one(
-                conn, select(projects).where(projects.c.id == project_id)
-            )
-            if project is None:
-                return None
-            schedule = await self._one(
-                conn,
-                select(project_integration_schedules).where(
-                    project_integration_schedules.c.project_id == project_id
-                ),
-            )
-            batch = await self._one(
-                conn,
-                select(integration_batches)
-                .where(
-                    integration_batches.c.project_id == project_id,
-                    integration_batches.c.lifecycle.in_(ACTIVE_BATCH_STATES),
-                )
-                .order_by(integration_batches.c.updated_at.desc(), integration_batches.c.id),
-            )
-            revision = None
-            if batch is not None:
-                revision = await self._one(
-                    conn,
-                    select(integration_candidate_revisions).where(
-                        integration_candidate_revisions.c.batch_id == batch["id"],
-                        integration_candidate_revisions.c.revision == batch["current_revision"],
-                    ),
-                )
-            from src.integration.controls import IntegrationControlService
+            return await self._control_status_on(conn, project_id)
 
-            drain_blockers = await IntegrationControlService(self.db).drain_blockers_on(
-                conn, project_id
+    async def _control_status_on(self, conn: AsyncConnection, project_id: str):
+        project = await self._one(
+            conn, select(projects).where(projects.c.id == project_id)
+        )
+        if project is None:
+            return None
+        rows = await self._all(
+            conn,
+            select(integration_subjects)
+            .where(
+                integration_subjects.c.project_id == project_id,
+                integration_subjects.c.phase != "done",
             )
-            return {
-                "projection_kind": "control",
-                "project_id": project_id,
-                "effective_mode": project["hierarchical_integration_mode"],
-                "desired_mode": project["hierarchical_integration_desired_mode"],
-                "draining": bool(project["hierarchical_integration_draining"]),
-                "generation": project["hierarchical_integration_generation"],
-                "repository_id": project["integration_repository_id"],
-                "schedule": schedule,
-                "active_batch": self._batch_projection(batch, revision),
-                "drain_blockers": drain_blockers,
-                "ready": None,
-                "rollout_ready": None,
-            }
+            .order_by(integration_subjects.c.created_at, integration_subjects.c.id)
+            .limit(100),
+        )
+        subjects = []
+        for row in rows:
+            journal = await self._one(
+                conn,
+                select(integration_subject_journal)
+                .where(
+                    integration_subject_journal.c.subject_id == row["id"],
+                )
+                .order_by(integration_subject_journal.c.seq.desc())
+                .limit(1),
+            )
+            subjects.append({**row, "last_record": journal})
+        return {
+            "projection_kind": "subjects",
+            "project_id": project_id,
+            "effective_mode": project["hierarchical_integration_mode"],
+            "desired_mode": project["hierarchical_integration_desired_mode"],
+            "generation": project["hierarchical_integration_generation"],
+            "repository_id": project["integration_repository_id"],
+            "subjects": subjects,
+        }
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
-        """Return one complete project projection from one database snapshot.
-
-        Git delivery evidence is gathered first, outside the snapshot.
-        """
+        """Subject facts and Git delivery evidence, verified on one snapshot."""
         view = await self._observe(await self._delivery_candidates(project_id=project_id))
         async with self._consistent_snapshot() as conn:
-            project = (
-                (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                .mappings()
-                .one_or_none()
-            )
-            if project is None:
-                return None
-
-            if project["hierarchical_integration_mode"] == "development":
-                from src.database.tables import sessions
-                from src.integration.development import operation_rows_on
-                from src.integration.live_operations import live_operations_on
-
-                rows = list(reversed(await operation_rows_on(conn, [project_id])))[:100]
-                live_operations = await live_operations_on(conn, project_id)
-                owner_rows = await self._all(conn, select(integration_branch_owners,
-                    sessions.c.state.label("session_state"),
-                    sessions.c.desired_state.label("session_desired_state")).outerjoin(
-                    sessions, sessions.c.id == integration_branch_owners.c.session_id).where(
-                    integration_branch_owners.c.repository_id == project["integration_repository_id"],
-                    integration_branch_owners.c.handoff_state != "released"))
-                owners = []
-                for owner in owner_rows:
-                    classification = "reserved" if owner["handoff_state"] == "reserved" and not owner["session_id"] else (
-                        "stopped_awaiting_preservation" if owner["session_state"] == "stopped" and
-                        owner["session_desired_state"] == "stopped" else "live_or_unconfirmed")
-                    owners.append({"ref": owner["ref"], "classification": classification,
-                                   "owner_id": owner["owner_id"]})
-                pending = [r["id"] for r in rows if r["state"] == "publishing"]
-                blockers = [_blocker("publication_pending", "Remote write awaits reconciliation", ref=i)
-                            for i in pending]
-                delivery, delivery_blockers = await self._development_delivery_on(
-                    conn, project_id, view
-                )
-                blockers = _sorted_blockers(blockers + delivery_blockers)
-                # A drain requested from development keeps development
-                # effective until the drain completes; the desired mode and
-                # the drain flag are what the operator asked for.
-                return {"project_id": project_id, "effective_mode": "development",
-                        "desired_mode": project["hierarchical_integration_desired_mode"],
-                        "draining": bool(project["hierarchical_integration_draining"]),
-                        "generation": project["hierarchical_integration_generation"],
-                        "policy": project["hierarchical_integration_policy"], "deliveries": rows,
-                        "delivery": delivery,
-                        "ownership": owners, "live_operations": live_operations,
-                        "blockers": blockers, "ready": not pending, "rollout_ready": True,
-                        "pending_publications": [r["id"] for r in rows if r["state"] == "publishing"],
-                        "parked": [r["id"] for r in rows if r["state"] == "parked"]}
-
-            schedule = await self._one(
-                conn,
-                select(project_integration_schedules).where(
-                    project_integration_schedules.c.project_id == project_id
-                ),
-            )
-            batch = await self._one(
-                conn,
-                select(integration_batches)
-                .where(
-                    integration_batches.c.project_id == project_id,
-                    integration_batches.c.lifecycle.in_(ACTIVE_BATCH_STATES),
-                )
-                .order_by(integration_batches.c.updated_at.desc(), integration_batches.c.id),
-            )
-            revision = None
-            members: list[dict[str, Any]] = []
-            repair: list[dict[str, Any]] = []
-            evidence: list[dict[str, Any]] = []
-            promotion: list[dict[str, Any]] = []
-            release = None
-            if batch is not None:
-                revision = await self._one(
-                    conn,
-                    select(integration_candidate_revisions).where(
-                        integration_candidate_revisions.c.batch_id == batch["id"],
-                        integration_candidate_revisions.c.revision == batch["current_revision"],
-                    ),
-                )
-                member_rows = await self._all(
-                    conn,
-                    select(integration_batch_members)
-                    .where(integration_batch_members.c.batch_id == batch["id"])
-                    .order_by(integration_batch_members.c.ordinal),
-                )
-                members = [
-                    {
-                        "ordinal": row["ordinal"],
-                        "task_id": row["task_id"],
-                        "repository_id": row["repository_id"],
-                        "reviewed_head_sha": row["reviewed_head_sha"],
-                        "review_evidence_id": row["review_evidence_id"],
-                    }
-                    for row in member_rows
-                ]
-                operation_rows = await self._all(
-                    conn,
-                    select(integration_repair_operations).where(
-                        integration_repair_operations.c.batch_id == batch["id"]
-                    ),
-                )
-                repair = await self._repair_projection(conn, operation_rows)
-                evidence_rows = await self._all(
-                    conn,
-                    select(integration_check_evidence).where(
-                        integration_check_evidence.c.batch_id == batch["id"],
-                        integration_check_evidence.c.candidate_revision
-                        == batch["current_revision"],
-                    ),
-                )
-                evidence = [
-                    {
-                        "id": row["id"],
-                        "producer_id": row["producer_id"],
-                        "workflow_id": row["workflow_id"],
-                        "run_id": row["run_id"],
-                        "attempt": row["attempt"],
-                        "required_check_version": row["required_check_version"],
-                        "conclusion": row["conclusion"],
-                        "classification": row["classification"],
-                        "observed_at": row["observed_at"],
-                    }
-                    for row in evidence_rows
-                ]
-                promotion_rows = await self._all(
-                    conn,
-                    select(integration_promotion_intents).where(
-                        integration_promotion_intents.c.root_batch_id == batch["id"],
-                        integration_promotion_intents.c.root_candidate_revision
-                        == batch["current_revision"],
-                    ),
-                )
-                promotion = [
-                    {
-                        "id": row["id"],
-                        "state": row["state"],
-                        "source_head": row["source_head"],
-                        "expected_target": row["expected_target"],
-                        "prepared_sha": row["prepared_sha"],
-                    }
-                    for row in promotion_rows
-                ]
-            release = await self._one(
-                conn,
-                select(integration_release_results)
-                .where(integration_release_results.c.project_id == project_id)
-                .order_by(
-                    integration_release_results.c.released_at.desc(),
-                    integration_release_results.c.batch_id,
-                ),
-            )
-
-            ownership_rows = (
-                await self._all(
-                    conn,
-                    select(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id
-                        == project["integration_repository_id"],
-                        integration_branch_owners.c.handoff_state != "released",
-                    )
-                    .order_by(integration_branch_owners.c.ref),
-                )
-                if project["integration_repository_id"]
-                else []
-            )
-            ownership = [
-                {
-                    "ref": row["ref"],
-                    "owner_id": row["owner_id"],
-                    "owner_role": row["owner_role"],
-                    "fence_token": row["fence_token"],
-                    "handoff_state": row["handoff_state"],
-                    "expires_at": row["expires_at"],
-                }
-                for row in ownership_rows
-            ]
-            lease = await self._one(
-                conn,
-                select(project_integration_leases).where(
-                    project_integration_leases.c.project_id == project_id
-                ),
-            )
-            cleanup_rows = await self._all(
-                conn,
-                select(integration_cleanup_items)
-                .where(
-                    integration_cleanup_items.c.project_id == project_id,
-                    integration_cleanup_items.c.state != "complete",
-                )
-                .order_by(
-                    integration_cleanup_items.c.batch_id,
-                    integration_cleanup_items.c.domain_key,
-                ),
-            )
-            cleanup = [
-                {
-                    "batch_id": row["batch_id"],
-                    "kind": row["kind"],
-                    "identity": row["identity"],
-                    "state": row["state"],
-                    "attempts": row["attempts"],
-                    "next_attempt_at": row["next_attempt_at"],
-                    "irreversible": row["irreversible_prewrite_at"] is not None,
-                }
-                for row in cleanup_rows
-            ]
-            suppression = await self._one(
-                conn,
-                select(integration_legacy_suppression).where(
-                    integration_legacy_suppression.c.project_id == project_id
-                ),
-            )
-            children = tasks.alias("integration_status_children")
-            # Completed standalone legacy tasks were never enrolled in the
-            # train. They must not make project rollout look broken merely
-            # because their historical repository identity is absent. Keep
-            # every live task, hierarchy member, and integration-tracked task
-            # visible, even if its repository identity is corrupt/missing.
-            relevant_task = or_(
-                tasks.c.status.not_in(TERMINAL_TASK_STATES),
-                tasks.c.repo_id.is_not(None),
-                tasks.c.parent_task_id.is_not(None),
-                select(children.c.id).where(children.c.parent_task_id == tasks.c.id).exists(),
-                *(
-                    select(column).where(column == tasks.c.id).exists()
-                    for column in (
-                        task_integration_checkpoints.c.task_id,
-                        task_branch_origins.c.task_id,
-                        integration_batch_members.c.task_id,
-                        integration_repair_operations.c.parent_task_id,
-                        integration_repair_operations.c.verifier_task_id,
-                        integration_repair_stages.c.repair_task_id,
-                        integration_review_evidence.c.source_task_id,
-                        integration_review_evidence.c.reviewer_task_id,
-                    )
-                ),
-            )
-            task_rows = await self._all(
-                conn,
-                select(tasks.c.id)
-                .where(
-                    tasks.c.project_id == project_id,
-                    relevant_task,
-                )
-                .order_by(tasks.c.id),
-            )
-            parent_readiness = []
-            # Functional rollout readiness is derived from the same typed
-            # policy/artifact/activation rows the cutover revalidates.  The
-            # deferred security/probe certification is reported explicitly,
-            # never represented as a fabricated successful fact or a
-            # permanent operational blocker.
-            from src.integration.controls import IntegrationControlService, _blocker_digest
-
-            functional = await IntegrationControlService(self.db)._functional_preflight_on(
-                conn, project_id
-            )
-            project_blockers = self._project_blockers(
-                project, batch, revision, repair, cleanup, now=self.clock()
-            )
-            for task_row in task_rows:
-                task_projection = await self._task_blockers_on(
-                    conn, task_row["id"], expected_project_id=project_id, delivery=view
-                )
-                if task_projection and task_projection["blockers"]:
-                    parent_readiness.append(task_projection)
-
-            blockers = list(functional["blockers"]) + list(project_blockers)
-            active_owners = (
-                await self._all(
-                    conn,
-                    select(integration_branch_owners.c.ref).where(
-                        integration_branch_owners.c.repository_id
-                        == project["integration_repository_id"],
-                        integration_branch_owners.c.handoff_state != "released",
-                        ~terminal_reservation_clause(),
-                    ).order_by(integration_branch_owners.c.ref),
-                )
-                if project["integration_repository_id"]
-                else []
-            )
-            if active_owners:
-                blockers.append(
-                    _blocker(
-                        "active_owner",
-                        "one or more integration branches retain an active owner",
-                        active_owners[0]["ref"],
-                    )
-                )
-            blockers.extend(
-                blocker
-                for task_projection in parent_readiness
-                for blocker in task_projection["blockers"]
-                if blocker["code"] != "preflight_evidence_unavailable"
-            )
-            blockers = _sorted_blockers(blockers)
-            rollout_ready = not blockers
-            return {
-                "project_id": project_id,
-                "effective_mode": project["hierarchical_integration_mode"],
-                "desired_mode": project["hierarchical_integration_desired_mode"],
-                "draining": bool(project["hierarchical_integration_draining"]),
-                "generation": project["hierarchical_integration_generation"],
-                "repository_id": project["integration_repository_id"],
-                "schedule": schedule,
-                "active_batch": self._batch_projection(batch, revision),
-                "members": members,
-                "parent_readiness": parent_readiness,
-                "ownership": ownership,
-                "lease": lease,
-                "repair": repair,
-                "ci_evidence": evidence,
-                "promotion": promotion,
-                "reconciliation": {
-                    "pending": any(
-                        item["state"] not in {"committed", "superseded"} for item in promotion
-                    )
-                },
-                "cleanup_pending": cleanup,
-                "release": release,
-                "legacy_suppression": suppression,
-                "blockers": blockers,
-                "blocker_digest": _blocker_digest(blockers),
-                "certification": functional["certification"],
-                # ``ready`` is rollout/preflight eligibility, not ordinary
-                # task schedulability.  Keep the explicit alias so later CLI
-                # work can name that distinction without changing this wire
-                # contract.
-                "ready": rollout_ready,
-                "rollout_ready": rollout_ready,
-            }
+            projection = await self._control_status_on(conn, project_id)
+            if projection is not None and projection["effective_mode"] == "development":
+                delivery, blockers = await self._development_delivery_on(conn, project_id, view)
+                projection.update(delivery=delivery, blockers=_sorted_blockers(blockers))
+            return projection
 
     async def task_blockers(self, task_id: str) -> dict[str, Any] | None:
         """Return integration blockers after resolving task/project server-side.
@@ -644,7 +315,9 @@ class IntegrationStatusService:
             (
                 await conn.execute(
                     select(tasks, projects)
-                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                    .select_from(
+                        tasks.join(projects, projects.c.id == tasks.c.project_id)
+                    )
                     .where(tasks.c.id == task_id)
                 )
             )
@@ -664,7 +337,10 @@ class IntegrationStatusService:
         # Development publication accepts an unpinned task on the project's
         # designated repository, just as its candidate query does.
         effective_repo = row["repo_id"]
-        if effective_repo is None and row["hierarchical_integration_mode"] == "development":
+        if (
+            effective_repo is None
+            and row["hierarchical_integration_mode"] == "development"
+        ):
             effective_repo = designated
         if integration_active and (designated is None or effective_repo != designated):
             # Name the task: its repository is usually unset, and a ref of
@@ -742,7 +418,9 @@ class IntegrationStatusService:
             ):
                 blockers.append(
                     _blocker(
-                        "stale_review", "review does not bind the current task head", review["id"]
+                        "stale_review",
+                        "review does not bind the current task head",
+                        review["id"],
                     )
                 )
         owners = (
@@ -759,7 +437,9 @@ class IntegrationStatusService:
         )
         if owners:
             blockers.append(
-                _blocker("active_owner", "task branch has an active owner", owners[0]["id"])
+                _blocker(
+                    "active_owner", "task branch has an active owner", owners[0]["id"]
+                )
             )
 
         readiness_operation = None
@@ -768,7 +448,8 @@ class IntegrationStatusService:
                 conn,
                 select(integration_repair_operations).where(
                     integration_repair_operations.c.parent_task_id == task_id,
-                    integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                    integration_repair_operations.c.episode_id
+                    == checkpoint["episode_id"],
                 ),
             )
         operation_rows = await self._all(
@@ -794,8 +475,12 @@ class IntegrationStatusService:
             and readiness_operation["state"] == "cancelled"
             and row["status"] in TERMINAL_TASK_STATES
         )
-        if checkpoint is not None and readiness_operation is not None and not collection_abandoned:
-            parent_readiness = await ParentCompletion(self.db).readiness_on(
+        if (
+            checkpoint is not None
+            and readiness_operation is not None
+            and not collection_abandoned
+        ):
+            parent_readiness = await ParentEpisodeRecords(self.db).readiness_on(
                 conn,
                 parent=dict(row),
                 project=dict(row),
@@ -806,7 +491,9 @@ class IntegrationStatusService:
                 child_id = item["task_id"]
                 cause = item["reason"]
                 if child_status.get(child_id) not in TERMINAL_TASK_STATES:
-                    blockers.append(_blocker("open_child", "child task is not terminal", child_id))
+                    blockers.append(
+                        _blocker("open_child", "child task is not terminal", child_id)
+                    )
                 elif cause == "origin_mismatch":
                     blockers.append(
                         _blocker(
@@ -834,43 +521,13 @@ class IntegrationStatusService:
                             cause=cause,
                         )
                     )
-        else:
-            # No current collection: a terminal parent is never collected, so
-            # a child it delivered outside the train (development publisher,
-            # adopted legacy delivery) is settled rather than missing a receipt.
-            completed_children = [
-                child["id"] for child in child_rows if child["status"] == "COMPLETED"
-            ]
-            verified = (
-                await delivery.verified_on(conn, completed_children)
-                if delivery is not None and completed_children else {}
-            )
-            legacy = await legacy_delivered_children_on(
-                conn, row, [child["id"] for child in child_rows],
-                delivered={
-                    child_id for child_id, evidence in verified.items()
-                    if evidence.state is DeliveryState.CONTAINED
-                },
-            )
-            for child in child_rows:
-                if child["status"] not in TERMINAL_TASK_STATES:
-                    blockers.append(
-                        _blocker("open_child", "child task is not terminal", child["id"])
-                    )
-                elif child["id"] not in legacy:
-                    blockers.append(
-                        _blocker(
-                            "missing_receipt",
-                            "no current parent collection exists for the terminal child",
-                            child["id"],
-                            cause=NO_PARENT_COLLECTION,
-                        )
-                    )
         repair = await self._repair_projection(conn, operation_rows)
         for item in repair:
             if item["state"] == "human_required":
                 blockers.append(
-                    _blocker("human_hold", "repair requires a human decision", item["id"])
+                    _blocker(
+                        "human_hold", "repair requires a human decision", item["id"]
+                    )
                 )
         blockers.extend(self._repair_blockers(repair, now=self.clock()))
         return {
@@ -914,7 +571,9 @@ class IntegrationStatusService:
                 "delivery_unknown",
                 "completed work cannot be proven on the delivery target",
                 task_id,
-                cause=evidence.reason if evidence is not None else "changed_during_observation",
+                cause=evidence.reason
+                if evidence is not None
+                else "changed_during_observation",
             )
         ]
 
@@ -1005,14 +664,20 @@ class IntegrationStatusService:
             or revision["state"] not in {"green", "promoted"}
         ):
             blockers.append(
-                _blocker("pending_ci", "active candidate is not proven green", batch["id"])
+                _blocker(
+                    "pending_ci", "active candidate is not proven green", batch["id"]
+                )
             )
         for operation in repair:
             if operation["state"] == "human_required" or (
                 batch is not None and batch["lifecycle"] == "human_blocked"
             ):
                 blockers.append(
-                    _blocker("human_hold", "integration repair awaits a human", operation["id"])
+                    _blocker(
+                        "human_hold",
+                        "integration repair awaits a human",
+                        operation["id"],
+                    )
                 )
         blockers.extend(IntegrationStatusService._repair_blockers(repair, now=now))
         conflict = next((item for item in cleanup if item["state"] == "conflict"), None)
@@ -1027,7 +692,9 @@ class IntegrationStatusService:
         return blockers
 
     @staticmethod
-    def _repair_blockers(repair: list[dict[str, Any]], *, now: float) -> list[dict[str, Any]]:
+    def _repair_blockers(
+        repair: list[dict[str, Any]], *, now: float
+    ) -> list[dict[str, Any]]:
         blockers: list[dict[str, Any]] = []
         for operation in repair:
             current = next(
@@ -1038,7 +705,10 @@ class IntegrationStatusService:
                 ),
                 None,
             )
-            if current is None or current["state"] not in {"active", "awaiting_completion"}:
+            if current is None or current["state"] not in {
+                "active",
+                "awaiting_completion",
+            }:
                 continue
             policy = RepairPolicy.model_validate(current["policy"])
             ordinal = int(current["ordinal"])
@@ -1056,7 +726,9 @@ class IntegrationStatusService:
                     )
                 )
             deadline_at = current["deadline_at"]
-            deadline_bound = current["state"] == "active" or operation["target_kind"] == "parent"
+            deadline_bound = (
+                current["state"] == "active" or operation["target_kind"] == "parent"
+            )
             if deadline_bound and deadline_at is not None and now >= float(deadline_at):
                 blockers.append(
                     _blocker(

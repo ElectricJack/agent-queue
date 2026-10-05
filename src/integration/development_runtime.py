@@ -1,18 +1,7 @@
-"""Per-project Development rollout: durable frontier, shared ports, default-off visits.
+"""Durable Development frontier, shared Git ports and active reconciler visits.
 
-Task ``agile-harbor-62.4``, implementing ``rev-agile-ridge`` revision 2,
-SHA256 ``5a3ef472bebf25cf4d308842488837646defdb26994cc87990158717fb5fb928``,
-§6 phase 3. It supplies the seam
-:class:`~src.integration.development_adapter.DevelopmentIntegrationAdapter`
-expects and installs it at the existing single remote-pass boundary, so one
-project can be adopted while every other project keeps the old engine.
-
-Nothing here activates a project. Both reconciler flags stay off, a seeded
-subject stays ``legacy`` until the operator's audited per-project transfer, the
-old :class:`~src.integration.development.DevelopmentIntegration` keeps every
-durable row and source branch, and ``keen-stone-14`` preserved-repair recovery
-is reused rather than reimplemented. Migration is read-only: existing
-operations become frontier truth, never a rewrite or a deletion.
+Retained operations remain observation facts. New subjects pin reviewed policy
+and own publication through their durable engine and branch fences.
 """
 
 from __future__ import annotations
@@ -29,6 +18,7 @@ from typing import Any
 from sqlalchemy import select
 
 from src.database import tables as t
+from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.delivery_branches import delete_branches, remote_heads
 from src.integration.development import (
@@ -251,6 +241,10 @@ class DevelopmentFrontierReader:
         }
         held |= {label["task_id"] for label in labels if str(label["label"]).startswith("hold:")}
         satisfied = {row["source_task_id"] for row in receipts if row.get("source_task_id")}
+        # Obsolete work releases its dependents without entering publication.
+        satisfied |= {
+            task_id for task_id in checkpoints if (task_id, OBSOLETE_META_KEY) in metadata
+        }
         satisfied |= {row["task_id"] for row in retired if row.get("proof") == "abandoned"}
         parked = parked_revisions(operations)
         # A landed revision counts as delivered only when the target still holds
@@ -681,7 +675,7 @@ async def _transfer_on(
             )
         now = clock()
         for row in rows:
-            subject = Subject.from_row(row)
+            subject = Subject.from_row({**row, "engine": "reconciler"})
             await db.append_integration_subject_journal_on(
                 conn,
                 {
@@ -698,7 +692,7 @@ async def _transfer_on(
                     "outcome": "recorded",
                     "recorded_at": now,
                     "payload": {
-                        "from": subject.engine.value,
+                        "from": row["engine"],
                         "to": engine.value,
                         "reason": reason,
                         "evidence": list(evidence),
@@ -836,13 +830,8 @@ async def transfer_development_engine(
     audited transfer waits for it instead of racing it: row versions alone
     cannot fence a publisher that is mid-push.
 
-    Rollback is this same serialized transfer back to ``legacy``: it never
-    deletes a subject, a journal entry, an operation row, a branch or a
-    receipt, so the old engine resumes the same durable state and the migration
-    of that state into subjects stays valid. Adopting the reconciler requires
-    explicit evidence. An unconfirmed publish write refuses the transfer in
-    either direction: the old publisher must not resume an ambiguous write, and
-    the reconciler must not adopt one.
+    Activation requires evidence and exact versions. Unconfirmed publication
+    refuses activation; disabling reconciliation preserves durable ownership.
     """
     engine = SubjectEngine(engine)
     if not dry_run and (
@@ -1071,7 +1060,7 @@ class DevelopmentWriterProjection:
 
 
 class DevelopmentSubjectRuntime:
-    """One service-owned pair of loops over Development subjects, default off."""
+    """Service-owned active visits over durable Development subjects."""
 
     def __init__(
         self,
@@ -1093,7 +1082,7 @@ class DevelopmentSubjectRuntime:
         scoped_db = ScopedIntegrationDB(db, (DEVELOPMENT_MODE,))
         self.loops = [
             adapter.reconciler(mode=mode, subject_db=scoped_db)
-            for enabled, mode in ((active, JournalMode.ACTIVE), (shadow, JournalMode.SHADOW))
+            for enabled, mode in ((active, JournalMode.ACTIVE),)
             if enabled
         ]
 
@@ -1175,9 +1164,8 @@ class DevelopmentSubjectRuntime:
         """Bounded creation from current project settings; never an activation.
 
         A project is seeded only once a reviewed, imported ``development``
-        artifact pins its scope. The engine stays ``legacy`` until the
-        operator's audited per-project transfer, so a shadow visit journals a
-        mirror of current truth and mutates nothing.
+        artifact pins its scope. Each new subject starts under the reconciler
+        and retains that exact artifact throughout its lifecycle.
         """
         async with self.db._engine.connect() as conn:
             projects = (
@@ -1224,15 +1212,6 @@ class DevelopmentSubjectRuntime:
                     )
                 )
             ).first()
-            owner = (
-                await conn.execute(
-                    select(t.integration_subjects.c.id).where(
-                        t.integration_subjects.c.repository_id == repository_id,
-                        t.integration_subjects.c.kind == SubjectKind.ROOT_BATCH.value,
-                        t.integration_subjects.c.engine == SubjectEngine.RECONCILER.value,
-                    )
-                )
-            ).first()
         if prior is not None:
             return
         subject = Subject(
@@ -1242,7 +1221,7 @@ class DevelopmentSubjectRuntime:
             repository_id=repository_id,
             kind=SubjectKind.ROOT_BATCH,
             subject_key=key,
-            engine=SubjectEngine.RECONCILER if owner else SubjectEngine.LEGACY,
+            engine=SubjectEngine.RECONCILER,
             policy=pin,
             phase=SubjectPhase.ADMITTING,
             target_ref="refs/heads/" + repository.default_branch.removeprefix("refs/heads/"),
@@ -1272,7 +1251,7 @@ def project_development_pin(project) -> PolicyArtifactPin | None:
 
 
 async def development_repository(
-    legacy, repo, binding: GitHubRepositoryBinding, settings
+    primitives, repo, binding: GitHubRepositoryBinding, settings
 ) -> RetainedRepository:
     """The existing retained clone, freshly fetched, bound to the pinned rebuild.
 
@@ -1283,7 +1262,7 @@ async def development_repository(
     """
     return RetainedRepository(
         repository_id=repo.id,
-        store=await legacy.store(repo),
+        store=await primitives.store(repo),
         binding=binding,
         default_branch=repo.default_branch,
         regenerate=settings.regenerate if settings.validation != "none" else None,
@@ -1294,12 +1273,11 @@ async def development_repository(
 def development_runtime_for(orchestrator):
     """Construct the Development adapter over the daemon's existing owners.
 
-    Returns ``None`` unless a reconciler flag is on, so the default install
-    never constructs a Development subject runtime and a feature-off (or a
-    rollback to ``legacy``) keeps the old engine authoritative.
+    Returns ``None`` when active visits are disabled. Pausing visits preserves
+    durable reconciler ownership and never starts another publisher.
     """
     config = orchestrator.config.integration
-    if not (config.reconciler_shadow or config.reconciler_active):
+    if not config.reconciler_active:
         return None
     from src.integration.observe import (
         DatabaseObservationReader,
@@ -1308,7 +1286,7 @@ def development_runtime_for(orchestrator):
     )
     from src.playbooks.integration_policy import IntegrationPolicyFacts
 
-    legacy = orchestrator.development_integration
+    primitives = orchestrator.development_integration
     app = getattr(orchestrator, "integration_app_client", None)
     repository_binding = getattr(app, "repository", None)
     pinned_settings: dict[str, Any] = {}
@@ -1326,7 +1304,7 @@ def development_runtime_for(orchestrator):
             full_name=repository_binding.full_name,
         )
         return await development_repository(
-            legacy, repo, binding, pinned_settings.pop(repository_id)
+            primitives, repo, binding, pinned_settings.pop(repository_id)
         )
 
     async def repository_for(subject: Subject) -> RetainedRepository:
@@ -1363,10 +1341,10 @@ def development_runtime_for(orchestrator):
     )
     DevelopmentPrimitiveAdapters(
         orchestrator.db,
-        development=legacy,
+        development=primitives,
         git_operations=git_operations,
         commands=lambda: orchestrator._command_handler,
-        backup_dir=legacy.backup_dir,
+        backup_dir=primitives.backup_dir,
         frontier_for=adapter.frontier_for,
     ).bind(adapter.shared)
     return DevelopmentSubjectRuntime(
@@ -1374,7 +1352,7 @@ def development_runtime_for(orchestrator):
         adapter,
         policy=policy_for,
         active=config.reconciler_active,
-        shadow=config.reconciler_shadow and not config.reconciler_active,
+        shadow=False,
     )
 
 

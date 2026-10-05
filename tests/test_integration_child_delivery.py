@@ -36,7 +36,6 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.doctor.integration_checks import run_check
 from src.doctor.task_checks import run_check as run_task_check
 from src.git.manager import GitManager
 from src.integration.child_delivery import (
@@ -592,39 +591,8 @@ async def test_redrive_classifies_tasks_it_cannot_advance(case):
 # ---------------------------------------------------------------------------
 
 
-async def test_doctor_flags_a_child_its_parent_never_assembled(case):
-    result = await run_check(case.db, "integration.stuck_children")
-
-    assert result.severity.value == "warn"
-    [child] = result.data["children"]
-    assert child["task_id"] == "epic.1"
-    assert child["parent_task_id"] == "epic"
-    assert child["head_sha"] == case.head
-    assert child["evidence"] == "none"
-    assert "redrive-child" in result.detail
 
 
-async def test_doctor_ignores_fresh_and_delivered_children(case):
-    import time
-
-    async with case.db.immediate() as conn:
-        await conn.execute(
-            update(tasks).where(tasks.c.id == "epic.1").values(updated_at=time.time())
-        )
-    fresh = await run_check(case.db, "integration.stuck_children")
-    assert fresh.severity.value == "ok"
-
-    async with case.db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(updated_at=3.0))
-        await conn.execute(
-            insert(task_delivery_receipts).values(
-                id="receipt", domain_key="receipt", source_task_id="epic.1",
-                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
-                reviewed_head_sha=case.head, disposition="code", created_at=5.0,
-            )
-        )
-    delivered = await run_check(case.db, "integration.stuck_children")
-    assert delivered.severity.value == "ok"
 
 
 @pytest.mark.parametrize(
@@ -740,24 +708,6 @@ async def test_redrive_collection_does_not_override_real_blockers(case, blocker)
     assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
 
 
-async def test_doctor_reports_collectors_hidden_by_blocked_status(case):
-    await _block_collector(case)
-    result = await run_check(case.db, "integration.blocked_collectors")
-    assert result.severity.value == "warn"
-    [parent] = result.data["parents"]
-    assert parent["task_id"] == "epic"
-    assert parent["operation_state"] == "active"
-    assert parent["episode_id"] is not None
-
-    # Even a missing episode must be visible; the child alarm only scans
-    # parents with live operations and would otherwise report a clean bill.
-    async with case.db.immediate() as conn:
-        await conn.execute(update(task_integration_checkpoints).where(
-            task_integration_checkpoints.c.task_id == "epic",
-        ).values(episode_id=None))
-    missing = await run_check(case.db, "integration.blocked_collectors")
-    assert missing.data["parents"][0]["operation_id"] is None
-    assert missing.severity.value == "warn"
 
 
 async def test_resume_collecting_parent_survives_stopped_session_orphan_sweep(case):

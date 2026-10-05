@@ -68,9 +68,8 @@ and then does one of two things:
 * **valid** — re-arms this exact stage and runs the ordinary fenced acceptance
   path, so the work is not thrown away; or
 * **invalid** — retains the push verbatim and marks it terminally `rejected`,
-  which is what makes a subsequent ordinary
-  [`integration_resume`](integration_resume.md) safe to dispatch a freshly
-  fenced writer.
+  which lets a subsequent durable Subject
+  visit evaluate whether a freshly fenced writer can be dispatched.
 
 It never edits the integration branch directly and never removes the private
 pushed ref.
@@ -160,12 +159,12 @@ would strand an operation that is once again active.
 | `wait` | Acceptance could not complete yet — the handoff or a ref mutation is still settling. Re-run it. |
 | `stale` | Not LOCAL; unknown or malformed reservation; the reservation is not in `pushed`; its batch is gone; or the operation/stage no longer matches the shape a recovery requires. |
 
-After a `rejected`, the operation is still blocked and the normal next step is
-[`integration_resume`](integration_resume.md), which will now find no ambiguous
-write blocking it and can dispatch a fresh writer. Use `aq integration status
+After a `rejected`, the operation remains blocked until the Subject evaluates
+the new evidence and its gate. A durable visit can then dispatch a fresh writer
+if no ambiguous write or policy hold remains. Use `aq integration status
 <project>` to find the reservation id: the `repair[]` projection names the
 operation and stage, and
-[repair tasks](../../guides/integration-troubleshooting.md#repair-tasks)
+[repair tasks](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress)
 explains the delegate side.
 
 ## Example step
@@ -185,6 +184,6 @@ aq integration resume <operation_id>
 ## Related
 
 * [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) — creates the reservation this command resolves.
-* [`integration_resume`](integration_resume.md) — the follow-up after a rejection.
+* [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) — inspect the gate and recorded decision after a rejection.
 * [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) — the parent-delivery equivalent.
 * Spec: [Human escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#93-human-escalation).

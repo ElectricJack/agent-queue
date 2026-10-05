@@ -22,7 +22,7 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
-from src.integration import train_onboarding, trust_manifest
+from src.integration import trust_manifest
 from src.integration.ci import IntegrationTrustManifest
 from src.profiles.capabilities import DENY_ALL
 
@@ -91,20 +91,6 @@ def test_canonical_text_sorts_keys_like_the_example_and_keeps_list_order():
     assert trust_manifest.canonical_text(example) == EXAMPLE_PATH.read_text()
 
 
-def test_onboarding_builder_is_a_thin_wrapper_over_the_shared_builder():
-    kwargs = {
-        "canonical_repository_id": "agent-queue2",
-        "full_name": "ElectricJack/agent-queue",
-        "attestation_app_id": 5075923,
-        "checks": ["b", "a"],
-        "check_version": "v1",
-    }
-
-    planned = train_onboarding.build_trust_manifest(github_repository_id=1160639300, **kwargs)
-
-    assert planned == trust_manifest.build_trust_manifest(
-        repository_id=1160639300, ci_producer_app_id=15368, **kwargs
-    )
 
 
 @pytest.mark.parametrize(

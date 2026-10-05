@@ -234,14 +234,16 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert orch.integration_scheduler is not None
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
-    assert orch.integration_control_service is not None
+    assert not hasattr(orch, "integration_control_service")
     assert orch.branch_materialization_service is not None
-    assert service._drain_handler.__self__ is orch.integration_control_service
-    assert orch.integration_control_service.external_preflight is not None
-    assert (
-        service._candidate_ci_handler.__self__.attestation
-        is orch.integration_attestation_service
-    )
+    assert service._subject_runtime is not None
+    assert orch.config.integration.reconciler_active is True
+    assert len(service._subject_runtime.loops) == 1
+    assert service._subject_runtime.loops[0]._mode.value == "active"
+    assert service._parent_subject_runtime is orch.parent_subject_runtime
+    assert service._development_subject_runtime is orch.development_subject_runtime
+    assert service._outbox is orch.integration_outbox
+    assert "delegate cleanup" in service._maintenance
     assert (
         orch.integration_attestation_resolver.__self__
         is orch.integration_attestation_service
@@ -252,12 +254,12 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     orch.playbook_manager = runtime
     try:
         assert await orch.integration_outbox._accept_event(
-            "integration.sweep_due", {"project_id": "p"}, "event-1"
+            "integration.root_delivered", {"project_id": "p"}, "event-1"
         )
         # The adapter asks the runtime for explicit no-consumer evidence; a
         # bare False from it stays retryable.
         runtime.accept_integration_event.assert_awaited_once_with(
-            "integration.sweep_due", {"project_id": "p"}, "event-1", prove_no_consumer=True
+            "integration.root_delivered", {"project_id": "p"}, "event-1", prove_no_consumer=True
         )
         # A disabled runtime is never evidence that nothing subscribes.
         orch.playbook_manager = None

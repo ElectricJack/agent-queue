@@ -60,10 +60,11 @@ def test_guide_says_where_preserved_work_lands():
     assert "aq/preserved/" in section
 
 
-def test_guide_points_at_the_stranded_fences_doctor_fix():
-    section = _owner_section(_guide())
-    assert "integration.stranded_fences" in section
-    assert "--fix" in section
+def test_guide_points_at_subject_diagnostics_and_owner_preview():
+    text = _guide()
+    assert "integration.subjects_overdue" in text
+    assert "integration.subjects_held" in text
+    assert "release-owner --task-id TASK_ID --dry-run" in text
 
 
 def test_guide_shows_the_audit_table_and_a_psql_query():

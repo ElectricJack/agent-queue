@@ -185,7 +185,7 @@ human. If the remote genuinely never moved,
 [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md)
 is the LOCAL-only path that supersedes the reservation with a fresh successor;
 if it did move, reconciliation finalizes it. Start from
-[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication).
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery).
 
 ## Example step
 

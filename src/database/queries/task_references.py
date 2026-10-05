@@ -88,17 +88,17 @@ INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
     IntegrationTaskReference(
         "integration_parent_episodes",
         "parent_task_id",
-        "parent collection (src/integration/parent_completion.py)",
+        "parent collection (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_parent_verifications",
         "parent_task_id",
-        "parent verification (src/integration/parent_completion.py)",
+        "parent verification (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_repair_operations",
         "verifier_task_id",
-        "branchless-parent verifier (src/integration/parent_completion.py)",
+        "branchless-parent verifier (src/integration/records.py)",
     ),
     IntegrationTaskReference(
         "integration_candidate_resolutions",

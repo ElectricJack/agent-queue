@@ -148,7 +148,7 @@ deliberately refuses to resolve on its own.
 may have landed — the right next step is
 [`integration_reconcile_promotion`](integration_reconcile_promotion.md), which
 will either finalize the receipt or tell you the remote never moved. See
-[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication).
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery).
 
 ## Example step
 
@@ -165,9 +165,8 @@ command surface:
 
 Read the blocked operation and its intent first with
 `aq integration status <project>` (the `promotion[]` and `repair[]`
-projections), and resume the operation afterwards with
-[`integration_resume`](integration_resume.md) so a freshly fenced writer is
-dispatched.
+projections). The next durable Subject visit rechecks the recovery evidence
+and policy gate before dispatching a freshly fenced writer.
 
 ## Related
 

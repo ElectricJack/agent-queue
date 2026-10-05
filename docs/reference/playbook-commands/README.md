@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-185 commands are registered.
+164 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -81,40 +81,26 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
-| [`integration_abort`](integration_abort.md) | Integration Abort | Authenticated hierarchical integration operational control. |
-| [`integration_adopt`](integration_adopt.md) | Integration Adopt | Authenticated hierarchical integration operational control. |
-| [`integration_adopt_legacy_deliveries`](integration_adopt_legacy_deliveries.md) | Integration Adopt Legacy Deliveries | Authenticated hierarchical integration operational control. |
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
-| [`integration_bind_legacy_repositories`](integration_bind_legacy_repositories.md) | Integration Bind Legacy Repositories | Authenticated hierarchical integration operational control. |
 | [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
-| [`integration_cancel_preserving`](integration_cancel_preserving.md) | Integration Cancel Preserving | Authenticated hierarchical integration operational control. |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
-| [`integration_clear_stale_request`](integration_clear_stale_request.md) | Integration Clear Stale Request | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
-| [`integration_develop`](integration_develop.md) | Integration Develop | Authenticated hierarchical integration operational control. |
-| [`integration_development_engine_transfer`](integration_development_engine_transfer.md) | Development engine transfer | Preview or transfer every Development subject of one project between the legacy publisher and the reconciler, at the exact previewed versions; the same command rolls it back. |
-| [`integration_development_sweep`](integration_development_sweep.md) | Integration Development Sweep | Authenticated hierarchical integration operational control. |
+| [`integration_development_engine_transfer`](integration_development_engine_transfer.md) | Development engine transfer | Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
-| [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
-| [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
-| [`integration_materialize_root`](integration_materialize_root.md) | Integration Materialize Root | Authenticated hierarchical integration operational control. |
-| [`integration_migrate_provenance`](integration_migrate_provenance.md) | Integration Migrate Provenance | Inventory exact legacy completions; optionally retain verified Git provenance. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
 | [`integration_rebind_detached_repair`](integration_rebind_detached_repair.md) | Integration Rebind Detached Repair | Authenticated hierarchical integration operational control. |
 | [`integration_rebind_repair`](integration_rebind_repair.md) | Integration Rebind Repair | Authenticated hierarchical integration operational control. |
-| [`integration_rebind_reused_identity`](integration_rebind_reused_identity.md) | Integration Rebind Reused Identity | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
-| [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) | Integration Reconcile Unmaterialized | Authenticated hierarchical integration operational control. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
@@ -125,7 +111,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_reevaluate_repair`](integration_reevaluate_repair.md) | Integration Reevaluate Repair | Authenticated hierarchical integration operational control. |
 | [`integration_release`](integration_release.md) | Release terminal root train | Release terminal root train |
-| [`integration_release_delegates`](integration_release_delegates.md) | Integration Release Delegates | Authenticated hierarchical integration operational control. |
 | [`integration_release_held_gate`](integration_release_held_gate.md) | Release a held parent gate | A local human releases an exact parent hold with an audited reason. |
 | [`integration_release_owner`](integration_release_owner.md) | Integration Release Owner | Authenticated hierarchical integration operational control. |
 | [`integration_release_stale_owners`](integration_release_stale_owners.md) | Integration Release Stale Owners | Authenticated hierarchical integration operational control. |
@@ -137,17 +122,11 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) | Resolve candidate member | Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session. |
 | [`integration_resolve_conflict`](integration_resolve_conflict.md) | Reserve conflict resolution | Freeze an active repair session's exact conflict resolution before push. |
-| [`integration_resume`](integration_resume.md) | Integration Resume | Authenticated hierarchical integration operational control. |
-| [`integration_retry_cleanup`](integration_retry_cleanup.md) | Integration Retry Cleanup | Authenticated hierarchical integration operational control. |
 | [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
-| [`integration_settle_delivered_batch`](integration_settle_delivered_batch.md) | Integration Settle Delivered Batch | Authenticated hierarchical integration operational control. |
-| [`integration_settle_parked`](integration_settle_parked.md) | Integration Settle Parked | Settle a parked development delivery as not owed, or dismiss it. |
-| [`integration_shadow_report`](integration_shadow_report.md) | Shadow comparison report | Compare the shadow loop's journalled decisions against the legacy decisions of one explicit window and name every gate still open. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
-| [`integration_waive_history`](integration_waive_history.md) | Integration Waive History | Authenticated hierarchical integration operational control. |
 
 ### Other
 
@@ -311,61 +290,41 @@ reconciling concern — see [escalations](../../guides/escalations.md).
 
 ### The integration operation model
 
-The integration family drives delivery: getting completed work from task branches
-onto the default branch. Every command in it is scoped by a project's
-**integration mode**, and most are fenced by a **generation** or an operation
-state.
+Durable root, parent and Development Subjects own delivery. A Subject pins its
+reviewed policy artifact, exact source identity and next visit. The reconciler
+runs one policy-selected primitive at a time through CommandHandler, records its
+result, and revisits waits after restarts.
 
-A project is in exactly one mode
-([`src/integration/controls.py:409`](../../../src/integration/controls.py)):
+Project configuration uses `edit_project` with an expected integration generation,
+reason and authenticated operator identity. Existing Subjects keep their frozen
+policy. Disabling delivery pauses visits without transferring ownership. A live
+Subject or unresolved publisher prevents changing the repository binding.
 
 | Mode | What it means |
 |---|---|
-| `disabled` | Integration does nothing. |
-| `observe` | Preflight and eligibility are computed; nothing is driven. |
-| `hierarchy` | Parent/child branch origins and parent completion are managed. |
-| `train` | Batches are sealed, candidates built and attested, and promotion runs. |
-| `development` | The lightweight local publisher: assemble, validate locally, push with a lease. No App, no attestation, no CI receipts. |
+| `disabled` | Delivery is paused; durable work and authority are retained. |
+| `observe` | Readiness can be inspected without admitting delivery work. |
+| `hierarchy` | Parent Subjects collect children and verify their exact aggregate. |
+| `train` | Root Subjects seal batches, build candidates, collect trusted CI, and publish. |
+| `development` | Development Subjects assemble, validate locally, and publish with a lease. |
 
-Three fences recur across the family:
+Every mutation rechecks the Subject version, exact head and generation, policy
+pin, branch fence and human hold. Rebuilding invalidates old CI evidence. A stale
+observation is a refusal; unresolved external-write evidence never grants a retry.
 
-- **Generation.** A project's rollout generation fences `integration_enable`;
-  a parent task's checkpoint generation fences `integration_file_children`,
-  `integration_checkpoint_parent`, `integration_complete_parent` and
-  `integration_mutate_hierarchy`. Amending a parent advances its generation
-  and clears its verification, so stale plans lose rather than interleave.
-- **Exact identity.** Root-train work is keyed by `(batch_id, revision)` and
-  parent work by `(episode, operation, generation, head_sha)`. Rebuilding a
-  candidate allocates a new revision and invalidates evidence gathered for the old
-  one; that is why `integration_ci_evidence` answers `stale_subject` rather
-  than reusing it.
-- **Ownership and operation state.** Branch writes go through a fenced owner, and
-  recovery commands act only on an operation in `human_required` —
-  `integration_abort` and `integration_resume` both refuse with `ambiguous`
-  while unresolved external-write evidence exists.
-
-The outcome vocabulary is shared, so the same word means the same thing on every
-page:
+Use `aq integration status` to inspect Subjects, wait reasons and gates. Recovery
+commands operate on exact retained evidence and authenticated authority. Root
+mutation primitives require the active reconciler visit; caller arguments cannot
+select another engine or grant that authority.
 
 | Outcome | Meaning |
 |---|---|
-| `wait` | Something legitimate is in flight. Retry on the next tick; this is not an error. |
-| `stale` / `stale_revision` / `stale_parent` / `stale_subject` | The fence moved between read and write. Re-read and decide again. |
+| `wait` | A named prerequisite is in flight; the durable visit will retry. |
+| `stale` / `stale_revision` / `stale_parent` / `stale_subject` | The observed fence changed; re-read before deciding. |
 | `blocked` | A precondition is unmet and named in `blockers`. |
-| `invariant_error` | The durable state is not what the step requires. Needs a look, not a retry. |
-| `unauthorized` | The caller lacks authority for this project or operation. |
-| `contract_violation` | The handler returned an outcome the contract does not declare — a wiring bug, produced by the typed adapter ([`src/commands/contracts/integration.py:1637`](../../../src/commands/contracts/integration.py)). |
-
-Authority splits in two. Rollout and recovery controls —
-`integration_enable`, `integration_abort`, `integration_develop`,
-`integration_adopt`, `integration_development_sweep` and
-`integration_cancel_preserving` — require a **LOCAL** operator principal and
-are reached through `aq integration …`. The
-pipeline commands — flush, file children, checkpoint, readiness, complete, build,
-CI evidence, cleanup, mutate — accept a resolved playbook principal for the
-project whose policy allows that capability
-([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
-which is what lets a project playbook drive delivery.
+| `invariant_error` | Durable state violates a required invariant. |
+| `unauthorized` | The caller lacks authority for the project or operation. |
+| `contract_violation` | The handler returned an undeclared outcome. |
 
 Further reading:
 [integration concepts](../../concepts/integration.md),

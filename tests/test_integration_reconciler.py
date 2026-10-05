@@ -232,7 +232,7 @@ async def test_exactly_one_action_and_atomic_result_per_visit(db):
 
 async def test_shadow_journals_choice_without_action_settlement_or_domain_write(db):
     clock = Clock()
-    original = await add_subject(db, clock, engine=SubjectEngine.LEGACY)
+    original = await add_subject(db, clock)
     harness = make_loop(db, clock, mode=JournalMode.SHADOW)
     await harness.loop.tick()
     after = await read_subject(db)
@@ -255,14 +255,6 @@ async def test_shadow_journals_choice_without_action_settlement_or_domain_write(
     assert entries[0]["entry_kind"] == "decision"
 
 
-async def test_active_never_visits_legacy_owned_subject(db):
-    clock = Clock()
-    await add_subject(db, clock, engine=SubjectEngine.LEGACY)
-    harness = make_loop(db, clock)
-    await harness.loop.tick()
-    await harness.loop.visit("s1")
-    assert not harness.observations
-    assert not await db.list_integration_subject_journal("s1")
 
 
 async def test_unknown_refusal_has_bounded_exponential_backoff(db):
@@ -526,7 +518,7 @@ async def test_action_schedule_transaction_rolls_back_and_restart_reobserves(db,
     assert (await read_subject(db)).version == 1
 
 
-async def test_engine_transfer_after_observation_prevents_action(db):
+async def test_version_change_after_observation_prevents_action(db):
     clock = Clock()
     await add_subject(db, clock)
 
@@ -536,7 +528,7 @@ async def test_engine_transfer_after_observation_prevents_action(db):
                 conn,
                 subject_id=subject.id,
                 expected_version=0,
-                values={"engine": "legacy"},
+                values={"wait_reason": "changed during observation"},
                 now=clock(),
             )
         return SubjectFacts(
@@ -551,7 +543,7 @@ async def test_engine_transfer_after_observation_prevents_action(db):
     await harness.loop.tick()
     assert not harness.actions
     assert not await db.list_integration_subject_journal("s1")
-    assert (await read_subject(db)).engine is SubjectEngine.LEGACY
+    assert (await read_subject(db)).version == 1
 
 
 @pytest.mark.parametrize(

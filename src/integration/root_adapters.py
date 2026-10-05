@@ -139,7 +139,7 @@ class RootPrimitiveAdapters:
             args.primitive,
             result.get("reason")
             or result.get("error")
-            or "legacy_outcome:" + str(result.get("outcome")),
+            or "primitive_outcome:" + str(result.get("outcome")),
         )
 
     async def _rows(self, subject):

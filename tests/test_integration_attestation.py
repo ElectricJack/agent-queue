@@ -28,7 +28,6 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     SubjectTrustError,
 )
-from src.integration.controls import IntegrationControlService
 from src.integration.main_promotion import RootAttestationSubject
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
@@ -952,101 +951,6 @@ async def test_subject_check_set_cannot_lower_the_snapshot_bar(
         )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("manifest", "cause", "fields"),
-    [
-        (None, "missing", []),
-        (b"x" * (64 * 1024 + 1), "too_large", []),
-        (b"{not-json", "malformed", []),
-        (b'{"schema":"aq.integration-trust.v1","schema":"x"}', "malformed", []),
-        (trust_document(schema="aq.integration-trust.v2"), "malformed", []),
-        (trust_document(attestation_app_id=404), "malformed", []),
-        (trust_document(repository_id=304), "identity_mismatch", ["repository_id"]),
-        (
-            trust_document(
-                canonical_repository_id="other",
-                full_name="acme/other",
-                attestation_app_id=505,
-                ci_producer_app_id=606,
-            ),
-            "identity_mismatch",
-            ["canonical_repository_id", "full_name", "attestation_app_id", "ci_producer_app_id"],
-        ),
-        (
-            trust_document(attestation_name="Another Attestation"),
-            "identity_mismatch",
-            ["attestation_name"],
-        ),
-    ],
-    ids=[
-        "missing",
-        "too_large",
-        "not_json",
-        "duplicate_field",
-        "other_schema",
-        "invalid_document",
-        "repository_id",
-        "every_identity",
-        "attestation_name",
-    ],
-)
-async def test_subject_trust_refusal_is_classified_and_named_in_status(
-    attestation_db, tmp_path, manifest, cause, fields
-):
-    await _reset_candidate_for_observation(attestation_db)
-    async with attestation_db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(integration_repair_stages.c.operation_id == "root-op")
-            .values(policy={"debug_intelligence_class": "deep"})
-        )
-    client = ProviderClient()
-    client.workflow_offset = 1000
-    git = ExactTreeGit(manifest)
-    service = IntegrationAttestationService(
-        attestation_db,
-        data_dir=tmp_path,
-        git_manager=git,
-        github_client_factory=lambda binding: client,
-        clock=lambda: 10.0,
-    )
-
-    result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
-
-    assert result == {"outcome": "configuration_blocked"}
-    assert client.published == 0
-    blockers = await service.subject_trust_blockers("p")
-    assert [
-        {key: value for key, value in blocker.items() if key != "detail"}
-        for blocker in blockers
-    ] == [
-        {
-            "code": "subject_trust_invalid",
-            "ref": "root-op",
-            "target_kind": "batch",
-            "subject": {"batch_id": "batch", "revision": 0},
-            "head_sha": SHA,
-            "cause": cause,
-            "fields": fields,
-        }
-    ]
-    assert blockers[0]["detail"].startswith(f"batch batch revision 0 at {SHA}: ")
-    assert blockers[0]["detail"].endswith("refresh the branch from the default branch")
-    assert await service.subject_trust_blockers("other-project") == []
-
-    status = await IntegrationControlService(
-        attestation_db, subject_trust_reader=service.subject_trust_blockers
-    ).status("p")
-    assert blockers[0] in status["blockers"]
-    assert status["ready"] is False
-
-    # Refreshing the subject from the default branch retires the report.
-    git.manifest = trust_document()
-    assert (await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0))["outcome"] == (
-        "published"
-    )
-    assert await service.subject_trust_blockers("p") == []
 
 
 @pytest.mark.asyncio
@@ -1651,3 +1555,9 @@ async def test_live_publication_reservation_blocks_stage_expiry(attestation_db, 
     assert result["action"] == "wait"
     release.set()
     assert (await asyncio.wait_for(task, timeout=1.0)).outcome == "published"
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

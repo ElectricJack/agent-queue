@@ -1,9 +1,8 @@
 """Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train.
 
-After the operator's audited engine transfer, every train mutation is a
-reconciler decision that runs one existing command through the root primitive
-adapters, on the daemon's ``IntegrationService`` remote pass beside the legacy
-service sources. The tests play only the outside world: repair workers that
+Every train mutation is a reconciler decision that runs one existing command
+through the root primitive adapters on the daemon's ``IntegrationService``
+subject pass. The tests play only the outside world: repair workers that
 claim, push and close (or never claim), the trusted CI producer, and newly
 approved work. No operator, recovery or legacy-rule command runs.
 """
@@ -36,7 +35,7 @@ from src.integration.ci import (
     TrustedFixtureObserver,
 )
 from src.integration.cleanup import IntegrationCleanupService
-from src.integration.engine import RootEngineOwnership, root_engine_guard
+from src.integration.engine import root_engine_guard
 from src.integration.main_promotion import RootAttestationProof, RootPromotionService
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.ownership import BranchOwnership
@@ -486,24 +485,15 @@ class Train:
             PinnedRootPolicy(self.load_artifact),
             ports,
             active=True,
-            shadow=True,
+            shadow=False,
             clock=self.clock,
         )
         self.scheduler = IntegrationScheduler(db, clock=self.clock)
         await self.scheduler.configure(
             project_id=PROJECT, now=0.0, enabled=True, interval_seconds=300
         )
-        # The daemon's service owns the single remote pass: the subject loops
-        # run beside the legacy service sources and the schedule pass, whose
-        # root mutations the engine guard refuses once the reconciler owns the
-        # repository.
         self.service = IntegrationService(
-            db,
-            self.scheduler,
-            self.repair,
-            LegacyRulesDisabled(),
-            subject_runtime=self.runtime,
-            clock=self.clock,
+            db, LegacyRulesDisabled(), subject_runtime=self.runtime, clock=self.clock,
         )
 
     def load_artifact(self, sha):
@@ -627,29 +617,17 @@ class Train:
             )
 
     async def cutover(self) -> Subject:
-        """Legacy seals the first batch, shadow observes it, the operator transfers."""
+        """The first active visit seeds and seals a subject without legacy services."""
         due = await self.scheduler.mark_due(PROJECT, 1300.0, "periodic")
         assert due["outcome"] == "due"
         self.clock.now = 1301.0
-        sealed = await TrainService(self.db).seal(PROJECT, due["request_id"], 1301.0)
-        assert sealed["outcome"] == "sealed"
         await self.tick(1)
         [subject] = await self.subjects()
-        # Shadow seeded and journaled a legacy mirror without mutating anything.
-        assert subject.engine.value == "legacy" and subject.batch_id == sealed["batch_id"]
-        shadow = await self.journal(subject.id)
-        assert shadow and {row["mode"] for row in shadow} == {"shadow"}
-        assert {row["entry_kind"] for row in shadow} == {"decision"}
-        assert self.commands == []
-        await RootEngineOwnership(self.db, clock=self.clock).transfer(
-            REPO,
-            engine="reconciler",
-            expected_versions={subject.id: subject.version},
-            reason="approved root cutover",
-            evidence=("shadow-week", "root-scenarios", "operator-approval"),
-            operator_id="human:local-operator",
-        )
-        return await self.subject(subject.id)
+        assert subject.engine.value == "reconciler" and subject.batch_id is not None
+        journal = await self.journal(subject.id)
+        assert journal and {row["mode"] for row in journal} == {"active"}
+        assert [name for name, _, _ in self.commands] == ["integration_seal"]
+        return subject
 
     # ---------------------------------------------------------- reconciler
 

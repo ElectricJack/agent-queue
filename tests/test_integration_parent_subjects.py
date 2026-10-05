@@ -24,6 +24,7 @@ from src.integration.subjects import (
     PolicyArtifactPin,
     Primitive,
     PrimitivePorts,
+    Subject,
 )
 from src.models import Project, Task, TaskStatus
 from tests.test_integration_cancelled_collection import (  # noqa: F401
@@ -103,7 +104,7 @@ async def test_eight_children_failure_conflict_noop_and_skipped_without_events(d
             resolution_evidence={"reason": "fixture"},
         )
     subject, created = await bridge(db)
-    assert created and subject.engine == "legacy"
+    assert created and subject.engine == "reconciler"
     before = await _rows(db, t.task_delivery_receipts)
     statements = []
 
@@ -309,13 +310,16 @@ async def test_failed_verification_recovery_keeps_receipts_and_observes_new_fix(
     assert old.verification.status == "failed" and old.verification.head_sha == red_head
     assert old.writer.task_id == old_verifier
     old_receipts = await _rows(case.db, t.task_delivery_receipts)
-    applied = await FailedVerificationRecovery(case.db, case.promotion).run(
-        "epic",
-        dry_run=False,
-        expected_head_sha=red_head,
-        reason="collect completed fix",
-        operator_id="fixture",
-    )
+    from src.integration.parent_engine import ParentEngineOwnership
+
+    async with ParentEngineOwnership(case.db).operation("epic", subject=subject):
+        applied = await FailedVerificationRecovery(case.db, case.promotion).run(
+            "epic",
+            dry_run=False,
+            expected_head_sha=red_head,
+            reason="collect completed fix",
+            operator_id="fixture",
+        )
     assert applied["outcome"] == "reopened"
     checkpoint = await case.db.get_integration_checkpoint("epic")
     # The reconciler owns this versioned head refresh; the observation never writes it.
@@ -338,7 +342,9 @@ async def test_failed_verification_recovery_keeps_receipts_and_observes_new_fix(
         child for child in reopened.children if child.task_id == "epic.3"
     ).pending_collection
     assert await _rows(case.db, t.task_delivery_receipts) == old_receipts
-    assert await _promote_next(case, 30) is not None
+    subject = Subject.from_row(await case.db.get_integration_subject(subject.id))
+    async with ParentEngineOwnership(case.db).operation("epic", subject=subject):
+        assert await _promote_next(case, 30) is not None
     facts = await observer(case.db).observe_subject(subject.id)
     assert "parent_collection_head_moved" in facts.unknown
     assert facts.failed_aggregate_head_sha == red_head

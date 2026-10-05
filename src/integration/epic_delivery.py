@@ -8,7 +8,7 @@ dashboard, without persisting anything, changing a task's lifecycle or
 authorizing an action.
 
 It is deliberately not a state machine. Every fact comes from an existing
-read: collection readiness (:meth:`ParentCompletion.readiness_on`), claim
+read: collection readiness (:meth:`ParentEpisodeRecords.readiness_on`), claim
 eligibility (:func:`claim_frontier_predicates`), live operations, branch
 reservations, root delivery receipts, operator holds and — for what git says
 about the epic's *current* completion right now — the request-scoped
@@ -66,7 +66,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
-from src.integration.parent_completion import ParentCompletion
+from src.integration.records import ParentEpisodeRecords
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +368,8 @@ def classify_epic_delivery(
                 reason=f"Repair operation {_short(live_operation['id'])} needs a human decision",
                 responsible=_ref("operator", None, "Operator"),
                 since=live_operation.get("updated_at"),
-                remedy=f"aq integration resume {live_operation['id']}",
+                remedy=(f"aq integration status {facts.project_id}" if facts.project_id
+                        else f"aq task show {facts.task_id}"),
                 extra=[_ref("operation", live_operation["id"], f"Operation {_short(live_operation['id'])}")],
             )
     if facts.batch is not None and facts.batch.get("lifecycle") == "human_blocked":
@@ -723,10 +724,7 @@ def _unknown_reason(canonical: CanonicalDelivery, facts: EpicFacts) -> str:
 
 def _unknown_remedy(reason: str, facts: EpicFacts) -> str | None:
     if reason == "missing_git_provenance" and facts.project_id:
-        return (
-            f"aq integration migrate-provenance {facts.project_id} --task-id {facts.task_id} "
-            "--apply"
-        )
+        return f"aq task show {facts.task_id}"
     return None
 
 
@@ -1449,7 +1447,7 @@ class EpicDeliveryProjection:
                 # A savepoint keeps one epic's failed read from aborting the
                 # transaction every later statement in this response shares.
                 async with conn.begin_nested():
-                    readiness[task_id] = await ParentCompletion(self.db).readiness_on(
+                    readiness[task_id] = await ParentEpisodeRecords(self.db).readiness_on(
                         conn,
                         parent=rows[task_id],
                         project={},

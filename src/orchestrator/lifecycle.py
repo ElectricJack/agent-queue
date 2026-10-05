@@ -222,7 +222,7 @@ class LifecycleMixin:
         leaves an obsolete task's cleanup pending; this finishes it once the
         holder lets go.
         """
-        from src.integration.obsolete_close import ObsoleteClose, obsolete_owner_release_for
+        from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
 
         service = ObsoleteClose(
             self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,

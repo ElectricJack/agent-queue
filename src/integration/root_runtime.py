@@ -1,4 +1,4 @@
-"""Default-off root wiring at the existing service's single remote-pass boundary."""
+"""Root reconciler wiring at the existing service's single remote-pass boundary."""
 
 from __future__ import annotations
 
@@ -142,13 +142,13 @@ class RootObserver(IntegrationObserver):
                 update={"budget": facts.budget.model_copy(update={"attempts": attempts})}
             )
         if subject.engine is SubjectEngine.RECONCILER and subject.batch_id and facts.writer.task_id:
-            facts = await self._legacy_writer(subject, facts)
+            facts = await self._writer_facts(subject, facts)
         return facts
 
-    async def _legacy_writer(self, subject, facts):
-        """Read phase-one legacy repair receipts as the table's writer facts.
+    async def _writer_facts(self, subject, facts):
+        """Read shared repair receipts as the table's writer facts.
 
-        The legacy stage keeps naming its writer after the work is done. Its
+        The shared stage keeps naming its writer after the work is done. Its
         own durable receipts say when that writer let go: an accepted repair
         handed the fenced ref to the collector, or the delegate closed under
         its exact fence and its session and checkout are gone. A stopped
@@ -328,17 +328,6 @@ class RootObserver(IntegrationObserver):
         )
 
 
-def _legacy_phase(lifecycle):
-    return {
-        "testing": "testing",
-        "repairing": "repairing",
-        "human_blocked": "repairing",
-        "promoting": "publishing",
-        "cleanup_pending": "published",
-        "promoted": "published",
-        "delivered": "published",
-        "completed": "published",
-    }.get(lifecycle, "building")
 
 
 class _RootObservationReader:
@@ -396,69 +385,16 @@ class _RootObservationReader:
                           and r["ordinal"] == operation["active_stage"]), None)
             if (stage and stage["repair_task_id"]
                     and stage["repair_task_id"] != subject.writer.task_id):
-                # The legacy stage can dispatch a successor inside a visit,
+                # The repair stage can dispatch a successor inside a visit,
                 # before its subject writer mirror has been committed.
                 changes["writer"] = WriterLease()
-            if subject.engine is SubjectEngine.LEGACY:
-                changes["phase"] = SubjectPhase(_legacy_phase(batch["lifecycle"]))
         return replace(snapshot, subject=subject.model_copy(update=changes))
 
 
-class _ShadowDB:
-    def __init__(self, db):
-        self.db = db
-
-    def __getattr__(self, name):
-        return getattr(self.db, name)
-
-    async def due_integration_subject_page(self, **kwargs):
-        return await self.db.due_integration_subject_page(**{**kwargs, "engine": "legacy"})
-
-    async def get_integration_subject(self, subject_id):
-        row = await self.db.get_integration_subject(subject_id)
-        if row is None or row["engine"] != "legacy" or not row["batch_id"]:
-            return row
-        # Observe legacy's current substrate without changing the subject's
-        # domain columns. The journal records this exact virtual identity.
-        async with self.db._engine.connect() as conn:
-            batch = (
-                (
-                    await conn.execute(
-                        select(t.integration_batches).where(
-                            t.integration_batches.c.id == row["batch_id"]
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if batch is None:
-                return row
-            revision = (
-                (
-                    await conn.execute(
-                        select(t.integration_candidate_revisions).where(
-                            t.integration_candidate_revisions.c.batch_id == batch["id"],
-                            t.integration_candidate_revisions.c.revision
-                            == batch["current_revision"],
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        phase = _legacy_phase(batch["lifecycle"])
-        return {
-            **row,
-            "phase": phase,
-            "generation": batch["current_revision"],
-            "head_sha": revision["head_sha"] if revision else None,
-            "base_sha": revision["construction_base_sha"] if revision else batch["base_sha"],
-        }
 
 
 class RootSubjectRuntime:
-    """A service-owned pair of loops; no second background remote pass."""
+    """A service-owned loop; no second background remote pass."""
 
     def __init__(self, db, observer, policy, ports, *, shadow=False, active=False, clock=time.time):
         self.db, self.policy, self.clock = db, policy, clock
@@ -468,17 +404,6 @@ class RootSubjectRuntime:
             self.loops.append(
                 IntegrationReconciler(
                     scoped_db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock
-                )
-            )
-        if shadow:
-            self.loops.append(
-                IntegrationReconciler(
-                    _ShadowDB(scoped_db),
-                    observer.observe,
-                    policy,
-                    ports,
-                    mode=JournalMode.SHADOW,
-                    clock=clock,
                 )
             )
         self.cursor = None
@@ -524,8 +449,8 @@ class RootSubjectRuntime:
     async def seed(self, now):
         """Bounded creation over current schedule/batch facts; no live cutover.
 
-        Old bundles without a table remain legacy. Importing a new artifact is
-        an operator prerequisite; this path never imports or activates one.
+        The reviewed policy must expose a root table. There is no fallback
+        sealer: unsupported pins remain visible as configuration failures.
         """
         async with self.db._engine.connect() as conn:
             statement = (
@@ -547,6 +472,9 @@ class RootSubjectRuntime:
         self.cursor = projects[-1]["id"] if len(projects) == 100 else None
         for project in projects:
             try:
+                from src.integration.scheduler import IntegrationScheduler
+                due = await IntegrationScheduler(self.db).mark_due(project["id"], now, "periodic")
+                project = {**project, "outstanding_request_id": due.get("request_id")}
                 await self._seed_project(project, now)
             except (ValueError, FileNotFoundError, KeyError):
                 logger.debug("root subject policy unavailable for %s", project["id"])
@@ -618,19 +546,6 @@ class RootSubjectRuntime:
             ).first()
             if prior:
                 return
-            owner = (
-                await conn.execute(
-                    select(t.integration_subjects.c.id)
-                    .where(
-                        t.integration_subjects.c.repository_id == repository_id,
-                        t.integration_subjects.c.kind == "root_batch",
-                        t.integration_subjects.c.engine == "reconciler",
-                    )
-                    .limit(1)
-                )
-            ).first()
-            if not batch and not owner:
-                return  # shadow starts after legacy seals, avoiding a stale admitting mirror
             if project["outstanding_request_id"] is not None:
                 await self._supersede_admitting(
                     conn, project["id"], repository_id, project["outstanding_request_id"], now
@@ -668,7 +583,7 @@ class RootSubjectRuntime:
                 repository_id=repository_id,
                 kind=SubjectKind.ROOT_BATCH,
                 subject_key=key,
-                engine=SubjectEngine.RECONCILER if owner else SubjectEngine.LEGACY,
+                engine=SubjectEngine.RECONCILER,
                 policy=pin,
                 phase=phase,
                 batch_id=batch["id"] if batch else None,
@@ -700,6 +615,12 @@ class RootSubjectRuntime:
                         repository_id,
                     )
                     return
+            from src.integration.models import BranchKey
+            from src.integration.ownership import BranchOwnership
+            await BranchOwnership(self.db).acquire(
+                BranchKey(repository_id=repository_id, branch=subject.target_ref),
+                "root-reconciler:" + repository_id, "publisher", conn=conn,
+            )
             await self.db.ensure_integration_subject_on(conn, subject.to_row())
 
     async def _supersede_admitting(self, conn, project_id, repository_id, request_id, now):
@@ -771,7 +692,7 @@ class RootSubjectRuntime:
 
 def root_runtime_for(orchestrator):
     config = orchestrator.config.integration
-    if not (config.reconciler_shadow or config.reconciler_active):
+    if not config.reconciler_active:
         return None
     observer = RootObserver(
         orchestrator.db,
@@ -795,7 +716,7 @@ def root_runtime_for(orchestrator):
         observer,
         policy,
         ports,
-        shadow=config.reconciler_shadow,
+        shadow=False,
         active=config.reconciler_active,
     )
     runtime.subscribe(orchestrator.bus)

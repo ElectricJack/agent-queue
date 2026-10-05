@@ -62,7 +62,7 @@ from src.models import (
 from tests.db_fixtures import seed_task_session_attempt
 from tests.test_delivery_consumers import git
 
-# A real ParentCompletion close on a real origin, at generation 6.
+# A real ParentEpisodeRecords close on a real origin, at generation 6.
 from tests.test_integration_parent_completion import (
     _code_receipt,
     _parent_tree,
@@ -287,7 +287,7 @@ def test_human_approval_holds():
 
     human = _classify(_facts(operation={**OPERATION, "state": "human_required"}))
     assert human["label"] == "Integration awaiting operator decision"
-    assert human["remedy"] == "aq integration resume op-1"
+    assert human["remedy"] == "aq task show epic"
 
     batch = _classify(
         _facts(status="COMPLETED", operation=None, batch={"id": "b1", "lifecycle": "human_blocked"})
@@ -485,7 +485,7 @@ def test_git_that_cannot_account_for_the_epic_says_so():
         "unknown", "Delivery evidence unavailable", "unavailable",
     )
     assert "no exact source is retained in git" in unknown["reason"]
-    assert unknown["remedy"] == "aq integration migrate-provenance p --task-id epic --apply"
+    assert unknown["remedy"] == "aq task show epic"
 
     misplaced = _classify(_complete(canonical=replace(
         ADOPTED, state="unknown", reason="scope_mismatch",
@@ -1076,10 +1076,10 @@ async def test_a_retargeted_repository_invalidates_the_observed_answer(
     assert "is not in release as observed at" in retargeted["reason"]
 
 
-async def test_a_real_operator_equivalence_adoption_is_delivered_and_says_so(
+async def test_retained_operator_equivalence_proof_is_delivered_and_says_so(
     git_completed_parent, tmp_path,
 ):
-    """The recorded adoption the display must agree with, on a real adoption."""
+    """Historical operator evidence remains valid after its control is removed."""
     service, origin, _base, _partial, head, *_rest = git_completed_parent
     # The operator landed the aggregate by hand: main carries the content but
     # not the verified source, so git alone cannot prove the delivery.
@@ -1095,21 +1095,25 @@ async def test_a_real_operator_equivalence_adoption_is_delivered_and_says_so(
     assert (unproven["state"], unproven["label"]) == ("queued", "Delivery pending")
     assert f"source {head[:12]} is not in main as observed at {main[:12]} yet" in unproven["reason"]
 
-    adopted = await service.adopt(
-        project_id="p", task_ids=["parent"], target_ref="refs/heads/main", head_sha=main,
-        reason="operator landed the aggregate by hand", operator_id="local",
-        accept_equivalent=True,
+    # Seed retained historical operator evidence directly; the removed adoption
+    # command cannot create it, but the delivery reader still recognizes it.
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    observed = (await service.delivery_observer.observe(["parent"])).get("parent")
+    original = CompletedSource(
+        CompletionIdentity("p", "repo", "parent", observed.request.completion_id), head,
     )
-    assert adopted["manifest"] == [
-        {"task_id": "parent", "source_sha": head, "acceptance": "operator_equivalent"},
-    ]
+    provenance = GitProvenance(service.git, str(origin.clone), repository_url=origin.url)
+    await provenance.write_completion(original)
+    await provenance.write_replacement(
+        source_oid=main, base_oid=await provenance.run("merge-base", head, main),
+        replaces=[original], authority="operator", reason="historical operator acceptance",
+    )
 
     # A fresh observer, because the one above answered before the adoption
     # and a read-only surface may reuse that snapshot for its read window.
     delivered = await _epic_delivery(service.db, tmp_path)
     assert (delivered["state"], delivered["label"]) == ("delivered", "Delivered")
     assert delivered["reason"] == (
-        f"Verified generation 6 source {head[:12]} is in main at {main[:12]} "
-        "(operator accepted this source as equivalent)"
+        f"Verified generation 6 source {head[:12]} is in main at {main[:12]}"
     )
     assert delivered["implementation_total"] == 1

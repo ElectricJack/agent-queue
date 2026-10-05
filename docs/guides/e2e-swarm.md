@@ -64,8 +64,8 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 19 scenarios. `S1`–`S8` cover swarm composition;
-`S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
+The default run executes all 18 scenarios. `S1`–`S8` cover swarm composition;
+`S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
 terminal worker close. `S19` uses a planner's authenticated session token to
@@ -75,9 +75,9 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-CI covers all 19 scenarios as **20 individually reported pytest items** in four
+CI covers all 18 scenarios as **19 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
-S17), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S15, S16a).
+S17), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S14, S16a).
 S16a covers outage detection/rerouting; S16b prepares a separate outage through
 public commands and covers recovery/undo/all-down. Select `S16` in the shell
 runner to run the original full serial transcript.
@@ -167,7 +167,6 @@ PASS S13 plugin extensions (...)
      disposable entry point loaded when present and was an exit-2 unknown command when absent
 PASS S14 graph + vault (...)
      layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
-PASS S15 development integration (...)
      local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
 PASS S16 provider failover (206.1s)
      prova tripped in 2 launch(es); moved …,… to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned …; all-down held everything, claim=drain_requested, critical escalation
@@ -177,7 +176,7 @@ PASS S17 phased graph (...)
 PASS S18 supervisor failure triage (...)
      task.failed completed the reviewed playbook run and queued one durable supervisor notice
 
-19/19 scenarios passed
+18/18 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -204,7 +203,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 19 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 18 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -381,16 +380,11 @@ including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
 
-**S15 — development integration.** The disposable source repository commits a
-pytest check that its README is a file. Development validation runs that check
-through the managed `test` preset before publishing. The scenario verifies the
-delivery journal contains a passing job receipt and result hash for the exact
-snapshot SHA published to the remote, then checks dependency release and operator
-adoption. The source task is filed with `hold:e2e-adoption` so the live routing
-playbook and scheduler cannot prepare a worker workspace and replace its branch
-between the scenario's status and adoption commands. Its successor remains
-schedulable to exercise delivery admission. S17 uses the same supported validation
-command in its development policy.
+**S15 — retired.** The old development integration scenario depended on the
+removed adoption, provenance migration and autonomous sweep commands. It was
+retired with that engine on 2026-10-04. Current root delivery is exercised by the
+reconciler Git scenarios in `tests/test_integration_root_scenarios.py`; the
+remaining swarm scenarios retain their original numbers.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake
@@ -510,7 +504,7 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the nineteen scenarios then run against an empty database
+serving `/api/health`; the eighteen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
 eighteen product regressions rather than one broken environment.
 

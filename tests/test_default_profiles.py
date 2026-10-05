@@ -139,10 +139,6 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
         "Retry up to three times",
         "equivalent authorized route",
         "Confirm first only for",
-        "aq integration abort",
-        "aq integration cancel-preserving",
-        "aq integration waive-history",
-        "aq integration adopt-legacy-deliveries --accept",
         "aq agent delete",
         "destroying work that cannot be recovered",
         "publishing outside the user's own repositories",
@@ -198,34 +194,10 @@ def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_pa
             assert worker.allows_plugin_tool(command), (profile_id, command)
 
 
-def test_seeded_supervisor_can_run_integration_status_and_enable_and_workers_cannot(tmp_path):
-    """The supervisor drives an integration cutover; a worker never controls one."""
-    ensure_default_profiles(str(tmp_path))
-
-    def policy_for(profile_id):
-        parsed = parse_profile(_vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8"))
-        assert parsed.capabilities is not None
-        return CapabilityPolicy.from_namespaces(**parsed.capabilities)
-
-    supervisor = policy_for("supervisor")
-    commands = ("integration_status", "integration_enable")
-    for command in commands:
-        assert supervisor.allows_aq_command(command), command
-    for profile_id in WORKER_PROFILE_IDS:
-        worker = policy_for(profile_id)
-        for command in commands:
-            assert not worker.allows_aq_command(command), (profile_id, command)
 
 
 def test_seeded_supervisor_holds_every_operator_integration_control(tmp_path):
-    """Scope admits an elevated supervisor to every operator control; so must its grants.
-
-    ``integration_retry_cleanup`` and ``integration_eject`` were admitted by
-    ``OPERATOR_INTEGRATION_CONTROLS`` yet missing from the shipped grants, so a
-    supervisor finishing a drain got ``capability denied``.  Abort,
-    cancel-preserving and waive-history stay granted: they are gated by the
-    profile's confirm-first rule, not by capability.
-    """
+    """Current operator controls remain admitted by scope and shipped grants."""
     from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
 
     ensure_default_profiles(str(tmp_path))

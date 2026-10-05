@@ -169,7 +169,7 @@ ordinal: the primary stage is always ordinal `0`, and the escalation to ordinal
 |---|---|---|
 | `stale` | Operation absent; malformed `starting_sha` or empty `trigger_id`; operation not `active` / not on stage 0 with no stage row; a parent trigger alias that resolves to no intent; a parent continuation that no longer matches the live conflict | `aq integration status <project>` → `repair[]`, and the operation row's `state`/`active_stage` |
 | `invariant_error` | The operation's project cannot be resolved; a stage exists but the active-stage row is missing; a **batch** operation was handed a different `(starting_sha, trigger_id)` | `aq doctor --check integration.operational` |
-| `unauthorized` | A session principal called it, or a playbook principal outside the operation's project or without the capability | [Who may run what](../../guides/integration-troubleshooting.md#who-may-run-what) |
+| `unauthorized` | A session principal called it, or a playbook principal outside the operation's project or without the capability | [Who may run what](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) |
 
 `already_started` is a success, not a warning: it is the expected answer to a
 replayed `delivery.ready` conflict or a redelivered event.

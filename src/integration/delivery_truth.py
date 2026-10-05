@@ -8,8 +8,7 @@ retained in git (:mod:`src.integration.provenance`). A verified parent's durable
 operation completion locates its exact source without a leaf close record.
 A leaf generation without retained provenance is
 unlabelled: no branch head, reported commit or historical manifest stands in
-for it, so it is unknown until an operator retains it
-(``aq integration migrate-provenance``). An absent ref is never an empty artifact.
+for it, so it stays unknown without retained proof. An absent ref is never an empty artifact.
 Completed legacy tasks without a descriptive close row can be attested under
 their recorded current generation or :func:`legacy_completion_id`, without
 fabricating a passing worker close or a parent verification. A parent operation
@@ -19,7 +18,7 @@ episode stays a legacy leaf binding and recovers by ordinary provenance.
 A *settlement* is the one database answer the evaluator honours, and it is not
 a delivery: it records that a generation is **not owed** to one target (work
 already delivered to the target a retarget replaced, a repair built for another
-target, or an operator's ``aq integration settle-parked``). Git is asked first:
+target, or a retained historical operator settlement). Git is asked first:
 a settlement only turns *pending* into *settled*, never contained or unknown
 work. It is fenced to the repository, the target and, for ordinary work, the
 exact completion generation it settled, so a reopened task owes its new work.

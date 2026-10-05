@@ -227,10 +227,10 @@ async def build_integration_delivery_summary(db: Any, task: Any) -> str:
     if checkpoint is None or checkpoint.get("episode_id") is None:
         return ""
     from src.database.queries.hierarchy_queries import HierarchyError
-    from src.integration.parent_completion import ParentCompletion
+    from src.integration.records import ParentEpisodeRecords
 
     try:
-        projection = await ParentCompletion(db).readiness(task.id)
+        projection = await ParentEpisodeRecords(db).readiness(task.id)
     except HierarchyError as exc:
         return f"## Integration delivery\nBlocked: {exc}"
     lines = [

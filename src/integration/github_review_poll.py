@@ -170,8 +170,8 @@ class GitHubReviewPoller:
             self._report(
                 row["id"], ("no_source", row["pr_url"]), logging.WARNING,
                 "Completed train root %s has PR %s but no eligible review source; "
-                "inspect its checkpoint and branch origin (aq integration materialize-root %s)",
-                row["id"], row["pr_url"], row["id"],
+                "inspect its recorded checkpoint and branch origin",
+                row["id"], row["pr_url"],
             )
             return
         if withdrawn is not None:

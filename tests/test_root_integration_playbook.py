@@ -18,9 +18,8 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
 )
-from src.integration.candidates import CandidateBuildResult
-from src.integration.candidates import CandidateService
 from src.git.github_app import GitHubRepositoryBinding
+from src.integration.candidates import CandidateBuildResult, CandidateService
 from src.integration.main_promotion import RootPromotionResult
 from src.integration.release import IntegrationReleaseResult
 from src.models import Project, RepoConfig, RepoSourceType
@@ -34,7 +33,6 @@ from tests.playbook_v2_engine_helpers import (
     StubActivations,
     artifact_ref_for,
 )
-
 
 FIXTURE = Path("tests/fixtures/playbooks/historical-v2/root-integration-train/artifact.json")
 CURRENT_FIXTURE = Path("tests/fixtures/playbooks/v2/agent-queue-root-train/artifact.json")
@@ -396,75 +394,6 @@ async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
     promotion.promote.assert_awaited_once_with("build-batch", 0)
     assert repair.dispatch.await_args_list == [(("root-op", 1), {}), (("root-op", 1), {})]
     assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
-    await handler.db.close()
-
-
-async def test_shipped_root_train_completes_an_empty_sweep_without_a_batch_row(
-    command_handler_factory,
-):
-    """The shipped graph releases every empty seal; a rowless one must still complete."""
-    from sqlalchemy import select
-
-    from src.integration.release import IntegrationReleaseService
-    from src.integration.scheduler import TrainService
-    from tests.test_integration_sealing import _enable_train, _request
-
-    handler = await command_handler_factory()
-    await handler.db.create_project(Project(id="p", name="project"))
-    await handler.db.create_repo(
-        RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.LINK,
-            default_branch="main",
-        )
-    )
-    await _enable_train(handler.db)
-    request = await _request(handler.db)
-    handler.orchestrator.integration_train_service = TrainService(handler.db)
-    handler.orchestrator.integration_release_service = IntegrationReleaseService(handler.db)
-    artifact = load_definition_json(
-        Path("tests/fixtures/playbooks/v2/root-train/artifact.json").read_text(encoding="utf-8")
-    )
-    runs = RecordingRunRepository()
-    engine = PlaybookEngine(
-        services=EngineServices(
-            contracts=CONTRACTS,
-            clock=lambda: 123.0,
-            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
-            handler=handler,
-            db=handler.db,
-        ),
-        runs=runs,
-        waits=runs,
-        activations=StubActivations([artifact_ref_for(artifact)]),
-    )
-    principal = ExecutionPrincipal(
-        kind=PrincipalKind.PLAYBOOK,
-        project_id="p",
-        policy=CapabilityPolicy.from_namespaces(
-            aq_commands=["integration_seal", "integration_release"]
-        ),
-    )
-    due = {
-        "event_type": "integration.sweep_due",
-        "project_id": "p",
-        "operation_id": request["request_id"],
-    }
-    set_handler_provider(lambda: handler)
-    try:
-        first = await engine.dispatch_event({**due, "event_id": "due-1"}, principal)
-        redelivered = await engine.dispatch_event({**due, "event_id": "due-2"}, principal)
-    finally:
-        set_handler_provider(None)
-
-    assert first.rules_selected == redelivered.rules_selected == ("seal-due-frontier",)
-    assert [snapshot.lifecycle.value for snapshot in runs.snapshots.values()] == [
-        "completed",
-        "completed",
-    ]
-    async with handler.db._engine.connect() as conn:
-        assert (await conn.execute(select(integration_batches))).all() == []
     await handler.db.close()
 
 

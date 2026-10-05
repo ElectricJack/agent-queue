@@ -140,9 +140,9 @@ open.
 10. **Publication** — the human-block transition's flips and notifications are
    published after the transaction commits.
 
-Expiry never resets `attempts`: the debug stage starts with its own budget, and
-a human resume ([`integration_resume`](integration_resume.md)) re-arms only the
-clock.
+Expiry never resets `attempts`: the debug stage starts with its own budget.
+Further progress is evaluated by the durable Subject under its pinned policy;
+resolve a named human gate through [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress).
 
 ## Side effects and persistence
 
@@ -172,7 +172,7 @@ clock.
 A stage that stays `not_due` across several timer firings is the signal to look
 for a stuck mutation: `aq integration status <project>` reports
 `pending_publications`, and
-[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication)
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery)
 covers the reconciliation path.
 
 ## Example step
@@ -192,5 +192,5 @@ timeout outcome.
 
 * [`integration_record_repair`](integration_record_repair.md) — the other route to the same escalations.
 * [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
-* [`integration_resume`](integration_resume.md) — re-arms an expired stage's clock after a human decision.
+* [Subject recovery](../../guides/integration-troubleshooting.md#human-holds-and-repair-progress) — resolve a named gate before the next durable visit.
 * Spec: [One higher-intelligence debug escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#92-one-higher-intelligence-debug-escalation).

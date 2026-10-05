@@ -156,7 +156,7 @@ async def test_missed_windows_and_manual_calls_coalesce_until_release(db):
     assert row["catchup_after_sequence"] == 1
 
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(integration_outbox))).all()) == 1
+        assert (await conn.execute(select(integration_outbox))).all() == []
 
     async with db.immediate() as conn:
         await conn.execute(
@@ -255,7 +255,7 @@ async def test_promoted_before_release_preserves_first_catchup_for_all_cleanup_s
     assert row["catchup_requested_at"] == catchup_at
     assert row["catchup_after_sequence"] == 1
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(integration_outbox))).all()) == 1
+        assert (await conn.execute(select(integration_outbox))).all() == []
 
 
 @pytest.mark.parametrize("cleanup_after_release", ("complete", "conflict"))
@@ -375,7 +375,7 @@ async def test_concurrent_duplicate_delivery_allocates_one_request(db):
     assert first["request_id"] == second["request_id"]
     assert first["request_sequence"] == second["request_sequence"] == 1
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(integration_outbox))).all()) == 1
+        assert (await conn.execute(select(integration_outbox))).all() == []
 
 
 async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
@@ -420,9 +420,7 @@ async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
         assert replay["request_sequence"] == first["request_sequence"]
         async with restarted_db._engine.connect() as conn:
             events = (await conn.execute(select(integration_outbox))).mappings().all()
-        assert len(events) == 1
-        assert events[0]["event_type"] == "integration.sweep_due"
-        assert events[0]["payload"]["operation_id"] == first["request_id"]
+        assert events == []  # A durable request is revisited directly after restart.
     finally:
         await restarted_db.close()
 
@@ -571,3 +569,9 @@ async def test_tick_leaves_promotion_claim_headroom_on_the_batch_lease(db, remai
     assert left > _CLAIM_SECONDS
     assert lease["owner_id"] == "sealer-live-batch"
     assert lease["fence_token"] == 1
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

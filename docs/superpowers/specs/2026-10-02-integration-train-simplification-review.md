@@ -89,7 +89,7 @@ The `agent-queue` project runs mode `train` at policy generation 86 with `on_exh
 | `parent-integration.promote-delivery` | 11 | 2 | `conflict` 7 (then repair started), `stale` 2 |
 | `root-train.seal-due-frontier` | 380 | 0 | (438 of the 476 batches ever sealed were empty) |
 
-A `wait` on promotion is documented as expected ("the first `integration.candidate_green` run ends on `wait`… that is expected", [troubleshooting](../../../docs/guides/integration-troubleshooting.md#a-green-batch-never-promotes)), and a separate service, `GreenPromotionReconciler` (`src/integration/green_continuation.py:149`), exists only to re-emit the event up to six times with backoff and then stop. That is the pattern in miniature: an event-driven rule cannot wait, so a second mechanism is bolted on to re-fire the event, and that mechanism has its own exhaustion.
+A `wait` on promotion is documented as expected ("the first `integration.candidate_green` run ends on `wait`… that is expected", [troubleshooting](../../../docs/guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery)), and a separate service, `GreenPromotionReconciler` (`src/integration/green_continuation.py:149`), exists only to re-emit the event up to six times with backoff and then stop. That is the pattern in miniature: an event-driven rule cannot wait, so a second mechanism is bolted on to re-fire the event, and that mechanism has its own exhaustion.
 
 **Noise that hides signal.** In the two-day log window: 6,400 warnings of the form `Completed train root <id> has PR … but no eligible review source` for eleven roots (one line per root per tick, no action attached); the `GitHub PR reviews` source exceeded the 5-second tick 3,450 times and the remote reconciliation pass runs its 18 sources serially (`IntegrationService._reconcile`, `src/integration/service.py:107-157`), so the review poll's latency is every other source's latency; 112 `Could not open the pull request for train root fleet-ember-…` warnings.
 
@@ -109,7 +109,7 @@ A `wait` on promotion is documented as expected ("the first `integration.candida
 
 **C5. `human_required` is the catch-all.** `RepairService.dispatch` (`repair.py:1346-1730`) returns `human_required` from at least eight distinct situations: the delegate task row is missing and cannot be restored, the writer kind is not a delegate, the delegate's identity does not match, the task id already exists, the target has no owner row, and several ownership shapes. None of these is a decision a human needs to make; they are states the code did not expect. Routing them to a human gate makes the unexpected state look like policy and gives the policy layer nothing to act on.
 
-**C6. Three delivery engines.** `development` mode (`development.py`, 4,172 lines, plus validation, result parser, stalls, settlement, delivery truth, delivery observer: about 7,000 lines) re-implements candidate assembly, parking, conflict repair with its own three-generation chain, publication with its own journal, and its own stall detection and supervisor messaging, next to the train's. The legacy `pr_merge` path (`integration.merge_ci_policy`, `src/git/ci_gate.py`) is a third. The [concept page](../../../docs/concepts/integration.md#modes) describes development mode as what you get when you drop the verifier, the attestation and the repair ladder from the train; that is a policy difference, not an engine difference.
+**C6. Three delivery engines.** `development` mode (`development.py`, 4,172 lines, plus validation, result parser, stalls, settlement, delivery truth, delivery observer: about 7,000 lines) re-implements candidate assembly, parking, conflict repair with its own three-generation chain, publication with its own journal, and its own stall detection and supervisor messaging, next to the train's. The legacy `pr_merge` path (`integration.merge_ci_policy`, `src/git/ci_gate.py`) is a third. The [concept page](../../../docs/concepts/integration.md#modes-and-policy) describes development mode as what you get when you drop the verifier, the attestation and the repair ladder from the train; that is a policy difference, not an engine difference.
 
 **C7. Frozen policy as a JSON blob forces drains.** `HierarchicalIntegrationPolicy` is copied into every batch, operation and stage at creation (`scheduler.py:528-548`, `repair.py:194-280`, `parent_completion.py:83-147`). Freezing is right: a running subject must not change its rules under it. Freezing the *whole project policy as one blob* and then refusing any edit while any subject is live is what forces the drain. The playbook artifact pin that already exists (`integration_operation_artifact_pins`, `PlaybookRoute.artifact`) is the correct unit of freezing: a subject runs under the policy version it started with; new subjects take the new version.
 
@@ -903,3 +903,26 @@ Changing mid-operation: through supported controls, impossible (`configure` requ
 | `task.completed`, `task.failed` | event bus, not outbox (`orchestrator/events.py:44-50, 115`; `monitoring.py:425`) | hydrated task | parent |
 
 Audit-only (`events` table, not subscribable): `integration.collection_redriven` (`collecting_parent_recovery.py:270`), `integration.collection_reopened` (`cancelled_collection_recovery.py:95, 892`), `integration.migration_deferred`, `integration.batch_source_withdrawn`, `development.operation`.
+
+
+### 2026-10-04 roll-forward retirement (eager-willow-81)
+
+The reconciler owns root delivery; engine transfer only admits `reconciler`.
+Pausing active visits preserves durable ownership and does not select a fallback.
+The phase 4 deletion map's sixteen modules are retired. Shared parent episode
+records, exact CI verification, root PR rendering, branch safety checks and pytest
+output parsing live with their current owners. Legacy shadow reporting, delivered
+parent adoption, manual delivered-batch settlement and root identity reconstruction
+are also retired. Old tables remain audit history.
+
+The integration service visits root, parent and Development subjects and runs
+bounded maintenance. Durable root requests are revisited directly, including after
+restart; `integration.sweep_due` and an in-memory sealing run no longer own them.
+Root mutations require the named current subject, while shared cleanup receives
+only publication exclusion. Project editing activates current policy inputs behind
+the existing generation CAS; it cannot rewrite an in-flight subject's artifact.
+
+The legacy configure/adopt/sweep end-to-end scenario S15 is retired with those
+commands. The swarm kit retains its eighteen other scenarios. Reconciler scenario
+tests retain real PostgreSQL and Git construction, publication, replay and fencing
+coverage; primitive unit tests enter the real durable subject ownership scope.

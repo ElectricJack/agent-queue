@@ -10,17 +10,35 @@ These ports are inert until CommandHandler's reconciler wiring binds them.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import gates, integration_subjects, task_metadata, tasks
+from src.database.tables import (
+    gates,
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
+    integration_candidate_ref_mutations,
+    integration_candidate_resolutions,
+    integration_candidate_revisions,
+    integration_promotion_intents,
+    integration_repair_operations,
+    integration_repair_stages,
+    integration_subjects,
+    project_integration_leases,
+    sessions,
+    task_metadata,
+    tasks,
+    workspaces,
+)
+from src.integration.engine import RootPolicyEjection, root_engine_guard
 from src.integration.records import (
     append_record_on,
     human_hold_on,
@@ -28,6 +46,7 @@ from src.integration.records import (
     journal_key,
     lock_current_on,
 )
+from src.integration.scheduler import TrainService
 from src.integration.subjects import (
     ARTIFACT_PATTERN,
     EjectArgs,
@@ -43,6 +62,7 @@ from src.integration.subjects import (
     WriterStatus,
     schedule_values,
 )
+from src.integration.writers import OperationSafety
 
 
 class EjectionPlan(BaseModel):
@@ -550,3 +570,673 @@ class GatePrimitives:
             outcome="ejected",
             detail={**payload, "subject_version": row["version"], "generation": row["generation"]},
         )
+
+
+class RootMemberEjection:
+    """Apply the root policy's journalled ejection to its physical membership."""
+
+    def __init__(self, db, *, clock=time.time):
+        self.db = db
+        self.clock = clock
+
+    @root_engine_guard("batch", outcome="invalid_state", refusal={"success": False})
+    async def eject(
+        self,
+        batch_id: str,
+        *,
+        task_id: str,
+        reason: str,
+        operator_id: str,
+        resolution_observer: Callable[[dict[str, Any]], Awaitable[str | None]] | None = None,
+        policy_ejection: RootPolicyEjection | None = None,
+    ) -> dict[str, Any]:
+        """Eject before construction or rebuild a safely detached repair candidate."""
+        if not reason.strip():
+            raise ValueError("ejection reason is required")
+        now = self.clock()
+        transition = None
+        observations = {}
+        if resolution_observer is not None:
+            async with self.db._engine.connect() as read_conn:
+                pending = (
+                    (
+                        await read_conn.execute(
+                            select(integration_candidate_resolutions)
+                            .join(
+                                integration_batch_members,
+                                (
+                                    integration_batch_members.c.batch_id
+                                    == integration_candidate_resolutions.c.batch_id
+                                )
+                                & (
+                                    integration_batch_members.c.ordinal
+                                    == integration_candidate_resolutions.c.member_ordinal
+                                ),
+                            )
+                            .where(
+                                integration_candidate_resolutions.c.batch_id == batch_id,
+                                integration_candidate_resolutions.c.state == "pushed",
+                                integration_batch_members.c.task_id == task_id,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            for resolution in pending:
+                observations[resolution["id"]] = await resolution_observer(dict(resolution))
+        async with self.db.immediate() as conn:
+            batch = (
+                (
+                    await conn.execute(
+                        select(integration_batches).where(integration_batches.c.id == batch_id)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if batch is None:
+                return {"outcome": "unknown_batch", "batch_id": batch_id}
+            project_id = str(batch["project_id"])
+            await self.db.lock_hierarchy_project(conn, project_id)
+            batch = (
+                (
+                    await conn.execute(
+                        select(integration_batches)
+                        .where(integration_batches.c.id == batch_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            policy_decision = None
+            if policy_ejection is not None:
+                policy_decision = await policy_ejection.validate_on(
+                    self.db, conn, batch, task_id=task_id, reason=reason
+                )
+                operator_id = "service:root-reconciler"
+            members = (
+                (
+                    await conn.execute(
+                        select(integration_batch_members)
+                        .where(integration_batch_members.c.batch_id == batch_id)
+                        .order_by(integration_batch_members.c.ordinal)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not any(member["task_id"] == task_id for member in members):
+                return {"outcome": "not_a_member", "batch_id": batch_id, "task_id": task_id}
+            revision = (
+                (
+                    await conn.execute(
+                        select(integration_candidate_revisions)
+                        .where(integration_candidate_revisions.c.batch_id == batch_id)
+                        .where(
+                            integration_candidate_revisions.c.revision == batch["current_revision"]
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            repairing = batch["lifecycle"] in {"repairing", "human_blocked"}
+            if not repairing and (batch["lifecycle"] != "sealed" or revision is not None):
+                return {"outcome": "invalid_state", "batch_id": batch_id, "task_id": task_id}
+            operation = stage = None
+            if repairing:
+                operation = (
+                    (
+                        await conn.execute(
+                            select(integration_repair_operations)
+                            .where(
+                                integration_repair_operations.c.batch_id == batch_id,
+                            )
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    revision is None
+                    or operation is None
+                    or operation["state"] not in {"active", "escalated", "human_required"}
+                ):
+                    return {"outcome": "invalid_state", "batch_id": batch_id, "task_id": task_id}
+                blockers = await OperationSafety._ambiguous_writes_on(
+                    conn,
+                    operation,
+                    allow_reserved_delegate=True,
+                )
+                rejections = await self._observed_ejection_rejections_on(
+                    conn,
+                    batch,
+                    task_id,
+                    observations,
+                )
+                rejected_ids = {row["id"] for row in rejections}
+                blockers = [
+                    blocker
+                    for blocker in blockers
+                    if blocker not in {f"resolution:{row_id}" for row_id in rejected_ids}
+                ]
+                # Even a historical root promotion intent freezes source
+                # identities through its receipt FKs. It must never be rewritten.
+                intent = (
+                    await conn.execute(
+                        select(integration_promotion_intents.c.id)
+                        .where(
+                            integration_promotion_intents.c.root_batch_id == batch_id,
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                owner = (
+                    (
+                        await conn.execute(
+                            select(integration_branch_owners)
+                            .where(
+                                integration_branch_owners.c.repository_id == batch["repository_id"],
+                                integration_branch_owners.c.ref == batch["integration_branch"],
+                            )
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if owner is not None and (
+                    owner["handoff_state"] not in {"reserved", "released"}
+                    or owner["session_id"] is not None
+                    or owner["workspace_id"] is not None
+                ):
+                    blockers.append("writer")
+                if intent is not None:
+                    blockers.append("promotion")
+                if blockers:
+                    return {
+                        "outcome": "invalid_state",
+                        "batch_id": batch_id,
+                        "task_id": task_id,
+                        "blockers": sorted(set(blockers)),
+                    }
+                stage = (
+                    (
+                        await conn.execute(
+                            select(integration_repair_stages)
+                            .where(
+                                integration_repair_stages.c.operation_id == operation["id"],
+                                integration_repair_stages.c.ordinal == operation["active_stage"],
+                            )
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if stage is None:
+                    return {"outcome": "invalid_state", "batch_id": batch_id, "task_id": task_id}
+                if stage["repair_task_id"] is not None:
+                    delegate = (
+                        (
+                            await conn.execute(
+                                select(tasks)
+                                .where(tasks.c.id == stage["repair_task_id"])
+                                .with_for_update()
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    from src.database.queries.integration_state_queries import (
+                        session_attached_clause,
+                    )
+
+                    live_session = (
+                        await conn.execute(
+                            select(sessions.c.id)
+                            .where(
+                                sessions.c.task_id == stage["repair_task_id"],
+                                session_attached_clause(),
+                            )
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if live_session is not None or (
+                        delegate is not None
+                        and (
+                            delegate["assigned_agent_id"] is not None
+                            or delegate["status"] in {"ASSIGNED", "IN_PROGRESS"}
+                        )
+                    ):
+                        return {
+                            "outcome": "invalid_state",
+                            "batch_id": batch_id,
+                            "task_id": task_id,
+                            "blockers": ["repair_delegate_not_settled"],
+                        }
+                    if delegate is not None and delegate["status"] in {
+                        "DEFINED",
+                        "READY",
+                        "PAUSED",
+                        "BLOCKED",
+                    }:
+                        from src.models import TaskStatus
+
+                        transition = await self.db._apply_transition(
+                            conn,
+                            delegate["id"],
+                            TaskStatus.FAILED,
+                            context="integration_ejected_delegate",
+                            force=True,
+                            _manual_pause_control=True,
+                            resume_after=None,
+                        )
+                        await self.db._upsert_meta(
+                            delegate["id"],
+                            "integration_retirement",
+                            {
+                                "operation_id": operation["id"],
+                                "disposition": "superseded",
+                                "previous_status": delegate["status"],
+                                "retired_at": now,
+                                "reason": f"batch member {task_id} ejected from revision {revision['revision']}",
+                            },
+                            conn=conn,
+                        )
+                        await conn.execute(
+                            delete(task_metadata).where(
+                                task_metadata.c.task_id == delegate["id"],
+                                task_metadata.c.key.in_(
+                                    (
+                                        "needs_attention",
+                                        "blocked_terminal",
+                                        "claim_prepare_backoff_until",
+                                        "manual_pause",
+                                    )
+                                ),
+                            )
+                        )
+                if owner is not None:
+                    from src.integration.models import BranchKey, Fence
+                    from src.integration.ownership import BranchOwnership
+
+                    await BranchOwnership(self.db, clock=self.clock).transfer_detached_on(
+                        conn,
+                        Fence(
+                            target=BranchKey(
+                                repository_id=batch["repository_id"],
+                                branch=batch["integration_branch"],
+                            ),
+                            owner_id=owner["owner_id"],
+                            token=owner["fence_token"],
+                        ),
+                        operation["id"],
+                        "collector",
+                    )
+                for resolution in rejections:
+                    await conn.execute(
+                        update(integration_candidate_resolutions)
+                        .where(
+                            integration_candidate_resolutions.c.id == resolution["id"],
+                            integration_candidate_resolutions.c.state == "pushed",
+                        )
+                        .values(
+                            state="rejected",
+                            rejection_evidence={
+                                "invariant": resolution["invariant"],
+                                "rejected_at": now,
+                                "disposition": "membership_ejection",
+                                "operator_id": operator_id,
+                                "remote_sha": observations[resolution["id"]],
+                            },
+                            updated_at=now,
+                        )
+                    )
+
+            # The trigger requires this audit row from the same transaction,
+            # together with the project lock and the transaction-local markers.
+            event_id = await self.db.log_event(
+                "integration.batch_ejected",
+                project_id=project_id,
+                task_id=task_id,
+                payload=json.dumps(
+                    {
+                        "batch_id": batch_id, "reason": reason, "operator_id": operator_id,
+                        "at": now,
+                        **({"policy_decision": policy_decision} if policy_decision else {}),
+                    }
+                ),
+                conn=conn,
+            )
+            await conn.execute(
+                select(func.set_config("aq.integration_eject_batch", batch_id, True))
+            )
+            await conn.execute(
+                select(func.set_config("aq.integration_eject_event", str(event_id), True))
+            )
+
+            if repairing:
+                # The immutable revision snapshot keeps old ordinal/result
+                # bindings meaningful after the live manifest is compacted.
+                await conn.execute(
+                    update(integration_candidate_revisions)
+                    .where(
+                        integration_candidate_revisions.c.batch_id == batch_id,
+                        integration_candidate_revisions.c.source_manifest.is_(None),
+                    )
+                    .values(source_manifest=[dict(member) for member in members])
+                )
+                await conn.execute(
+                    update(integration_candidate_revisions)
+                    .where(
+                        integration_candidate_revisions.c.batch_id == batch_id,
+                    )
+                    .values(state="superseded", updated_at=now)
+                )
+
+            await conn.execute(
+                delete(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch_id,
+                    integration_batch_members.c.task_id == task_id,
+                )
+            )
+            remaining = [member for member in members if member["task_id"] != task_id]
+            for ordinal, member in enumerate(remaining):
+                if member["ordinal"] != ordinal:
+                    await conn.execute(
+                        update(integration_batch_members)
+                        .where(
+                            integration_batch_members.c.batch_id == batch_id,
+                            integration_batch_members.c.task_id == member["task_id"],
+                        )
+                        .values(ordinal=ordinal)
+                    )
+            manifest = [
+                {
+                    "task_id": member["task_id"],
+                    "repository_id": member["repository_id"],
+                    "source_base": member["source_base_sha"],
+                    "source_head": member["reviewed_head_sha"],
+                    "review": {
+                        "id": member["review_evidence_id"],
+                        "reviewed_tree_sha": member["reviewed_tree_sha"],
+                    },
+                    "source_ref": member["source_ref"],
+                    "source_ref_retention": member["source_ref_retention"],
+                }
+                for member in remaining
+            ]
+            values: dict[str, Any] = {"updated_at": now}
+            if repairing:
+                values.update(tested_candidate_sha=None, ci_evidence_id=None)
+            if remaining:
+                values.update(
+                    source_manifest_digest=TrainService._manifest_digest(manifest),
+                    base_sha=remaining[0]["source_base_sha"],
+                )
+            else:
+                values.update(
+                    lifecycle="aborted",
+                    human_abort_reason=reason,
+                    cleanup_state="complete",
+                )
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(integration_repair_operations.c.batch_id == batch_id)
+                    .values(state="cancelled", updated_at=now)
+                )
+                await conn.execute(
+                    delete(project_integration_leases).where(
+                        project_integration_leases.c.project_id == project_id,
+                        project_integration_leases.c.batch_id == batch_id,
+                    )
+                )
+                await TrainService._consume_request(conn, project_id, batch["request_id"], now)
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == batch_id)
+                .values(**values)
+            )
+            if repairing and remaining:
+                next_revision = int(batch["current_revision"]) + 1
+                base = revision["construction_base_sha"]
+                await conn.execute(
+                    insert(integration_candidate_revisions).values(
+                        batch_id=batch_id,
+                        revision=next_revision,
+                        construction_base_sha=base,
+                        source_manifest=[
+                            dict(member) | {"ordinal": ordinal}
+                            for ordinal, member in enumerate(remaining)
+                        ],
+                        head_sha=base,
+                        state="constructing",
+                        repair_parent_revision=revision["revision"],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                dossier = dict(stage["dossier"] or {})
+                dossier.setdefault("membership_ejections", []).append(
+                    {
+                        "task_id": task_id,
+                        "revision": revision["revision"],
+                        "at": now,
+                        "previous_writer": stage["repair_task_id"],
+                        "previous_subject": stage["current_subject"],
+                        "reviewed_file_guard": dossier.get("reviewed_file_guard"),
+                    }
+                )
+                for key in ("reviewed_file_guard", "repair_commits", "conflict", "main_rebuild"):
+                    dossier.pop(key, None)
+                dossier["manifest"] = {
+                    "kind": "batch",
+                    "batch_id": batch_id,
+                    "source_manifest_digest": values["source_manifest_digest"],
+                    "revision": next_revision,
+                }
+                dossier["starting_sha"] = base
+                dossier["branch_sha"] = base
+                stage_values = {
+                    "state": "active",
+                    "starting_sha": base,
+                    "current_subject": {
+                        "kind": "batch",
+                        "revision": next_revision,
+                        "candidate_sha": base,
+                    },
+                    "success_subject": None,
+                    "success_evidence_id": None,
+                    "repair_task_id": None,
+                    "writer_kind": None,
+                    "retained_workspace_id": None,
+                    "retained_handoff": None,
+                    "dossier": dossier,
+                    "completed_at": None,
+                }
+                if operation["state"] == "human_required":
+                    from src.integration.models import RepairPolicy
+                    from src.integration.outbox import enqueue_integration_event
+
+                    policy = RepairPolicy.model_validate(stage["policy"])
+                    duration = (
+                        policy.primary_seconds
+                        if int(stage["ordinal"]) == 0
+                        else policy.debug_seconds
+                    )
+                    deadline_id = f"repair-deadline-{operation['id']}-eject-{next_revision}"
+                    stage_values.update(
+                        started_at=now, deadline_at=now + duration, deadline_event_id=deadline_id
+                    )
+                    dossier["budget"] = dict(dossier.get("budget") or {}) | {
+                        "started_at": now,
+                        "deadline_at": now + duration,
+                        "attempts": stage["attempts"],
+                    }
+                    await enqueue_integration_event(
+                        conn,
+                        event_id=deadline_id,
+                        dedup_key=deadline_id,
+                        project_id=project_id,
+                        event_type="integration.repair_deadline_due",
+                        available_at=now + duration,
+                        payload={
+                            "operation_id": operation["id"],
+                            "stage": stage["ordinal"],
+                            "deadline_event_id": deadline_id,
+                        },
+                    )
+                await conn.execute(
+                    update(integration_repair_stages)
+                    .where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == stage["ordinal"],
+                    )
+                    .values(**stage_values)
+                )
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(
+                        integration_repair_operations.c.id == operation["id"],
+                    )
+                    .values(
+                        state="active" if int(stage["ordinal"]) == 0 else "escalated",
+                        updated_at=now,
+                    )
+                )
+                await conn.execute(
+                    update(integration_batches)
+                    .where(
+                        integration_batches.c.id == batch_id,
+                    )
+                    .values(
+                        current_revision=next_revision,
+                        lifecycle="sealed",
+                        tested_candidate_sha=None,
+                        ci_evidence_id=None,
+                        updated_at=now,
+                    )
+                )
+                from src.integration.outbox import enqueue_integration_event
+
+                event = f"integration-sealed:{batch_id}:eject:{next_revision}"
+                await enqueue_integration_event(
+                    conn,
+                    event_id=event,
+                    dedup_key=event,
+                    project_id=project_id,
+                    event_type="integration.sealed",
+                    available_at=now,
+                    payload={"batch_id": batch_id, "operation_id": operation["id"]},
+                )
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        return {"outcome": "ejected", "batch_id": batch_id, "task_id": task_id, "reason": reason}
+
+
+    async def _observed_ejection_rejections_on(self, conn, batch, task_id, observations):
+        """Prove that a refused private push is retained evidence, not a live write."""
+        from src.integration.migration_heads import REVIEWED_FILE_GUARDS
+
+        if not observations:
+            return []
+        resolution = integration_candidate_resolutions
+        stage = integration_repair_stages
+        member = integration_batch_members
+        rows = (
+            (
+                await conn.execute(
+                    select(resolution, stage.c.dossier)
+                    .join(
+                        stage,
+                        (stage.c.operation_id == resolution.c.operation_id)
+                        & (stage.c.ordinal == resolution.c.stage_ordinal),
+                    )
+                    .join(
+                        member,
+                        (member.c.batch_id == resolution.c.batch_id)
+                        & (member.c.ordinal == resolution.c.member_ordinal),
+                    )
+                    .where(
+                        resolution.c.batch_id == batch["id"],
+                        resolution.c.revision == batch["current_revision"],
+                        resolution.c.state == "pushed",
+                        member.c.task_id == task_id,
+                        resolution.c.id.in_(observations),
+                    )
+                    .with_for_update(of=resolution)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        verified = []
+        for row in rows:
+            guard = (row["dossier"] or {}).get("reviewed_file_guard") or {}
+            if (
+                observations[row["id"]] != row["resolved_head_sha"]
+                or guard.get("reservation_id") != row["id"]
+                or guard.get("revision") != row["revision"]
+                or guard.get("invariant") not in REVIEWED_FILE_GUARDS
+            ):
+                continue
+            session = (
+                (
+                    await conn.execute(
+                        select(sessions)
+                        .where(
+                            sessions.c.id == row["repair_session_id"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            workspace = (
+                (
+                    await conn.execute(
+                        select(workspaces)
+                        .where(
+                            workspaces.c.id == row["repair_workspace_id"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            applied = (
+                await conn.execute(
+                    select(integration_candidate_ref_mutations.c.id).where(
+                        integration_candidate_ref_mutations.c.resolution_id == row["id"],
+                        integration_candidate_ref_mutations.c.purpose == "repair_resolution",
+                        integration_candidate_ref_mutations.c.state == "applied",
+                        integration_candidate_ref_mutations.c.remote_sha
+                        == row["resolved_head_sha"],
+                    )
+                )
+            ).scalar_one_or_none()
+            if (
+                session is None
+                or workspace is None
+                or applied is None
+                or session["state"] != "stopped"
+                or session["desired_state"] != "stopped"
+                or session["instance_token"] != row["repair_session_instance_token"]
+                or session["project_id"] != row["project_id"]
+                or session["task_id"] not in {None, row["repair_task_id"]}
+                or session["work_dir"] != row["repair_workspace_path"]
+                or workspace["workspace_path"] != row["repair_workspace_path"]
+                or workspace["project_id"] != row["project_id"]
+                or workspace["locked_by_task_id"] is not None
+            ):
+                continue
+            verified.append(dict(row) | {"invariant": guard["invariant"]})
+        return verified

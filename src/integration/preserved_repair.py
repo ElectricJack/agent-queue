@@ -26,7 +26,7 @@ from src.database.tables import (
 from src.git.manager import RemoteRefState
 from src.integration.models import BranchKey, RepairPolicy
 from src.integration.promotion import PromotionInvariantError
-from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.writers import OperationSafety
 from src.integration.repair import _RepairInvariant
 
 _RECORD = "preserved_resolution_recovery"
@@ -239,7 +239,7 @@ class PreservedRepairRecovery:
         )
         if hint is None:
             raise RecoveryRefused("operation is missing")
-        project_id = await IntegrationRecoveryControls._project_id_on(conn, hint)
+        project_id = await OperationSafety._project_id_on(conn, hint)
         await self.db.lock_hierarchy_project(conn, project_id)
         operation = await row(
             integration_repair_operations,
@@ -247,7 +247,7 @@ class PreservedRepairRecovery:
         )
         if operation is None or operation["target_kind"] != "parent":
             raise RecoveryRefused("operation is not a parent repair")
-        if await IntegrationRecoveryControls._project_id_on(conn, operation) != project_id:
+        if await OperationSafety._project_id_on(conn, operation) != project_id:
             raise RecoveryRefused("operation project changed")
         project = await row(projects, projects.c.id == project_id)
         if (
@@ -564,7 +564,7 @@ class PreservedRepairRecovery:
             or intent["resolution_tree_sha"] != record["tree_sha"]
         ):
             raise RecoveryRefused("reserved recovery identity or collector fence changed")
-        blockers = await IntegrationRecoveryControls._ambiguous_writes_on(
+        blockers = await OperationSafety._ambiguous_writes_on(
             conn,
             operation,
             allowed_writer_id=owner["id"] if record else None,

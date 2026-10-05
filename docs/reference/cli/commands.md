@@ -303,24 +303,12 @@ moved).
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
-| `aq integration abort` | `—` | hand | Abort a safe, human-required integration OPERATION_ID. |
-| `aq integration adopt` | `—` | hand | Record already-delivered work without replaying old repair checkpoints. |
 | `aq integration app-setup` | `—` | hand | Print what App credential mode still needs for PROJECT_ID and the exact fix; `--apply` sets only the differing Actions variables with your `gh` login and verifies again ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 | `aq integration app-verify` | `—` | hand | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each, exit 1 when one fails ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
-| `aq integration cancel-preserving` | `—` | hand | Cancel obsolete repair scheduling while retaining refs and attached workspaces. |
-| `aq integration develop` | `—` | hand | Use automatic development batches with explicit local validation. |
-| `aq integration enable` | `—` | hand | CAS PROJECT_ID to MODE using the generation reported by status. |
-| `aq integration flush` | `—` | hand | Request an immediate eligibility pass or train sweep for PROJECT_ID. |
-| `aq integration onboard-train` | `—` | hand | Plan PROJECT_ID's move onto the integration train and print every step; changes nothing ([runbook](../../config/train-onboarding.md)). |
-| `aq integration reconcile-unmaterialized` | `—` | hand | Bind safe pre-rollout tasks and reserve their hierarchy origins. |
 | `aq integration recover-candidate-member` | `—` | hand | Resolve one pushed frozen candidate-member repair reservation. |
 | `aq integration resolve-candidate-member` | `—` | hand | Resolve the candidate member assigned to this repair session. |
-| `aq integration resume` | `—` | hand | Resume a safe, human-required integration OPERATION_ID. |
-| `aq integration retry-cleanup` | `—` | hand | Requeue the exact safe cleanup items for BATCH_ID. |
 | `aq integration status` | `—` | hand | Show rollout, readiness, active work, and cleanup for PROJECT_ID. |
-| `aq integration sweep` | `—` | hand | Build and publish a development batch now. |
 | `aq integration trust-manifest` | `—` | hand | Render the App-mode trust manifest from the policy, the binding and the daemon's App; `--write`, `--print` or `--check` the default-branch copy ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
-| `aq integration waive-history` | `—` | hand | Waive only the exact historical blockers reported for PROJECT_ID. |
 
 ### `aq mcp`
 
@@ -740,7 +728,6 @@ proposal flow a spec ingest produces.
 | `aq task comments` | `task_comments` | hand | Read a task's comments, newest first. |
 | `aq task create` | `—` | hand | Create a new task (interactive wizard or via flags). |
 | `aq task delete` | `delete_task` | gen | Delete a task. |
-| `aq task deliver` | `task_deliver` | gen | Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete the task. |
 | `aq task deps` | `task_deps` | gen | Return upstream dependencies and downstream dependents for a task. |
 | `aq task details` | `—` | hand | Alias of `aq task show` (kept for backward compatibility). |
 | `aq task edit` | `edit_task` | gen | Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode… |

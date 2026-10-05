@@ -30,7 +30,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S12 MCP registry           CRUD plus an unavailable optional endpoint
     S13 plugin extensions      installed entry point present and absent
     S14 graph + vault          layout mutations and isolated vault dry-run
-    S15 development delivery   local validation and exact Git publication
+    S15 integration surface    supported reconciler controls and retired legacy commands
     S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
     S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
     S18 failure triage         durable task.failed playbook dispatch and supervisor notice
@@ -1749,6 +1749,23 @@ def s14_graph_and_vault(state: dict) -> str:
     return "layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes"
 
 
+def s15_integration_surface(state: dict) -> str:
+    """Check that the CLI exposes current integration controls, not retired legacy paths."""
+    help_text = aq_text("integration", "--help")
+    if "Commands:" not in help_text:
+        raise Failure(f"integration help omitted its command list: {help_text[:400]!r}")
+    commands = {
+        line.strip().split(maxsplit=1)[0]
+        for line in help_text.split("Commands:", 1)[1].splitlines()
+        if line.strip()
+    }
+    check("status" in commands, f"current integration status command is missing: {commands}")
+    retired = {"adopt", "adopt-legacy-deliveries", "develop", "migrate-provenance", "sweep"}
+    still_exposed = sorted(retired & commands)
+    check(not still_exposed, f"retired integration commands remain exposed: {still_exposed}")
+    return "current integration status remains available and legacy development controls are retired"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1766,175 +1783,8 @@ def _seed_development_validation(source: Path) -> None:
     )
 
 
-def _adoption_evidence(task_id: str, remote, head: str) -> str:
-    """Name the live inputs of an adoption that observed a non-ancestor source.
-
-    Hosted runs intermittently refused S15's adoption this way (runs
-    36779116662, 36786775568); the smoke output is all CI keeps, so carry the
-    task row, the remote heads and the daemon's observation into the failure.
-    """
-    from pathlib import Path
-    row = task_show(task_id)
-    observed = {key: row.get(key) for key in ("status", "branch_name", "assigned_agent",
-                                               "route_source", "updated_at")}
-    remote_heads = _git_text(str(remote), "for-each-ref",
-                             "--format=%(refname) %(objectname)", "refs/heads/")
-    log = Path(os.environ["AQ_E2E_HOME"]) / "daemon.log"
-    lines = [
-        line for line in log.read_text(errors="replace").splitlines()
-        if "development adoption:" in line and not line.startswith("{")
-    ][-3:] if log.is_file() else []
-    return (f"task now {observed}; pushed {head}; remote heads {remote_heads!r}; "
-            f"daemon observed {lines}")
 
 
-def s15_development_delivery(state: dict) -> str:
-    """Operator configure → real published branch → AQ validation/promotion → adoption."""
-    from pathlib import Path
-    root = Path(os.environ["AQ_E2E_HOME"]) / "onboarding"
-    remote, source = root / "development.git", root / "development-source"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
-    _git_text(str(source), "config", "user.name", "AQ E2E")
-    _git_text(str(source), "config", "user.email", "e2e@example.test")
-    (source / "README.md").write_text("development fixture\n")
-    _seed_development_validation(source)
-    _git_text(str(source), "add", ".")
-    _git_text(str(source), "commit", "-m", "base")
-    _git_text(str(source), "push", "origin", "main")
-    aq_text("project", "onboard", "--request-id", "e2e-development", "--source-mode", "link",
-            "--root-id", "e2e-onboarding", "--relative-path", "development-source",
-            "--project-name", "Development", "--project-id", "e2e-development")
-    configured = aq("integration", "develop", "e2e-development", "--command", DEVELOPMENT_VALIDATION_COMMAND,
-                    "--interval-seconds", "86400", "--reason", "isolated acceptance")
-    check(configured.get("outcome") == "configured", str(configured))
-    _git_text(str(source), "checkout", "-b", "fixture-feature")
-    (source / "feature.txt").write_text("delivered by AQ\n")
-    _git_text(str(source), "add", ".")
-    _git_text(str(source), "commit", "-m", "feature")
-    head = _git_text(str(source), "rev-parse", "HEAD")
-    _git_text(str(source), "push", "origin", "fixture-feature")
-    # This source is completed/adopted by the scenario, never by a worker.
-    # Filing stores the row before its labels. Pause this disposable project
-    # before creation so no scheduler tick can prepare the fixture's workspace
-    # during that interval or between the subsequent setup commands.
-    api_checked("pause_project", {"project_id": "e2e-development"})
-    try:
-        task = api_checked("create_task", {
-            "project_id": "e2e-development", "repo_id": configured["repository_id"],
-            "title": "development delivery", "description": "real Git fixture",
-            "labels": ["hold:e2e-adoption"],
-        })
-        task_id = task.get("task_id") or task.get("created")
-        check(bool(task_id), str(task))
-        aq("task", "set", task_id, "--branch", "fixture-feature")
-        aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
-        check(task_show(task_id)["branch_name"] == "fixture-feature",
-              "legacy fixture source branch changed during setup")
-    finally:
-        api_checked("resume_project", {"project_id": "e2e-development"})
-    successor = api("create_task", {
-        "project_id": "e2e-development", "title": "wait for delivered code",
-        "description": "must not start before the prerequisite reaches main",
-        "intelligence_class": POOL_CLASS,
-    })
-    successor_id = successor.get("task_id") or successor.get("created")
-    check(bool(successor_id), str(successor))
-    route_task(successor_id, POOL_PROFILE, POOL_CLASS)
-    api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
-    check(not task_show(successor_id)["is_blocked"], "delivery leaked into graph projection")
-    waiting = api("explain_task", {"task_id": successor_id})
-    check(any(reason["code"] == "development_dependency_delivery"
-              for reason in waiting.get("reasons", [])),
-          f"undelivered code released its successor: {waiting}")
-    # set-status deliberately models an old task without an immutable close.
-    # Its branch head, reported commits and any journal are no stand-in for
-    # the generation's exact source: git delivery is unknown, so it is neither
-    # published nor allowed to release its successor.
-    base = _git_text(str(remote), "rev-parse", "main")
-    idle = aq("integration", "sweep", "e2e-development")
-    check(idle.get("outcome") == "idle", f"an unlabelled generation was published: {idle}")
-    check(_git_text(str(remote), "rev-parse", "main") == base, "unlabelled work reached main")
-    withheld = api("explain_task", {"task_id": successor_id})
-    check(any(reason["code"] == "development_dependency_delivery"
-              and "missing_git_provenance" in str(reason.get("detail"))
-              for reason in withheld.get("reasons", [])),
-          f"unknown provenance did not withhold the successor: {withheld}")
-    inventory = aq("integration", "migrate-provenance", "e2e-development")
-    check(not inventory.get("zero_fallback") and any(
-        entry["task_id"] == task_id and entry.get("generation") is None
-        for entry in inventory.get("fallback_generations", [])
-    ), f"unlabelled generation was not named: {inventory}")
-    # The operator records an exact generation for the pushed work (adopted
-    # against its own branch, which is at that SHA); neither a finished
-    # operation nor ancestry invents one for a COMPLETED task.
-    feature_ref = "refs/heads/fixture-feature"
-    refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--target-ref", feature_ref, "--head-sha", head,
-                 "--reason", "unlabelled legacy generation", check_ok=False)
-    if "provenance migration" not in str(refused.get("_error")):
-        raise Failure(f"adoption invented legacy completion identity: {refused}; "
-                      + _adoption_evidence(task_id, remote, head))
-    # Reopening DEFINED can be promoted on the next tick. Keep project
-    # scheduling paused until the fixture's manual task pause is established.
-    api_checked("pause_project", {"project_id": "e2e-development"})
-    try:
-        aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
-        paused = api_checked("pause_task", {"task_id": task_id})
-        check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
-        aq("task", "set", task_id, "--branch", "fixture-feature")
-    finally:
-        api_checked("resume_project", {"project_id": "e2e-development"})
-    for reason in ("operator creates an exact completion generation",
-                   "prove repeatable operator reconciliation"):
-        adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                     "--target-ref", feature_ref, "--head-sha", head,
-                     "--reason", reason, check_ok=False)
-        if adopted.get("outcome") != "adopted":
-            raise Failure(f"{adopted}; " + _adoption_evidence(task_id, remote, head))
-    after = aq("integration", "migrate-provenance", "e2e-development")
-    check(not any(entry["task_id"] == task_id for entry in after.get("fallback_generations", [])),
-          f"the exact generation is still unlabelled: {after}")
-
-    # With its exact source retained, AQ validates and promotes that commit.
-    result = aq("integration", "sweep", "e2e-development")
-    check(result.get("outcome") == "delivered", str(result))
-    check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
-    released = api("explain_task", {"task_id": successor_id})
-    check(not any(reason["code"].startswith("development_")
-                  for reason in released.get("reasons", [])),
-          f"publication did not release the successor: {released}")
-    status = aq("integration", "status", "e2e-development")
-    delivery = next((row for row in status.get("deliveries", []) if row["id"] == result["id"]), None)
-    check(delivery is not None, f"missing publisher operation evidence: {status}")
-    evidence = delivery["evidence"]
-    checks = evidence.get("checks", [])
-    check(evidence.get("conclusion") == "passed" and len(checks) == 1,
-          f"validation did not pass: {evidence}")
-    validation = checks[0]
-    check(validation.get("command") == DEVELOPMENT_VALIDATION_COMMAND
-          and bool(validation.get("job_id")) and bool(validation.get("result_hash"))
-          and validation.get("exit_code") == 0 and validation.get("outcome") == "passed"
-          and validation.get("input_ref") == head and validation.get("input_mode") == "snapshot",
-          f"validation receipt does not attest the published snapshot: {validation}")
-    status = aq("integration", "status", "e2e-development")
-    check(status.get("effective_mode") == "development", str(status))
-
-    # S16 starts by quiescing the e2e project's worker fleet.  Do not leave
-    # this S15-only READY successor continuously replacing a worker in its
-    # separate development project, or that cross-project session keeps the
-    # global pool nonempty forever.  A delete can race an already-started fake
-    # session, so stop it and retry the public delete until it lands.
-    def _delete_successor() -> bool:
-        for session in pool_sessions("e2e-development"):
-            api("session_kill", {"session_id": session["id"]})
-        deleted = api("delete_task", {"task_id": successor_id})
-        return deleted.get("deleted") == successor_id
-
-    wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
-    return ("unlabelled legacy generation withheld; operator adoption recorded an exact "
-            "generation without CI fabrication; managed pytest snapshot validation and exact "
-            "Git publication through real AQ CLI")
 
 
 # ---------------------------------------------------------------------------
@@ -2533,17 +2383,18 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
             project_id,
         )
 
-    configured = aq(
-        "integration",
-        "develop",
-        project_id,
-        "--command",
-        DEVELOPMENT_VALIDATION_COMMAND,
-        "--interval-seconds",
-        "86400",
-        "--reason",
-        "isolated phased-graph acceptance",
-    )
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id,
+        "hierarchical_integration_mode": "development",
+        "integration_repository": {"id": project_id + "-repo", "url": str(remote),
+                                   "default_branch": "main"},
+        "hierarchical_integration_policy": {"validation": "focused",
+                                            "commands": [DEVELOPMENT_VALIDATION_COMMAND],
+                                            "interval_seconds": 86400},
+        "expected_integration_generation": status["generation"],
+        "reason": "isolated phased-graph acceptance",
+    })
     check(configured.get("outcome") == "configured", f"development configuration: {configured}")
     return project_id, home, source
 
@@ -3083,7 +2934,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("S12", "MCP registry", s12_mcp_registry, ("MCP registry CRUD",)),
     Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
     Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
-    Scenario("S15", "development integration", s15_development_delivery, ("integration",)),
+    Scenario("S15", "integration surface cleanup", s15_integration_surface, ("integration/CLI",)),
     Scenario(
         "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
     ),

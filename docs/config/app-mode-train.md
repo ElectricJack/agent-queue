@@ -1,11 +1,17 @@
 # App-mode integration train: operator runbook
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](../guides/hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 App credential mode is how a production AQ install runs the integration train.
 It is on when `~/.agent-queue/config.yaml` sets `integration.github_app`; on this
 install that is the App `agent-queue-train` (id 5075923, installation
 164874645). Existing-login credentials (`gh` as the daemon user) remain for
 development installs without an App
-([hierarchical-integration-trains.md §2](../guides/hierarchical-integration-trains.md#2-github-credentials-app-mode-or-existing-login)).
+([hierarchical-integration-trains.md §2](../concepts/integration.md#github-access-during-delivery)).
 
 In App mode the train trusts three things:
 

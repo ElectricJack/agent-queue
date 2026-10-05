@@ -74,6 +74,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
   - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
   - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py", "src/commands/contracts/job.py", "src/api/models/job.py", "src/cli/jobs.py"], areas: ["managed-jobs"] }
+  - { paths: ["src/jobs/pytest_output.py"], areas: ["development-delivery"] }
   # ---- repository files outside src/
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
@@ -120,6 +121,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**", "tests/knowledge_fixture_adapter.py", "src/knowledge/delivery.py", "src/prime/hook_envelopes.py"], areas: ["knowledge-evaluation"] }
 
   # ---- test helpers, fixtures and the selection artifacts
+  - { paths: ["tests/integration_primitive_scope.py"], areas: ["integration-trains", "integration-promotion"] }
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }
   - { paths: ["tests/assignment_routing_helpers.py"], areas: ["orchestrator", "task-lifecycle", "task-routing"] }
   - { paths: ["tests/dashboard_server_helpers.py"], areas: ["dashboard-server", "install"] }
@@ -336,19 +338,18 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/delivery_observer.py"], areas: ["development-delivery", "task-lifecycle", "task-archive", "integration-controls"] }
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/repair_progress.py"], areas: ["integration-promotion", "integration-ownership"] }
-  - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
-  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
-  - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
+  - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py"], areas: ["integration-ownership"] }
+  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/review_evidence.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/parent_source.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
-  - { paths: ["src/integration/delivered_parent_adoption.py"], areas: ["integration-promotion", "integration-controls", "development-delivery"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
   - { paths: ["src/integration/development*.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
-  - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
+  - { paths: ["src/integration/delivery_path.py"], areas: ["development-delivery", "integration-trains"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
-  - { paths: ["src/integration/train_onboarding.py", "src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
+  - { paths: ["src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
 
   - { paths: ["src/integrations/**"], areas: ["plugins"] }
   - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }
@@ -405,6 +406,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/services/**"], areas: ["plugins"] }
 
   - { paths: ["src/sessions/**"], areas: ["session-runtime"] }
+  - { paths: ["src/sessions/obsolete.py"], areas: ["task-lifecycle", "integration-ownership"] }
   - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/host_shell.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
   - { paths: ["src/sessions/transcripts/**"], areas: ["transcripts"] }
   - { paths: ["src/sessions/pane_broadcaster.py"], areas: ["panes-streams"] }
@@ -415,6 +417,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/skills/**"], areas: ["doctor", "docs-guards", "worker-pools"] }
 
   - { paths: ["src/task_graph/**"], areas: ["task-graph-creation"] }
+  - { paths: ["src/task_graph/integration_dependencies.py"], areas: ["epic-trains"] }
   - { paths: ["src/task_graph/layout/**"], areas: ["graph-layout"] }
   - { paths: ["src/task_graph/formulas.py"], areas: ["formulas"] }
   - { paths: ["src/test_selection/**"], areas: ["test-selection"] }

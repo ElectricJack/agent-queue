@@ -265,37 +265,6 @@ def test_sync_shipped_capabilities_touches_only_synced_profiles(root, data_dir):
     assert _vault(data_dir, "reviewer").read_text(encoding="utf-8") == stale_reviewer
 
 
-def test_the_real_shipped_supervisor_restores_the_2026_09_24_denials(data_dir):
-    """The shipped file itself, minus the controls that were denied that day."""
-    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
-    denied = [
-        "integration_release_stale_owners",
-        "integration_retry_cleanup",
-        "integration_eject",
-        "review_dispatch",
-        "integration_adopt_legacy_deliveries",
-    ]
-    start = shipped.index("## Capabilities")
-    end = shipped.index("## Rules")
-    block = shipped[start:end]
-    for name in denied:
-        assert f'    "{name}",\n' in block, name
-        block = block.replace(f'    "{name}",\n', "", 1)
-    block = block.replace('"plugin_tools": [\n', '"plugin_tools": [\n    "operator_plugin_tool",\n', 1)
-    stale = shipped[:start] + block + shipped[end:]
-    _write(_vault(data_dir), stale)
-
-    result = sync_profile_capabilities(data_dir, "supervisor")
-
-    assert result.status == STATUS_SYNCED
-    assert sorted(result.added["aq_commands"]) == sorted(denied)
-    parsed = parse_profile(_vault(data_dir).read_text(encoding="utf-8"))
-    assert parsed.errors == []
-    shipped_caps = parse_profile(shipped).capabilities
-    for ns, names in shipped_caps.items():
-        assert set(names) <= set(parsed.capabilities[ns]), ns
-    assert "operator_plugin_tool" in parsed.capabilities["plugin_tools"]
-    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
 
 
 def test_the_real_shipped_supervisor_syncs_the_escalation_resolve_grant(data_dir):
@@ -580,9 +549,9 @@ async def stale_orchestrator(tmp_path):
 
     data_dir = tmp_path / "data"
     shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
-    stale = shipped.replace('    "integration_eject",\n', "", 1)
+    stale = shipped.replace('    "integration_status",\n', "", 1)
     stale = stale.replace('"aq_commands": [\n', '"aq_commands": [\n    "operator_custom_command",\n', 1)
-    assert "integration_eject" not in stale
+    assert "integration_status" not in stale
     _write(_vault(str(data_dir)), stale)
 
     config = AppConfig(
@@ -599,11 +568,11 @@ async def stale_orchestrator(tmp_path):
 async def test_daemon_start_merges_the_supervisor_before_the_db_sync(stale_orchestrator):
     data_dir = stale_orchestrator.config.data_dir
     commands = _aq_commands(_vault(data_dir))
-    assert "integration_eject" in commands
+    assert "integration_status" in commands
     assert "operator_custom_command" in commands
     assert len(_backups(_vault(data_dir))) == 1
 
     profile = await stale_orchestrator.db.get_profile("supervisor")
     assert profile is not None
-    assert "integration_eject" in profile.aq_commands
+    assert "integration_status" in profile.aq_commands
     assert "operator_custom_command" in profile.aq_commands

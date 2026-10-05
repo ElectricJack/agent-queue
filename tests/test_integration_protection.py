@@ -6,11 +6,10 @@ import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.commands.integration_commands import IntegrationCommandsMixin
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -810,80 +809,3 @@ async def test_the_guard_names_policy_checks_with_the_bound_policy():
         )
 
     assert with_policy.value.reading.classification == ATTESTED_ONLY
-
-
-class _Development:
-    """``DevelopmentIntegration.configure`` as far as the guard is concerned."""
-
-    def __init__(self):
-        self.configured = []
-
-    async def configure(self, project_id, policy, *, reason, operator_id, protection_guard):
-        reading = await protection_guard(_repository()) if protection_guard else None
-        self.configured.append(project_id)
-        result = {"outcome": "configured", "project_id": project_id,
-                  "repository_id": "agent-queue2", "policy": policy}
-        if reading is not None:
-            result["evidence"] = {"protection": reading.as_dict()}
-        return result
-
-
-def _develop_handler(client, development, identity=APP):
-    handler = IntegrationCommandsMixin()
-    handler.db = _db()
-    handler.orchestrator = SimpleNamespace(
-        github_repository_binding_resolver=AsyncMock(return_value=BINDING),
-        github_client_factory=lambda _binding: client,
-        github_access=SimpleNamespace(credential_identity=identity),
-    )
-    handler._development_integration = lambda: development
-    return handler
-
-
-async def _develop(handler):
-    with patch(
-        "src.commands.integration_commands.integration_operator",
-        return_value=("human:local-operator", None),
-    ):
-        return await handler._cmd_integration_develop(
-            {"project_id": "agent-queue", "policy": {"validation": "none"}, "reason": "rollback"}
-        )
-
-
-async def test_integration_develop_is_refused_under_attested_only():
-    development = _Development()
-
-    result = await _develop(_develop_handler(FakeProtectionClient(), development))
-
-    assert result["success"] is False and result["outcome"] == "blocked"
-    assert [blocker["code"] for blocker in result["blockers"]] == [
-        "main_protection_blocks_development_publisher"
-    ]
-    assert result["error"].startswith("main_protection_blocks_development_publisher: ")
-    assert development.configured == []
-
-
-async def test_integration_develop_reads_nothing_under_existing_login():
-    client = FakeProtectionClient()
-    development = _Development()
-    handler = _develop_handler(
-        client, development, identity=GitHubCredentialIdentity.existing_login()
-    )
-
-    result = await _develop(handler)
-
-    assert result["outcome"] == "configured" and "evidence" not in result
-    handler.orchestrator.github_repository_binding_resolver.assert_not_called()
-    assert client.requests == []
-
-
-async def test_integration_develop_is_allowed_under_app_bypass():
-    client = FakeProtectionClient()
-    client.rulesets[TRAIN]["current_user_can_bypass"] = "always"
-    development = _Development()
-
-    result = await _develop(_develop_handler(client, development))
-
-    assert result["outcome"] == "configured"
-    assert result["evidence"]["protection"]["classification"] == APP_BYPASS
-    assert development.configured == ["agent-queue"]

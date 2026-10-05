@@ -435,6 +435,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Managed-job process identity: boot id, start ticks and launch nonce."),
     ("src/jobs/output.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "Read-only bounded views over the runner's retained output stream."),
+    ("src/jobs/pytest_output.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Shared pytest result and failure parsing for managed-job output."),
     ("src/jobs/result.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "Managed-job result v1 rendering."),
     ("src/jobs/workspace.py", "scheduler", "docs/specs/implementation/managed-jobs.md",

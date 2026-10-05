@@ -14,8 +14,6 @@ from src.database.queries.hierarchy_queries import container_flag_exists
 from src.database.tables import (
     agent_waits,
     archived_tasks,
-    integration_batch_members,
-    integration_batches,
     integration_branch_owners,
     messages,
     task_metadata,
@@ -220,10 +218,6 @@ async def _fix_stale_attention(ctx: DoctorContext) -> CheckResult:
 
 _LIFECYCLE_CHECK = "tasks.dangling_lifecycle"
 _FINISHED = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
-_ACTIVE_TRAIN_LIFECYCLES = (
-    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
-    "cleanup_pending",
-)
 #: How many rows of each finding the check reports.
 _LIFECYCLE_LIMIT = 50
 
@@ -232,13 +226,13 @@ async def _find_dangling_lifecycle(ctx: DoctorContext) -> dict[str, list[dict]]:
     """COMPLETED tasks still holding state, and finished containers left open.
 
     Read-only.  ``owners``: unreleased branch-owner rows a COMPLETED task
-    owns.  ``batches``: unsettled development batches (and active train
-    batches) that list a COMPLETED task.  ``obsolete_pending``: obsolete
+    owns. Historical integration records are not actionable lifecycle
+    findings. ``obsolete_pending``: obsolete
     closes whose cleanup is still pending.  ``containers``: open containers
     with children, all of them COMPLETED or FAILED.
     """
     found: dict[str, list[dict]] = {
-        "owners": [], "batches": [], "obsolete_pending": [], "containers": [],
+        "owners": [], "obsolete_pending": [], "containers": [],
     }
     async with ctx.db._engine.connect() as conn:
         owners = integration_branch_owners
@@ -256,51 +250,6 @@ async def _find_dangling_lifecycle(ctx: DoctorContext) -> dict[str, list[dict]]:
         ).all():
             found["owners"].append(
                 {"task_id": row[0], "owner_row_id": row[1], "ref": row[2], "handoff_state": row[3]}
-            )
-        from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
-
-        listed: dict[str, list[tuple[str, str]]] = {}
-        for operation in await operation_rows_on(conn, states=OPEN_OPERATION_STATES):
-            manifest = operation["manifest"]
-            for member in manifest if isinstance(manifest, list) else []:
-                if isinstance(member, dict) and member.get("task_id"):
-                    listed.setdefault(str(member["task_id"]), []).append(
-                        (operation["id"], operation["state"])
-                    )
-        if listed:
-            completed = set(
-                (
-                    await conn.execute(
-                        select(tasks.c.id).where(
-                            tasks.c.id.in_(sorted(listed)),
-                            tasks.c.status == TaskStatus.COMPLETED.value,
-                        )
-                    )
-                ).scalars()
-            )
-            for task_id in sorted(completed):
-                for batch_id, state in listed[task_id]:
-                    found["batches"].append(
-                        {"task_id": task_id, "batch_id": batch_id, "state": state,
-                         "kind": "development"}
-                    )
-        for row in (
-            await conn.execute(
-                select(tasks.c.id, integration_batches.c.id, integration_batches.c.lifecycle)
-                .join(integration_batch_members, integration_batch_members.c.task_id == tasks.c.id)
-                .join(
-                    integration_batches,
-                    integration_batches.c.id == integration_batch_members.c.batch_id,
-                )
-                .where(
-                    tasks.c.status == TaskStatus.COMPLETED.value,
-                    integration_batches.c.lifecycle.in_(_ACTIVE_TRAIN_LIFECYCLES),
-                )
-                .order_by(tasks.c.id)
-            )
-        ).all():
-            found["batches"].append(
-                {"task_id": row[0], "batch_id": row[1], "state": row[2], "kind": "train"}
             )
         for task_id, raw in (
             await conn.execute(
@@ -357,18 +306,14 @@ async def _check_dangling_lifecycle(ctx: DoctorContext) -> CheckResult:
     stale containers settle on the next sweep once every child is delivered;
     an owner row is released by `aq integration release-owner` or the
     `integration.finished_branch_owners` fix; superseded work is retired with
-    `aq task close <id> --obsolete --reason`, which also drops it from parked
-    batches.  Membership of a batch still publishing is only informational.
+    `aq task close <id> --obsolete --reason`. Integration Subjects are diagnosed
+    by their current integration checks; historical batches remain audit data.
     """
     if ctx.db is None or getattr(ctx.db, "_engine", None) is None:
         return CheckResult(id=_LIFECYCLE_CHECK, severity=Severity.INFO, detail="database unavailable")
     found = await _find_dangling_lifecycle(ctx)
-    in_flight = [b for b in found["batches"] if b["state"] in ("prepared", "publishing")]
-    stuck_batches = [b for b in found["batches"] if b not in in_flight]
     counts = {
         "owners": len(found["owners"]),
-        "stuck_batches": len(stuck_batches),
-        "publishing_batches": len(in_flight),
         "obsolete_pending": len(found["obsolete_pending"]),
         "containers": len(found["containers"]),
     }
@@ -387,18 +332,11 @@ async def _check_dangling_lifecycle(ctx: DoctorContext) -> CheckResult:
         parts.append(f"{counts['containers']} open container(s) whose children are all done")
     if counts["owners"]:
         parts.append(f"{counts['owners']} branch-owner row(s) held by COMPLETED tasks")
-    if counts["stuck_batches"]:
-        parts.append(f"{counts['stuck_batches']} parked/active batch membership(s) of COMPLETED tasks")
     if counts["obsolete_pending"]:
         parts.append(f"{counts['obsolete_pending']} obsolete close(s) with cleanup pending")
-    if counts["publishing_batches"]:
-        parts.append(f"{counts['publishing_batches']} COMPLETED task(s) in a batch still publishing")
-    stuck = counts["containers"] or counts["owners"] or counts["stuck_batches"] or counts[
-        "obsolete_pending"
-    ]
     return CheckResult(
         id=_LIFECYCLE_CHECK,
-        severity=Severity.WARN if stuck else Severity.INFO,
+        severity=Severity.WARN,
         detail=(
             "; ".join(parts)
             + ". Superseded work: `aq task close <id> --obsolete --reason \"...\"`; owner rows: "

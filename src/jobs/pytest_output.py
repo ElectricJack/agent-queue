@@ -71,7 +71,9 @@ _INFRASTRUCTURE_PATTERNS = (
     r"Cannot connect to the Docker daemon",
     r"Error response from daemon",
 )
-INFRASTRUCTURE_SIGNATURES = re.compile("|".join(_INFRASTRUCTURE_PATTERNS), re.IGNORECASE)
+INFRASTRUCTURE_SIGNATURES = re.compile(
+    "|".join(_INFRASTRUCTURE_PATTERNS), re.IGNORECASE
+)
 
 #: pytest's short test summary: ``FAILED <node id> - <reason>``.  The node id
 #: must be a ``.py`` path, so captured output and log lines that merely start
@@ -135,7 +137,9 @@ class _Failures:
 
     def report(self, summary, no_tests_ran, **kwargs) -> PytestReport:
         return PytestReport(
-            failing=[{"id": key, "reason": self.tests[key]} for key in sorted(self.tests)],
+            failing=[
+                {"id": key, "reason": self.tests[key]} for key in sorted(self.tests)
+            ],
             summary=summary,
             no_tests_ran=no_tests_ran,
             all_failures_infrastructure=self.all_infra,
@@ -253,7 +257,9 @@ def parse_pytest_output(text: str) -> PytestReport:
     """Compatibility entry point using the same bounded streaming parser."""
     parser = PytestOutputParser()
     for offset in range(0, len(text), _CHUNK_BYTES):
-        parser.feed(text[offset : offset + _CHUNK_BYTES].encode("utf-8", errors="replace"))
+        parser.feed(
+            text[offset : offset + _CHUNK_BYTES].encode("utf-8", errors="replace")
+        )
     return parser.finish()
 
 
@@ -293,11 +299,17 @@ def parse_junit(chunks: Iterable[bytes] | None) -> PytestReport:
         if name == "testcase":
             if case is not None or not attrs.get("name"):
                 raise ValueError("malformed_junit")
-            file, cls, test = (attrs.get(key, "") for key in ("file", "classname", "name"))
+            file, cls, test = (
+                attrs.get(key, "") for key in ("file", "classname", "name")
+            )
             if file:
                 # pytest classnames include the module; keep only any test class.
                 module = file.removesuffix(".py").replace("/", ".")
-                cls = cls.removeprefix(module).lstrip(".") if cls.startswith(module) else cls
+                cls = (
+                    cls.removeprefix(module).lstrip(".")
+                    if cls.startswith(module)
+                    else cls
+                )
             case = {
                 "id": _bounded("::".join(part for part in (file, cls, test) if part)),
                 "kind": "passed",
@@ -417,3 +429,23 @@ def classify_report(
     if report.infrastructure_error:
         return INFRASTRUCTURE, "infrastructure_error", []
     return FAILED, None, []
+
+
+def failing_tests(evidence: dict) -> list[dict]:
+    """Every failing test an evidence record names, parsing older records.
+
+    Rows parked before checks carried ``failing_tests`` still hold their
+    output tail, so the ids are recovered from it.
+    """
+    found, seen = [], set()
+    for check in (evidence or {}).get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        tests = check.get("failing_tests")
+        if tests is None:
+            tests = parse_pytest_output(str(check.get("output") or "")).failing
+        for test in tests:
+            if isinstance(test, dict) and test.get("id") and test["id"] not in seen:
+                seen.add(test["id"])
+                found.append({"id": test["id"], "reason": test.get("reason") or ""})
+    return found[:MAX_FAILING_TESTS]

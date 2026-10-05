@@ -365,18 +365,6 @@ class TestNoArgumentlessCommandsByAccident:
             "_ALL_TOOL_DEFINITIONS or a schema to _FALLBACK_INPUT_SCHEMAS."
         )
 
-    def test_contract_discovery_projects_integration_enable_schema(self):
-        from src.mcp_registration import _discover_all_commands
-
-        discovered = _discover_all_commands()
-        schema = discovered["integration_enable"]["input_schema"]
-        properties = schema["properties"]
-        assert properties["expected_generation"]["minimum"] == 0
-        assert properties["interval_seconds"]["anyOf"][0]["exclusiveMinimum"] == 0
-        assert {"project_id", "mode", "expected_generation", "reason"} <= set(
-            schema["required"]
-        )
-        assert "integration_probe" not in discovered
 
     def test_empty_schema_ledger_does_not_rot(self):
         from src.mcp_registration import _discover_all_commands, _needs_arguments

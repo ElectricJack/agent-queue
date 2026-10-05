@@ -201,6 +201,17 @@
             ],
             "description": "LOCAL-only complete typed hierarchical integration policy."
           },
+          "hierarchical_integration_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "observe",
+              "hierarchy",
+              "train",
+              "development"
+            ],
+            "description": "LOCAL-only integration mode for new reconciler subjects."
+          },
           "expected_integration_generation": {
             "type": "integer",
             "minimum": 0,
@@ -5293,36 +5304,6 @@
       }
     },
     {
-      "name": "task_deliver",
-      "description": "Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the project's live supervisor only.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "description": "The BLOCKED task whose recorded branch is delivered."
-          },
-          "reason": {
-            "type": "string",
-            "description": "Audit reason; recorded on the task and in the merge commit."
-          },
-          "dry_run": {
-            "type": "boolean",
-            "description": "Report the delivery plan without pushing or completing.",
-            "default": false
-          },
-          "expected_head": {
-            "type": "string",
-            "description": "The branch head you inspected (head_sha from a dry run, full or 7+ characters); a branch that moved since is refused."
-          }
-        },
-        "required": [
-          "task_id",
-          "reason"
-        ]
-      }
-    },
-    {
       "name": "pr_merge",
       "description": "Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to you and the project's configured publisher is PR-based; where AQ's integration service publishes (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).  The PR's status-check rollup is consulted first according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind its base passed against a base that has since moved, and under ``required`` that refuses too until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).",
       "input_schema": {
@@ -10049,152 +10030,6 @@
         ]
       }
     },
-    "integration_abort": {
-      "name": "integration_abort",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "operation_id",
-          "reason"
-        ],
-        "title": "IntegrationAbortArgs",
-        "type": "object"
-      }
-    },
-    "integration_adopt": {
-      "name": "integration_adopt",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "task_ids": {
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "title": "Task Ids",
-            "type": "array"
-          },
-          "target_ref": {
-            "minLength": 1,
-            "title": "Target Ref",
-            "type": "string"
-          },
-          "head_sha": {
-            "pattern": "^[0-9a-f]{40}$",
-            "title": "Head Sha",
-            "type": "string"
-          },
-          "accept_equivalent": {
-            "default": false,
-            "title": "Accept Equivalent",
-            "type": "boolean"
-          },
-          "settle_delivered_children": {
-            "default": false,
-            "title": "Settle Delivered Children",
-            "type": "boolean"
-          },
-          "dry_run": {
-            "default": false,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "task_ids",
-          "target_ref",
-          "head_sha",
-          "reason"
-        ],
-        "title": "IntegrationAdoptArgs",
-        "type": "object"
-      }
-    },
-    "integration_adopt_legacy_deliveries": {
-      "name": "integration_adopt_legacy_deliveries",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": false,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "accept": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Accept",
-            "type": "array"
-          },
-          "retire": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Retire",
-            "type": "array"
-          },
-          "supersede": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Supersede",
-            "type": "object"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationAdoptLegacyDeliveriesArgs",
-        "type": "object"
-      }
-    },
     "integration_app_verify": {
       "name": "integration_app_verify",
       "description": "Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each.",
@@ -10304,43 +10139,6 @@
         "type": "object"
       }
     },
-    "integration_bind_legacy_repositories": {
-      "name": "integration_bind_legacy_repositories",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationBindLegacyRepositoriesArgs",
-        "type": "object"
-      }
-    },
     "integration_build_candidate": {
       "name": "integration_build_candidate",
       "description": "Build exact root candidate",
@@ -10383,31 +10181,6 @@
           "batch_id"
         ],
         "title": "IntegrationBuildCandidateArgs",
-        "type": "object"
-      }
-    },
-    "integration_cancel_preserving": {
-      "name": "integration_cancel_preserving",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "operation_id",
-          "reason"
-        ],
-        "title": "IntegrationAbortArgs",
         "type": "object"
       }
     },
@@ -10480,56 +10253,6 @@
           "batch_id"
         ],
         "title": "IntegrationCleanupArgs",
-        "type": "object"
-      }
-    },
-    "integration_clear_stale_request": {
-      "name": "integration_clear_stale_request",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_request_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Request Id"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationClearStaleRequestArgs",
         "type": "object"
       }
     },
@@ -10635,43 +10358,12 @@
         "type": "object"
       }
     },
-    "integration_develop": {
-      "name": "integration_develop",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "policy": {
-            "additionalProperties": true,
-            "title": "Policy",
-            "type": "object"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "policy",
-          "reason"
-        ],
-        "title": "IntegrationDevelopArgs",
-        "type": "object"
-      }
-    },
     "integration_development_engine_transfer": {
       "name": "integration_development_engine_transfer",
-      "description": "Preview or transfer every Development subject of one project between the legacy publisher and the reconciler, at the exact previewed versions; the same command rolls it back.",
+      "description": "Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back.",
       "input_schema": {
         "additionalProperties": false,
-        "description": "The audited per-project Development engine cutover and its rollback.\n\n``expected_versions`` is the exact subject-version set the preview named, so\nan apply is a CAS over the whole Development subject set rather than a\npartial move. ``reason`` is required for an apply and ``evidence`` for a\nreconciler take-over; rollback to ``legacy`` needs only a reason, because\nit never adopts a write the old publisher left ambiguous.",
+        "description": "The audited per-project forward Development engine transfer.\n\n``expected_versions`` is the exact subject-version set the preview named, so\nan apply is a CAS over the whole Development subject set rather than a\npartial move. ``reason`` is required for an apply and ``evidence`` for a\nreconciler activation; disabling visits preserves ownership, because\nit never adopts a write the old publisher left ambiguous.",
         "properties": {
           "project_id": {
             "minLength": 1,
@@ -10679,10 +10371,7 @@
             "type": "string"
           },
           "engine": {
-            "enum": [
-              "legacy",
-              "reconciler"
-            ],
+            "const": "reconciler",
             "title": "Engine",
             "type": "string"
           },
@@ -10720,43 +10409,6 @@
         "type": "object"
       }
     },
-    "integration_development_sweep": {
-      "name": "integration_development_sweep",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "retry": {
-            "default": false,
-            "title": "Retry",
-            "type": "boolean"
-          },
-          "recover_child": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recover Child"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationDevelopmentSweepArgs",
-        "type": "object"
-      }
-    },
     "integration_eject": {
       "name": "integration_eject",
       "description": "Authenticated hierarchical integration operational control.",
@@ -10788,74 +10440,6 @@
         "type": "object"
       }
     },
-    "integration_enable": {
-      "name": "integration_enable",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "mode": {
-            "enum": [
-              "disabled",
-              "observe",
-              "hierarchy",
-              "train"
-            ],
-            "title": "Mode",
-            "type": "string"
-          },
-          "expected_generation": {
-            "minimum": 0,
-            "title": "Expected Generation",
-            "type": "integer"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "waiver_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Waiver Id"
-          },
-          "interval_seconds": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Interval Seconds"
-          }
-        },
-        "required": [
-          "project_id",
-          "mode",
-          "expected_generation",
-          "reason"
-        ],
-        "title": "IntegrationEnableArgs",
-        "type": "object"
-      }
-    },
     "integration_engine_transfer": {
       "name": "integration_engine_transfer",
       "description": "Authenticated hierarchical integration operational control.",
@@ -10881,10 +10465,7 @@
             "type": "string"
           },
           "engine": {
-            "enum": [
-              "legacy",
-              "reconciler"
-            ],
+            "const": "reconciler",
             "title": "Engine",
             "type": "string"
           },
@@ -10951,157 +10532,6 @@
           "expected_generation"
         ],
         "title": "IntegrationFileChildrenArgs",
-        "type": "object"
-      }
-    },
-    "integration_flush": {
-      "name": "integration_flush",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationStatusArgs",
-        "type": "object"
-      }
-    },
-    "integration_materialize_root": {
-      "name": "integration_materialize_root",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "description": "The same dry-run/head/reason fence used by root redrive.",
-        "properties": {
-          "task_id": {
-            "minLength": 1,
-            "title": "Task Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_head_sha": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Head Sha"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "task_id"
-        ],
-        "title": "IntegrationMaterializeRootArgs",
-        "type": "object"
-      }
-    },
-    "integration_migrate_provenance": {
-      "name": "integration_migrate_provenance",
-      "description": "Inventory exact legacy completions; optionally retain verified Git provenance.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "apply": {
-            "default": false,
-            "title": "Apply",
-            "type": "boolean"
-          },
-          "limit": {
-            "default": 500,
-            "maximum": 1000,
-            "minimum": 1,
-            "title": "Limit",
-            "type": "integer"
-          },
-          "offset": {
-            "default": 0,
-            "minimum": 0,
-            "title": "Offset",
-            "type": "integer"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Task Id"
-          },
-          "source": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{40}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Source"
-          },
-          "no_artifact": {
-            "default": false,
-            "title": "No Artifact",
-            "type": "boolean"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "IntegrationMigrateProvenanceArgs",
         "type": "object"
       }
     },
@@ -11415,59 +10845,6 @@
         "type": "object"
       }
     },
-    "integration_rebind_reused_identity": {
-      "name": "integration_rebind_reused_identity",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "task_id": {
-            "minLength": 1,
-            "title": "Task Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_origin_ids": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Expected Origin Ids",
-            "type": "array"
-          },
-          "discard_tips": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Discard Tips",
-            "type": "array"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "task_id"
-        ],
-        "title": "IntegrationRebindReusedIdentityArgs",
-        "type": "object"
-      }
-    },
     "integration_reconcile_promotion": {
       "name": "integration_reconcile_promotion",
       "description": "Compare a durable prepared intent with the remote and finalize its receipt.",
@@ -11539,37 +10916,6 @@
           "intent_id"
         ],
         "title": "IntegrationReconcilePromotionArgs",
-        "type": "object"
-      }
-    },
-    "integration_reconcile_unmaterialized": {
-      "name": "integration_reconcile_unmaterialized",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "expected_generation": {
-            "minimum": 0,
-            "title": "Expected Generation",
-            "type": "integer"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "expected_generation",
-          "reason"
-        ],
-        "title": "IntegrationReconcileUnmaterializedArgs",
         "type": "object"
       }
     },
@@ -12054,30 +11400,6 @@
           "batch_id"
         ],
         "title": "IntegrationReleaseArgs",
-        "type": "object"
-      }
-    },
-    "integration_release_delegates": {
-      "name": "integration_release_delegates",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "archive_obsolete": {
-            "default": false,
-            "title": "Archive Obsolete",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "operation_id"
-        ],
-        "title": "IntegrationReleaseDelegatesArgs",
         "type": "object"
       }
     },
@@ -12632,44 +11954,6 @@
         "type": "object"
       }
     },
-    "integration_resume": {
-      "name": "integration_resume",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "operation_id"
-        ],
-        "title": "IntegrationOperationControlArgs",
-        "type": "object"
-      }
-    },
-    "integration_retry_cleanup": {
-      "name": "integration_retry_cleanup",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "batch_id"
-        ],
-        "title": "IntegrationRetryCleanupArgs",
-        "type": "object"
-      }
-    },
     "integration_schedule_due": {
       "name": "integration_schedule_due",
       "description": "Coalesce a periodic or manual trigger into one durable sweep request.",
@@ -12737,155 +12021,6 @@
           "request_id"
         ],
         "title": "IntegrationSealArgs",
-        "type": "object"
-      }
-    },
-    "integration_settle_delivered_batch": {
-      "name": "integration_settle_delivered_batch",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_candidate_sha": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{40}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Candidate Sha"
-          },
-          "expected_target_sha": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{40}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Target Sha"
-          },
-          "expected_snapshot_digest": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Snapshot Digest"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "batch_id"
-        ],
-        "title": "IntegrationSettleDeliveredBatchArgs",
-        "type": "object"
-      }
-    },
-    "integration_settle_parked": {
-      "name": "integration_settle_parked",
-      "description": "Settle a parked development delivery as not owed, or dismiss it.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "dismiss": {
-            "default": false,
-            "title": "Dismiss",
-            "type": "boolean"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "operation_id",
-          "reason"
-        ],
-        "title": "IntegrationSettleParkedArgs",
-        "type": "object"
-      }
-    },
-    "integration_shadow_report": {
-      "name": "integration_shadow_report",
-      "description": "Compare the shadow loop's journalled decisions against the legacy decisions of one explicit window and name every gate still open.",
-      "input_schema": {
-        "additionalProperties": false,
-        "description": "One explicit evidence window for the shadow-versus-legacy comparison.\n\nThe window is supplied, never inferred: ``since``/``until`` are epoch\nseconds and a window shorter than the required observation period is\nreported incomplete rather than rounded up. ``acknowledge_unknown`` names\nexact journal sequences an operator has reviewed; unknown is never a\nsuccessful action, so an unacknowledged one blocks.",
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "since": {
-            "title": "Since",
-            "type": "number"
-          },
-          "until": {
-            "title": "Until",
-            "type": "number"
-          },
-          "acknowledge_unknown": {
-            "default": [],
-            "items": {
-              "type": "integer"
-            },
-            "title": "Acknowledge Unknown",
-            "type": "array"
-          }
-        },
-        "required": [
-          "project_id",
-          "since",
-          "until"
-        ],
-        "title": "IntegrationShadowReportArgs",
         "type": "object"
       }
     },
@@ -13008,37 +12143,6 @@
           "project_id"
         ],
         "title": "IntegrationTrustManifestArgs",
-        "type": "object"
-      }
-    },
-    "integration_waive_history": {
-      "name": "integration_waive_history",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "blocker_digest": {
-            "pattern": "^sha256:[0-9a-f]{64}$",
-            "title": "Blocker Digest",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "reason",
-          "blocker_digest"
-        ],
-        "title": "IntegrationWaiveHistoryArgs",
         "type": "object"
       }
     },
@@ -15386,7 +14490,6 @@
     "task_route": "task",
     "task_route_override": "task",
     "pr_merge": "git",
-    "task_deliver": "task",
     "ci_baseline_status": "git",
     "ci_repair_adopt": "git",
     "provider_status": "provider",
