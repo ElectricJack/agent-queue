@@ -579,6 +579,7 @@
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
         "tests/test_integration_observe.py",
+        "tests/test_integration_operator_decisions.py",
         "tests/test_integration_outbox.py",
         "tests/test_integration_parent_reconciler.py",
         "tests/test_integration_parent_subjects.py",
@@ -1412,7 +1413,7 @@
       ]
     }
   },
-  "digest": "sha256:1162a3a0ced8d459814ee6d10063833be85a86cddc35152d10c414de8c41afef",
+  "digest": "sha256:8b5f9d5ee45a7df36399dc2f73db5f2c8b50cb5a4abd915c1ca9e3659bb1e122",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3062,13 +3063,22 @@
         "src.database.tables",
         "src.doctor.pool_checks",
         "src.event_bus",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.admission",
+        "src.integration.batches",
         "src.integration.development",
+        "src.integration.git_truth",
+        "src.integration.gitops",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.repair",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -5970,6 +5980,7 @@
         "src.explain",
         "src.intelligence_classes",
         "src.models",
+        "src.operator_decisions",
         "src.orchestrator",
         "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
@@ -7744,6 +7755,28 @@
       ],
       "summary": "Deterministic facts, unknowns and read-only ports for integration subjects."
     },
+    "tests/test_integration_operator_decisions.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.envelope",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.integration.status",
+        "src.models",
+        "src.operator_decisions",
+        "src.prime.sections",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Durable human decisions are shared, auditable and binding across supervisors."
+    },
     "tests/test_integration_outbox.py": {
       "areas": [
         "integration-trains"
@@ -8541,8 +8574,10 @@
         "src.cli.auto_commands",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.database.tables",
         "src.integration.batches",
         "src.integration.checks",
+        "src.integration.git_truth",
         "src.integration.repair",
         "src.integration.train",
         "src.integration.train_sources",
@@ -8562,12 +8597,15 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.batches",
         "src.integration.ci",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
@@ -8578,8 +8616,10 @@
         "src.integration.repair",
         "src.integration.status",
         "src.integration.train",
+        "src.integration.train_controls",
         "src.integration.train_sources",
-        "src.models"
+        "src.models",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -12970,6 +13010,7 @@
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.ownership",
+        "src.integration.repair",
         "src.orchestrator.workspace"
       ],
       "markers": [
@@ -14757,6 +14798,7 @@
         "src.commands.contracts.models",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.batches",
         "src.models",
         "src.profiles.capabilities"
       ],

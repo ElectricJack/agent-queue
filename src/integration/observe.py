@@ -211,6 +211,15 @@ class DatabaseObservationReader:
                 if not project or not repository:
                     raise ValueError("subject project or repository is missing")
                 rows: dict[str, tuple[Row, ...]] = {}
+                from src.operator_decisions import history_on, related_on
+
+                refs = set()
+                for kind, identity in (("task", subject.task_id), ("batch", subject.batch_id)):
+                    if identity:
+                        refs.update(await related_on(conn, kind, identity))
+                rows["operator_decisions"] = tuple(
+                    await history_on(conn, subject.project_id, refs)
+                )
 
                 async def keep(table, *conditions):
                     rows[table.name] = await read(table, *conditions)
@@ -391,7 +400,8 @@ def _operation(snapshot: ObservationRows) -> Row | None:
 
 
 def _task_holds(snapshot: ObservationRows, task_ids: set[str]) -> list[HoldFacts]:
-    holds = []
+    holds = [HoldFacts(kind="operator_hold", reason=f"{row['id']}: {row['decision']}")
+             for row in snapshot.all("operator_decisions") if row["active"]]
     if snapshot.project.get("status") != "ACTIVE":
         holds.append(HoldFacts(kind="project_inactive", reason=str(snapshot.project.get("status"))))
     for row in snapshot.all("task_metadata"):

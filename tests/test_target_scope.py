@@ -56,6 +56,7 @@ from src.database.tables import (
     integration_review_evidence,
     integration_subjects,
     playbook_artifacts,
+    task_branch_origins,
     workspaces,
 )
 from src.models import (
@@ -405,6 +406,11 @@ async def db(reuse_database):
                     updated_at=1.0,
                 )
             )
+        for task_id, repository_id in (("own", "repo-p"), ("foreign", "repo-other")):
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{task_id}", task_id=task_id, repository_id=repository_id,
+                base_sha="a" * 40, creation_generation=0, created_at=1.0,
+            ))
         for intent_id, project_id, repository_id in (
             ("intent-p", "p", "repo-p"),
             ("intent-other", "other", "repo-other"),
@@ -488,6 +494,9 @@ async def test_reserve_owner_on_a_foreign_task_is_refused_at_the_scope_layer(db)
 #: The four families the task names, each on this project's row and on another
 #: project's, so "resolves the target" is proven per resolver rather than once.
 _FOREIGN_TARGETS = [
+    ("integration_abort_batch", {"batch_id": "batch-other"}),
+    ("integration_retire_origin", {"task_id": "foreign"}),
+    ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-foreign"}),
     ("integration_reserve_owner", {"task_id": "foreign"}),
     ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
@@ -499,6 +508,8 @@ _FOREIGN_TARGETS = [
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
 ]
 _OWN_TARGETS = [
+    ("integration_abort_batch", {"batch_id": "batch-p"}),
+    ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-own"}),
     ("integration_reserve_owner", {"task_id": "own"}),
     ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
@@ -521,6 +532,44 @@ async def test_a_foreign_target_is_refused_whichever_key_names_it(db, command, a
 @pytest.mark.parametrize(("command", "args"), _OWN_TARGETS)
 async def test_the_same_call_on_this_projects_target_is_admitted(db, command, args):
     assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
+
+
+@pytest.mark.parametrize("command,args,outcome,method", [
+    ("integration_abort_batch", {"batch_id": "batch-p"}, "preview", "abort_batch"),
+    ("integration_abort_batch", {"batch_id": "batch-p", "dry_run": False,
+                                 "reason": "duplicate"}, "aborted", "abort_batch"),
+    ("integration_retire_origin", {"task_id": "own"}, "preview", "retire_origin"),
+    ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-own",
+                                   "dry_run": False, "reason": "delivered"},
+     "retired", "retire_origin"),
+])
+async def test_supervisor_train_controls_dispatch_through_the_contract(
+    db, command_handler_factory, monkeypatch, command, args, outcome, method,
+):
+    handler = await command_handler_factory()
+    handler.orchestrator.db = db
+    handler.config.security.capability_enforcement = "off"
+    control = AsyncMock(return_value={"outcome": outcome, "project_id": "p"})
+    monkeypatch.setattr(f"src.integration.train_controls.TrainControls.{method}", control)
+    if method == "abort_batch":
+        from src.integration.batches import Batch
+
+        monkeypatch.setattr("src.integration.batches.BatchStore.get", AsyncMock(return_value=
+                            Batch("batch-p", "p", "repo-p", "refs/heads/main")))
+    assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
+    with principal_context(_principal("p")):
+        result = await handler.execute(command, {**args, "_scope": _elevated_scope_envelope("p")})
+    assert result["success"], result
+    control.assert_awaited_once()
+    assert control.call_args.kwargs["operator_id"] == f"supervisor session:{SUPERVISOR}"
+
+
+@pytest.mark.parametrize("command,args", [
+    ("integration_abort_batch", {"batch_id": "batch-p"}),
+    ("integration_retire_origin", {"task_id": "own"}),
+])
+async def test_plain_session_cannot_reach_train_controls(db, command, args):
+    assert check_command_scope(command, dict(args), _scope("p", elevated=False)) is not None
 
 
 async def test_held_gate_release_still_requires_a_human_after_project_scope_passes(
@@ -686,7 +735,7 @@ def test_the_refused_surface_is_exactly_the_one_that_is_declared():
             for field, spec in model.model_fields.items()
             if spec.is_required() and field not in VALUE_ARGUMENTS
         }
-        missing = unresolvable_targets(args)
+        missing = unresolvable_targets(args, command=name)
         if missing:
             unresolvable[name] = missing
     assert unresolvable == _UNRESOLVED_TARGETS
@@ -697,6 +746,38 @@ def test_the_resolver_table_names_only_row_references():
     for name in TARGET_RESOLVERS:
         assert name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES, name
     assert not set(TARGET_RESOLVERS) & VALUE_ARGUMENTS
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "own", "foreign"),
+    [("task", "own", "foreign"), ("batch", "batch-p", "batch-other"),
+     ("operation", "op-p", "op-other")],
+)
+async def test_decision_scope_resolves_the_tagged_object(db, command, kind, own, foreign):
+    args = {"object_kind": kind, "object_id": own}
+    assert await check_request_scope(command, args, _scope("p"), db=db) is None
+    assert "project_id" not in args
+    args["object_id"] = foreign
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error == f"out of scope: {command} targets another project (object_id belongs to other)"
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "identity"),
+    [("task", "gone"), ("batch", "gone"), ("operation", "gone"),
+     ("task", "batch-p"), ("invalid", "own"), (None, "own"), (["task"], "own")],
+)
+async def test_decision_scope_refuses_missing_objects_and_invalid_tags(db, command, kind, identity):
+    args = {"object_kind": kind, "object_id": identity}
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error is not None and error.startswith("out of scope:"), error
+
+
+def test_an_unrelated_command_cannot_use_a_decision_discriminator():
+    args = {"object_kind": "task", "object_id": "own"}
+    assert unresolvable_targets(args, command="unrelated") == ["object_id"]
 
 
 # ---------------------------------------------------------------------------

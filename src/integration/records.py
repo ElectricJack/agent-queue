@@ -231,6 +231,16 @@ async def human_hold_on(conn, subject: Subject, *, task_id: str | None = None) -
     ).scalar_one_or_none()
     if status != "ACTIVE":
         return "project_inactive" if status else "project_missing"
+    from src.operator_decisions import history_on, related_on
+
+    refs = set()
+    for kind, identity in (("task", subject.task_id), ("task", task_id),
+                           ("batch", subject.batch_id)):
+        if identity:
+            refs.update(await related_on(conn, kind, identity))
+    holds = [row for row in await history_on(conn, subject.project_id, refs) if row["active"]]
+    if holds:
+        return "operator_decision_hold:" + holds[0]["id"]
     ids = sorted({value for value in (subject.task_id, task_id) if value})
     if ids:
         # manual_pause takes the task lock before writing its snapshot.

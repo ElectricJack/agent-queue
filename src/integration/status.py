@@ -281,6 +281,8 @@ class IntegrationStatusService:
             .order_by(integration_subjects.c.created_at, integration_subjects.c.id)
             .limit(100),
         )
+        from src.operator_decisions import history_on, related_on
+
         subjects = []
         for row in rows:
             journal = await self._one(
@@ -292,7 +294,13 @@ class IntegrationStatusService:
                 .order_by(integration_subject_journal.c.seq.desc())
                 .limit(1),
             )
-            subjects.append({**row, "last_record": journal})
+            refs = set()
+            for kind, identity in (("task", row.get("task_id")),
+                                   ("batch", row.get("batch_id"))):
+                if identity:
+                    refs.update(await related_on(conn, kind, identity))
+            subjects.append({**row, "last_record": journal,
+                             "operator_decisions": await history_on(conn, project_id, refs)})
         return {
             "projection_kind": "subjects",
             "project_id": project_id,
@@ -301,6 +309,7 @@ class IntegrationStatusService:
             "generation": project["hierarchical_integration_generation"],
             "repository_id": project["integration_repository_id"],
             "subjects": subjects,
+            "operator_decisions": await history_on(conn, project_id),
         }
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
@@ -616,6 +625,9 @@ class IntegrationStatusService:
             )
             visits = self._train_visits(project_id)
             evidence = await self._train_evidence_on(conn, visits)
+            from src.operator_decisions import history_on
+
+            decisions = await history_on(conn, project_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
@@ -630,6 +642,7 @@ class IntegrationStatusService:
             # compare-and-set token `edit_project` requires, so it stays.
             "generation": project["hierarchical_integration_generation"],
             "repository_id": project["integration_repository_id"],
+            "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
             "blockers": _sorted_blockers(blockers),
@@ -675,7 +688,7 @@ class IntegrationStatusService:
         table = integration_batches
         rows = await self._all(
             conn,
-            select(table.c.id, table.c.repository_id, table.c.target_ref, table.c.intent,
+            select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
                    table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
@@ -705,7 +718,12 @@ class IntegrationStatusService:
         )
         from src.integration.batches import candidate_ref
 
+        from src.operator_decisions import history_on, related_on
+
         for row in rows:
+            row["operator_decisions"] = await history_on(
+                conn, row["project_id"], await related_on(conn, "batch", row["id"])
+            )
             row["candidate_ref"] = candidate_ref(row["id"])
             row["members"] = [
                 {"task_id": m["task_id"], "source_sha": m["source_sha"]}
@@ -715,6 +733,11 @@ class IntegrationStatusService:
                 {"task_id": r["id"], "status": r["status"]}
                 for r in repairs if r["created_by_id"] == row["id"]
             ]
+            visit = self._train_visits(row["project_id"]).get(
+                (row["repository_id"], row["target_ref"])
+            )
+            if visit and visit.get("batch_id") == row["id"]:
+                row["detail"] = visit.get("detail")
         return rows
 
     def _train_visits(self, project_id: str) -> dict[tuple[str, str], dict[str, Any]]:
@@ -761,18 +784,31 @@ class IntegrationStatusService:
         visits: dict[tuple[str, str], dict[str, Any]], *, task_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Unknown completions can block a target before any batch exists."""
-        return [
+        blockers = [
             blocker
             for visit in visits.values()
             for blocker in (visit.get("detail") or {}).get("blockers", [])
             if task_id is None or blocker.get("task_id") == task_id
         ]
+        if task_id is None:
+            for visit in visits.values():
+                detail = visit.get("detail") or {}
+                if detail.get("reason") == "visit_timeout":
+                    blockers.append(_blocker(
+                        "visit_timeout", f"target visit exceeded {detail['timeout_seconds']}s "
+                        f"during {detail['stage']}", visit["target_ref"], evidence=detail,
+                    ))
+        return blockers
 
     @staticmethod
     def _train_batch_blockers(
         batch: dict[str, Any], visits: dict[tuple[str, str], dict[str, Any]]
     ) -> list[dict[str, Any]]:
         ref = batch["id"]
+        holds = [row for row in batch.get("operator_decisions", []) if row["active"]]
+        if holds:
+            return [_blocker("operator_decision_hold", row["decision"], row["id"])
+                    for row in holds]
         if batch["intent"] == "aborted":
             return [_blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
         if batch["intent"] == "paused":
@@ -786,6 +822,13 @@ class IntegrationStatusService:
         if visit is None or visit.get("batch_id") != ref:
             return blockers + [_blocker(
                 "awaiting_visit", "the train has not visited this batch since start", ref)]
+        if (visit.get("detail") or {}).get("outcome") == "conflict":
+            blockers.append(_blocker("merge_conflict", "the batch does not merge onto its target",
+                                     ref, evidence=visit["detail"]))
+        if (visit.get("repair") or {}).get("outcome") == "unconfirmed":
+            blockers.append(_blocker("repair_target_unconfirmed",
+                                     "the repair starting head is not confirmed on its remote ref",
+                                     ref, evidence=visit["repair"]))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
             blockers.append(_blocker(

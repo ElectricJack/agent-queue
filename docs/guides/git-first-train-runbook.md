@@ -39,7 +39,16 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   result ends the repair with no attempt counted. A red or conflicting candidate then
   gets one ordinary repair task for the batch and target
   (`OrdinaryRepairService.allocate`); its counter rises when a task is filed, never
-  per visit.
+  per visit. A merge conflict first publishes the partial merge head to the
+  batch ref through the managed lease. Allocation confirms that exact remote
+  start before filing. Publication failure leaves the batch waiting without
+  creating a repair or consuming an attempt.
+  A merge conflict files its repair with a plain-English brief naming the
+  conflicting member, its source OID, the conflicting files, the members already
+  merged into the starting head and the members still to merge in order; generated
+  files are regenerated, never hand-merged. A repaired head is published to the target
+  only once it proves every frozen member's source, so a member is never dropped by a
+  partial repair.
 - **No replay.** The scheduler, outbox dispatch and green continuations stop.
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.
@@ -103,20 +112,53 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `checks_pending` | Required checks not yet green on the exact candidate | Wait; check the producer if it stays |
 | `checks_red` | Red on the exact candidate | A repair task is filed; follow it |
 | `repair_open` | A repair task owns the candidate | Follow the named task |
-| `merge_conflict` | The batch does not merge onto its target | A repair task is filed |
+| `merge_conflict` | The batch does not merge onto its target | Follow the repair task, or inspect publication evidence if filing was withheld |
+| `repair_target_unconfirmed` | The repair starting OID could not be confirmed on the batch ref | Inspect the visit's publication evidence; the train retries |
 | `target_moved` | The target moved | None; the next visit rebuilds |
 | `source_moved` | A member's source moved after freezing | None; the next visit refreezes |
 | `held` | Explicit hold or required review missing | Release the hold or review |
 | `unobserved` | Git or checks could not be read | Fix the fetch or producer; evidence names the cause |
 | `batch_paused` / `batch_aborted` | Operator intent | See below |
+| `batch_inputs_delivered_to_project` | Frozen epic inputs already landed at the project root | Abort the duplicate batch before retiring origins |
+| `visit_timeout` | Visit exceeded its time budget | Inspect `evidence.stage`, target, batch and candidate; fix the named operation |
+
+Conflict evidence in each target and batch's `detail` names the member,
+partial head, reason and files; the daemon log records the same build result.
+A repair claim with `needs_attention: repair_target_unpublished` found its
+remote target absent and reports an integration train defect. It does not
+consume slot-reset retries or create the ref from the worker slot.
 
 ## Controls
 
 Batch intent (`open`, `paused`, `aborted`) is the only control the train reads. An
 aborted batch is never rebuilt, and its exact (task, source) inputs are withheld
-from that target until the task's source changes. The `pause`, `resume` and `abort`
-commands that set it arrive with the integration CLI consolidation node; until then
-the control is the rollback below. Do not edit `integration_batches` by hand.
+from that target until the task's source changes. A local operator or live named
+supervisor can preview and apply an abort:
+
+```bash
+aq integration abort-batch <batch-id>
+aq integration abort-batch <batch-id> --apply --reason "inputs already delivered"
+```
+
+The control refuses a promoted candidate and rechecks the target and candidate
+under the batch's publication lock. It records the principal and reason.
+
+The train excludes current completions whose exact retained source is an ancestor
+of the project's default/development ref. Scoped legacy delivery attestations also
+exclude the completion they cover; a reopened completion requires fresh evidence.
+A provenance marker locates the source and alone does not attest delivery.
+
+To retire a delivered task's live branch origin, preview it and use the returned
+`origin_id` in the apply request. Abort any open batch containing that task first:
+
+```bash
+aq integration retire-origin <task-id>
+aq integration retire-origin <task-id> --origin-id <origin-id> --apply --reason "delivered"
+```
+
+Retirement rechecks the completion, origin and delivery proof, removes the origin
+from pending train inputs, and records the principal and reason. Do not edit
+`integration_batches` or branch origins by hand.
 
 ## Roll back
 

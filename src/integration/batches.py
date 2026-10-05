@@ -9,6 +9,7 @@ There are no persisted candidate, promotion or delivery projections here.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -23,6 +24,8 @@ from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.gitops import ZERO, GitOperations, RetainedRepository, branch
 from src.integration.provenance import CompletionIdentity, GitProvenance
+
+logger = logging.getLogger(__name__)
 
 
 def candidate_ref(batch_id: str) -> str:
@@ -186,7 +189,8 @@ class BatchStore:
             ).with_for_update())).scalar_one_or_none()
             yield row == "open"
 
-    async def set_intent(self, batch_id: str, intent: str):
+    async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
+                         authorize=None, operator_id=None, reason=""):
         """Abort before intentional candidate deletion; an abort is irreversible."""
         if intent not in {"open", "paused", "aborted"}:
             raise ValueError("invalid batch intent")
@@ -197,9 +201,23 @@ class BatchStore:
             ).with_for_update())).mappings().one()
             if row["intent"] == "aborted" and intent != "aborted":
                 raise ValueError("aborted batch cannot reopen")
+            if intent == "aborted" and row["lifecycle"] == "promoted":
+                raise ValueError("promoted batch cannot be aborted")
+            if authorize is not None and not await authorize():
+                raise ValueError("batch target or candidate changed; preview again")
+            if dry_run:
+                return
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(intent=intent, updated_at=self.clock()))
+            if operator_id is not None:
+                import json
+
+                await self.db.log_event(
+                    "integration.batch_intent", project_id=row["project_id"],
+                    payload=json.dumps({"batch_id": batch_id, "intent": intent,
+                                        "operator_id": operator_id, "reason": reason}), conn=conn,
+                )
 
 
 class ManagedPublish(Protocol):
@@ -239,6 +257,10 @@ class BatchService:
         self.publish, self.eligible, self.gate = publish, eligible, gate
 
     async def _authorized(self, batch, members):
+        from src.operator_decisions import OperatorDecisions
+
+        if await OperatorDecisions(self.store.db).holds("batch", batch.id):
+            return False
         current = await self.store.get(batch.id)
         return bool(current and current.intent == "open" and
                     (current.project_id, current.repository_id, current.target_ref) ==
@@ -300,15 +322,27 @@ class BatchService:
                     return "held"
                 await self.publish(repo, ref, expected_old_oid=expected, new_oid=sha,
                                    authorize=authorize)
-        except (GitError, RuntimeError, ValueError):
-            pass
+        except (GitError, RuntimeError, ValueError) as exc:
+            logger.warning("integration batch %s publication of %s at %s failed: %s",
+                           batch.id, ref, sha, exc)
         actual = await self.gitops.remote(repo, ref)
         if actual == sha:
             return "published"
         return "moved" if (actual or ZERO) != expected else "unknown"
 
+    async def repair_authorized(self, batch, members, head_sha):
+        """Recheck the exact published repair start under the allocator's ref lock."""
+        repo = await self.gitops.repository(batch)
+        return (await self._authorized(batch, members) and
+                await self.gitops.remote(repo, candidate_ref(batch.id)) == head_sha)
+
     async def visit(self, batch: Batch, members: Iterable[BatchMember], snapshot: GitTruthSnapshot):
         """Derive progress from this visit's fetched refs; never from legacy lifecycle."""
+        from src.operator_decisions import OperatorDecisions
+
+        holds = await OperatorDecisions(self.store.db).holds("batch", batch.id)
+        if holds:
+            return BatchObservation("held", detail={"operator_decisions": holds})
         members = tuple(members)
         current = await self.store.get(batch.id)
         if (current is None or
@@ -331,8 +365,8 @@ class BatchService:
         try:
             # Historical inclusion settles even a held/aborted intent. It does
             # not authorize another write, and stale progress never blocks it.
-            if candidate and await self.gitops.is_ancestor(repo, candidate, target):
-                return BatchObservation("delivered", candidate, target)
+            # A published repair start can be the target itself or only a
+            # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
             if members and all(proof is True for proof in proofs):
@@ -359,6 +393,23 @@ class BatchService:
                 result = await self.gitops.merge_sources(repo, target, members,
                                                         created_at=batch.created_at)
                 if result["outcome"] != "merged":
+                    logger.warning("integration batch %s build %s on %s: %s",
+                                   batch.id, result["outcome"], batch.target_ref, result)
+                    if result["outcome"] == "conflict" and candidate is None:
+                        # A conflict may follow successful member merges. Retain
+                        # their exact head as the repair's start, through the same
+                        # expected-old managed publisher as a complete candidate.
+                        head = result["head"]
+                        transferred = await self._transfer(
+                            batch, repo, ref, head, ZERO,
+                            lambda: self._authorized(batch, members),
+                        )
+                        if transferred != "published":
+                            return BatchObservation(transferred, None, target, detail={
+                                **result, "repair_publication": transferred,
+                                "repair_start_sha": head,
+                            })
+                        candidate = head
                     return BatchObservation(result["outcome"], candidate, target, detail=result)
                 head = result["head"]
                 transferred = await self._transfer(batch, repo, ref, head, candidate or ZERO,
@@ -384,4 +435,6 @@ class BatchService:
                 return BatchObservation("delivered", candidate, candidate, tree)
             return BatchObservation(state, candidate, target, tree)
         except (GitError, OSError, ValueError) as exc:
+            logger.warning("integration batch %s observation failed on %s: %s",
+                           batch.id, batch.target_ref, exc)
             return BatchObservation("unknown", candidate, target, detail={"reason": str(exc)})

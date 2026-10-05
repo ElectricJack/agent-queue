@@ -519,7 +519,9 @@ class GitOperations:
                                     if "\t" in line and
                                     line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))})
                     return {"outcome": "conflict", "head": current, "members": results,
-                            "member": member.task_id, "files": files, "reason": exc.reason}
+                            "member": member.task_id, "files": files,
+                            "reason": exc.reason or "merge_conflict",
+                            "error": str(exc)[:4000]}
                 # Attribute-driven regeneration can change the raw merge tree.
                 regenerated = bool(repo.regenerate and regenerate_generated)
                 stamp = f"@{int(created_at)} +0000"

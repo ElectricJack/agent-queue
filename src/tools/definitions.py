@@ -9,6 +9,8 @@ from __future__ import annotations
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "decision_record": "decision",
+    "decision_list": "decision",
     "object_loop_start": "task",
     "object_loop_inputs": "task",
     "object_loop_reconcile": "task",
@@ -8583,3 +8585,18 @@ for _definition in _ALL_TOOL_DEFINITIONS:
         _definition["input_schema"] = _RecordSearchArgs.model_json_schema()
     elif _definition["name"] == "record_show":
         _definition["input_schema"] = _RecordShowArgs.model_json_schema()
+
+
+from src.commands.contracts.decisions import (  # noqa: E402
+    DecisionListArgs as _DecisionListArgs,
+    DecisionRecordArgs as _DecisionRecordArgs,
+)
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "decision_record",
+     "description": "Record an operator instruction durably before acting or messaging supervisors.",
+     "input_schema": _DecisionRecordArgs.model_json_schema()},
+    {"name": "decision_list",
+     "description": "Read shared operator decisions and active holds for a task, batch or operation.",
+     "input_schema": _DecisionListArgs.model_json_schema()},
+])
