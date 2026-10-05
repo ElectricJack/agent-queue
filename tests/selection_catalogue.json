@@ -7465,6 +7465,22 @@
       "markers": [],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
+    "tests/test_integration_epics.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.epics",
+        "src.integration.reviews",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
+    },
     "tests/test_integration_finished_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8054,17 +8070,21 @@
         "src.commands.principal",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.git_truth",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.review_evidence",
+        "src.integration.reviews",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Trusted real-review verdict production for integration sources."
     },
     "tests/test_integration_root_adapters.py": {
