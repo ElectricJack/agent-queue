@@ -159,6 +159,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "decision": CategoryMeta(
+        name="decision",
+        description="Durable operator decisions shared by all supervisors",
+    ),
     "supervisor_inbox": CategoryMeta(
         name="supervisor_inbox",
         description="Durable Discord conversations with the global supervisor",

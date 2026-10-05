@@ -340,6 +340,7 @@ ownership:                      # path globs -> areas whose modules join M
 
   - { paths: ["src/integration/delivery_truth.py", "src/integration/admission.py"], areas: ["development-delivery", "work-graph"] }
   - { paths: ["src/integration/delivery_observer.py"], areas: ["development-delivery", "task-lifecycle", "task-archive", "integration-controls"] }
+  - { paths: ["src/operator_decisions.py"], areas: ["integration-trains"] }
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/repair_progress.py"], areas: ["integration-promotion", "integration-ownership"] }
   - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py"], areas: ["integration-ownership"] }

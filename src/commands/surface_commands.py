@@ -72,6 +72,9 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        from src.operator_decisions import OperatorDecisions
+
+        info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
         deps = await self._cmd_task_deps({"task_id": task_id})

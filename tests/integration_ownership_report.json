@@ -4475,9 +4475,6 @@
         290
       ]
     },
-    "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
-      "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
-    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._release_claim_on": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9117,6 +9114,66 @@
     },
     "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
       "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
+      "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
+    },
+    "src/api/target_scope.py::import from src.database.tables import escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/api/target_scope.py::TARGET_RESOLVERS['origin_id']": {
+      "reason": "Project ownership resolver and table import for supervised origin retirement."
+    },
+    "src/cli/envelope.py::_project_item": {
+      "reason": "Projects durable operator decisions in compact integration status and task views."
+    },
+    "src/commands/contracts/decisions.py::register_decision_contracts": {
+      "reason": "Registers typed shared operator decision commands governing integration holds and releases."
+    },
+    "src/commands/contracts/records.py::_record_invoke": {
+      "reason": "Shared typed command invocation adapter used by integration operator decision contracts."
+    },
+    "src/operator_decisions.py::READ_COMMANDS": {
+      "reason": "Names integration diagnostics that remain readable while an operator hold is active."
+    },
+    "src/operator_decisions.py::control_refusal": {
+      "reason": "Enforces project-scoped operator holds on integration mutations before command dispatch."
+    },
+    "src/operator_decisions.py::decision_control": {
+      "reason": "Identifies integration mutations carrying object or project authority for hold enforcement."
+    },
+    "src/operator_decisions.py::history_on": {
+      "reason": "Reads append-only operator instructions and exact hold releases for integration authorization."
+    },
+    "src/operator_decisions.py::object_project_on": {
+      "reason": "Resolves task, batch and repair operation project scope for durable operator instructions."
+    },
+    "src/operator_decisions.py::related_on": {
+      "reason": "Relates integration batch members and repair operations so object holds cannot be bypassed."
+    },
+    "src/commands/contracts/decisions.py::import from src.commands.contracts.records import _record_invoke": {
+      "reason": "Imports the shared typed invocation adapter for integration operator decisions."
+    },
+    "src/commands/decision_commands.py::DecisionCommandsMixin._decision_access": {
+      "reason": "Enforces project-scoped authority for decisions on integration batches and operations."
+    },
+    "src/commands/decision_commands.py::import from src.operator_decisions import OperatorDecisions, object_project_on": {
+      "reason": "Imports shared integration decision storage and its object scope resolver."
+    },
+    "src/commands/handler.py::CommandHandler.execute": {
+      "reason": "Shared dispatch boundary applies durable holds to integration commands before mutation."
+    },
+    "src/api/target_scope.py::ContextResolver": {
+      "reason": "Contextual project ownership resolver type used by integration operator decision commands."
+    },
+    "src/api/target_scope.py::_decision_object_project": {
+      "reason": "Project scope gate resolves a tagged integration decision object through its exact handler lookup."
+    },
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_record', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision write ownership."
+    },
+    "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
+      "reason": "Registers tagged integration operator decision read ownership."
     }
   },
   "shared_state": {

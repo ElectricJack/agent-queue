@@ -131,6 +131,7 @@ def test_registry_has_categories(registry):
         "supervisor_inbox",
         "review",
         "digest",
+        "decision",
         "dashboard",
         "discord",
         "pool",

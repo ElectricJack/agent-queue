@@ -925,3 +925,18 @@ class TestExplainAfterATerminalClose:
         details = {r["code"]: r["detail"] for r in res["reasons"]}
         assert details["blocked_terminal"].startswith("session_close_hard_failure")
         assert "restart or reopen" in details["blocked_terminal"]
+
+
+async def test_explain_includes_shared_operator_decision(handler, db):
+    from src.operator_decisions import OperatorDecisions
+
+    await mktask(db, "decision-task")
+    row = await OperatorDecisions(db).record({
+        "object_kind": "task", "object_id": "decision-task", "operator": "Jack",
+        "decision": "Wait for the fix", "effect": "hold", "source": "chat",
+        "source_ref": "chat:123", "idempotency_key": "chat:123", "releases": None,
+    }, recorded_by="human:local-operator")
+    result = await handler.execute("explain_task", {"task_id": "decision-task"})
+    assert result["success"], result
+    assert "operator_decision_hold" in result["reason_codes"]
+    assert result["operator_decisions"][0]["id"] == row["id"]

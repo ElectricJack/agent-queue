@@ -16,7 +16,9 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database import Database
-from src.database.tables import integration_batches, projects, task_branch_origins, tasks
+from src.database.tables import (
+    events, integration_batches, integration_legacy_deliveries, projects, task_branch_origins, tasks,
+)
 from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.integration.batches import (
@@ -27,6 +29,7 @@ from src.integration.batches import (
     candidate_ref,
 )
 from src.integration.ci import IntegrationCITrust
+from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
@@ -35,6 +38,7 @@ from src.integration.ownership import BranchBusy
 from src.integration.repair import OrdinaryRepairService
 from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
     DaemonLanes,
     DatabaseBatches,
@@ -43,6 +47,7 @@ from src.integration.train_sources import (
     _never_trusted,
     batch_id,
     train_for,
+    _pending_tasks,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
@@ -67,7 +72,9 @@ async def world(tmp_path):
             integration_repository_id="r", hierarchical_integration_mode="train",
             hierarchical_integration_desired_mode="train",
         ))
-    yield SimpleNamespace(db=db, origin=origin, truth=GitTruth(GitManager()))
+    truth = GitTruth(GitManager())
+    db.set_delivery_observer(DeliveryObserver(db, git=truth.git, data_dir=tmp_path, truth=truth))
+    yield SimpleNamespace(db=db, origin=origin, truth=truth)
     await db.close()
 
 
@@ -168,6 +175,262 @@ async def test_pending_members_are_exact_undelivered_sources(world):
     assert dependencies == {"a": set(), "b": set()}
     assert set(requests) == {"a", "b"}
     assert batch_id(MAIN, members) == batch_id(MAIN, tuple(reversed(members)))
+
+
+@pytest.mark.parametrize("mode", ["development", "train", "hierarchy"])
+async def test_root_delivered_legacy_epic_children_create_no_epic_target_or_batch(world, mode):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                              description="", branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    for tid in ("child-a", "child-b"):
+        await completed(world, tid, parent="epic", land=True)
+    # The project root is deliberately a development ref different from main.
+    git(origin.clone, "push", "origin", "main:development")
+    async with db._engine.begin() as conn:
+        from src.database.tables import repos
+
+        await conn.execute(update(repos).where(repos.c.id == "r")
+                           .values(default_branch="development"))
+        await conn.execute(update(projects).where(projects.c.id == "p")
+                           .values(hierarchical_integration_mode=mode))
+    [root] = await DatabaseTargets(db).targets(time.time())
+    assert root.target_ref == "refs/heads/development"
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    # Even a direct stale epic visit has no inputs to freeze or repair.
+    selection = await DatabaseBatches(db).open_batch(epic, await snapshot(world, epic),
+                                                     SimpleNamespace(store=BatchStore(db)))
+    assert selection.batch is None and not selection.blockers
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+
+
+async def legacy_delivery(world, tid, source, *, repository_id="r", target_ref="main"):
+    async with world.db._engine.begin() as conn:
+        await conn.execute(insert(integration_legacy_deliveries).values(
+            task_id=tid, project_id="p", parent_task_id="epic", repository_id=repository_id,
+            target_ref=target_ref, target_sha=source, delivered_sha=source,
+            proof="development_delivery", operator_id="operator", reason="legacy delivery",
+            created_at=time.time(),
+        ))
+
+
+async def test_scoped_legacy_delivery_attestation_suppresses_missing_provenance(world):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                              branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    source = await completed(world, "child", parent="epic", done=False)
+    await close(db, "child", [source])  # no retained provenance
+    await legacy_delivery(world, "child", source)
+    assert [t.target_ref for t in await DatabaseTargets(db).targets(time.time())] == [MAIN.target_ref]
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    assert await DatabaseBatches(db).pending(epic, await snapshot(world, epic)) is None
+    # A new close never inherits the old delivery attestation.
+    await close(db, "child", [source], close_id="reopened-generation", origin=origin)
+    assert "refs/heads/aq/epic" in {
+        t.target_ref for t in await DatabaseTargets(db).targets(time.time())
+    }
+
+
+@pytest.mark.parametrize("repository_id,target_ref", [("other", "main"), ("r", "elsewhere")])
+async def test_legacy_delivery_for_another_repository_or_ref_does_not_suppress_work(
+    world, repository_id, target_ref,
+):
+    source = await completed(world, "a")
+    await legacy_delivery(world, "a", source, repository_id=repository_id, target_ref=target_ref)
+    members, _, _ = await DatabaseBatches(world.db).pending(MAIN, await snapshot(world))
+    assert [m.task_id for m in members] == ["a"]
+
+
+async def test_existing_epic_batch_with_root_delivered_inputs_is_held(world):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                              branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    source = await completed(world, "child", parent="epic")
+    base = git(origin.clone, "rev-parse", f"{source}^")
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    store = BatchStore(db)
+    await store.freeze(Batch("wrong", "p", "r", epic.target_ref),
+                       (BatchMember("child", source, base),), trees={"child": tree(world, source)})
+    origin.land("child")
+    selection = await DatabaseBatches(db).open_batch(
+        epic, await snapshot(world, epic), SimpleNamespace(store=store),
+    )
+    assert selection.batch is None
+    assert selection.blockers[0]["code"] == "batch_inputs_delivered_to_project"
+
+
+async def test_delivered_work_does_not_consume_the_pending_member_limit(world):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                              branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    await completed(world, "owed", parent="epic")
+    await completed(world, "newer-delivered", land=True)
+    targets = await DatabaseTargets(db, limit=1).targets(time.time())
+    [epic] = [t for t in targets if t.kind == "epic"]
+    members, _, _ = await DatabaseBatches(db, limit=1).pending(epic, await snapshot(world, epic))
+    assert [m.task_id for m in members] == ["owed"]
+
+
+async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
+    import asyncio
+
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    original = train.lane_for
+
+    async def blocked_fetch():
+        await asyncio.Event().wait()
+
+    async def lane_for(target):
+        current = await original(target)
+        return TrainLane(snapshot=blocked_fetch, service=current.service, checks=current.checks)
+
+    train.lane_for = lane_for
+    train.visit_timeout_seconds = 0.01
+    await train.tick()
+    await train.drain()
+    status = await IntegrationStatusService(
+        world.db, git_first="active", train=train,
+    ).control_status("p")
+    assert not status["batches"]
+    [blocker] = status["blockers"]
+    assert blocker["code"] == "visit_timeout"
+    assert blocker["evidence"]["stage"] == "fetch_snapshot"
+    assert blocker["evidence"]["timeout_seconds"] == 0.01
+
+
+async def test_unavailable_root_probe_keeps_epic_work_owed(world):
+    import asyncio
+
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                              branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    await completed(world, "child", parent="epic", land=True)
+
+    async def unavailable(db, target):
+        await asyncio.Event().wait()
+
+    targets = await DatabaseTargets(
+        db, snapshot=unavailable, probe_timeout_seconds=0.01,
+    ).targets(time.time())
+    assert {t.target_ref for t in targets} == {MAIN.target_ref, "refs/heads/aq/epic"}
+    # The visit has its own fetched root evidence and never batches the child.
+    [epic] = [t for t in targets if t.kind == "epic"]
+    assert await DatabaseBatches(db).pending(epic, await snapshot(world, epic)) is None
+
+
+@pytest.mark.parametrize("kind", ["service", "playbook", "session"])
+async def test_train_control_handlers_refuse_non_supervisor_principals(world, kind):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    source = await completed(world, "a", land=True)
+    store = BatchStore(world.db)
+    await store.freeze(Batch("batch", "p", "r", MAIN.target_ref),
+                       (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind(kind), policy=DENY_ALL,
+                                              elevated=True, project_id="p")):
+        abort = await handler._cmd_integration_abort_batch({"batch_id": "batch"})
+        retire = await handler._cmd_integration_retire_origin({"task_id": "a"})
+    assert abort["outcome"] == retire["outcome"] == "unauthorized"
+    assert (await store.get("batch")).intent == "open"
+
+
+async def test_abort_batch_preview_apply_and_promoted_candidate_refusal(world):
+    db, origin = world.db, world.origin
+    source = await completed(world, "a")
+    store = BatchStore(db)
+    batch = Batch("abort-me", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    controls = TrainControls(db)
+    preview = await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
+    assert preview["outcome"] == "preview" and (await store.get(batch.id)).intent == "open"
+    applied = await controls.abort_batch(batch.id, dry_run=False, operator_id="operator",
+                                          reason="duplicate work")
+    assert applied["outcome"] == "aborted" and (await store.get(batch.id)).intent == "aborted"
+    async with db._engine.connect() as conn:
+        [audit] = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_intent"))).scalars().all()
+    assert "duplicate work" in audit
+    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
+    promoted = Batch("promoted", "p", "r", MAIN.target_ref)
+    await store.freeze(promoted, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    git(origin.clone, "push", "origin", f"main:{candidate_ref(promoted.id)}")
+    with pytest.raises(ValueError, match="promoted candidate"):
+        await controls.abort_batch(promoted.id, dry_run=False, operator_id="operator", reason="no")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == promoted.id)
+                           .values(lifecycle="promoted"))
+    with pytest.raises(ValueError, match="promoted batch"):
+        await store.set_intent(promoted.id, "aborted")
+
+
+async def test_retire_origin_preview_apply_removes_pending_and_requires_delivery(world):
+    db = world.db
+    await completed(world, "a", land=True)
+    await completed(world, "pending")
+    controls = TrainControls(db)
+    with pytest.raises(ValueError, match="not proven delivered"):
+        await controls.retire_origin("pending", dry_run=True, origin_id=None,
+                                     operator_id="operator", reason="")
+    preview = await controls.retire_origin("a", dry_run=True, origin_id=None,
+                                           operator_id="operator", reason="")
+    async with db._engine.connect() as conn:
+        assert "a" in await _pending_tasks(conn, "p", "r", limit=200)
+    with pytest.raises(ValueError, match="origin changed"):
+        await controls.retire_origin("a", dry_run=False, origin_id="wrong",
+                                     operator_id="operator", reason="delivered")
+    assert (await controls.retire_origin("a", dry_run=False, origin_id=preview["origin_id"],
+                                         operator_id="operator", reason="delivered"))["outcome"] == "retired"
+    async with db._engine.connect() as conn:
+        assert await _pending_tasks(conn, "p", "r", limit=200) == ["pending"]
+        [audit] = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.origin_retired"))).scalars().all()
+    assert "delivered" in audit
+
+
+@pytest.mark.parametrize("unknown_ancestry", [True, False])
+async def test_abort_requires_observed_promotion_and_unchanged_refs(world, monkeypatch, unknown_ancestry):
+    from unittest.mock import AsyncMock
+
+    source = await completed(world, "a")
+    batch = Batch("uncertain", "p", "r", MAIN.target_ref)
+    store = BatchStore(world.db)
+    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    git(world.origin.clone, "push", "origin", f"{source}:{candidate_ref(batch.id)}")
+    if unknown_ancestry:
+        monkeypatch.setattr(GitManager, "ais_ancestor", AsyncMock(return_value=None))
+        cause = "promotion cannot be observed"
+    else:
+        monkeypatch.setattr("src.integration.git_truth.GitTruthSnapshot.is_fresh",
+                            AsyncMock(return_value=False))
+        cause = "target or candidate changed"
+    with pytest.raises(ValueError, match=cause):
+        await TrainControls(world.db).abort_batch(batch.id, dry_run=False,
+                                                  operator_id="operator", reason="duplicate")
+    assert (await store.get(batch.id)).intent == "open"
+
+
+async def test_retire_origin_requires_aborting_its_open_batches(world):
+    source = await completed(world, "a", land=True)
+    store = BatchStore(world.db)
+    batch = Batch("duplicate", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    controls = TrainControls(world.db)
+    with pytest.raises(ValueError, match="abort the task's open batches"):
+        await controls.retire_origin("a", dry_run=False, origin_id="a-origin",
+                                     operator_id="operator", reason="delivered")
+    await controls.abort_batch(batch.id, dry_run=False, operator_id="operator", reason="duplicate")
+    retired = await controls.retire_origin("a", dry_run=False, origin_id="a-origin",
+                                           operator_id="operator", reason="delivered")
+    assert retired["outcome"] == "retired"
 
 
 async def test_eligible_tracks_project_and_task_state(world):

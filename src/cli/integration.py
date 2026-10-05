@@ -31,6 +31,37 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("abort-batch")
+@click.argument("batch_id")
+@click.option("--reason", default="", help="Required explanation when aborting.")
+@click.option("--apply", is_flag=True, help="Abort the batch; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_abort_batch(ctx, batch_id, reason, apply):
+    """Preview or abort an unpromoted Git-first BATCH_ID."""
+    if apply and not reason.strip():
+        raise click.UsageError("--apply needs a nonblank --reason")
+    _execute(ctx, "integration_abort_batch", {
+        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("retire-origin")
+@click.argument("task_id")
+@click.option("--origin-id", default=None, help="Exact origin id returned by the preview.")
+@click.option("--reason", default="", help="Required explanation when retiring.")
+@click.option("--apply", is_flag=True, help="Retire the delivered origin; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_retire_origin(ctx, task_id, origin_id, reason, apply):
+    """Preview or retire a delivered TASK_ID's branch origin."""
+    if apply and (not origin_id or not reason.strip()):
+        raise click.UsageError("--apply needs --origin-id and a nonblank --reason")
+    _execute(ctx, "integration_retire_origin", {
+        "task_id": task_id, "origin_id": origin_id, "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("release-held-gate")
 @click.argument("subject_id")
 @click.argument("gate_id")

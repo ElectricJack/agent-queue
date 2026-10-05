@@ -76,6 +76,7 @@ from src.commands.discord_commands import DiscordCommandsMixin
 from src.commands.formula_commands import FormulaCommandsMixin
 from src.commands.graph_commands import GraphCommandsMixin
 from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.decision_commands import DecisionCommandsMixin
 
 # Framework-overhaul substrate mixins (Wave 0).  Empty today — registered
 # here so the Wave 1/2 lanes add methods to their own module without
@@ -373,6 +374,7 @@ class CommandHandler(
     FormulaCommandsMixin,
     GraphCommandsMixin,
     IntegrationCommandsMixin,
+    DecisionCommandsMixin,
     # -- Framework-overhaul substrate mixins (empty until their lane) ----
     GateCommandsMixin,
     MessageCommandsMixin,
@@ -1066,6 +1068,14 @@ class CommandHandler(
                         _emit_error = refusal["error"]
                         return refusal
                     args = without_inert_choices(args)
+
+                from src.operator_decisions import control_refusal, decision_control
+
+                if decision_control(name, args):
+                    refusal = await control_refusal(self.db, name, args)
+                    if refusal is not None:
+                        _emit_ok, _emit_error = _classify_result(refusal)
+                        return refusal
 
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:

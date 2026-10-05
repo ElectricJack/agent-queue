@@ -187,6 +187,8 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
+        "integration_abort_batch",
+        "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",

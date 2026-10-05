@@ -6,7 +6,9 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
+from src.database.tables import integration_batches
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
 from src.integration.checks import ChecksState
 from src.integration.train import (
@@ -16,12 +18,19 @@ from src.integration.train import (
     TrainLane,
     TrainTarget,
     candidate_head,
+    conflict_brief,
     exact_gate,
 )
+from tests import test_integration_gitops
+from tests.test_integration_gitops import commit, git
+
+#: The real Git/PostgreSQL repository substrate, re-exported for the fixture below.
+setup = test_integration_gitops.setup
 
 TARGET_SHA = "a" * 40
 CANDIDATE = "b" * 40
 SOURCE = "c" * 40
+PARTIAL = "d" * 40
 
 
 def batch(batch_id="batch-1", ref="refs/heads/main", intent="open", attempts=0) -> Batch:
@@ -30,6 +39,17 @@ def batch(batch_id="batch-1", ref="refs/heads/main", intent="open", attempts=0) 
 
 
 MEMBERS = (BatchMember(task_id="t-1", source_sha=SOURCE, source_base_sha=TARGET_SHA),)
+CONFLICTING_MEMBERS = (
+    BatchMember(task_id="t-1", source_sha=SOURCE, source_base_sha=TARGET_SHA, order=0),
+    BatchMember(task_id="t-2", source_sha="e" * 40, source_base_sha=TARGET_SHA, order=1),
+    BatchMember(task_id="t-3", source_sha="f" * 40, source_base_sha=TARGET_SHA, order=2),
+)
+#: The exact ``merge_sources`` conflict result for those members.
+CONFLICT = {
+    "outcome": "conflict", "head": PARTIAL, "reason": "alembic_head_collision",
+    "member": "t-2", "files": ["migrations/versions/head.py"],
+    "members": [{"member": "t-1", "source": SOURCE, "head": PARTIAL, "regenerated": False}],
+}
 
 
 def result(state: ChecksState):
@@ -44,8 +64,23 @@ class Service:
     async def visit(self, batch, members, snapshot):
         self.calls += 1
         state = self.states.pop(0)
-        candidate = None if state == "conflict" else CANDIDATE
+        candidate = TARGET_SHA if state == "conflict" else CANDIDATE
         return BatchObservation(state, candidate, TARGET_SHA, detail={"step": self.calls})
+
+    async def repair_authorized(self, batch, members, head_sha):
+        return True
+
+
+class Conflicting(Service):
+    """A merge conflict carrying one exact ``merge_sources`` detail."""
+
+    def __init__(self, detail, candidate=None):
+        self.detail, self.candidate = detail, candidate
+        self.calls = 0
+
+    async def visit(self, batch, members, snapshot):
+        self.calls += 1
+        return BatchObservation("conflict", self.candidate, TARGET_SHA, detail=self.detail)
 
 
 class Checks:
@@ -174,8 +209,12 @@ async def test_red_candidate_allocates_one_repair_for_the_exact_head():
     visit = await t.visit(ROOT)
     assert visit.state == "repair"
     assert visit.repair["task_id"] == "repair-batch-1"
-    assert repair.calls == [("batch-1", {"target_ref": candidate_ref("batch-1"),
-                                         "head_sha": CANDIDATE, "held": False})]
+    [(batch_id, args)] = repair.calls
+    assert batch_id == "batch-1"
+    assert (args["target_ref"], args["head_sha"], args["held"]) == (
+        candidate_ref("batch-1"), CANDIDATE, False)
+    assert await args["authorize"]()
+    assert args["brief"] == ""
 
 
 async def test_green_on_refresh_ends_repair_without_an_attempt():
@@ -196,6 +235,61 @@ async def test_merge_conflict_files_repair_against_the_target_head():
     assert visit.state == "repair"
     assert repair.calls[0][1]["head_sha"] == TARGET_SHA
     assert repair.calls[0][1]["target_ref"] == candidate_ref("batch-1")
+
+
+async def test_conflict_brief_names_the_conflicting_and_remaining_members():
+    """The worker reads which members it still owes, in order, on the starting head."""
+    repair = Repair()
+    service = Conflicting(CONFLICT, candidate=PARTIAL)
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), CONFLICTING_MEMBERS)}),
+              {ROOT.key: lane(service)}, repair)
+    visit = await t.visit(ROOT)
+    assert (visit.state, repair.calls[0][1]["head_sha"]) == ("repair", PARTIAL)
+    brief = repair.calls[0][1]["brief"]
+    assert brief == conflict_brief(CONFLICT, CONFLICTING_MEMBERS, starting_sha=PARTIAL)
+    # A raw detail dict is never an instruction.
+    assert "{" not in brief and "}'" not in brief
+    assert "t-2" in brief and "e" * 40 in brief
+    assert "migrations/versions/head.py" in brief and "alembic_head_collision" in brief
+    assert f"Already merged into the starting head (do not merge them again):\n  1. t-1 (source {SOURCE})" in brief
+    assert (f"Still to merge onto the starting head, in this order:\n"
+            f"  1. t-2 (source {'e' * 40})\n  2. t-3 (source {'f' * 40})") in brief
+    assert f"starting head {PARTIAL} in that order" in brief
+    assert "Generated files are regenerated, never hand-merged" in brief
+    assert "scripts/regenerate-generated.sh" in brief
+    assert "Do not stop once the conflict is resolved" in brief
+
+
+def test_conflict_brief_owes_every_member_when_start_is_not_the_partial_head():
+    """A published target start carries no members from another partial head."""
+    brief = conflict_brief(CONFLICT, CONFLICTING_MEMBERS, starting_sha=TARGET_SHA)
+    assert "Nothing is merged into the starting head yet." in brief
+    assert (f"Still to merge onto the starting head, in this order:\n"
+            f"  1. t-1 (source {SOURCE})\n  2. t-2 (source {'e' * 40})\n"
+            f"  3. t-3 (source {'f' * 40})") in brief
+
+
+def test_conflict_brief_without_merge_evidence_still_instructs_every_member():
+    brief = conflict_brief({"reason": "conflict"}, MEMBERS, starting_sha=TARGET_SHA)
+    assert "{" not in brief and "not reported by the merge" in brief
+    assert f"  1. t-1 (source {SOURCE})" in brief
+    assert f"starting head {TARGET_SHA}" in brief
+
+
+async def test_unpublished_conflict_never_dispatches_repair():
+    class Unpublished(Service):
+        async def visit(self, *args):
+            return BatchObservation("conflict", target_sha=TARGET_SHA,
+                                    detail={"reason": "merge_conflict", "member": "t-1"})
+
+    repair = Repair()
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(Unpublished())}, repair)
+    visit = await t.visit(ROOT)
+    assert visit.state == "unknown"
+    assert visit.detail["repair_publication"] == "unpublished"
+    assert visit.detail["member"] == "t-1"
+    assert repair.calls == []
 
 
 @pytest.fixture
@@ -227,6 +321,112 @@ async def test_red_candidate_files_one_ordinary_repair_on_the_candidate_ref(db):
     assert task.branch_name == candidate_ref("batch-db").removeprefix("refs/heads/")
     assert task.branch_name != "main"
     assert (await store.get("batch-db")).repair_attempt_count == 1
+
+
+async def test_filed_conflict_repair_task_carries_the_plain_english_brief(db):
+    from src.integration.batches import BatchStore
+    from src.integration.repair import OrdinaryRepairService
+
+    store = BatchStore(db)
+    frozen = await store.freeze(batch("batch-brief"), CONFLICTING_MEMBERS,
+                                trees={member.task_id: "d" * 40 for member in CONFLICTING_MEMBERS})
+    service = OrdinaryRepairService(db)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, CONFLICTING_MEMBERS)}),
+              {ROOT.key: lane(Conflicting(CONFLICT, candidate=PARTIAL))}, service)
+    visit = await t.visit(ROOT)
+    assert (visit.state, visit.repair["outcome"]) == ("repair", "filed")
+    # The raw merge record stays in the visit, where a worker never reads it.
+    assert (visit.detail["member"], visit.detail["files"]) == ("t-2", ["migrations/versions/head.py"])
+    task = await db.get_task(visit.repair["task_id"])
+    brief, _, rest = task.description.partition("\n\nRepair the observed head on")
+    assert brief.startswith(f"The batch merge conflicted while building the starting head {PARTIAL}.")
+    assert "{'outcome': 'conflict'" not in task.description and "{'member':" not in task.description
+    assert "Still to merge onto the starting head, in this order:" in brief
+    assert (await service.input(task.id)) == {
+        "batch_id": "batch-brief", "attempt": 1, "repository_id": "r",
+        "target_ref": candidate_ref("batch-brief"), "starting_sha": PARTIAL,
+    }
+    assert f" {candidate_ref('batch-brief')}. Publish with the managed lease" in rest
+
+
+@pytest.fixture
+async def conflicting_batch_env(setup):
+    """Real Git and the real batch service over two members that conflict."""
+    from src.integration.batches import BatchService, BatchStore
+    from src.integration.git_truth import GitTruth
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    db, ops, _subject, _fence, repo, base, _head, _green = setup
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.LINK))
+    left = commit(repo.store, {"new.txt": "left\n"}, base=base)
+    right = commit(repo.store, {"new.txt": "right\n"}, base=base)
+    store = BatchStore(db)
+    frozen = Batch("batch-conflict", "p", "r", "refs/heads/main", created_at=1700000000)
+    members = (BatchMember("task-a", left, base, 0), BatchMember("task-b", right, base, 1))
+    await store.freeze(frozen, members, trees={
+        member.task_id: git(repo.store, "rev-parse", f"{member.source_sha}^{{tree}}")
+        for member in members})
+    green = set()
+
+    async def eligible(batch, members):
+        return True
+
+    async def gate(batch, sha, tree):
+        return sha in green
+
+    async def publish(repository, ref, *, expected_old_oid, new_oid, authorize):
+        assert await authorize()
+        await ops.push(repository, ref, new_oid, expected_old_oid)
+
+    truth = GitTruth(ops.git)
+
+    async def snapshot(batch=frozen):
+        return await truth.snapshot(str(repo.store), project_id="p", repository_id="r",
+                                    repository_url=str(ops.git.remote_path),
+                                    target_ref=batch.target_ref)
+
+    return SimpleNamespace(
+        db=db, ops=ops, repo=repo, base=base, store=store, batch=frozen, members=members,
+        green=green, snapshot=snapshot,
+        service=BatchService(store, ops, publish=publish, eligible=eligible, gate=gate),
+    )
+
+
+async def test_green_repaired_head_missing_a_member_never_settles_the_batch(conflicting_batch_env):
+    """A repaired head is deliverable only once it contains every frozen member."""
+    from src.integration.repair import OrdinaryRepairService
+
+    env = conflicting_batch_env
+    batches = Batches({ROOT.key: (env.batch, env.members)})
+    lane = TrainLane(snapshot=lambda: env.snapshot(), service=env.service,
+                     checks=CandidateChecks.fixed(Checks(*([ChecksState.GREEN] * 4))))
+    t = train(Targets(ROOT), batches, {ROOT.key: lane}, OrdinaryRepairService(env.db))
+
+    first = await t.visit(ROOT)
+    assert first.state == "repair" and first.detail["member"] == "task-b"
+    partial = first.detail["head"]
+    assert first.detail["files"] == ["new.txt"] and first.detail["outcome"] == "conflict"
+
+    # The worker publishes the head it reached and its exact checks go green.
+    ref = candidate_ref(env.batch.id)
+    git(env.repo.store, "push", "origin", f"{partial}:{ref}")
+    env.green.add(partial)
+    second = await t.visit(ROOT)
+    assert second.state == "repair" and second.repair["outcome"] == "exists"
+    assert batches.settled == [] and await env.store.members(env.batch.id) == env.members
+    assert git(env.ops.git.remote_path, "rev-parse", "main") == env.base
+
+    # A target that already contains that head still may not settle a batch
+    # whose member is still missing; the member is never dropped.
+    git(env.ops.git.remote_path, "update-ref", "refs/heads/main", partial)
+    third = await t.visit(ROOT)
+    assert third.state == "repair" and third.repair["outcome"] == "exists"
+    assert batches.settled == [] and await env.store.members(env.batch.id) == env.members
+    async with env.db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == env.batch.id))).scalar_one() == "sealed"
+    assert git(env.ops.git.remote_path, "rev-parse", "main") == partial
 
 
 @pytest.mark.parametrize("state", ["held", "moved", "source_moved", "unknown"])
@@ -321,8 +521,10 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.tick()
     await t.drain()
     [row] = t.status()
-    assert (row["state"], row["detail"], row["running"]) == (
-        "unknown", {"reason": "visit_timeout"}, False)
+    assert (row["state"], row["running"]) == ("unknown", False)
+    assert row["detail"] == {
+        "reason": "visit_timeout", "stage": "fetch_snapshot", "timeout_seconds": 0.01,
+    }
     assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
     await t.stop()
 
@@ -481,9 +683,33 @@ def test_train_reads_no_journal_receipt_or_runtime_truth():
                 continue
             names = {alias.name for alias in node.names}
             assert node.module not in RETIRED_TRUTH, (path, node.module)
-            assert not names & RETIRED_TABLES, (path, names & RETIRED_TABLES)
+            forbidden = names & RETIRED_TABLES
+            if path == "src/integration/train_sources.py" and node.module == "src.database.tables":
+                forbidden -= {"integration_legacy_deliveries"}
+            assert not forbidden, (path, forbidden)
             if node.module in SHARED_NAMES:
                 assert names <= SHARED_NAMES[node.module], (path, names)
+
+
+def test_legacy_delivery_compatibility_is_read_only_and_confined_to_project_proof():
+    """Historical operator attestations are the only legacy read the train needs.
+
+    Scope and completion-generation fences are exercised by train_sources tests;
+    no journal, receipt or runtime becomes a train lifecycle authority.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path("src/integration/train_sources.py").read_text())
+    proof = next(node for node in tree.body
+                 if isinstance(node, ast.AsyncFunctionDef) and node.name == "project_delivered")
+    allowed = {id(node) for node in ast.walk(proof)}
+    uses = [node for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "integration_legacy_deliveries"]
+    assert uses and all(id(node) in allowed for node in uses)
+    for node in ast.walk(proof):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in {"insert", "update", "delete"}
 
 
 def test_activation_runbook_exists_before_canary():

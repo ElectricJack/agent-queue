@@ -20,6 +20,42 @@ def _client(result):
     return client
 
 
+@pytest.mark.parametrize("leaf,identity,extra,command", [
+    ("abort-batch", "batch", [], "integration_abort_batch"),
+    ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),
+])
+def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity, extra, command):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", leaf, identity])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[0] == command
+    assert client.execute.call_args.args[1]["dry_run"] is True
+    client.reset_mock()
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", leaf, identity, "--apply", *extra,
+                                         "--reason", "delivered work"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1]["dry_run"] is False
+    assert client.execute.call_args.args[1]["reason"] == "delivered work"
+
+
+@pytest.mark.parametrize("argv", [
+    ["abort-batch", "batch", "--apply"],
+    ["retire-origin", "task", "--apply", "--reason", "delivered"],
+])
+def test_train_controls_require_apply_arguments_before_transport(argv):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+    assert result.exit_code == 2, result.output
+    client.execute.assert_not_awaited()
+
+
 def test_reevaluate_repair_apply_requires_exact_preview():
     from src.cli.app import cli
 

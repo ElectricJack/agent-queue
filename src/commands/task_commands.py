@@ -5177,6 +5177,11 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         reasons: list[Reason] = []
+        from src.operator_decisions import OperatorDecisions
+
+        operator_decisions = await OperatorDecisions(self.db).history("task", str(task_id))
+        reasons.extend(Reason(code="operator_decision_hold", detail=row["decision"], ref=row["id"])
+                       for row in operator_decisions if row["active"])
         retirement = await self.db.get_task_meta(str(task_id), "integration_retirement")
         if not retirement:
             operation = await self.db.get_terminal_integration_delegate_operation(str(task_id))
@@ -5461,6 +5466,7 @@ class TaskCommandsMixin:
             "success": True,
             "reasons": reasons,
             "reason_codes": [reason["code"] for reason in reasons],
+            "operator_decisions": operator_decisions,
             "assignment_route": assignment_route,
             "provider_hold": provider_hold,
             "phase_hold": phase_hold,

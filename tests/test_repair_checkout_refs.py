@@ -55,6 +55,29 @@ async def test_repair_retry_fetches_published_tip_from_authorized_repository(anc
     )
 
 
+@pytest.mark.parametrize('state', [RemoteRefState.ABSENT, RemoteRefState.ERROR])
+async def test_ordinary_repair_checks_remote_even_with_stale_tracking_ref(state):
+    from src.integration.repair import UnpublishedRepairTarget
+
+    git = SimpleNamespace(
+        afetch_origin=AsyncMock(), _arun=AsyncMock(return_value='b' * 40),
+        als_remote_ref=AsyncMock(return_value=RemoteRefResult(state, error='unavailable')),
+    )
+    fence = Fence(target=BranchKey(repository_id='repo', branch='aq/batches/missing'),
+                  owner_id='repair', token=1)
+    error = UnpublishedRepairTarget if state is RemoteRefState.ABSENT else GitError
+    with pytest.raises(error) as raised:
+        await WorkspaceMixin._hierarchy_repair_start(
+            SimpleNamespace(git=git), '/slot', {'ordinary_repair': True}, fence,
+            repository_url='/authorized',
+        )
+    assert isinstance(raised.value, UnpublishedRepairTarget) is (state is RemoteRefState.ABSENT)
+    git._arun.assert_not_awaited()
+    git.als_remote_ref.assert_awaited_once_with(
+        '/slot', 'aq/batches/missing', repository_url='/authorized',
+    )
+
+
 @pytest.mark.parametrize(
     ('workspace_task', 'repo_id', 'branch_name', 'precondition', 'fixable_by'),
     [

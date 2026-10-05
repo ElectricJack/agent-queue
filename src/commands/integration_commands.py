@@ -57,6 +57,45 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_abort_batch(self, args: dict) -> dict:
+        """Preview or abort an unpromoted Git-first batch."""
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db).abort_batch(
+                request.batch_id, dry_run=request.dry_run, operator_id=operator,
+                reason=request.reason,
+            )
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_retire_origin(self, args: dict) -> dict:
+        """Retire only the previewed origin of a proven delivered completion."""
+        from src.commands.contracts.integration import IntegrationRetireOriginArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationRetireOriginArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db).retire_origin(
+                request.task_id, dry_run=request.dry_run, origin_id=request.origin_id,
+                operator_id=operator, reason=request.reason,
+            )
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_release_held_gate(self, args: dict) -> dict:
         """A human may lift a hold without changing its immutable gate answer."""
         from pydantic import ValidationError

@@ -21,20 +21,22 @@ from sqlalchemy import and_, select, update
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_legacy_deliveries,
     projects,
     repos,
     task_branch_origins,
     task_dependencies,
     tasks,
 )
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
-from src.integration.delivery_observer import delivery_targets
+from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
+from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.subjects import Subject
 from src.integration.train import (
     BatchSelection,
@@ -66,7 +68,7 @@ def _branch(ref: str) -> str:
     return "refs/heads/" + str(ref).removeprefix("refs/heads/")
 
 
-async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int) -> list[str]:
+async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
     """Completed tasks with a live branch origin in the repository, newest first."""
     rows = await conn.execute(
         select(tasks.c.id)
@@ -80,13 +82,86 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
         .order_by(tasks.c.id)
     )
     ids = list(rows.scalars().all())
-    if len(ids) <= limit:
+    if limit is None or len(ids) <= limit:
         return ids
     newest = await conn.execute(
         select(tasks.c.id).where(tasks.c.id.in_(ids))
         .order_by(tasks.c.updated_at.desc(), tasks.c.id).limit(limit)
     )
     return list(newest.scalars().all())
+
+
+async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
+    """Observe the project root through the daemon's isolated delivery store."""
+    observer = getattr(db, "_delivery_observer", None)
+    if observer is None:
+        return None
+    repo = await db.get_repo(target.repository_id)
+    observed = await observer.snapshot(DeliveryTarget(
+        target.project_id, target.repository_id, repo.url, target.target_ref,
+    ))
+    return observed if isinstance(observed, GitTruthSnapshot) else GitTruthSnapshot(
+        GitTruth(observer.git), observed,
+    )
+
+
+async def project_delivered(db, ids, *, project_id, repository_id, target_ref, snapshot=None):
+    """Current completions already delivered beyond their epic.
+
+    A provenance attestation locates an exact source; only its reachability
+    proves delivery. An ordinary worker's provenance marker alone never does.
+    Historical delivery attestations must name this project/repository/root
+    and cover the current completion, never a later reopened generation.
+    """
+    requests = await load_delivery_requests(
+        db, ids, repository_id=repository_id, target_ref=target_ref, reduced=True,
+    )
+    requests = {task_id: request for task_id, request in requests.items()
+                if (request.project_id, request.repository_id) == (project_id, repository_id)}
+    async with db._engine.connect() as conn:
+        legacy = (await conn.execute(select(integration_legacy_deliveries).where(
+            integration_legacy_deliveries.c.task_id.in_(ids),
+            integration_legacy_deliveries.c.project_id == project_id,
+            integration_legacy_deliveries.c.repository_id == repository_id,
+            integration_legacy_deliveries.c.target_ref.in_(
+                (target_ref, target_ref.removeprefix("refs/heads/"))),
+        ))).mappings().all()
+    delivered = set()
+    for row in legacy:
+        request = requests.get(row["task_id"])
+        if request is None or request.task_status != "COMPLETED":
+            continue
+        if (request.completed_at is not None and request.completed_at <= row["created_at"]
+                or request.completion_id == request.legacy_generation
+                and request.task_version <= row["created_at"]):
+            delivered.add(request.task_id)
+    if (snapshot is None or snapshot.error or not snapshot.target_oid
+            or (snapshot.observation.project_id, snapshot.observation.repository_id,
+                snapshot.observation.target_ref) != (project_id, repository_id, target_ref)):
+        return delivered
+    observed = snapshot.observation
+    provenance = GitProvenance(observed.git, observed.store,
+                               repository_url=observed.repository_url)
+    for task_id, request in requests.items():
+        if task_id in delivered or request.task_status != "COMPLETED":
+            continue
+        try:
+            record = await provenance.read_completion(CompletionIdentity(
+                project_id, repository_id, task_id,
+                request.completion_id or request.legacy_generation,
+            ), refs=observed.source_heads)
+            if record is None:
+                continue
+            source = record["source_oid"]
+            facts = snapshot.truth._pair(observed, source)
+            if facts.ancestor is None:
+                facts.ancestor = await provenance.ancestor(source, snapshot.target_oid)
+            if not record["artifact"] or facts.ancestor:
+                delivered.add(task_id)
+        except (GitError, OSError, ValueError, KeyError, TypeError):
+            # Unknown root evidence never suppresses owed work.
+            continue
+    return delivered
 
 
 def _open_batch_rows(project_id: str, repository_id: str):
@@ -103,8 +178,11 @@ class DatabaseTargets:
     """Every branch the train owns: each train-mode project's default ref, the
     parent branches its completed work routes to, and any open batch's target."""
 
-    def __init__(self, db, *, limit: int = MEMBER_LIMIT) -> None:
+    def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
+                 probe_timeout_seconds: float = 5.0) -> None:
         self.db, self.limit = db, limit
+        self.snapshot = snapshot
+        self.probe_timeout_seconds = probe_timeout_seconds
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
@@ -118,28 +196,40 @@ class DatabaseTargets:
                        projects.c.status == "ACTIVE")
                 .order_by(projects.c.id)
             )).mappings().all()
-            for row in rows:
-                project_id, repository_id = row["id"], row["repository_id"]
-                default = _branch(row["default_branch"])
-                root = "development" if row["hierarchical_integration_mode"] == "development" \
-                    else "root"
-
-                def add(ref: str, project_id=project_id, repository_id=repository_id,
-                        default=default, root=root) -> None:
-                    target = TrainTarget(project_id, repository_id, ref,
-                                         root if ref == default else "epic")
-                    found.setdefault(target.key, target)
-
-                add(default)
-                pending = await _pending_tasks(conn, project_id, repository_id, limit=self.limit)
-                for routed in (await delivery_targets(conn, pending, reduced=True)).values():
-                    if (routed.project_id, routed.repository_id) == (project_id, repository_id):
-                        add(routed.target_ref)
-                for batch in (await conn.execute(
-                    _open_batch_rows(project_id, repository_id)
-                )).mappings():
-                    add(batch["target_ref"])
+        # Root probes run concurrently and outside a held database connection.
+        # A stalled probe leaves work owed; visits perform their own root proof.
+        for targets in await asyncio.gather(*(self._project_targets(row) for row in rows)):
+            for target in targets:
+                found.setdefault(target.key, target)
         return [found[key] for key in sorted(found)]
+
+    async def _project_targets(self, row):
+        project_id, repository_id = row["id"], row["repository_id"]
+        default = _branch(row["default_branch"])
+        kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
+        root = TrainTarget(project_id, repository_id, default, kind)
+        async with self.db._engine.connect() as conn:
+            pending = await _pending_tasks(conn, project_id, repository_id, limit=None)
+            routed = await delivery_targets(conn, pending, reduced=True)
+            batches = (await conn.execute(
+                _open_batch_rows(project_id, repository_id))).mappings().all()
+        delivered = set()
+        if pending:
+            try:
+                async with asyncio.timeout(self.probe_timeout_seconds):
+                    observed = await self.snapshot(self.db, root)
+                    delivered = await project_delivered(
+                        self.db, pending, project_id=project_id, repository_id=repository_id,
+                        target_ref=default, snapshot=observed,
+                    )
+            except (TimeoutError, GitError, OSError):
+                logger.warning("integration root discovery probe unavailable for %s", root.key)
+        refs = {default, *(batch["target_ref"] for batch in batches)}
+        refs.update(target.target_ref for task_id, target in routed.items()
+                    if task_id not in delivered and
+                    (target.project_id, target.repository_id) == (project_id, repository_id))
+        return [root if ref == default else TrainTarget(project_id, repository_id, ref, "epic")
+                for ref in sorted(refs)]
 
 
 class DatabaseBatches:
@@ -157,7 +247,19 @@ class DatabaseBatches:
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers)
         if current is not None:
-            return BatchSelection(current, await service.store.members(current.id), tuple(blockers))
+            members = await service.store.members(current.id)
+            # Old frozen inputs also stay out of duplicate epic publication.
+            if target.kind == "epic":
+                delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
+                if delivered:
+                    blockers.append({
+                        "code": "batch_inputs_delivered_to_project", "ref": current.id,
+                        "detail": "batch contains work already delivered to the project root; "
+                                  "abort the batch before retiring its origins",
+                        "task_ids": sorted(delivered),
+                    })
+                    return BatchSelection(blockers=tuple(blockers))
+            return BatchSelection(current, members, tuple(blockers))
         if pending is None:
             return BatchSelection(blockers=tuple(blockers))
         members, requests, dependencies = pending
@@ -184,12 +286,18 @@ class DatabaseBatches:
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
-            ids = await _pending_tasks(conn, target.project_id, target.repository_id,
-                                       limit=self.limit)
+            ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
+        delivered_to_project = await self.delivered(target, snapshot, ids)
+        ids = [task_id for task_id in ids if task_id not in delivered_to_project]
+        async with self.db._engine.connect() as conn:
             routed = await delivery_targets(conn, ids, reduced=True)
             ids = [task_id for task_id in ids if task_id in routed and
                    (routed[task_id].repository_id, routed[task_id].target_ref) ==
                    (target.repository_id, target.target_ref)]
+            if len(ids) > self.limit:
+                ids = list((await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(ids))
+                           .order_by(tasks.c.updated_at.desc(), tasks.c.id)
+                           .limit(self.limit))).scalars().all())
             if not ids:
                 return None
             withheld = set((await conn.execute(
@@ -265,6 +373,16 @@ class DatabaseBatches:
                         for task_id in members}
         return tuple(members.values()), {key: requests[key] for key in members}, dependencies
 
+    async def delivered(self, target, snapshot, ids):
+        async with self.db._engine.connect() as conn:
+            default = await conn.scalar(select(repos.c.default_branch).where(
+                repos.c.id == target.repository_id))
+        root_ref = _branch(default)
+        return await project_delivered(
+            self.db, ids, project_id=target.project_id, repository_id=target.repository_id,
+            target_ref=root_ref, snapshot=snapshot.for_target(root_ref),
+        )
+
     async def eligible(self, batch: Batch, members: tuple[BatchMember, ...]) -> bool:
         """Ordinary identity is still current: completed, routed to this target."""
         ids = [member.task_id for member in members]
@@ -274,6 +392,11 @@ class DatabaseBatches:
                 .where(projects.c.id == batch.project_id)
             )).first()
             routed = await delivery_targets(conn, ids, reduced=True)
+            live = set((await conn.execute(select(task_branch_origins.c.task_id).where(
+                task_branch_origins.c.task_id.in_(ids),
+                task_branch_origins.c.repository_id == batch.repository_id,
+                task_branch_origins.c.retired_at.is_(None),
+            ))).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":
             return False
         requests = await load_delivery_requests(
@@ -282,7 +405,8 @@ class DatabaseBatches:
         )
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
-            if (request is None or request.task_status != "COMPLETED" or target is None or
+            if (task_id not in live or request is None or request.task_status != "COMPLETED" or
+                    target is None or
                     (target.repository_id, target.target_ref) !=
                     (batch.repository_id, batch.target_ref)):
                 return False

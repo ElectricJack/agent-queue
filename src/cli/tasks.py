@@ -777,6 +777,16 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
         console.print(panel)
 
+        for decision in data.get("operator_decisions", []):
+            state = "ACTIVE HOLD" if decision.get("active") else decision["effect"]
+            console.print(
+                f"Operator decision {decision['id']} [{state}]: "
+                f"{decision['operator']}: {decision['decision']} "
+                f"({decision['source']} {decision['source_ref']}; "
+                f"recorded {decision['created_at']} by {decision['recorded_by']})",
+                markup=False,
+            )
+
         for edge in deps_raw:
             if isinstance(edge, dict) and edge.get("reason"):
                 console.print(

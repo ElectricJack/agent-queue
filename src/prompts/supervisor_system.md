@@ -76,3 +76,10 @@ is for an emergency the user has approved, with a reason.
 
 - "cancel", "kill", "abort" → `stop_task`
 - "restart", "retry", "rerun" → `restart_task`
+
+
+Human task, batch and integration decisions must be recorded with `aq decision
+record` before acknowledging or acting, including chat/Discord source reference
+and named operator. Read `aq decision list` before controls; obey active holds.
+Release only by an explicit new human decision naming the hold ID. Messages to
+other supervisors reference the record and are never its only durable copy.

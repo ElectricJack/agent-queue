@@ -184,6 +184,50 @@ async def test_crash_before_candidate_push_rebuilds_same_commit_without_allocati
     assert (await store.get(batch.id)).repair_attempt_count == 0
 
 
+@pytest.mark.parametrize("fail_push", [False, True])
+async def test_first_member_conflict_publishes_start_without_settling_batch(batch_env, fail_push):
+    _, ops, repo, base, _, store, batch, members, _, _, snapshot, service = batch_env
+    target = commit(repo.store, {"new.txt": "upstream conflict\n"}, base=base)
+    git(repo.store, "push", "origin", f"{target}:main")
+    ops.git.fail_push = fail_push
+    observed = await service.visit(batch, members, await snapshot())
+    assert observed.detail["outcome"] == "conflict"
+    assert observed.detail["member"] == "task"
+    assert observed.detail["reason"] == "merge_conflict"
+    assert observed.detail["files"] == ["new.txt"]
+    assert (await store.get(batch.id)).repair_attempt_count == 0
+    if fail_push:
+        assert observed.state == "unknown"
+        assert observed.candidate_sha is None
+        assert observed.detail["repair_start_sha"] == target
+        assert await ops.remote(repo, candidate_ref(batch.id)) is None
+        return
+    assert observed.state == "conflict"
+    assert observed.candidate_sha == target
+    assert await ops.remote(repo, candidate_ref(batch.id)) == target
+    # The published start is already in main, but its conflicting source is not.
+    # Neither a revisit nor a fresh service may interpret it as a delivery.
+    assert (await service.visit(batch, members, await snapshot())).state == "conflict"
+    restarted = BatchService(store, ops, publish=service.publish,
+                             eligible=service.eligible, gate=service.gate)
+    assert (await restarted.visit(batch, members, await snapshot())).state == "conflict"
+
+
+async def test_repair_authorization_rechecks_exact_remote_head_and_hold(batch_env):
+    _, ops, repo, _, _, _, batch, members, _, approved, snapshot, service = batch_env
+    observed = await service.visit(batch, members, await snapshot())
+    assert await service.repair_authorized(batch, members, observed.candidate_sha)
+    approved["value"] = False
+    assert not await service.repair_authorized(batch, members, observed.candidate_sha)
+    approved["value"] = True
+    moved = commit(repo.store, {"repair.txt": "repair"}, base=observed.candidate_sha)
+    git(repo.store, "push", "origin", f"{moved}:{candidate_ref(batch.id)}")
+    assert not await service.repair_authorized(batch, members, observed.candidate_sha)
+    assert await service.repair_authorized(batch, members, moved)
+    git(repo.store, "push", "origin", f":{candidate_ref(batch.id)}")
+    assert not await service.repair_authorized(batch, members, moved)
+
+
 async def test_required_gate_can_pause_before_final_publication(batch_env):
     _, ops, _, base, _, store, batch, members, green, _, snapshot, service = batch_env
     first = await service.visit(batch, members, await snapshot())
