@@ -229,6 +229,42 @@ async def test_unfinished_or_untrusted_refresh_replaces_cached_success(
         assert result.due_at == 1310
 
 
+@pytest.mark.parametrize("mode", ["shadow", "active"])
+async def test_root_reader_refreshes_the_commit_cache_only_when_active(db, monkeypatch, mode):
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.root_runtime import root_candidate_ci_reader
+    from src.integration.subjects import CIState
+
+    client, trust = github(app=False)
+    monkeypatch.setattr("src.integration.observe._required", lambda _snapshot: {})
+    owner = SimpleNamespace(
+        config=SimpleNamespace(integration=SimpleNamespace(git_first=mode)),
+        db=db,
+        github_repository_binding_resolver=AsyncMock(
+            return_value=GitHubRepositoryBinding(123, "acme/widgets")
+        ),
+        integration_attestation_service=SimpleNamespace(
+            _load_trust=AsyncMock(return_value=(trust, client))
+        ),
+    )
+    snapshot = SimpleNamespace(subject=SimpleNamespace(project_id="p", batch_id="b", id="s"))
+    read = root_candidate_ci_reader(owner)
+
+    evidence = await read(snapshot, head())
+    assert evidence.state is CIState.GREEN and evidence.head_sha == HEAD
+    # Shadow keeps the legacy read; active writes only the per-commit cache.
+    assert [row["check_name"] for row in await stored(db)] == (
+        ["unit"] if mode == "active" else []
+    )
+
+    client.paged_items.side_effect = OSError("github down")
+    evidence = await read(snapshot, head())
+    assert evidence.state is not CIState.GREEN
+    if mode == "active":
+        assert evidence.state is CIState.INFRA
+        assert [row["conclusion"] for row in await stored(db)] == ["unavailable"]
+
+
 async def test_older_observation_never_overwrites_a_newer_one(db):
     class Provider:
         required = RequiredChecks(version="v1", names=("unit",), producer_id="p")
