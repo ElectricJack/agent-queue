@@ -613,6 +613,58 @@ async def test_uncertain_audit_revision_write_reconciles_without_replay(credenti
 
 
 @pytest.mark.asyncio
+async def test_audit_create_supersedes_closed_pr_of_earlier_revision(credential_identity):
+    old_key = "a" * 64
+    new_key = "b" * 64
+    body = f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`."
+    stale = _audit_pull(key=old_key, body=body, state="closed", head_sha="c" * 40)
+    created = _audit_pull(key=new_key, head_sha="a" * 40)
+    created["number"] = 8
+    created["html_url"] = "https://github.com/acme/widgets/pull/8"
+    runner = FakeRunner(
+        credential_identity, [_response(200, [stale]), _response(201, created)]
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    result = await client.create_audit_pr(
+        repository_id="repo",
+        branch="aq/integration/batch",
+        head_sha="a" * 40,
+        base_branch="main",
+        batch_id="batch",
+        idempotency_key=new_key,
+        repository_numeric_id=303,
+        repository_full_name="acme/widgets",
+    )
+
+    assert result.number == 8
+    assert result.head_sha == "a" * 40
+    methods = [call["args"][call["args"].index("--method") + 1] for call in runner.calls]
+    assert methods == ["GET", "POST"]
+
+
+@pytest.mark.asyncio
+async def test_audit_create_refuses_closed_pr_of_another_batch(credential_identity):
+    body = f"<!-- aq-integration-audit:{'a' * 64} -->\nRoot integration batch `other`."
+    stale = _audit_pull(key="a" * 64, body=body, state="closed", head_sha="c" * 40)
+    runner = FakeRunner(credential_identity, [_response(200, [stale])])
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.create_audit_pr(
+            repository_id="repo",
+            branch="aq/integration/batch",
+            head_sha="a" * 40,
+            base_branch="main",
+            batch_id="batch",
+            idempotency_key="b" * 64,
+            repository_numeric_id=303,
+            repository_full_name="acme/widgets",
+        )
+    assert caught.value.category == "conflict_or_invalid"
+
+
+@pytest.mark.asyncio
 async def test_uncertain_comment_write_is_reconciled_by_marker(credential_identity):
     marker = "<!-- aq-delivery:receipt:head -->"
     body = f"{marker}\nDelivered once."
