@@ -528,6 +528,8 @@ class IntegrationCIEvidenceAdapter:
         duplicate = (
             await conn.execute(
                 select(integration_check_evidence).where(
+                    # Exact-commit cache rows (checks.py) share run identities.
+                    integration_check_evidence.c.sha.is_(None),
                     integration_check_evidence.c.producer_id == evidence.producer_id,
                     integration_check_evidence.c.run_id == evidence.run_id,
                     integration_check_evidence.c.attempt == evidence.attempt,

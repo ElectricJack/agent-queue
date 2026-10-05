@@ -148,6 +148,10 @@ class HostedCIProducer:
             )
 
     async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+        return await self.observe_head(head)
+
+    async def observe_head(self, head: HeadIdentity) -> ProducerObservation:
+        """Observe the exact head alone; trust, not a subject, binds the result."""
         producer = (
             str(self.trust.ci_producer_app_id)
             if isinstance(self.trust, IntegrationTrustManifest)
@@ -268,7 +272,10 @@ class LocalCIProducer:
                 "subject": subject.id,
                 "project": subject.project_id,
                 "head": head.model_dump(mode="json"),
-                "policy": subject.policy.model_dump(mode="json"),
+                # Exact-commit checks own their jobs by commit, with no subject policy.
+                "policy": None
+                if subject.policy is None
+                else subject.policy.model_dump(mode="json"),
                 "plan": self.plan.model_dump(mode="json"),
             }
         )
@@ -398,10 +405,27 @@ class LocalCIProducer:
             return CIState.GREEN, "conclusive", "success", None
         return CIState.INFRA, "infra", "missing", "invalid_job_conclusion"
 
-    async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+    async def job_states(
+        self, subject: Subject, head: HeadIdentity
+    ) -> tuple[tuple[str, dict | None, tuple], ...]:
+        """Each planned command with its job and classification for this exact head."""
         keys = self._keys(subject, head)
         existing = await self.read_jobs(subject, keys)
-        requested_at = min((job["submitted_at"] for job in existing.values()), default=None)
+        return tuple(
+            (
+                command,
+                existing.get(key),
+                (CIState.PENDING, "pending", "missing", None)
+                if existing.get(key) is None
+                else self._classify_job(subject, head, existing[key]),
+            )
+            for command, key in zip(self.plan.commands, keys, strict=True)
+        )
+
+    async def observe(self, subject: Subject, head: HeadIdentity) -> ProducerObservation:
+        states = await self.job_states(subject, head)
+        existing = [job for _, job, _ in states if job is not None]
+        requested_at = min((job["submitted_at"] for job in existing), default=None)
         now = self.clock()
         common = dict(
             head_sha=head.sha,
@@ -411,19 +435,14 @@ class LocalCIProducer:
             requested_at=requested_at,
             age_seconds=max(0, now - requested_at) if requested_at is not None else None,
         )
-        if not keys or not existing:
+        if not existing:
             return ProducerObservation(**common, state=CIState.NONE, classification="none")
         checks, classified, details = {}, [], []
-        for index, key in enumerate(keys):
-            job = existing.get(key)
-            if job is None:
-                checks[str(index)] = "missing"
-                classified.append((CIState.PENDING, "pending", "missing", None))
-                continue
-            state = self._classify_job(subject, head, job)
+        for index, (_, job, state) in enumerate(states):
             classified.append(state)
             checks[str(index)] = state[2]
-            details.append({"job_id": job["id"], "result": job.get("result")})
+            if job is not None:
+                details.append({"job_id": job["id"], "result": job.get("result")})
         # A real failure outranks infrastructure, but identity failures cannot
         # be used as evidence for any attempt.
         selected = next((item for item in classified if item[0] is CIState.UNTRUSTED), None)
