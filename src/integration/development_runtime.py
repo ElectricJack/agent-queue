@@ -21,15 +21,16 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
 from src.database import tables as t
 from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.manager import RemoteRefState
 from src.integration.delivery_branches import delete_branches, remote_heads
 from src.integration.development import (
     _carried_sources,
@@ -55,6 +56,7 @@ from src.integration.subjects import (
     Primitive,
     PrimitiveOutcome,
     PrimitivePorts,
+    RemoteHead,
     Subject,
     SubjectEngine,
     SubjectKind,
@@ -71,6 +73,9 @@ from src.integration.subjects import (
 from src.jobs.adapters import PublisherJobs
 
 logger = logging.getLogger(__name__)
+
+#: One repository or project row, as the integration tables return it.
+Row = Mapping[str, Any]
 
 #: The existing Development integration mode. Train/hierarchy/parent projects
 #: keep their own wiring; this module never considers them.
@@ -158,7 +163,7 @@ class DevelopmentFrontierReader:
         db,
         *,
         git=None,
-        ancestry: Callable[[str, str], Awaitable[bool]] | None = None,
+        ancestry: Callable[[Row, str, str], Awaitable[bool | None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db, self.git, self.ancestry, self.clock = db, git, ancestry, clock
@@ -173,7 +178,7 @@ class DevelopmentFrontierReader:
             return None
         return head.sha if head.state == "present" else None
 
-    async def _contains(self, ancestor: str, descendant: str) -> bool:
+    async def _contains(self, repository: dict, ancestor: str, descendant: str) -> bool:
         if not ancestor or not descendant:
             return False
         probe = self.ancestry
@@ -182,7 +187,7 @@ class DevelopmentFrontierReader:
         if probe is None:
             return False
         try:
-            return bool(await probe(None, ancestor, descendant))
+            return bool(await probe(repository, ancestor, descendant))
         except Exception:
             logger.debug("development frontier ancestry probe failed", exc_info=True)
             return False
@@ -270,7 +275,7 @@ class DevelopmentFrontierReader:
             completed = task is not None and task["status"] == "COMPLETED"
             pushed = bool(head) and (await self._remote(repository, branch or "")) == head
             if pushed and (task_id, head) in landed and bool(
-                target_tip and await self._contains(head, target_tip)
+                target_tip and await self._contains(repository, head, target_tip)
             ):
                 # Existing durable truth: the old publisher landed this exact
                 # revision. It is a satisfied prerequisite, not a new member.
@@ -293,17 +298,17 @@ class DevelopmentFrontierReader:
                     completed_at=float((task or {}).get("updated_at") or 0),
                     dependencies=frozenset(dependencies.get(task_id, ())),
                     carries=await self._verified_carries(
-                        task_id, head or "", contracts, checkpoints
+                        task_id, head or "", contracts, checkpoints, repository
                     ),
                 )
             )
         return DevelopmentFrontier(tuple(members), frozenset(satisfied), frozenset(parked))
 
-    async def _verified_carries(self, repair_id, head, contracts, checkpoints):
+    async def _verified_carries(self, repair_id, head, contracts, checkpoints, repository):
         """Carried revisions whose source is genuinely an ancestor of *head*."""
         verified = set()
         for pair in self._contract_carries(repair_id, contracts, checkpoints):
-            if await self._contains(pair[1], head):
+            if await self._contains(repository, pair[1], head):
                 verified.add(pair)
         return frozenset(verified)
 
@@ -323,6 +328,59 @@ class DevelopmentFrontierReader:
             and source
             and checkpoints.get(task_id, {}).get("checkpoint_sha") == source
         }
+
+
+class RetainedGitReads:
+    """The frontier's Git port over the old publisher's own retained clone.
+
+    Development's truth surface is the retained store, not a base checkout: a
+    repository the integration engine created carries no ``checkout_base_path``,
+    so a checkout-bound reader answers ``unknown`` for every branch and no
+    member is ever admitted. The store is created from the repository's own URL
+    and fetched with every head, so it holds the member branches, the target tip
+    and the locally built candidate.
+
+    Remote heads are read live from that clone's origin, so admission never
+    depends on how old the local fetch is. Ancestry is answered from the store's
+    objects, which the publication path refreshes before every push, so the only
+    object it can lack is one this engine has never had. The store is resolved
+    once per repository per process: re-fetching it per frontier read would put
+    a network sweep in front of every member. A store that cannot be read
+    answers ``unknown``, never ``absent``.
+    """
+
+    def __init__(self, git, legacy, db) -> None:
+        self.git, self.legacy, self.db = git, legacy, db
+        self._stores: dict[str, Path] = {}
+
+    async def store_for(self, repository: Row) -> Path:
+        repository_id = repository["id"]
+        store = self._stores.get(repository_id)
+        if store is None:
+            repo = await self.db.get_repo(repository_id)
+            if repo is None:
+                raise ValueError(f"development repository {repository_id} is gone")
+            store = self._stores[repository_id] = await self.legacy.store(repo)
+        return store
+
+    async def remote_head(self, repository: Row, ref: str) -> RemoteHead:
+        store = await self.store_for(repository)
+        name = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else ref
+        if not name:
+            return RemoteHead(ref=ref, state="unknown")
+        observed = await self.git.als_remote_ref(
+            str(store), name, repository_url=repository.get("url") or None
+        )
+        if observed.state is RemoteRefState.PRESENT:
+            return RemoteHead(ref=ref, state="present", sha=observed.oid)
+        return RemoteHead(
+            ref=ref,
+            state="absent" if observed.state is RemoteRefState.ABSENT else "unknown",
+        )
+
+    async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None:
+        store = await self.store_for(repository)
+        return await self.git.ais_ancestor(str(store), ancestor, descendant, strict=True)
 
 
 async def retain_candidate(git, store, subject: Subject) -> str | None:
@@ -567,7 +625,7 @@ class DevelopmentPrimitiveAdapters:
         manifest = await self._manifest(subject)
         if not manifest:
             return PrimitiveOutcome(primitive=args.primitive, outcome="clean")
-        repository = await self.git.repository(subject.repository_id)
+        repository = await self.git.repository(subject)
 
         async def run_git(store, *args):
             return await self.git.run(repository, *args)
@@ -1311,7 +1369,6 @@ def development_runtime_for(orchestrator):
     legacy = orchestrator.development_integration
     app = getattr(orchestrator, "integration_app_client", None)
     repository_binding = getattr(app, "repository", None)
-    pinned_settings: dict[str, Any] = {}
 
     async def policy_for(artifact_sha256: str) -> PinnedDevelopmentPolicy:
         definition = await asyncio.to_thread(orchestrator._load_playbook_artifact, artifact_sha256)
@@ -1319,23 +1376,22 @@ def development_runtime_for(orchestrator):
             load_pinned_development_policy, orchestrator.config, artifact_sha256, definition
         )
 
-    async def retained_repository(repository_id: str) -> RetainedRepository:
-        repo = await orchestrator.db.get_repo(repository_id)
+    async def retained_repository(subject: Subject) -> RetainedRepository:
+        # Subject-scoped on purpose: the rebuild command and timeout come from
+        # this subject's own pinned reviewed source, never from current project
+        # settings and never from a value another call left behind.
+        settings = (await policy_for(subject.policy.artifact_sha256)).settings
+        repo = await orchestrator.db.get_repo(subject.repository_id)
+        if repo is None:
+            raise ValueError(f"development repository {subject.repository_id} is gone")
         binding = GitHubRepositoryBinding(
             repository_id=repository_binding.repository_id,
             full_name=repository_binding.full_name,
         )
-        return await development_repository(
-            legacy, repo, binding, pinned_settings.pop(repository_id)
-        )
+        return await development_repository(legacy, repo, binding, settings)
 
     async def repository_for(subject: Subject) -> RetainedRepository:
-        # The rebuild command and timeout come from the subject's own pinned
-        # reviewed source, never from current project settings.
-        pinned_settings[subject.repository_id] = (
-            await policy_for(subject.policy.artifact_sha256)
-        ).settings
-        repository = await retained_repository(subject.repository_id)
+        repository = await retained_repository(subject)
         await retain_candidate(orchestrator.git, repository.store, subject)
         return repository
 
@@ -1347,7 +1403,9 @@ def development_runtime_for(orchestrator):
             facts_type=IntegrationPolicyFacts,
             session_probe=orchestrator._root_subject_session_probe,
         ).observe,
-        frontier_for=DevelopmentFrontierReader(orchestrator.db),
+        frontier_for=DevelopmentFrontierReader(
+            orchestrator.db, git=RetainedGitReads(orchestrator.git, legacy, orchestrator.db)
+        ),
         policy_for=policy_for,
         repository_for=repository_for,
         shared_ports=PrimitivePorts(),
@@ -1387,6 +1445,7 @@ __all__ = [
     "DevelopmentSubjectRuntime",
     "DevelopmentTrustedGreen",
     "DevelopmentWriterProjection",
+    "RetainedGitReads",
     "development_repository",
     "development_runtime_for",
     "landed_revisions",

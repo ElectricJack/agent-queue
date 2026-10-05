@@ -32,6 +32,7 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -59,6 +60,7 @@ from src.integration.development_runtime import (
     DevelopmentSubjectRuntime,
     DevelopmentTrustedGreen,
     development_repository,
+    development_runtime_for,
     retain_candidate,
     transfer_development_engine,
 )
@@ -69,6 +71,10 @@ from src.integration.observe import DatabaseObservationReader, IntegrationObserv
 from src.integration.ownership import BranchOwnership
 from src.integration.service import IntegrationService
 from src.integration.subjects import (
+    AncestryArgs,
+    AncestryQuery,
+    MemberRef,
+    MergeMembersArgs,
     PrimitivePorts,
     RemoteHead,
     Subject,
@@ -312,7 +318,9 @@ class Development:
 
     # --------------------------------------------------------------- daemon
 
-    async def open(self, *, validation: str = "focused", commands=()) -> None:
+    async def open(
+        self, *, validation: str = "focused", commands=(), regenerate: str | None = None
+    ) -> None:
         self.init_git()
         self.db = db = Database(lease_dsn("development-scenarios.db"))
         await db.initialize()
@@ -325,6 +333,7 @@ class Development:
                 interval_seconds=300,
                 slot_wait_seconds=0,
                 timeout_seconds=60,
+                regenerate=regenerate,
             ),
         )
         definition = load_definition_json(
@@ -389,7 +398,7 @@ class Development:
         )
         config.resources.jobs.enabled = True
         config.resources.test_slots = 2
-        orchestrator = Orchestrator(config)
+        orchestrator = self.orchestrator = Orchestrator(config)
         orchestrator.db = db
         orchestrator.git = self.git
         orchestrator.development_integration = self.legacy
@@ -403,14 +412,14 @@ class Development:
             assert artifact_sha256 == self.artifact_sha
             return self.pinned
 
-        async def repository_for(repository_id):
-            repo = await db.get_repo(repository_id)
+        async def retained_repository(subject):
+            repo = await db.get_repo(subject.repository_id)
             return await development_repository(
                 self.legacy, repo, BINDING, self.pinned.settings
             )
 
         async def retained_for(subject):
-            repository = await repository_for(subject.repository_id)
+            repository = await retained_repository(subject)
             await retain_candidate(self.git, repository.store, subject)
             return repository
 
@@ -434,7 +443,7 @@ class Development:
         git_operations = GitOperations(
             db,
             git=self.git,
-            repository=repository_for,
+            repository=retained_repository,
             authority=SubjectGitAuthority(
                 db,
                 trusted_green=DevelopmentTrustedGreen(self.adapter.producer_for),
@@ -480,6 +489,31 @@ class Development:
             await self.service.stop()
         if getattr(self, "db", None) is not None:
             await self.db.close()
+
+    # -------------------------------------------------------------- factory
+
+    def factory_runtime(self) -> DevelopmentSubjectRuntime:
+        """The daemon's own construction over this world, nothing overridden.
+
+        ``development_runtime_for`` builds every port from the orchestrator's
+        existing owners, so this is the wiring an operator's reconciler flag
+        gets: the same database, Git manager, retained clone and reviewed
+        artifact, with nothing injected in place of the shipped resolver.
+        """
+        orchestrator = self.orchestrator
+        orchestrator.config.integration.reconciler_active = True
+        orchestrator.integration_app_client = SimpleNamespace(repository=BINDING)
+
+        # The daemon's artifact loader is synchronous; the factory reads it in
+        # a worker thread.
+        def load_playbook_artifact(artifact_sha256):
+            assert artifact_sha256 == self.artifact_sha
+            return self.pinned.definition.model_copy(update={"source": self.pinned.source})
+
+        orchestrator._load_playbook_artifact = load_playbook_artifact
+        runtime = development_runtime_for(orchestrator)
+        assert runtime is not None, "a reconciler flag on constructs the runtime"
+        return runtime
 
     # -------------------------------------------------------------- sources
 
@@ -773,6 +807,63 @@ async def world(tmp_path):
 
 
 COLLIDING = "value = 1\n"
+
+#: A pinned rebuild command. The merge identity journals it, so the factory
+#: test can see which settings the shared Git primitive actually resolved.
+REGENERATE = "scripts/regenerate-generated.sh --check"
+
+
+async def test_the_factory_admits_a_pushed_member_and_resolves_the_pinned_retained_store(world):
+    """The daemon's own construction, with nothing wired in its place.
+
+    Two wirings this covers can only be seen through the factory: the frontier
+    reader's Git port (without it no member is ever ``pushed``, so every seal is
+    ``empty``) and the Git primitives' retained repository (without the
+    subject's own pinned settings it raises instead of resolving).
+    """
+    await world.open(regenerate=REGENERATE)
+    world.source("alpha", {"checks/alpha.py": "VALUE = 1\n"})
+    await world.add_source("alpha")
+    # The repository the integration engine owns carries no base checkout, so a
+    # checkout-bound Git port would answer unknown for every branch.
+    assert (await world.db.get_repo(REPO)).checkout_base_path == ""
+    root = await world.cutover()
+    runtime = world.factory_runtime()
+
+    frontier = await runtime.adapter.frontier_for(root)
+    assert [(member.facts.task_id, member.pushed) for member in frontier.members] == [
+        ("alpha", True)
+    ]
+    assert [member.task_id for member in ordered_development_members(frontier, 10)] == ["alpha"]
+
+    # The shared Git primitives resolve the retained clone through the subject's
+    # own pinned artifact, so the merge identity names that rebuild command.
+    outcome = await runtime.adapter.shared.invoke(
+        root,
+        MergeMembersArgs(
+            target_ref=root.target_ref,
+            base_sha=world.base,
+            members=(MemberRef(task_id="alpha", head_sha=world.heads["alpha"], base_sha=world.base),),
+        ),
+    )
+    assert outcome.outcome == "merged", outcome
+    [prepared] = [
+        row
+        for row in await world.journal(root.id)
+        if row["primitive"] == "git_merge_members" and row["outcome"] == "prepared"
+    ]
+    assert prepared["payload"]["regenerate"] == REGENERATE
+    ancestry = await runtime.adapter.shared.invoke(
+        root,
+        AncestryArgs(
+            repository_id=REPO,
+            queries=(AncestryQuery(ancestor=world.base, descendant=world.base),),
+        ),
+    )
+    assert ancestry.outcome == "facts", ancestry
+    assert ancestry.detail["queries"][0]["is_ancestor"] is True
+    # Nothing was published: a retained clone is not a delivery source.
+    assert world.remote("refs/heads/main") == world.base
 
 
 async def test_parked_member_holds_only_its_dependents_and_keeps_the_rest_building(world):
