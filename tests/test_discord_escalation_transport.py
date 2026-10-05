@@ -128,6 +128,30 @@ async def test_a_non_numeric_channel_is_an_actionable_configuration_fault():
         await transport.post_root(channel_id="agent-queue", content="x")
 
 
+async def test_posts_and_edits_share_one_budget_across_transport_instances():
+    from unittest.mock import AsyncMock
+
+    from src.discord.rate_guard import OutboundTokenBucket
+
+    transport, _ = make_transport()
+    now = [0.0]
+    transport._bot._outbound_bucket = OutboundTokenBucket(clock=lambda: now[0])
+    message = SimpleNamespace(id=7, edit=AsyncMock())
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=message), fetch_message=AsyncMock(return_value=message)
+    )
+    transport._bot.get_channel = lambda _id: channel
+    other = DiscordEscalationTransport(transport._bot, transport._config)
+    for _ in range(10):
+        await transport.post_root(channel_id="424242424242424242", content="post")
+        await other.edit_root(channel_id="424242424242424242", root_message_id="7", content="edit")
+    with pytest.raises(TransportRetryable, match="outbound budget"):
+        await other.post_root(channel_id="424242424242424242", content="held")
+    assert channel.send.await_count == message.edit.await_count == 10
+    now[0] = 3
+    await other.post_root(channel_id="424242424242424242", content="resumed")
+
+
 class FakeMessage:
     """A root post that may or may not already own a thread."""
 
@@ -311,3 +335,35 @@ def test_an_oversized_last_line_falls_back_to_a_plain_cut():
     assert len(bounded) <= MAX_CONTENT_CHARS
     assert bounded.startswith("heading\nv")
     assert bounded.endswith(TRUNCATION_NOTICE)
+
+
+async def test_a_channel_conversation_post_replies_to_the_human_message():
+    """A channel conversation has no thread, so the reference carries context.
+
+    The reference must not fail the send when the referenced message is gone,
+    which is what ``fail_if_not_exists=False`` buys: Discord simply posts
+    without the reference rather than refusing the answer.
+    """
+    from unittest.mock import AsyncMock
+
+    transport, _ = make_transport()
+    message = SimpleNamespace(id=7)
+    channel = SimpleNamespace(send=AsyncMock(return_value=message))
+    transport._bot.get_channel = lambda _id: channel
+
+    await transport.post_root(
+        channel_id="424242424242424242",
+        content="answer",
+        reference_message_id="900000000000000000",
+    )
+    reference = channel.send.await_args.kwargs["reference"]
+    assert (reference.message_id, reference.channel_id) == (900000000000000000, 424242424242424242)
+    assert reference.fail_if_not_exists is False
+    # No reference asked for means no reference sent.
+    await transport.post_root(channel_id="424242424242424242", content="plain")
+    assert channel.send.await_args.kwargs["reference"] is None
+    # A non-snowflake id is not a reference at all rather than a failed send.
+    await transport.post_root(
+        channel_id="424242424242424242", content="odd", reference_message_id="not-an-id"
+    )
+    assert channel.send.await_args.kwargs["reference"] is None

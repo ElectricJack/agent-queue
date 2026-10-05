@@ -524,8 +524,8 @@ aq --json integration reserve-owner --task-id verify-04199964
 
 So the gate writes the key only where the contract declares it (`_forbids_project_id`, derived
 from the registry, never a hand list; an unregistered command forbids nothing and keeps the
-injection its handlers read), and **for a contract that forbids the key the project's
-isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
+injection, because it has no model to reject it), and **for a contract that forbids the key the
+project's isolation is the target's own**. `src/api/target_scope.py` resolves every target reference the
 call carries — an argument named `*_id`, or `depends_on` — to the project that owns that row
 and requires each to equal the token's. A task is read live-or-archived, an operation through
 the row its `target_kind` names, a branch owner row through its repository, check evidence
@@ -538,6 +538,24 @@ An integration `subject_id` resolves the subject row's own `project_id`. For
 `integration_release_held_gate`, both the subject and gate must belong to the token's
 project; passing this ownership check still leaves the handler's local human operator
 requirement in force.
+
+A command with no contract gets neither branch: the gate injects `project_id`, and no target
+is resolved. If it acts on the project row itself that is sound. If it acts on *another*
+project's row — `session_kill`, `session_peek`, `session_drain_ack` and `provider_reroute_undo`
+all name a session or a batch by id, prefix, name or task and read no `project_id` — then the
+isolation is that handler's own, and a supervisor grant is what makes it reachable from a token
+trusted for one project only. The session family shares one fence,
+`SessionCommandsMixin._session_project_scope_error`, which compares the resolved session's
+project with the caller's; the loopback CLI and the global supervisor carry no project pin and
+stay unrestricted. `tests/test_command_scope_matrix.py` derives the set of supervisor-granted
+contractless commands that name a project-owned target and dispatches each session-addressing
+member against another project's session.
+
+The provider reroute commands validate and canonicalise task IDs through
+`src/providers/reroute_args.py` before scope checks and again in their handlers.
+Whitespace and comma separators resolve to the same task IDs at both boundaries;
+undeclared aliases are refused. A project supervisor may name only its own project's
+tasks, may not run an unnamed reroute sweep, and may undo only its project's batch moves.
 
 The provider preference preview names its project in the nested
 `receive_new_work.project_id` field; that project row is resolved by the same guard.
@@ -553,10 +571,10 @@ The policy fails closed, because "I could not work out who owns this" is not "al
 | every named target is in the token's project | admitted; the handler still authorises (a live named supervisor of that project) |
 | a named target is in another project | `out of scope: <cmd> targets another project (<arg> belongs to <pid>)` |
 | a named target exists but has no resolved project (including a missing indirect owner) | `out of scope: <cmd> targets a row owned by no project` |
-| the call names no target at all (`list_projects`, provider previews without a project preference) | `out of scope: <cmd> names no project-owned target` |
+| the call names no target at all (`list_projects`, provider previews without a project preference), or every named ID matches no row | `out of scope: <cmd> names no project-owned target` |
 | a target argument has no resolver (a polymorphic `target_id`, a report `request_id`) | `out of scope: … cannot be resolved` — the global operator keeps it |
 | the scope layer has no database | refused rather than admitted unchecked |
-| a target row is gone | no project claim to violate; the handler answers `not_found` |
+| a target row is gone beside a resolved project-owned target | the missing row adds no project claim; the handler answers `not_found` |
 
 One mechanism, no contract gained a field, `extra="forbid"` untouched. A non-elevated agent
 token is unchanged: it still gets the whole ID triple injected, and layer 1c of

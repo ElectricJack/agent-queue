@@ -358,6 +358,39 @@ class SessionQueryMixin:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]
 
+    async def publish_session_running(
+        self, session_id: str, instance_token: str, *, conn=None,
+        release_agent_reservation: bool = False,
+    ) -> None:
+        """Acknowledge a registered launch and atomically release its reservation.
+
+        A worker can claim during startup. Releasing only an unassigned
+        reservation preserves that claim's BUSY ownership.
+        """
+        if conn is None:
+            async with self.immediate() as owned_conn:
+                await self.publish_session_running(
+                    session_id, instance_token, conn=owned_conn,
+                    release_agent_reservation=release_agent_reservation,
+                )
+            return
+        row = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ).with_for_update())).mappings().one_or_none()
+        if (row is None or row["instance_token"] != instance_token
+                or row["state"] not in _LIVE_STATES or row["desired_state"] != "running"):
+            raise ValueError("session changed before launch acknowledgement")
+        await self._update_session_on(conn, session_id, {
+            "state": "running" if row["state"] == "starting" else row["state"],
+            "last_activity": time.time(),
+        })
+        if release_agent_reservation and row["agent_id"]:
+            await conn.execute(update(agents).where(
+                agents.c.id == row["agent_id"],
+                agents.c.state == AgentState.BUSY.value,
+                agents.c.current_task_id.is_(None),
+            ).values(state=AgentState.IDLE.value))
+
     async def update_session(self, session_id: str, *, conn=None, **fields) -> int:
         """Update arbitrary columns.  Returns rows affected.
 
@@ -581,3 +614,17 @@ class SessionQueryMixin:
         """Hard-delete a row.  Admin and tests only — stop() keeps history."""
         async with self._engine.begin() as conn:
             await conn.execute(delete(sessions).where(sessions.c.id == session_id))
+
+    async def prune_named_session(self, session_id: str, instance_token: str) -> bool:
+        """Forget only the fenced, inactive named history an operator inspected."""
+        async with self.immediate() as conn:
+            result = await conn.execute(delete(sessions).where(
+                sessions.c.id == session_id,
+                sessions.c.instance_token == instance_token,
+                sessions.c.lifecycle == "named",
+                sessions.c.state.in_(("sleeping", "stopped")),
+                sessions.c.desired_state == "stopped",
+                sessions.c.task_id.is_(None),
+                sessions.c.claim_phase.is_(None),
+            ))
+            return result.rowcount == 1

@@ -231,10 +231,22 @@ class IntegrationDeliveryQueriesMixin:
             raise ValueError("promotion intent missing: " + ", ".join(sorted(missing)))
 
         async with self.immediate() as conn:
+            # Cancellation holds this row through its pending-intent check
+            # and fence release. Recheck here because prepare validates its
+            # authority before entering this reservation transaction.
+            operation_state = await conn.scalar(
+                select(integration_repair_operations.c.state).where(
+                    integration_repair_operations.c.id == values["operation_key"],
+                    integration_repair_operations.c.target_kind == "parent",
+                ).with_for_update()
+            )
             existing = await self._promotion_intent_by_domain(conn, values["domain_key"])
             if existing is not None:
                 self._assert_same_intent(existing, values)
                 return existing
+
+            if operation_state in {"cancelled", "completed"}:
+                raise ValueError("parent collection is no longer active")
 
             target = await self._unresolved_target_intent(
                 conn, values["repository_id"], values["target_branch"]

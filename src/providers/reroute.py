@@ -1343,6 +1343,7 @@ class ProviderRerouteService:
         task_ids: Sequence[str] | None = None,
         force: bool = False,
         actor: str = "system",
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Return tasks to ``rerouted_from`` (D16): by batch or by task.
 
@@ -1350,11 +1351,17 @@ class ProviderRerouteService:
         unless *force*; always refused for a running or claimed task, and for
         a routed task whose ``rerouted_from`` is not among its route
         candidates (mandatory routing §6.8), *force* or not.
+
+        *project_id* confines the undo to one project's tasks: a batch is a
+        sweep across projects, and a per-project supervisor undoes only its
+        own project's moves from it.
         """
         db = self.db
         wanted: list[str] = list(task_ids or [])
         if batch_id:
-            rows = await db.list_task_reroutes(batch_id=batch_id, limit=10_000)
+            rows = await db.list_task_reroutes(
+                batch_id=batch_id, project_id=project_id, limit=10_000
+            )
             wanted += [row["task_id"] for row in rows if row.get("undone_at") is None]
         wanted = list(dict.fromkeys(wanted))
         if not wanted:
@@ -1372,6 +1379,11 @@ class ProviderRerouteService:
                 task = await db.get_task(task_id)
                 if task is None:
                     refused.append({"task_id": task_id, "reason": "task not found"})
+                    continue
+                if project_id is not None and task.project_id != project_id:
+                    refused.append(
+                        {"task_id": task_id, "reason": f"not a task of project {project_id}"}
+                    )
                     continue
                 if not task.rerouted_from:
                     refused.append({"task_id": task_id, "reason": "not re-routed"})

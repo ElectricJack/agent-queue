@@ -32,6 +32,7 @@ async def test_repair_retry_fetches_published_tip_from_authorized_repository(anc
         _arun=AsyncMock(return_value=head),
         afetch_origin=AsyncMock(),
         ais_ancestor=AsyncMock(return_value=ancestor),
+        _apush_oid=AsyncMock(),
     )
     orch = SimpleNamespace(git=git)
     fence = Fence(target=BranchKey(repository_id='repo', branch='refs/heads/aq/integration/batch'), owner_id='repair', token=4)
@@ -41,11 +42,14 @@ async def test_repair_retry_fetches_published_tip_from_authorized_repository(anc
             repository_url='git@github.com:acme/widgets.git',
         ) == head
     else:
-        with pytest.raises(GitError, match='frozen starting commit'):
-            await WorkspaceMixin._hierarchy_repair_start(
-                orch, '/slot', {'base_sha': 'a' * 40}, fence,
-                repository_url='git@github.com:acme/widgets.git',
-            )
+        # A superseded prior stage's tip is reset to the frozen start under
+        # a lease on the observed tip (main hotfix #1062).
+        assert await WorkspaceMixin._hierarchy_repair_start(
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
+        ) == 'a' * 40
+        git._apush_oid.assert_awaited_once()
+        assert git._apush_oid.await_args.kwargs['expected_old_oid'] == head
     git.afetch_origin.assert_awaited_once_with(
         '/slot', repository_url='git@github.com:acme/widgets.git'
     )

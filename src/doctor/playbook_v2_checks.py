@@ -52,6 +52,56 @@ STALE_CHECK_ID = "playbooks.activation_stale"
 INVALID_CHECK_ID = "playbooks.activation_invalid"
 REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
+ORPHANED_RUNS_CHECK_ID = "playbooks.orphaned_runs"
+
+
+async def _check_orphaned_runs(ctx: DoctorContext) -> CheckResult:
+    """Use the daemon's boundary and driver registry, never an age heuristic."""
+    playbooks = getattr(ctx.config, "playbooks", None)
+    if playbooks is None or not getattr(playbooks, "enabled", False):
+        return CheckResult(
+            id=ORPHANED_RUNS_CHECK_ID, severity=Severity.INFO,
+            detail="playbooks.enabled is false; restart recovery is paused",
+        )
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    runtime = getattr(orchestrator, "playbook_manager", None)
+    recovery = getattr(runtime, "restart_reconciler", None)
+    scan = getattr(ctx.db, "list_interrupted_runs", None)
+    if recovery is None or not callable(scan):
+        return CheckResult(
+            id=ORPHANED_RUNS_CHECK_ID, severity=Severity.INFO,
+            detail="live playbook process ownership is unavailable",
+        )
+    rows = await scan(
+        updated_before=recovery.process_started_at,
+        exclude_ids=recovery.active_run_ids,
+        limit=100,
+    )
+    # A scan can overlap scheduling; check current ownership again before
+    # reporting a run with a new in-process driver as orphaned.
+    faults = [{
+        "run_id": row.run_id,
+        "playbook_id": row.playbook_id,
+        "lifecycle": row.lifecycle.value,
+        "current_step_id": row.current_step_id,
+        "updated_at": row.updated_at,
+    } for row in rows if row.run_id not in recovery.active_run_ids]
+    data = {
+        "process_started_at": recovery.process_started_at,
+        "count": len(faults),
+        "page_full": len(rows) == 100,
+        "runs": faults,
+    }
+    return CheckResult(
+        id=ORPHANED_RUNS_CHECK_ID,
+        severity=Severity.WARN if faults else Severity.OK,
+        detail=(
+            f"{len(faults)} prior-process V2 run(s) have no current driver; "
+            "restart recovery will retry them on the playbook cycle"
+            if faults else "no prior-process V2 runs lack a current driver"
+        ),
+        data=data,
+    )
 
 
 def _digest(path: Path) -> str:
@@ -395,6 +445,7 @@ async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
 
 def playbook_v2_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id=ORPHANED_RUNS_CHECK_ID, run=_check_orphaned_runs, owner=OWNER),
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
         DoctorCheck(id=STALE_CHECK_ID, run=_check_activation_stale, fix=None, owner=OWNER),
         DoctorCheck(id=INVALID_CHECK_ID, run=_check_activation_invalid, fix=None, owner=OWNER),

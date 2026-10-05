@@ -40,6 +40,7 @@ from src.providers import inflight
 from src.providers.availability import DEGRADED, DISABLED, EXHAUSTED
 from src.providers.intent import PREFERRED
 from src.sessions.harness_parser import Harness
+from src.sessions.launch import launch_session
 from src.sessions.provider import SessionDiedDuringStartup, SessionSpec
 from tests.assignment_routing_helpers import route_source_for
 
@@ -663,9 +664,6 @@ async def _claimed_pool_session(orch, tmp_path, task_id: str, n: int) -> Session
     )
     name = f"p-standard-high-codex--p-1--{n}"
     token = f"tok-{n}"
-    await fake.start(
-        SessionSpec(session_name=name, work_dir=str(path), command=("codex",), instance_token=token)
-    )
     task = await orch.db.get_task(task_id)
     row = SessionRecord(
         id=sid,
@@ -686,8 +684,15 @@ async def _claimed_pool_session(orch, tmp_path, task_id: str, n: int) -> Session
         claim_phase_at=time.time(),
         last_claim_epoch=task.claim_epoch,
     )
-    await orch.db.create_session(row)
-    return row
+    await launch_session(
+        orch.db, fake,
+        SessionSpec(
+            session_name=name, work_dir=str(path), command=("codex",), instance_token=token,
+            env={"AQ_SESSION_ID": sid},
+        ),
+        row,
+    )
+    return await orch.db.get_session(sid)
 
 
 async def test_a_pool_session_usage_limit_exit_requeues_without_a_key_quarantine(

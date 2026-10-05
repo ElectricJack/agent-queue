@@ -746,6 +746,134 @@ async def detach_slot_for_integration_handoff(
     )
 
 
+async def _probe_workspace_checkout(
+    git,
+    git_mutex: Callable,
+    workspace,
+    *,
+    mutex_path: str | None = None,
+    expected_branch: str,
+    repository_url: str | None = None,
+    default_branch: str | None = None,
+    allow_published_detached_head: bool = False,
+    require_detached: bool = False,
+) -> str | None:
+    """Read-only proof that a checkout is clean, fully pushed, at the exact tip.
+
+    Returns the HEAD SHA when every check holds, otherwise ``None``.  This is
+    deliberately free of ``switch --detach`` and free of any process control:
+    a live writer must not be killed until this probe has already passed.
+    """
+    checkout = workspace.workspace_path
+    mutex_path = mutex_path or checkout
+    expected_branch = expected_branch.removeprefix("refs/heads/")
+    branch_ref = f"refs/heads/{expected_branch}"
+    remote_ref = f"refs/remotes/origin/{expected_branch}"
+    async with git_mutex(mutex_path):
+        current = await git._arun_unlocked(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
+        )
+        if require_detached and current != "HEAD":
+            return None
+        if current not in {expected_branch, "HEAD"}:
+            return None
+        status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
+        if status:
+            return None
+
+        if repository_url:
+            await git.afetch_origin(
+                mutex_path, repository_url=repository_url, lock_held=True
+            )
+        else:
+            await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
+        local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
+        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
+        head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        if not local_tip or local_tip != remote_tip:
+            return None
+        if head != local_tip:
+            if current != "HEAD" or not allow_published_detached_head:
+                return None
+            # Failed verifier preparation can leave the published default
+            # branch detached. Preserve it and prove publication afresh;
+            # a stale remote-tracking ref cannot authorize release.
+            if repository_url and default_branch:
+                published_head = await git._arun_unlocked(
+                    ["rev-parse", f"refs/remotes/origin/{default_branch}"],
+                    cwd=checkout,
+                )
+                if published_head != head:
+                    return None
+            else:
+                remote_head = await git._arun_unlocked(
+                    ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=checkout
+                )
+                if remote_head.split() != [head, "HEAD"]:
+                    return None
+        return head
+
+
+async def probe_workspace_for_integration_handoff(
+    git,
+    git_mutex: Callable,
+    workspace,
+    *,
+    mutex_path: str | None = None,
+    expected_branch: str,
+    repository_url: str | None = None,
+    default_branch: str | None = None,
+    allow_published_detached_head: bool = False,
+    require_detached: bool = False,
+) -> bool:
+    """Read-only clean + pushed-tip proof; never stops, detaches, or mutates."""
+    return (
+        await _probe_workspace_checkout(
+            git,
+            git_mutex,
+            workspace,
+            mutex_path=mutex_path,
+            expected_branch=expected_branch,
+            repository_url=repository_url,
+            default_branch=default_branch,
+            allow_published_detached_head=allow_published_detached_head,
+            require_detached=require_detached,
+        )
+        is not None
+    )
+
+
+async def probe_slot_for_integration_handoff(
+    db,
+    git,
+    git_mutex: Callable,
+    workspace,
+    *,
+    expected_branch: str,
+    repository_url: str | None = None,
+    default_branch: str | None = None,
+    allow_published_detached_head: bool = False,
+    require_detached: bool = False,
+) -> bool:
+    """Resolve the slot's base and run the same read-only probe against it."""
+    if not workspace.is_slot or not workspace.base_workspace_id:
+        return False
+    base = await db.get_workspace(workspace.base_workspace_id)
+    if base is None or base.project_id != workspace.project_id:
+        return False
+    return await probe_workspace_for_integration_handoff(
+        git,
+        git_mutex,
+        workspace,
+        mutex_path=base.workspace_path,
+        expected_branch=expected_branch,
+        repository_url=repository_url,
+        default_branch=default_branch,
+        allow_published_detached_head=allow_published_detached_head,
+        require_detached=require_detached,
+    )
+
+
 async def detach_workspace_for_integration_handoff(
     git,
     git_mutex: Callable,
@@ -758,57 +886,35 @@ async def detach_workspace_for_integration_handoff(
     allow_published_detached_head: bool = False,
     require_detached: bool = False,
 ) -> bool:
-    """Prove and detach an exact pushed checkout before releasing its lock."""
+    """Prove and detach an exact pushed checkout before releasing its lock.
 
+    The read-only half of the proof is delegated to
+    :func:`_probe_workspace_checkout`; the write half then takes the same
+    mutex again and performs ``switch --detach`` plus verification.  The
+    two acquire/release sections are sequential, not nested.  Unknown Git
+    state is a failed proof, never release evidence -- there is no slot
+    restore ladder in this path.
+    """
     checkout = workspace.workspace_path
-    mutex_path = mutex_path or checkout
-    expected_branch = expected_branch.removeprefix("refs/heads/")
-    branch_ref = f"refs/heads/{expected_branch}"
-    remote_ref = f"refs/remotes/origin/{expected_branch}"
-    async with git_mutex(mutex_path):
+    head = await _probe_workspace_checkout(
+        git,
+        git_mutex,
+        workspace,
+        mutex_path=mutex_path,
+        expected_branch=expected_branch,
+        repository_url=repository_url,
+        default_branch=default_branch,
+        allow_published_detached_head=allow_published_detached_head,
+        require_detached=require_detached,
+    )
+    if head is None:
+        return False
+    expected_branch_str = expected_branch.removeprefix("refs/heads/")
+    async with git_mutex(mutex_path or checkout):
         current = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
         )
-        if require_detached and current != "HEAD":
-            return False
-        if current not in {expected_branch, "HEAD"}:
-            return False
-        status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
-        if status:
-            return False
-
-        if repository_url:
-            await git.afetch_origin(
-                mutex_path, repository_url=repository_url, lock_held=True
-            )
-        else:
-            await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
-        local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
-        remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
-        head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
-        if not local_tip or local_tip != remote_tip:
-            return False
-        if head != local_tip:
-            if current != "HEAD" or not allow_published_detached_head:
-                return False
-            # Failed verifier preparation can leave the published default
-            # branch detached. Preserve it and prove publication afresh;
-            # a stale remote-tracking ref cannot authorize release.
-            if repository_url and default_branch:
-                published_head = await git._arun_unlocked(
-                    ["rev-parse", f"refs/remotes/origin/{default_branch}"],
-                    cwd=checkout,
-                )
-                if published_head != head:
-                    return False
-            else:
-                remote_head = await git._arun_unlocked(
-                    ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=checkout
-                )
-                if remote_head.split() != [head, "HEAD"]:
-                    return False
-
-        if current == expected_branch:
+        if current == expected_branch_str:
             await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
         detached = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout

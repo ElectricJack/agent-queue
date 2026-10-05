@@ -45,6 +45,24 @@ class ArtifactStore:
             raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")
         return str(self._root / f"{artifact_sha256[7:]}.json")
 
+    def put_source(self, artifact_sha256: str, source: str) -> None:
+        """Retain reviewed Markdown separately from the immutable compiled schema."""
+        from src.playbooks.definition import source_digest
+
+        definition = self.load(artifact_sha256)
+        if source_digest(source) != definition.source_hash:
+            raise ArtifactVerificationFailed("source does not match the reviewed artifact")
+        path = Path(self.path_for(artifact_sha256)).with_suffix(".md")
+        self._write_atomically(path, source.encode("utf-8"))
+
+    def load_source(self, artifact_sha256: str) -> str:
+        from src.playbooks.definition import source_digest
+
+        source = Path(self.path_for(artifact_sha256)).with_suffix(".md").read_text(encoding="utf-8")
+        if source_digest(source) != self.load(artifact_sha256).source_hash:
+            raise ArtifactVerificationFailed("retained source does not match the reviewed artifact")
+        return source
+
     def layout_path_for(self, artifact_sha256: str) -> str:
         if not SHA256_RE.fullmatch(artifact_sha256):
             raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")

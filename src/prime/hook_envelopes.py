@@ -18,6 +18,12 @@ from typing import Mapping
 # compaction is exactly when restoring the continuation state pays for itself.
 STARTUP_PROMPT_DELIVERED_ENV = "AQ_STARTUP_PROMPT_DELIVERED"
 
+#: Harnesses whose SessionStart contract accepts structured JSON output
+#: (design §5.5).  Knowledge delivery (``src/knowledge/delivery.py``) reads this
+#: set rather than repeating the list, so "which harness has a hook envelope"
+#: has exactly one answer in the tree.
+HOOK_ENVELOPE_HARNESSES = frozenset({"claude", "codex"})
+
 
 def wrap(body: str, harness: str) -> str:
     """Wrap *body* in the hook envelope for *harness*.
@@ -31,7 +37,7 @@ def wrap(body: str, harness: str) -> str:
     §5.5: "harnesses without structured hook output -> plain text").
     """
     normalized = (harness or "").strip().lower()
-    if normalized in {"claude", "codex"}:
+    if normalized in HOOK_ENVELOPE_HARNESSES:
         return json.dumps(
             {
                 "hookSpecificOutput": {

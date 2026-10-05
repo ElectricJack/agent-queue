@@ -39,6 +39,7 @@ from src.escalations.facts import (
     MentionPolicy,
     TransportBinding,
 )
+from src.escalations.interactions import ButtonSpec, choice_buttons
 from src.escalations.plan import (
     DEFER_SECONDS,
     MAX_ATTEMPTS,
@@ -50,12 +51,22 @@ from src.escalations.plan import (
 from src.escalations.render import (
     marker_for,
     render_ack,
+    render_collapsed_root,
     render_relay,
     render_resolution,
     render_resolved_root,
     render_root,
+    render_state_root,
     render_thread_opener,
     thread_name,
+)
+from src.escalations.state import (
+    KIND_STATE,
+    STATE_OPEN,
+    STATE_STALE,
+    display_state,
+    is_collapsed,
+    is_stale_due,
 )
 from src.escalations.transport import (
     EscalationTransport,
@@ -80,6 +91,31 @@ RECONCILE_INTERVAL_SECONDS = 30.0
 #: time to go out; without this the newest hundred rows would be re-queried
 #: for the life of the daemon.
 TERMINAL_HORIZON_SECONDS = 3600.0
+#: §7.2: "Escalation edits coalesce: at most one edit per escalation per 30 s,
+#: latest state wins".  One incident's post is one message, so a burst of state
+#: changes inside half a minute is written once, at its last value, and the
+#: edits that lost the race are deferred rather than dropped.
+EDIT_COALESCE_SECONDS = 30.0
+#: The delivery kinds that write to an incident's root post.  Both are edits in
+#: the §7.2 sense, so both feed the coalescing floor.
+ROOT_EDIT_KINDS = frozenset({KIND_STATE, KIND_RESOLUTION})
+#: How a state edit records the form it wrote in its receipt.  It has to be in
+#: the receipt — ``payload`` is the form the row was *planned* for, and §7.2's
+#: "latest state wins" means the two legitimately differ when an edit was
+#: overtaken.  Neither an id nor a form can contain ``|``, and the form comes
+#: from :data:`~src.escalations.state.DISPLAY_STATES`.
+EDIT_RECEIPT_PREFIXES = ("edit|", "current|")
+
+
+def _written_form(receipt: str | None) -> str | None:
+    """The form a sent root-edit receipt recorded, or ``None``."""
+    if not receipt:
+        return None
+    for prefix in EDIT_RECEIPT_PREFIXES:
+        if receipt.startswith(prefix):
+            parts = receipt.split("|")
+            return parts[2] if len(parts) > 2 and parts[2] else None
+    return None
 
 
 @dataclass
@@ -90,6 +126,8 @@ class TickReport:
     sent: int = 0
     retried: int = 0
     unknown: int = 0
+    edits: int = 0
+    coalesced: int = 0
     skipped: str | None = None
     replacements: tuple[str, ...] = field(default_factory=tuple)
 
@@ -137,11 +175,55 @@ class EscalationDeliveryService:
         return self._discord.escalation
 
     @property
+    def _stateful(self) -> bool:
+        """§7.1's P1 flag: the escalation state machine and edit-in-place.
+
+        Read per call so a hot-reloaded ``discord.escalations.stateful`` bites
+        at once.  False is not a degraded mode: it is exactly the behaviour
+        that shipped before this phase -- one root post per incident, edited
+        only when it closes, no auto-resolution, no collapse bookkeeping.
+        """
+        return bool(getattr(getattr(self._discord, "escalations", None), "stateful", False))
+
+    def _reminder_minutes(self) -> int:
+        minutes = getattr(self._settings, "reminder_minutes", 0)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)):
+            return 0
+        return max(0, int(minutes))
+
+    def _stale(self, facts: EscalationFacts) -> bool:
+        """Has §5.2's stale timer fired for this incident?"""
+        return is_stale_due(
+            facts.state,
+            facts.updated_at,
+            now=self._clock(),
+            reminder_minutes=self._reminder_minutes(),
+        )
+
+    @property
     def _channel_id(self) -> str:
         return str(getattr(self._discord, "channel_id", "") or "")
 
     def _mentions(self) -> MentionPolicy:
         return MentionPolicy.from_config(self._settings)
+
+    def _buttons(
+        self, facts: EscalationFacts, *, display: str = STATE_OPEN
+    ) -> tuple[ButtonSpec, ...]:
+        """§5.3's buttons for one form of the post, or none.
+
+        Only the ``open`` and ``stale`` forms still want an answer -- the stale
+        reminder is §5.2's "this has been sitting since" on a question that is
+        *still* open -- so both keep the choice row.  ``answered`` and the two
+        collapsed forms drop it, so a post that says the supervisor is acting on
+        it does not still offer the alternatives it is acting between.
+
+        Entirely a §7.1 P1 affordance: with the flag off the post carries no
+        components at all, exactly as it did before the phase.
+        """
+        if not self._stateful or display not in {STATE_OPEN, STATE_STALE}:
+            return ()
+        return choice_buttons(facts.id, tuple(facts.choices))
 
     async def _dashboard(self) -> tuple[str, str]:
         """``(base_url, notice)`` for the payload about to be rendered."""
@@ -193,7 +275,13 @@ class EscalationDeliveryService:
         facts = EscalationFacts.from_row(incident)
         deliveries = await self.db.list_escalation_deliveries(facts.id)
         messages = await self.db.list_escalation_messages(facts.id)
-        plan = plan_deliveries(facts, deliveries=deliveries, messages=messages)
+        plan = plan_deliveries(
+            facts,
+            deliveries=deliveries,
+            messages=messages,
+            stateful=self._stateful,
+            stale=self._stateful and self._stale(facts),
+        )
         now = self._clock()
         created: list[dict[str, Any]] = []
         for planned in plan.deliveries:
@@ -367,6 +455,23 @@ class EscalationDeliveryService:
             return None
 
     async def _deliver_one(self, row: Mapping[str, Any], report: TickReport) -> None:
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        if incident is None:
+            await self._finish(
+                row, report, status="unknown", last_error="escalation record is gone"
+            )
+            return
+        facts = EscalationFacts.from_row(incident)
+        if not facts.wants_human_delivery:
+            # Also fences rows queued by an older daemon, including retries
+            # and follow-ups on a root that was posted before the cutover.
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="supervisor delivery incident is internal-only; nothing was sent",
+            )
+            return
         channel_id = self._channel_id
         if not channel_id:
             await self._finish(
@@ -386,13 +491,6 @@ class EscalationDeliveryService:
             )
             return
 
-        incident = await self.db.get_escalation(str(row["escalation_id"]))
-        if incident is None:
-            await self._finish(
-                row, report, status="unknown", last_error="escalation record is gone"
-            )
-            return
-        facts = EscalationFacts.from_row(incident)
         deliveries = await self.db.list_escalation_deliveries(facts.id)
         binding = binding_from_deliveries(deliveries)
         kind = str(row["kind"])
@@ -401,15 +499,277 @@ class EscalationDeliveryService:
             KIND_ACK: self._deliver_thread_text,
             KIND_RELAY: self._deliver_thread_text,
             KIND_RESOLUTION: self._deliver_resolution,
+            KIND_STATE: self._deliver_state,
         }.get(kind)
         if handler is None:
             await self._finish(
                 row, report, status="unknown", last_error=f"unknown delivery kind {kind!r}"
             )
             return
+        if kind == KIND_STATE and not self._stateful:
+            # Also fences rows a daemon planned before the flag was turned off:
+            # rollback is not "leave a half-applied phase running".
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                last_error="discord.escalations.stateful is off; no state edit was sent",
+            )
+            return
         await handler(row, report, facts=facts, binding=binding, deliveries=deliveries)
 
     # -- kinds ----------------------------------------------------------
+    def _last_root_edit(self, deliveries: Sequence[Mapping[str, Any]]) -> tuple[float | None, str | None]:
+        """``(when, which_form)`` for this incident's root post's last write.
+
+        Derived from the delivery rows rather than an in-memory map, so a
+        restart, a second daemon or the §5.6 sweep all see the same floor.  Only
+        ``sent`` rows count: a retry that never wrote anything must not hold up
+        the edit that will.
+
+        The form comes from the *receipt*, never from ``payload``.  ``payload``
+        is the form a row was planned for, and §7.2's "latest state wins" means
+        the two legitimately differ — a row can be recorded ``sent`` having
+        written nothing at all (superseded, or absorbed by a resolution), and
+        trusting its payload would make the dispatcher believe a post shows a
+        form it never received.
+
+        A ``root`` row is deliberately absent: creating a post is not editing
+        it, so §7.2's window starts at the incident's first *edit*.
+        """
+        best: tuple[float, str] | None = None
+        for row in deliveries:
+            if str(row.get("kind")) not in ROOT_EDIT_KINDS:
+                continue
+            if str(row.get("status")) != "sent":
+                continue
+            stamp = float(row["receipt_confirmed_at"] or row["updated_at"] or 0.0)
+            if stamp <= 0.0:
+                continue
+            form = _written_form(row.get("external_receipt_id"))
+            if not form:
+                continue
+            if best is None or stamp >= best[0]:
+                best = (stamp, form)
+        return (best[0], best[1]) if best else (None, None)
+
+    def _superseded_state_key(
+        self,
+        deliveries: Sequence[Mapping[str, Any]],
+        facts: EscalationFacts,
+        *,
+        current_key: str,
+    ) -> str | None:
+        """A newer form of this post is already owed, so this edit can be skipped.
+
+        §7.2's "latest state wins": the edit renders the incident's *current*
+        form rather than the one it was planned for, so a form that was overtaken
+        while queued has nothing to add.  Returning the newer key lets the row
+        say which one replaced it, instead of silently disappearing.
+
+        ``current_key`` is this delivery's own key.  Without it a queued row
+        would supersede *itself* — its planned form is by construction not the
+        current one — and the edit would never go out at all.
+        """
+        generation = binding_from_deliveries(deliveries).generation
+        current = display_state(facts.state, stale=self._stale(facts))
+        for row in deliveries:
+            if str(row.get("kind")) != KIND_STATE or str(row["dedup_key"]) == current_key:
+                continue
+            payload_display = str((row.get("payload") or {}).get("display") or "")
+            if not payload_display or payload_display == current:
+                continue
+            if int(row.get("generation") or 0) >= generation and str(row.get("status")) in {
+                "pending",
+                "sending",
+                "retry",
+            }:
+                return str(row["dedup_key"])
+        return None
+
+    async def _deliver_state(
+        self,
+        row: Mapping[str, Any],
+        report: TickReport,
+        *,
+        facts: EscalationFacts,
+        binding: TransportBinding,
+        deliveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Rewrite the incident's one post in place to show its current form.
+
+        §5.1: every state change edits that post; nothing appends a second root.
+        Four things stand between a state change and that edit, each of which
+        has to be a no-op rather than a second message:
+
+        * **no root yet** — defer until the post exists, so the post is never
+          created twice to show a state it should have shown at creation;
+        * **already collapsed** — a closed incident's post is stamped
+          ``collapsed_at`` on its first collapsed edit, so a replay reads that
+          and sends nothing;
+        * **coalescing** — §7.2 allows one edit per incident per 30 s.  A
+          deferred edit keeps its row and comes back at the window edge; it is
+          not an error and it is not dropped;
+        * **overtaken** — the edit renders the current form, so a newer state
+          that is already owed makes this one redundant.
+        """
+        dedup_key = str(row["dedup_key"])
+        if not binding.has_root:
+            # Bounded like any other wait: an edit that never gets a post to
+            # write to must not defer forever.  ``attempt_count`` is bumped on
+            # claim, so this is a real budget rather than a silent loop.
+            if int(row["attempt_count"]) >= self._max_attempts:
+                await self._finish(
+                    row,
+                    report,
+                    status="unknown",
+                    last_error=(
+                        "the incident's root post never became deliverable, so its "
+                        "state edit was abandoned rather than deferred forever"
+                    ),
+                )
+                return
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                next_attempt_at=self._clock() + DEFER_SECONDS,
+                last_error="waiting for the incident's root post to edit it in place",
+            )
+            return
+        display = display_state(facts.state, stale=self._stale(facts))
+        if is_collapsed(display):
+            # The resolution delivery owns the collapsed form, so a live form
+            # arriving here means the incident closed between planning and
+            # sending.  That is an ordinary race, not a fault: the post is
+            # correct once the resolution lands, so the row is recorded sent
+            # rather than raising an attention-needed ``unknown`` for a post
+            # that is about to be right.
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"absorbed|{binding.root_message_id}|resolution",
+                last_error=(
+                    f"incident became {display} before its state edit was sent; "
+                    "the resolution delivery owns the collapsed post"
+                ),
+            )
+            return
+        if facts.collapsed_at is not None:
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"collapsed|{binding.root_message_id}",
+                last_error="post is already collapsed; no edit was needed",
+            )
+            return
+        superseded = self._superseded_state_key(deliveries, facts, current_key=dedup_key)
+        if superseded is not None:
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"superseded:{superseded}",
+                last_error=f"latest state wins; {superseded} carries the current form",
+            )
+            return
+        last_edit, last_form = self._last_root_edit(deliveries)
+        if last_form == display:
+            # The post already shows this form: an overtaken edit rendered the
+            # current state on its way through, so there is nothing to write.
+            await self._finish(
+                row,
+                report,
+                status="sent",
+                binding=binding,
+                receipt_id=f"current|{binding.root_message_id}|{display}",
+                last_error="the post already shows this form; latest state wins",
+            )
+            return
+        now = self._clock()
+        if last_edit is not None and now - last_edit < EDIT_COALESCE_SECONDS:
+            report.coalesced += 1
+            await self._finish(
+                row,
+                report,
+                status="retry",
+                binding=binding,
+                next_attempt_at=last_edit + EDIT_COALESCE_SECONDS,
+                last_error=(
+                    f"coalesced: this incident's post was edited less than "
+                    f"{EDIT_COALESCE_SECONDS:g}s ago (§7.2 allows one edit per 30s)"
+                ),
+            )
+            return
+
+        base_url, dashboard_notice = await self._dashboard()
+        answered_at = await self._answered_at(facts.id)
+        try:
+            await self.transport.edit_root(
+                channel_id=str(binding.channel_id or self._channel_id),
+                root_message_id=str(binding.root_message_id),
+                content=render_state_root(
+                    facts,
+                    display=display,
+                    base_url=base_url,
+                    dedup_key=dedup_key,
+                    dashboard_notice=dashboard_notice,
+                    answered_at=answered_at,
+                ),
+                buttons=self._buttons(facts, display=display),
+            )
+        except TransportMissing as exc:
+            # The post this edit was going to rewrite is gone.  A live incident
+            # gets a replacement generation; a closed one never does.
+            replacement_id = await self._request_replacement(facts, deliveries, report)
+            await self._finish(
+                row,
+                report,
+                status="unknown",
+                binding=binding,
+                last_error=(
+                    f"{self._describe(exc)}; "
+                    + (
+                        f"replacement delivery {replacement_id} recorded"
+                        if replacement_id
+                        else "no replacement (incident is closed or one is already pending)"
+                    )
+                ),
+            )
+            return
+        except TransportError as exc:
+            await self._fail(
+                row, report, binding=binding, error=self._describe(exc), retryable=True
+            )
+            return
+        report.edits += 1
+        await self._finish(
+            row,
+            report,
+            status="sent",
+            binding=binding,
+            receipt_id=f"edit|{binding.root_message_id}|{display}",
+        )
+
+    async def _answered_at(self, escalation_id: str) -> float | None:
+        """When the human last answered in the thread, for §5.2's answered form."""
+        try:
+            messages = await self.db.list_escalation_messages(escalation_id)
+        except Exception:  # pragma: no cover - the form degrades, the edit does not
+            logger.debug("could not read escalation history for the answered form", exc_info=True)
+            return None
+        stamps = [
+            float(row["received_at"])
+            for row in messages
+            if str(row.get("direction")) == "inbound" and row.get("received_at") is not None
+        ]
+        return max(stamps) if stamps else None
+
     async def _deliver_root(
         self,
         row: Mapping[str, Any],
@@ -434,12 +794,8 @@ class EscalationDeliveryService:
         replacement = bool((row.get("payload") or {}).get("replacement"))
         base_url, dashboard_notice = await self._dashboard()
         content = (
-            render_resolved_root(
-                facts,
-                base_url=base_url,
-                dedup_key=dedup_key,
-                dashboard_notice=dashboard_notice,
-            )
+            # §3.2's collapsed row carries no link, so it needs no origin.
+            self._collapsed_content(facts, dedup_key=dedup_key)
             if facts.is_terminal
             else render_root(
                 facts,
@@ -490,7 +846,11 @@ class EscalationDeliveryService:
         )
         if root_id is None:
             try:
-                outcome = await self.transport.post_root(channel_id=channel_id, content=content)
+                outcome = await self.transport.post_root(
+                    channel_id=channel_id,
+                    content=content,
+                    buttons=self._buttons(facts),
+                )
             except TransportError as exc:
                 await self._fail(row, report, binding=current, error=exc)
                 return
@@ -800,15 +1160,14 @@ class EscalationDeliveryService:
                 return
 
         try:
+            # A closed incident carries no buttons: §5.2's collapsed row is the
+            # whole post, and a choice row under "Resolved: …" would invite a
+            # second answer to a question that is closed.
             await self.transport.edit_root(
                 channel_id=str(binding.channel_id or self._channel_id),
                 root_message_id=str(binding.root_message_id),
-                content=render_resolved_root(
-                    facts,
-                    base_url=base_url,
-                    dedup_key=f"{dedup_key}:root",
-                    dashboard_notice=dashboard_notice,
-                ),
+                content=self._collapsed_content(facts, dedup_key=f"{dedup_key}:root"),
+                buttons=self._buttons(facts, display=display_state(facts.state)),
             )
         except TransportMissing as exc:
             # The root is gone but the outcome is recorded in the thread and in
@@ -832,6 +1191,18 @@ class EscalationDeliveryService:
                 # The resolution is visible; archival is cosmetic.  Record the
                 # send and leave the reason on the row.
                 logger.debug("thread archive failed: %s", exc)
+        report.edits += 1
+        if self._stateful:
+            # Write-once, and only once the post really carries the collapsed
+            # form: it is the audit trail for "when did this stop asking", and
+            # the idempotency check every later replay of this edit relies on.
+            # It is not a countdown — §8 Q3 keeps collapsed posts forever.
+            try:
+                await self.db.record_escalation_collapse(facts.id, now=self._clock())
+            except Exception:  # pragma: no cover - the post is already correct
+                logger.warning(
+                    "could not stamp the collapsed post for %s", facts.id, exc_info=True
+                )
         await self._finish(
             row,
             report,
@@ -839,6 +1210,21 @@ class EscalationDeliveryService:
             binding=binding,
             receipt_id=receipt or f"edit:{binding.root_message_id}:{facts.revision}",
             last_error=thread_note,
+        )
+
+    def _collapsed_content(self, facts: EscalationFacts, *, dedup_key: str) -> str:
+        """The closed incident's one-line post, in whichever phase is configured.
+
+        With §7.1's P1 flag off this is the pre-phase wording, unchanged.  With
+        it on it is §5.2's collapsed row, which can tell a question somebody
+        answered from one a §5.5 rule retired.
+        """
+        if not self._stateful:
+            return render_resolved_root(facts, dedup_key=dedup_key)
+        return render_collapsed_root(
+            facts,
+            display=display_state(facts.state, stale=False),
+            dedup_key=dedup_key,
         )
 
     @staticmethod

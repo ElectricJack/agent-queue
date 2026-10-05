@@ -5,16 +5,13 @@ from __future__ import annotations
 import logging
 import time
 
-from src.discord.notifications import (
-    format_failed_blocked_report,
-    format_failed_blocked_report_embed,
-)
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
     BudgetWarningEvent,
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
+from src.notifications.render import format_failed_blocked_report
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
@@ -654,7 +651,6 @@ class MonitoringMixin:
 
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
-            format_failed_blocked_report_embed(proj_failed, proj_blocked)
             await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:
@@ -727,6 +723,17 @@ class MonitoringMixin:
                     )
                 except Exception:
                     pass
+
+    async def _recover_interrupted_playbook_runs(self) -> None:
+        """Schedule a bounded page of runs interrupted by a prior process."""
+        if not self.config.playbooks.enabled or self.playbook_manager is None:
+            return
+        try:
+            scheduled = await self.playbook_manager.recover_interrupted_runs()
+            if scheduled:
+                logger.info("Scheduled V2 restart recovery for runs: %s", scheduled)
+        except Exception:
+            logger.exception("V2 restart recovery scan failed; next cycle will retry")
 
     async def _reconcile_playbook_child_tasks(self) -> None:
         """Resume playbook runs suspended on a child task that has settled.

@@ -143,6 +143,7 @@ def test_registry_has_categories(registry):
         "wait",
         "collaboration",
         "job",
+        "artifact",
     }
 
     for cat in categories:

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/object_loop.py`](../../../src/commands/contracts/object_loop.py) |
-| Contract fingerprint | `sha256:0bb3c441ae652b0cc7dbe22d22e0c9aad47fd515ba9a3327e7eb910aff1bcd7b` |
+| Contract fingerprint | `sha256:e72164896a0ea9661c710d0a3aecd7a20647a6b633dd8f4255e459fc00d3c445` |
 
 ## Parameters
 
@@ -26,6 +26,8 @@
 | `attempt_id` | `string` | yes | — | — |
 | `incumbent_sha256` | `string` | yes | — | — |
 | `incumbent_artifact` | `Artifact \| null` | no | `null` | — |
+| `incumbent_capture_sha256` | `string` | yes | — | — |
+| `reference_kind` | `"calibrated" \| "self"` | no | `"calibrated"` | — |
 | `reference_sha256` | `string` | yes | — | — |
 | `rig_sha256` | `string` | yes | — | — |
 | `scorer_sha256` | `string` | yes | — | — |
@@ -39,6 +41,7 @@
 | `final_reserve` | `Reservation` | yes | — | — |
 | `score_reservation` | `Reservation` | yes | — | — |
 | `noise_band` | `number` | yes | — | — |
+| `max_rounds` | `integer` | no | `8` | — |
 | `max_repair_rounds` | `integer` | no | `2` | — |
 | `max_plateau_rounds` | `integer` | no | `3` | — |
 | `variants` | `Variant[]` | yes | — | — |
@@ -94,7 +97,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, epic_task_id, object_id, attempt_id, incumbent_sha256, incumbent_artifact, reference_sha256, rig_sha256, scorer_sha256, render_profile_sha256, policy_sha256, brief_review_id, brief_review_revision, brief_review_sha256, mandatory_views, limits, final_reserve, score_reservation, noise_band, max_repair_rounds, max_plateau_rounds, variants | — | always |
+| Create using project_id, epic_task_id, object_id, attempt_id, incumbent_sha256, incumbent_artifact, incumbent_capture_sha256, reference_kind, reference_sha256, rig_sha256, scorer_sha256, render_profile_sha256, policy_sha256, brief_review_id, brief_review_revision, brief_review_sha256, mandatory_views, limits, final_reserve, score_reservation, noise_band, max_rounds, max_repair_rounds, max_plateau_rounds, variants | — | always |
 
 <!-- aq:generated:end -->
 

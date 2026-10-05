@@ -206,6 +206,7 @@ areas:
     description: "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol."
     match:
       - tests/test_session_spec.py
+      - tests/test_session_launch.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
@@ -269,13 +270,13 @@ areas:
       - tests/test_notifications.py
       - tests/test_discord_adapter.py
       - tests/test_remote_links.py
+      - tests/test_dashboard_links.py
   - id: discord
-    description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle."
+    description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle."
     match:
       - tests/test_discord_*.py
       - tests/test_rate_guard.py
       - tests/test_slash_commands.py
-      - tests/test_views.py
   - id: discord-conversations
     description: "Discord @mention conversations with the supervisor: the pure intake classifier and its gate order, the numeric limits, fail-closed preconditions, the outbound outbox port and durable conversations, inputs, backfill cursors and gaps."
     match: [tests/test_conversation_*.py]
@@ -422,6 +423,7 @@ areas:
       - tests/test_integration_delivered_parent_adoption.py
       - tests/test_integration_root_pull_requests.py
       - tests/test_integration_repair.py
+      - tests/test_integration_repair_lineage.py
       - tests/test_integration_repair_rollover.py
       - tests/test_integration_review_evidence.py
       - tests/test_integration_root_authorization.py
@@ -730,8 +732,10 @@ areas:
       - tests/test_override_handler.py
       - tests/test_reference_stub_*.py
   - id: knowledge-evaluation
-    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks."
-    match: [tests/test_knowledge_evaluation.py]
+    description: "Offline synthetic knowledge fixture evaluation: sealed manifests, adapter observations, exact citations, leakage and budget checks, plus the thin harness delivery/resume adapters and the integrated runner replayed against the real context service."
+    match:
+      - tests/test_knowledge_evaluation.py
+      - tests/test_knowledge_harness_delivery.py
   - id: memory-facts
     description: "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection."
     match:
@@ -807,6 +811,7 @@ areas:
       - tests/test_doctor_stall_checks.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
+      - tests/test_doctor_discord_config.py
       - tests/test_health_platform.py
 
   # ------------------------------------------------------------ install and release

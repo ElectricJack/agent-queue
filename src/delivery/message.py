@@ -21,9 +21,39 @@ from src.escalations.transport import (
 logger = logging.getLogger(__name__)
 
 
+#: Base-4 zero-width alphabet: space, non-joiner, joiner, word joiner.
+_ZW_DIGITS = ("\u200b", "\u200c", "\u200d", "\u2060")
+_ZW_START = "\u2063"  # invisible separator
+#: One-digit kind tags; any other prefix shares the last tag.
+_KINDS = {"aq-out": 0, "aq-dig": 1, "aq-conv": 2}
+_HEX = "0123456789abcdef"
+
+
+def _fold(value: str) -> str:
+    if len(value) == 16 and all(ch in _HEX for ch in value):
+        return value
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def invisible(marker: str) -> str:
+    """Encode a reconciliation marker as a compact run of zero-width characters.
+
+    ``prefix:payload`` becomes a start character, one kind digit and the
+    16-hex fold of the payload at two base-4 digits per hex digit (34 chars).
+    Discord keeps these characters, so a marker search still matches, but a
+    reader never sees the marker.
+    """
+    prefix, _, payload = marker.partition(":")
+    kind = _KINDS.get(prefix, 3)
+    body = "".join(
+        _ZW_DIGITS[n >> 2] + _ZW_DIGITS[n & 3] for n in (_HEX.index(c) for c in _fold(payload))
+    )
+    return _ZW_START + _ZW_DIGITS[kind] + body
+
+
 def operation_marker(owner_id: str, *, prefix: str) -> str:
     fold = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:16]
-    return f"{prefix}:{fold}"
+    return invisible(f"{prefix}:{fold}")
 
 
 @dataclass(frozen=True)
@@ -35,6 +65,9 @@ class FrozenMessage:
     thread_id: str | None = None
     last_error: str | None = None
     reclaimed: bool = False
+    #: The message this post replies to, for a chat channel that has no thread
+    #: to hold the context.  Ignored when ``thread_id`` is set.
+    reference_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,10 +122,16 @@ class MessageDelivery:
                     ),
                 )
         try:
-            content = f"{message.text}\n{message.marker}"
+            content = f"{message.text}{message.marker}"
             if message.thread_id:
                 outcome = await self.transport.post_thread_message(
                     thread_id=message.thread_id, content=content
+                )
+            elif message.reference_message_id:
+                outcome = await self.transport.post_root(
+                    channel_id=message.channel_id,
+                    content=content,
+                    reference_message_id=message.reference_message_id,
                 )
             else:
                 outcome = await self.transport.post_root(

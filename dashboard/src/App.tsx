@@ -47,6 +47,12 @@ const FocusHome = lazy(() => import("./pages/focus/FocusHome"));
 const FocusTask = lazy(() => import("./pages/focus/FocusTask"));
 const FocusSession = lazy(() => import("./pages/focus/FocusSession"));
 const FocusReport = lazy(() => import("./pages/focus/FocusReport"));
+const FocusReview = lazy(() => import("./pages/focus/FocusReview"));
+const FocusEscalation = lazy(() => import("./pages/focus/FocusEscalation"));
+const FocusInbox = lazy(() => import("./pages/focus/FocusInbox"));
+const FocusBatch = lazy(() => import("./pages/focus/FocusBatch"));
+const FocusConversation = lazy(() => import("./pages/focus/FocusConversation"));
+const FocusConversationList = lazy(() => import("./pages/focus/FocusConversationList"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
 function WorkspaceIndexRedirect() {
@@ -170,6 +176,12 @@ export default function App() {
             <Route path="tasks/:taskId" element={<FocusTask />} />
             <Route path="sessions/:sessionId" element={<FocusSession />} />
             <Route path="reports/:reportId" element={<FocusReport />} />
+            <Route path="reviews/:reviewId" element={<FocusReview />} />
+            <Route path="escalations/:escalationId" element={<FocusEscalation />} />
+            <Route path="inbox" element={<FocusInbox />} />
+            <Route path="batches/:batchId" element={<FocusBatch />} />
+            <Route path="conversations" element={<FocusConversationList />} />
+            <Route path="conversations/:conversationId" element={<FocusConversation />} />
             <Route path="*" element={<Navigate to="/focus" replace />} />
           </Route>
           <Route element={<AppShellV2 />}>

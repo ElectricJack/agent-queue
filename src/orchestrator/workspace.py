@@ -728,11 +728,33 @@ class WorkspaceMixin:
             ):
                 raise GitError("preserved repair tip or canonical branch lineage changed")
             return progress["sha"]
-        if not is_valid_git_oid(head) or await self.git.ais_ancestor(
-            workspace, origin["base_sha"], head, strict=True
-        ) is not True:
+        if not is_valid_git_oid(head):
             raise GitError("repair branch no longer descends from its frozen starting commit")
-        return head
+        if await self.git.ais_ancestor(
+            workspace, origin["base_sha"], head, strict=True
+        ) is True:
+            return head
+        # A new stage froze a fresh start (e.g. the candidate was rebuilt onto
+        # a moved base) while the shared repair branch still carries the
+        # superseded prior stage's commits. This stage owns the branch under
+        # its fence: reset it to the frozen start, leased on the observed tip.
+        base_sha = str(origin["base_sha"])
+        if not is_valid_git_oid(base_sha):
+            raise GitError("repair branch no longer descends from its frozen starting commit")
+        try:
+            await self.git._arun(["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=workspace)
+        except GitError:
+            await self.git._arun(["fetch", "--no-tags", "origin", base_sha], cwd=workspace)
+        await self.git._apush_oid(
+            workspace, base_sha, branch,
+            force_with_lease=True, expected_old_oid=head,
+            repository_url=repository_url or None,
+        )
+        logger.warning(
+            "repair stage reset %s from superseded tip %s to frozen start %s",
+            branch, head, base_sha,
+        )
+        return base_sha
 
     @guard_workspace("attachment")
     async def _prepare_exact_origin_workspace(
@@ -1399,6 +1421,50 @@ class WorkspaceMixin:
             workspace.workspace_path, strict=True
         )
         if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
+            return False
+        # Read-only checkout proof must pass *before* we kill a live writer.
+        # Stopping the session destroys its process; if the checkout turns out
+        # to be dirty or unpushed at that point there is no recovery, and any
+        # subsequent probe/detach will race a checkout that is no longer under
+        # the writer's control.  Proving the Git state first lets us refuse
+        # cleanly while the writer is still intact.
+        try:
+            from src.orchestrator.workspace_attachments import (
+                probe_slot_for_integration_handoff,
+                probe_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                probed = await probe_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                )
+            else:
+                probed = await probe_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                )
+            if not probed:
+                logger.warning(
+                    "Refusing integration handoff %s: checkout not clean and pushed "
+                    "before writer stop (workspace=%s, branch=%s)",
+                    owner.get("id"), workspace.id, owner.get("ref"),
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Could not probe integration workspace %s before writer stop",
+                workspace.id, exc_info=True,
+            )
             return False
         try:
             provider = self.session_providers.create(session.provider, self.config)

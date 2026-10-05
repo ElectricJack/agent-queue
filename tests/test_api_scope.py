@@ -109,6 +109,12 @@ EXPECTED_AGENT_COMMANDS = {
     "report_brief",
     "report_submit",
     "github_issue_close_rejected",
+    # A worker that submitted a render has to retain its own capture to build a
+    # receipt from it. The step is fenced to that worker's own job; the matching
+    # ``artifact_verify`` read stays out of this set, because the artifact store
+    # is not project-scoped and a worker token must not become a cross-project
+    # existence oracle for stored evidence.
+    "job_retain",
 }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -18,6 +19,8 @@ from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.matter import capture_inputs, native_status, retain_capture, windows_path
 from src.jobs.policy import JobError, next_admission
+from src.jobs.result import build_result, render_profile_record
+from src.object_loop.render_profile import render_profile_sha256
 from src.jobs.service import JobService
 from src.jobs.identity import stop_tree
 from src.resources.box_lock import BoxLock
@@ -41,7 +44,7 @@ def configured(tmp_path, *, delay=0):
             "version": 1,
             "candidate_sha256": "a" * 64,
             "rig_sha256": "b" * 64,
-            "manifest": {"rig": {"views": [{"name": "front"}]}},
+            "manifest": {"rig": {"hold_frames": 90, "views": [{"name": "front"}]}},
         },
     )
     adapter = tmp_path / "adapter.py"
@@ -57,6 +60,12 @@ def main(argv):
         data = kind.encode()
         (output / ('front' + suffix)).write_bytes(data)
         view[kind] = {'sha256': hashlib.sha256(data).hexdigest()}
+    view['image'].update(width=1280, height=720)
+    view['capture'] = {'result': {
+        'presented': {'id': 'front-frame'},
+        'image': {'format': 'png', 'width': 1280, 'height': 720},
+        'readiness': {'ready': True, 'blockers': [], 'missing_vt': 0,
+                      'vt_queue_depth': 0, 'stable_camera_frames': 96}}}
     receipt = {k: candidate[k] for k in ('candidate_sha256', 'rig_sha256')}
     editor = pathlib.Path(argv[argv.index('--editor') + 1])
     receipt.update(version=1, status='complete', views={'front': view},
@@ -120,6 +129,8 @@ async def test_render_submission_uses_separate_device_domain(db, tmp_path):
     assert "locks/gpus/" in job["contract"]["lock_dir"]
     assert "AQ_TEST_RUN_ID" not in job["contract"]["env"]
     assert job["contract"]["capture_expected"]["views"] == ["front"]
+    # The rig's frame budget is admitted with the rest of the render preset.
+    assert job["contract"]["capture_expected"]["hold_frames"] == 90
     assert job["argv"][3:6] == [str(tmp_path), "/bin/true", str(tmp_path / "bundle")]
     assert not list((tmp_path / "data" / "locks" / "test-slots").glob("*"))
 
@@ -242,6 +253,13 @@ async def test_atomic_render_wait_recovers_once_and_evidence_outlives_logs(setup
             == artifact["sha256"]
         )
     expected = adopted["contract"]["capture_expected"]
+    profile = adopted["result"]["render_profile"]
+    assert profile["sha256"] == render_profile_sha256(adopted["contract"], capture)
+    assert profile["views"]["front"]["resolution"] == {"width": 1280, "height": 720}
+    assert profile["hold_frames"] == 90
+    assert profile["views"]["front"]["vt_budget"]["ready"] is True
+    # The digest is inside the immutable result, not beside it.
+    assert profile["sha256"] in json.dumps(adopted["result"], sort_keys=True)
     with pytest.raises(ValueError, match="budget"):
         retain_capture(directory, (directory / "capture/capture.json").stat().st_size, expected)
     image = directory / "capture/front.png"
@@ -400,3 +418,29 @@ async def test_native_render_job_adoption_and_wsl_owner_recovery(db, tmp_path, m
     finally:
         atomic_json(directory / "cancel.json", {})
         await stop_tree(job["runner_nonce"], grace=0.1)
+
+
+def test_render_profile_record_is_absent_not_invented():
+    """A result says what it has: a profile, no profile, or why there is none."""
+    capture = {"receipt": {"version": 1, "status": "complete", "views": {"front": {}}}}
+    contract = {"adapter_sha256": "b" * 64, "gpu_id": "gpu0",
+                "capture_expected": {"views": ["front"], "hold_frames": 90}}
+    job = {"id": "j", "preset": "matter_render", "input_mode": "live", "contract": contract}
+    assert render_profile_record(job, None) is None
+    assert render_profile_record({"contract": None}, None) is None
+    profile = render_profile_record(job, capture)
+    assert profile["sha256"] == render_profile_sha256(contract, capture)
+    partial = render_profile_record(job, {"receipt": {"status": "partial", "views": {}}})
+    assert list(partial) == ["error"] and "completed capture receipt" in partial["error"]
+
+    # The profile is part of the immutable result, so result_hash covers it: the
+    # same capture rendered through a different adapter is a different result.
+    result = build_result(job, {"exit_code": 0, "capture": capture})
+    assert result["render_profile"]["sha256"] == profile["sha256"]
+    elsewhere = dict(contract, adapter_sha256="c" * 64)
+    other = build_result(
+        dict(job, contract=elsewhere), {"exit_code": 0, "capture": capture}
+    )
+    assert other["render_profile"]["sha256"] != profile["sha256"]
+    assert other["result_hash"] != result["result_hash"]
+    assert build_result(job, {"exit_code": 0})["render_profile"] is None

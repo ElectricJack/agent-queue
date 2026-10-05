@@ -754,7 +754,7 @@ class PlaybookV2CommandsMixin:
             }
 
         return await self._v2_store_artifact(
-            definition, artifact_bytes, provenance={"validated_bundle": True}
+            definition, artifact_bytes, provenance={"validated_bundle": True}, source=source_text
         )
 
     async def _v2_store_artifact(
@@ -763,6 +763,7 @@ class PlaybookV2CommandsMixin:
         artifact_bytes: bytes,
         *,
         provenance: dict[str, Any] | None = None,
+        source: str | None = None,
     ) -> dict:
         """Revalidate one canonical artifact and store it, never activating it.
 
@@ -828,6 +829,8 @@ class PlaybookV2CommandsMixin:
                     compiler_build=definition.compiler_build or "unknown",
                     version=definition.version,
                 )
+                if source is not None:
+                    store.put_source(ref.artifact_sha256, source)
                 await self.db.upsert_playbook_artifact(
                     ref,
                     scope=scope,

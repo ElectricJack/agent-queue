@@ -31,6 +31,7 @@ from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.parent_completion import ParentCompletion
 from src.integration.parent_engine import parent_engine_guard
 from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.repair_lineage import introduced_repair_commits_on
 
 EXTENSIONS = "parent_head_extensions"
 COLLECTION_RECOVERY = "collection_head_recovery"
@@ -39,17 +40,26 @@ RECEIPT_COVERED_EXTENSIONS = "receipt_covered_extensions"
 
 
 def receipt_covers_extension(receipt, edge):
-    """Two proofs may describe the same edge, only with the same complete range."""
+    """Match immutable receipt identity; Git also proves the range of squash merges."""
+    if not ParentCompletion._trusted_code_receipt(receipt):
+        return False
     commits = (
         [receipt["squash_sha"]]
         if receipt["squash_sha"]
         else (receipt["resolution_evidence"] or {}).get("repair_commit_shas")
     )
     return (
-        ParentCompletion._trusted_code_receipt(receipt)
+        receipt["disposition"] == "code"
+        and receipt["parent_operation_id"] == edge["operation_id"]
+        and receipt["parent_episode_id"] == edge["episode_id"]
+        and receipt["repository_id"] == edge["repository_id"]
+        and receipt["target_branch"] == edge["branch"]
         and receipt["before_sha"] == edge["before_sha"]
         and receipt["after_sha"] == edge["after_sha"]
-        and commits == edge["commits"]
+        and (
+            edge["commits"][-1] == receipt["squash_sha"]
+            if receipt["squash_sha"] else commits == edge["commits"]
+        )
     )
 
 
@@ -84,7 +94,7 @@ async def advance_checkpoint_on(conn, checkpoint, head_sha, now):
     )
 
 
-async def extensions_on(conn, operation, checkpoint):
+async def extensions_on(conn, operation, checkpoint, *, include_covered=False):
     """Read durable edges; reject cross-episode or malformed proof instead of trusting a tip."""
     rows = (
         (
@@ -160,7 +170,8 @@ async def extensions_on(conn, operation, checkpoint):
                     or not receipt_covers_extension(receipt, edge)
                 ):
                     raise ValueError("parent repair extension lacks its reconciled receipt proof")
-                continue
+                if not include_covered:
+                    continue
             # Later stages inherit dossiers for diagnostics. An edge is owned
             # by its original stage and must never be counted twice.
             if edge not in edges:
@@ -221,9 +232,18 @@ class ParentHeadRecovery:
             "operation_state": proof["operation"]["state"],
         }
         if proof["collection_recovery"]:
+            recorded_gaps = [
+                edge for edge in proof["recorded_extensions"]
+                if edge not in [item["extension"] for item in proof["covered_extensions"]]
+            ]
             result["reason"] = "reconcile completed resolution; receipt gaps: " + ", ".join(
-                f"stage {gap['stage']['ordinal']} {edge['base_sha']} -> {edge['head_sha']}"
-                for gap, edge in zip(proof["gap_proofs"], gap_git_proofs, strict=True)
+                [
+                    f"stage {gap['stage']['ordinal']} {edge['base_sha']} -> {edge['head_sha']}"
+                    for gap, edge in zip(proof["gap_proofs"], gap_git_proofs, strict=True)
+                ] + [
+                    f"stage {edge['stage']} {edge['before_sha']} -> {edge['after_sha']}"
+                    for edge in recorded_gaps
+                ]
             )
         if proof["empty_verification"]:
             result["reason"] = "settle audited empty verification stage at the receipt-proven head"
@@ -291,7 +311,12 @@ class ParentHeadRecovery:
             if (
                 current["recovered_collection"]
                 or (current["empty_verification"] and current["settled"])
-                or (current["existing"] and (not current["advanced"] or current["settled"]))
+                or (
+                    not current["collection_recovery"]
+                    and not current["empty_verification"]
+                    and current["existing"]
+                    and (not current["advanced"] or current["settled"])
+                )
             ):
                 return result | {"outcome": "already_recovered"}
             if current["collection_recovery"]:
@@ -395,9 +420,12 @@ class ParentHeadRecovery:
 
     async def _recover_collection_on(self, conn, proof, git_proofs, *, request, principal, result):
         now = self.parent.clock()
+        dossiers = await self._cover_extensions_on(
+            conn, proof["covered_extensions"], persist=False,
+        )
         for gap, git_proof in zip(proof["gap_proofs"], git_proofs, strict=True):
             stage = gap["stage"]
-            dossier = dict(stage["dossier"] or {})
+            dossier = dossiers.setdefault(stage["ordinal"], dict(stage["dossier"] or {}))
             edge = extension(
                 proof["operation"],
                 proof["checkpoint"] | {"generation": stage["current_subject"]["generation"]},
@@ -412,16 +440,8 @@ class ParentHeadRecovery:
                 },
             )
             dossier[EXTENSIONS] = [*(dossier.get(EXTENSIONS) or []), edge]
-            await conn.execute(
-                update(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == request.operation_id,
-                    integration_repair_stages.c.ordinal == stage["ordinal"],
-                )
-                .values(dossier=dossier)
-            )
         stage = proof["stage"]
-        dossier = dict(stage["dossier"] or {})
+        dossier = dossiers.setdefault(stage["ordinal"], dict(stage["dossier"] or {}))
         dossier[COLLECTION_RECOVERY] = {
             "head_sha": request.head_sha,
             "episode_id": proof["checkpoint"]["episode_id"],
@@ -434,14 +454,19 @@ class ParentHeadRecovery:
             "stage": stage["ordinal"],
             "recorded_at": now,
         }
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(
-                integration_repair_stages.c.operation_id == request.operation_id,
-                integration_repair_stages.c.ordinal == stage["ordinal"],
+        for ordinal, dossier in dossiers.items():
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == request.operation_id,
+                    integration_repair_stages.c.ordinal == ordinal,
+                )
+                .values(
+                    dossier=dossier,
+                    **({"state": "passed", "completed_at": stage["completed_at"] or now}
+                       if ordinal == stage["ordinal"] else {}),
+                )
             )
-            .values(state="passed", completed_at=stage["completed_at"] or now, dossier=dossier)
-        )
         await advance_checkpoint_on(conn, proof["checkpoint"], request.head_sha, now)
         await conn.execute(
             update(task_integration_checkpoints)
@@ -777,8 +802,19 @@ class ParentHeadRecovery:
         empty_verification = (
             not collection_recovery
             and gap_base is None
-            and (stage["dossier"] or {}).get("repair_commits") == []
+            and await introduced_repair_commits_on(conn, stage) == []
         )
+        recorded_extensions, covered_extensions = [], []
+        if collection_recovery or empty_verification:
+            recorded_extensions, covered_extensions = await self._receipt_extensions_on(
+                conn, operation, checkpoint, original["receipts"]
+            )
+            if covered_extensions:
+                original = await self.parent.readiness_on(
+                    conn, parent=parent, project=project, checkpoint=checkpoint,
+                    operation=operation,
+                    receipt_covered_extensions=[item["extension"] for item in covered_extensions],
+                )
         if collection_recovery:
             from src.database.tables import integration_check_evidence
 
@@ -821,10 +857,10 @@ class ParentHeadRecovery:
             if original["outcome"] == "ready"
             else stage["starting_sha"]
         )
-        covered_extensions = []
         if empty_verification:
-            following, covered_extensions = await self._empty_verification_proof_on(
-                conn, operation, checkpoint, stage, completion, original, request.head_sha
+            following = await self._empty_verification_proof_on(
+                conn, operation, checkpoint, stage, completion, original, request.head_sha,
+                recorded_extensions, covered_extensions,
             )
             base_sha = original["checkpoint_sha"]
             recovered = (stage["dossier"] or {}).get(EMPTY_VERIFICATION_RECOVERY) or {}
@@ -937,12 +973,17 @@ class ParentHeadRecovery:
             "gap_proofs": [],
             "empty_verification": empty_verification,
             "covered_extensions": covered_extensions,
+            "recorded_extensions": recorded_extensions,
         }
         if collection_recovery:
             from types import SimpleNamespace
 
             for before, after in await self._receipt_gaps_on(
-                conn, operation, checkpoint, readiness
+                conn, operation, checkpoint, readiness,
+                extensions=[
+                    edge for edge in recorded_extensions
+                    if edge not in [item["extension"] for item in covered_extensions]
+                ],
             ):
                 candidates = (
                     (
@@ -960,17 +1001,9 @@ class ParentHeadRecovery:
                     .all()
                 )
                 proof_stages = candidates
-                origins, inherited = [], set()
+                origins = []
                 for candidate in candidates:
-                    recorded = (candidate["dossier"] or {}).get("repair_commits") or []
-                    if not isinstance(recorded, list) or any(
-                        not isinstance(sha, str) or not is_valid_git_oid(sha) for sha in recorded
-                    ):
-                        raise ValueError("stage has malformed recorded repair commits")
-                    if len(set(recorded)) != len(recorded):
-                        raise ValueError("stage has duplicate recorded repair commits")
-                    introduced = [sha for sha in recorded if sha not in inherited]
-                    inherited.update(recorded)
+                    introduced = await introduced_repair_commits_on(conn, candidate)
                     if after in introduced:
                         origins.append((candidate, introduced))
                 candidates = origins
@@ -1015,7 +1048,8 @@ class ParentHeadRecovery:
         return proof
 
     async def _empty_verification_proof_on(
-        self, conn, operation, checkpoint, stage, completion, readiness, head_sha
+        self, conn, operation, checkpoint, stage, completion, readiness, head_sha,
+        recorded_extensions, covered_extensions,
     ):
         """An empty stage supplies no edge: receipts must prove the entire aggregate."""
         dossier = stage["dossier"] or {}
@@ -1102,28 +1136,50 @@ class ParentHeadRecovery:
             .limit(1)
         ):
             raise ValueError("an earlier repair delegate retains a session or workspace")
-        covered = []
-        for edge in await extensions_on(conn, operation, checkpoint):
-            matches = [receipt for receipt in chain if receipt_covers_extension(receipt, edge)]
-            if len(matches) != 1 or edge["stage"] == stage["ordinal"]:
+        for edge in recorded_extensions:
+            if (
+                edge not in [item["extension"] for item in covered_extensions]
+                or edge["stage"] == stage["ordinal"]
+            ):
                 raise ValueError("empty verification cannot consume a repair outside the receipts")
-            origin = next(row for row in stages if row["ordinal"] == edge["stage"])
-            covered.append(
-                {"stage": dict(origin), "extension": edge, "receipt_id": matches[0]["id"]}
-            )
-        return chain, covered
+        return chain
+
+    async def _receipt_extensions_on(self, conn, operation, checkpoint, receipts):
+        """Partition exact receipt duplicates before either chain walker sees them."""
+        edges = await extensions_on(conn, operation, checkpoint, include_covered=True)
+        covered = []
+        for edge in edges:
+            matches = [
+                receipt for receipt in receipts
+                if receipt["target_task_id"] == operation["parent_task_id"]
+                and receipt_covers_extension(receipt, edge)
+            ]
+            if len(matches) > 1:
+                raise ValueError("parent repair extension has ambiguous receipt coverage")
+            if matches:
+                stage = (await conn.execute(select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation["id"],
+                    integration_repair_stages.c.ordinal == edge["stage"],
+                ).with_for_update())).mappings().one()
+                covered.append({
+                    "stage": dict(stage), "extension": edge, "receipt_id": matches[0]["id"],
+                    "receipt": dict(matches[0]),
+                })
+        return edges, covered
 
     @staticmethod
-    async def _cover_extensions_on(conn, covered):
+    async def _cover_extensions_on(conn, covered, *, persist=True):
         """Keep original edges byte-identical, recording which immutable receipt covers them."""
         dossiers = {}
         for item in covered:
             stage = item["stage"]
             dossier = dossiers.setdefault(stage["ordinal"], dict(stage["dossier"] or {}))
-            dossier[RECEIPT_COVERED_EXTENSIONS] = [
-                *(dossier.get(RECEIPT_COVERED_EXTENSIONS) or []),
-                {"extension": item["extension"], "receipt_id": item["receipt_id"]},
-            ]
+            record = {"extension": item["extension"], "receipt_id": item["receipt_id"]}
+            records = list(dossier.get(RECEIPT_COVERED_EXTENSIONS) or [])
+            if record not in records:
+                dossier[RECEIPT_COVERED_EXTENSIONS] = [*records, record]
+        if not persist:
+            return dossiers
         for ordinal, dossier in dossiers.items():
             await conn.execute(
                 update(integration_repair_stages)
@@ -1133,6 +1189,7 @@ class ParentHeadRecovery:
                 )
                 .values(dossier=dossier)
             )
+        return dossiers
 
     async def _close_history_on(self, conn, stage, operation, checkpoint, project_id):
         """Pair every fenced close with its one subsequent passing completion."""
@@ -1389,8 +1446,10 @@ class ParentHeadRecovery:
             },
         }
 
-    async def _receipt_gaps_on(self, conn, operation, checkpoint, readiness):
-        edges = list(await extensions_on(conn, operation, checkpoint))
+    async def _receipt_gaps_on(self, conn, operation, checkpoint, readiness, *, extensions=None):
+        edges = list(
+            await extensions_on(conn, operation, checkpoint) if extensions is None else extensions
+        )
         head, gaps = readiness["checkpoint_sha"], []
 
         def extend(value):
@@ -1411,6 +1470,12 @@ class ParentHeadRecovery:
                 continue
             if receipt["parent_episode_id"] != checkpoint["episode_id"]:
                 raise ValueError("child receipt belongs to another collection episode")
+            if (
+                receipt["target_task_id"] != operation["parent_task_id"]
+                or receipt["repository_id"] != checkpoint["repository_id"]
+                or receipt["target_branch"] != checkpoint["branch"]
+            ):
+                raise ValueError("child receipt belongs to another parent repository or branch")
             if not self.parent._trusted_code_receipt(receipt):
                 raise ValueError("untrusted child receipt cannot bind collection recovery")
             if receipt["before_sha"] != head:
@@ -1507,6 +1572,7 @@ class ParentHeadRecovery:
         )
         if remote.state is not RemoteRefState.PRESENT or remote.oid != published_head_sha:
             raise ValueError("published parent head differs from the supplied exact head")
+        await self._recorded_extensions_git_proof(proof, store, published_head_sha)
         if proof["empty_verification"]:
             return await self._empty_verification_git_proof(proof, store, head_sha)
         repair_head = proof["repair_head_sha"]
@@ -1645,28 +1711,69 @@ class ParentHeadRecovery:
                 raise ValueError("head loses an original child receipt")
         return {"base_sha": base_sha, "head_sha": repair_head, "commits": commits}
 
+    async def _recorded_extensions_git_proof(self, proof, store, published_head_sha):
+        """Durable edges replace missing-edge proofs only with exact published Git lineage."""
+        covered = [item["extension"] for item in proof["covered_extensions"]]
+        for edge in proof["recorded_extensions"]:
+            before, after = edge["before_sha"], edge["after_sha"]
+            if not await self.promotion._is_ancestor(store, after, published_head_sha):
+                raise ValueError("recorded extension is absent from the published parent head")
+            commits = await self.promotion._resolution_commit_range(store, before, after)
+            if commits != edge["commits"]:
+                raise ValueError("recorded extension differs from its complete Git commit range")
+            if edge in covered:
+                receipt = next(item["receipt"] for item in proof["covered_extensions"]
+                               if item["extension"] == edge)
+                await self._receipt_git_commits(receipt, store)
+            lineage = await self.promotion.git.arun_git_result(
+                ["rev-list", "--first-parent", after], cwd=str(store),
+                env={"LC_ALL": "C"}, lock_held=True,
+            )
+            if lineage.returncode != 0 or before not in lineage.stdout.splitlines():
+                raise ValueError("recorded extension base is absent from its first-parent lineage")
+            if edge not in covered:
+                first_parent = await self.promotion.git.arun_git_result(
+                    ["rev-list", "--reverse", "--first-parent", f"{before}..{after}"],
+                    cwd=str(store), env={"LC_ALL": "C"}, lock_held=True,
+                )
+                if first_parent.returncode != 0 or first_parent.stdout.splitlines() != commits:
+                    raise ValueError("recorded repair gap is not a contiguous first-parent range")
+
+    async def _receipt_git_commits(self, receipt, store):
+        before, after = receipt["before_sha"], receipt["after_sha"]
+        if not await self.promotion._is_ancestor(store, before, after):
+            raise ValueError("collection receipt has a non-ancestor head")
+        commits = await self.promotion._resolution_commit_range(store, before, after)
+        if receipt["squash_sha"]:
+            expected = [receipt["squash_sha"]]
+            parents = await self.promotion.git.arun_git_result(
+                ["rev-list", "--parents", "-n", "1", after], cwd=str(store),
+                env={"LC_ALL": "C"}, lock_held=True,
+            )
+            if parents.returncode != 0:
+                raise ValueError("squash receipt has no readable commit parents")
+            lineage = parents.stdout.split()[1:]
+            if len(lineage) > 1:
+                if lineage != [before, receipt["reviewed_head_sha"]]:
+                    raise ValueError("squash receipt merge parents differ from aggregate and review")
+                expected = [*await self.promotion._resolution_commit_range(
+                    store, before, receipt["reviewed_head_sha"],
+                ), after]
+        else:
+            expected = receipt["resolution_evidence"]["repair_commit_shas"]
+        if commits != expected:
+            raise ValueError("collection receipt does not cover its complete Git commit range")
+        return commits
+
     async def _empty_verification_git_proof(self, proof, store, head_sha):
         covered = []
         for receipt in proof["following_receipts"]:
-            if not await self.promotion._is_ancestor(
-                store, receipt["before_sha"], receipt["after_sha"]
-            ):
-                raise ValueError("collection receipt has a non-ancestor head")
-            commits = await self.promotion._resolution_commit_range(
-                store, receipt["before_sha"], receipt["after_sha"]
-            )
-            expected = (
-                [receipt["squash_sha"]]
-                if receipt["squash_sha"]
-                else receipt["resolution_evidence"]["repair_commit_shas"]
-            )
-            if commits != expected:
-                raise ValueError("collection receipt does not cover its complete Git commit range")
-            covered.extend(commits)
+            covered.extend(await self._receipt_git_commits(receipt, store))
+        commits = await self.promotion._resolution_commit_range(store, proof["base_sha"], head_sha)
         if (
             not await self.promotion._is_ancestor(store, proof["base_sha"], head_sha)
-            or await self.promotion._resolution_commit_range(store, proof["base_sha"], head_sha)
-            != covered
+            or len(set(covered)) != len(covered)
+            or set(commits) != set(covered)
         ):
             raise ValueError("published head contains commits outside the complete receipt chain")
-        return {"base_sha": proof["base_sha"], "head_sha": head_sha, "commits": covered}
+        return {"base_sha": proof["base_sha"], "head_sha": head_sha, "commits": commits}

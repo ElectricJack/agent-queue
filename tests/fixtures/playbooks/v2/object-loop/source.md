@@ -15,8 +15,15 @@ triggers:
 This opt-in policy implements approved proposal rev-amber-zenith revision 2.
 Import/review stores this artifact; activation requires a separate recorded
 operator decision naming its exact hash. Require the Matter adapter, durable
-artifact retention, approved brief, calibrated references, finite job/GPU lease
-and budget reserves before activation. This bundle never activates itself,
+artifact retention, approved brief, calibrated reference manifests or an explicit
+supervisor reference_kind=self start packet, finite job/GPU lease and budget
+reserves before activation. Self-reference results are indicative and prove
+plumbing only; all loop bounds and publication refusals still apply.
+Every start requires incumbent_capture_sha256 from the retained baseline capture
+receipt. For reference_kind=self, reference_sha256 must equal that capture hash;
+for calibrated references it remains independent. incumbent_sha256 continues
+to identify the candidate manifest.
+This bundle never activates itself,
 approves a review, chooses a provider or publishes a generator.
 
 Every rule performs the same bounded sweep for matter-engine-cpp. Events are
@@ -79,7 +86,7 @@ On timer.5m, perform the sweep below, including after restart.
    Call object_score_record with those fields. It validates all receipts, ranks
    eligible captures, keeps the incumbent on a tie, counts invalid-capture repair
    rounds and reserves a finite next wave atomically. If a continue request is
-   refused (including plateau, repair, eight-round or aggregate budget limits),
+   refused (including plateau, repair, round-cap or aggregate budget limits),
    retry the same score once with action stop and stop_reason
    `continuation refused by score or budget contract; retained verified result`.
    This fallback still validates the evidence, so invalid scores fail closed.
@@ -96,11 +103,12 @@ Command names are `object_loop_inputs`, `object_loop_start`,
 `object_loop_reconcile`, `object_checkpoint_read` and `object_score_record`.
 The read uses `project_id` and `limit`. Start forwards `epic_task_id`,
 `object_id`, `attempt_id`, `incumbent_sha256`, `incumbent_artifact`,
-`reference_sha256`, `rig_sha256`, `scorer_sha256`, `render_profile_sha256`,
+`incumbent_capture_sha256`,
+`reference_kind`, `reference_sha256`, `rig_sha256`, `scorer_sha256`, `render_profile_sha256`,
 `policy_sha256`, `brief_review_id`, `brief_review_revision`,
 `brief_review_sha256`, `mandatory_views`, `limits`, `final_reserve`,
-`score_reservation`, `noise_band`, `max_repair_rounds`, `max_plateau_rounds`
-and `variants`. Score forwards `expected_version`, `score_task_id`,
+`score_reservation`, `noise_band`, `max_rounds`, `max_repair_rounds`,
+`max_plateau_rounds` and `variants`. Score forwards `expected_version`, `score_task_id`,
 `receipts`, `spent`, `action`, `next_variants`, `stop_reason`, `review_id`,
 `review_revision` and `review_sha256` plus project/object identity.
 All commands route `completed`, `rejected` and `runtime_error` explicitly;

@@ -1,30 +1,43 @@
 #!/usr/bin/env python3
 """Check offline knowledge adapter observations, without implementing context policy.
 
-The default snapshot adapter replays synthetic observations. ContextBundle integration
-is explicitly unsupported until K08/K09 supplies an adapter; these are contract checks,
-not retrieval benchmarks or model-quality measurements. See the fixture README.
+Two adapters ship here. The default snapshot adapter replays sealed synthetic
+observations and needs nothing but the fixtures. ``--adapter context-bundle``
+replays the same oracle against the real K08 service in a **disposable**
+database named with ``--db-url``; it refuses the worker sentinels and the
+operator's production database outright.
+
+Both are contract checks, not retrieval benchmarks or model-quality measurements.
+See the fixture README.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import copy
 import hashlib
 import json
+import os
 import socket
 import subprocess
+import sys
 import urllib.request
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Protocol
 from unittest.mock import patch
+from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 FIXTURES = ROOT / "tests/fixtures/knowledge"
+INTEGRATED = FIXTURES / "integrated"
 SCHEMA_VERSION = 1
 
 
@@ -177,17 +190,32 @@ def check_observation(manifest: dict, observed: dict) -> tuple[list[str], dict]:
         record = records.get(identity(item))
         if record is None or item["excerpt"] not in record["excerpts"].values():
             errors.append("selection.exact_revision_bytes")
-        if item["content_sha256"] != sha256_text(item["excerpt"]):
+        # A snapshot fixture hashes the excerpt it rendered; an integrated
+        # fixture seals the exact revision hash the record store computed, which
+        # is the stronger claim -- the adapter cannot substitute a revision.
+        sealed = record.get("revision_sha256") if record else None
+        if item["content_sha256"] != (sealed or sha256_text(item["excerpt"])):
             errors.append("selection.content_hash")
         if record and any(
             item[key] != record[key] for key in ("evidence", "authority", "freshness")
         ):
             errors.append("selection.trust_labels")
+        if record and any(
+            key in record and item.get(key) != record[key]
+            for key in ("verification", "lifecycle")
+        ):
+            errors.append("selection.trust_labels")
     rendered = observed["rendered"]
     if sha256_text(rendered) != observed["rendered_sha256"]:
         errors.append("render.content_hash")
-    if any(identity(item) not in rendered or item["excerpt"] not in rendered for item in items):
-        errors.append("render.selected_payload")
+    # Exact bytes, and a delivery that names what it carries: a renderer either
+    # prints the composite identity (snapshot) or the sealed revision hash
+    # (integrated), and it must contain the selected excerpt verbatim.
+    for item in items:
+        if item["excerpt"] not in rendered or not any(
+            token in rendered for token in (identity(item), item["content_sha256"])
+        ):
+            errors.append("render.selected_payload")
     if any(
         item[key] not in rendered
         for item in items
@@ -341,7 +369,7 @@ def evaluate_manifest(manifest: dict, adapter: FixtureAdapter | None = None) -> 
                 if previous is not None and projection != previous:
                     failures.append("adapter.harness_parity")
                 previous = projection
-        except Exception:
+        except Exception:  # noqa: BLE001 - any adapter failure is one code, never its message
             # Exceptions can contain forbidden data or credentials; retain only a code.
             failures.append("adapter.exception")
         if calls:
@@ -386,20 +414,177 @@ def evaluate_paths(paths: list[Path], adapter: FixtureAdapter | None = None) -> 
     }
 
 
+class AdapterUnavailable(RuntimeError):
+    """The integrated adapter cannot run against the database it was given."""
+
+
+def _refuse_unsafe_database(db_url: str) -> None:
+    """Refuse anything that is not a disposable scratch database.
+
+    The integrated adapter creates its schema, so it must never be pointed at a
+    worker sentinel or at the database in the operator's config. Both refusals
+    are the guard the daemon itself uses, not a second opinion about it.
+    """
+    if not db_url:
+        raise AdapterUnavailable("adapter.context_bundle_requires_disposable_db")
+    sentinels = {
+        os.environ.get("AQ_DATABASE_URL"),
+        os.environ.get("AGENT_QUEUE_DB"),
+        os.environ.get("AGENT_QUEUE_DB_URL"),
+    }
+    if db_url in {value for value in sentinels if value}:
+        raise AdapterUnavailable("adapter.context_bundle_refuses_worker_sentinel")
+    if db_url.rpartition("/")[2] in PROTECTED_DATABASES:
+        raise AdapterUnavailable("adapter.context_bundle_refuses_maintenance_database")
+    from src.database.migration_guard import is_production_database
+
+    if is_production_database(db_url):
+        raise AdapterUnavailable("adapter.context_bundle_refuses_production_database")
+
+
+#: Never recreated, whatever ``--db-url`` says.
+PROTECTED_DATABASES = frozenset({"", "postgres", "template0", "template1"})
+
+
+def _admin_dsn(db_url: str) -> str:
+    """asyncpg wants the plain scheme, not SQLAlchemy's ``+asyncpg`` suffix."""
+    prefix = db_url.rpartition("/")[0]
+    return f"{prefix.replace('postgresql+asyncpg://', 'postgresql://')}/postgres"
+
+
+async def _recreate_disposable_database(db_url: str) -> tuple[str, callable]:
+    """Recreate the scratch database named by *db_url* and return it.
+
+    The integrated run seeds, migrates and acknowledges inside this database, so
+    it owns it outright: a run that inherited somebody else's rows would report
+    another execution's receipts. The maintenance database is never the target.
+    """
+    import asyncpg
+
+    prefix, _, name = db_url.rpartition("/")
+    admin = await asyncpg.connect(_admin_dsn(db_url))
+    try:
+        if await admin.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", name):
+            await admin.execute(
+                f'DROP DATABASE "{name}" WITH (FORCE)'
+            )
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await admin.close()
+    return db_url, lambda: _drop_database(prefix, name)
+
+
+async def _drop_database(prefix: str, name: str) -> None:
+    import asyncpg
+
+    admin = await asyncpg.connect(_admin_dsn(f"{prefix}/{name}"))
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await admin.close()
+
+
+async def _run_integrated(paths: list[Path], adapter_name: str, db_url: str, *, keep: bool) -> dict:
+    """Replay integrated fixtures against the real service, one per fixture.
+
+    The database is created by the caller; this function only seeds, prepares,
+    delivers, reads citations back and hands the runner a normalized adapter.
+    Nothing here reads the hidden oracle.
+    """
+    from src.database import Database
+    from tests.knowledge_fixture_adapter import (
+        ContextBundleFixtureAdapter,
+        LocalModelFixtureAdapter,
+    )
+
+    adapter_class = {
+        "context-bundle": ContextBundleFixtureAdapter,
+        "local-model": LocalModelFixtureAdapter,
+    }[adapter_name]
+    db_url, drop = await _recreate_disposable_database(db_url)
+    database = Database(db_url)
+    await database.initialize()
+    try:
+        reports = []
+        seen: set[str] = set()
+        for path in paths:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            errors = validate_manifest(manifest, load_schema())
+            if errors:
+                reports.append({
+                    "schema_version": SCHEMA_VERSION, "status": "fail", "errors": errors,
+                })
+                continue
+            fixture_id = str(manifest["fixture_id"])
+            if fixture_id in seen:
+                reports.append({
+                    "schema_version": SCHEMA_VERSION, "status": "fail",
+                    "errors": ["manifest.duplicate_fixture"],
+                })
+                continue
+            seen.add(fixture_id)
+            # One disposable database can host several runs, so the execution
+            # identity is namespaced per run. It never reaches the report: the
+            # observed owner is the sealed fixture label.
+            adapter = await adapter_class.run(
+                database, manifest, identity_suffix=f"-{uuid4().hex[:8]}",
+            )
+            report = evaluate_manifest(manifest, adapter)
+            report["context_bundle_integration"] = "integrated"
+            report["adapter"] = adapter_class.name
+            reports.append(report)
+    finally:
+        await database.close()
+        if not keep:
+            await drop()
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "pass" if reports and all(r["status"] == "pass" for r in reports) else "fail",
+        "adapter": adapter_class.name,
+        "context_bundle_integration": "integrated",
+        "model_quality": "unmeasured",
+        "reports": reports,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fixtures", nargs="*", type=Path, help="Manifest files or directories.")
-    parser.add_argument("--adapter", choices=("snapshot", "context-bundle"), default="snapshot")
+    parser.add_argument(
+        "--adapter", choices=("snapshot", "context-bundle", "local-model"), default="snapshot",
+        help="snapshot replays sealed observations; context-bundle and local-model "
+             "drive the real service and need --db-url.",
+    )
+    parser.add_argument(
+        "--db-url", default=None,
+        help="Disposable PostgreSQL URL for --adapter context-bundle|local-model. "
+             "Worker sentinels and the operator database are refused.",
+    )
+    parser.add_argument(
+        "--keep-db", action="store_true",
+        help="Leave the recreated scratch database in place for inspection.",
+    )
     parser.add_argument("--output", type=Path, help="Write the deterministic JSON report.")
     args = parser.parse_args(argv)
-    if args.adapter == "context-bundle":
-        report = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "unsupported",
-            "errors": ["adapter.context_bundle_not_integrated"],
-            "model_quality": "unmeasured",
-        }
-        code = 2
+    if args.adapter in ("context-bundle", "local-model"):
+        paths = []
+        for path in args.fixtures or [INTEGRATED]:
+            paths.extend(sorted(path.glob("*.json")) if path.is_dir() else [path])
+        try:
+            _refuse_unsafe_database(args.db_url)
+        except AdapterUnavailable as exc:
+            report = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "unsupported",
+                "errors": [str(exc)],
+                "model_quality": "unmeasured",
+            }
+            code = 2
+        else:
+            report = asyncio.run(
+                _run_integrated(paths, args.adapter, args.db_url, keep=args.keep_db)
+            )
+            code = 0 if report["status"] == "pass" else 1
     else:
         paths = []
         for path in args.fixtures or [FIXTURES / "golden"]:

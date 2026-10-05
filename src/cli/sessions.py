@@ -272,3 +272,12 @@ def session_drain_ack(ctx: click.Context, session_id) -> None:
             "(AQ_SESSION_ID is set by the session runtime)"
         )
     emit(ctx, _call(ctx, "session_drain_ack", {"session_id": resolved}))
+
+
+@session.command("prune")
+@click.argument("session_id")
+@click.pass_context
+@_handle_errors
+def prune(ctx: click.Context, session_id: str) -> None:
+    """Forget one inactive sleeping/stopped named session (never live work)."""
+    emit(ctx, _call(ctx, "session_prune", {"session_id": session_id}))

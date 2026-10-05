@@ -729,9 +729,15 @@ digest to task activity alone, and the reconciler never calls them.
   classifier acts only on positive evidence of death.
 - **PID recycling and name reuse.** Kills are double-fenced: process identified via env
   markers, then instance token compared before any signal.
-- **Daemon dies mid-launch:** a session may exist with no row, or a row with no session.
-  Adoption reconciles both directions (orphan session → adopt if markers match a known
-  task, else quarantine-kill; orphan row → exit-classify).
+- **Flock registration precedes spawn:** every role and provider launches through
+  `src/sessions/launch.py`. A committed `starting` row is mandatory; production
+  providers reject starts outside that registered launch scope. The flock exposes
+  every execution, including unlinked project/global supervisors and concurrent
+  sessions for one worker. See [the invariant and operator guide](../../guides/flock-sessions.md).
+- **Daemon dies mid-launch:** a starting row may have no process. Adoption and exit
+  classification recover it; a process without a row is a legacy orphan or bypass.
+  Periodic reconciliation, `sessions.untracked` and `stall.sweep` report such
+  violations at ERROR, including incomplete probes and live stopped-history rows.
 - **Two daemons on one host** are separated by tmux socket name and epoch; the reconciler
   refuses to adopt sessions whose `AQ_API_URL` points at a different daemon.
 - **Transcript path missing** (harness changed layout, slug mismatch): watching degrades to

@@ -163,7 +163,7 @@ async def test_reviewed_root_red_repair_close_green_continues_automatically(
         "integration_build_candidate", "integration_ci_evidence",
         "integration_promote_main", "integration_repair_close_current",
     ]
-    assert calls[2][1] == {"batch_id": "batch", "expected_revision": 1}
+    assert calls[2][1] == {"batch_id": "batch", "expected_revision": 1, "expected_base_sha": None}
     assert calls[3][1] == {"batch_id": "batch", "revision": 1}
     assert calls[4][1] == {"batch_id": "batch", "revision": 1}
     assert [snapshot.lifecycle.value for snapshot in runs.snapshots.values()] == [
