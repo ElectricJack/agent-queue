@@ -301,6 +301,11 @@ class IntegrationScheduler:
                     "outstanding_request_id": request_id,
                     "outstanding_trigger": trigger,
                     "outstanding_requested_at": now,
+                    # A fresh request sweeps everything a lingering catch-up
+                    # owed; keeping it would leave it pinned to a stale sequence.
+                    "catchup_trigger": None,
+                    "catchup_requested_at": None,
+                    "catchup_after_sequence": None,
                     "updated_at": now,
                 },
             )
