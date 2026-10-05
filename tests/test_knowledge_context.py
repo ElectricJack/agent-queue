@@ -363,3 +363,84 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
         assert refused["error_code"] == "context.required_over_budget"
     async with db.immediate() as conn:
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 1
+
+
+async def test_prime_degrades_when_the_principal_lacks_the_knowledge_show_grant(
+    command_handler_factory,
+):
+    """A refused read is an enrichment loss, never the loss of the prime doc."""
+    from src.commands.principal import principal_context
+    from src.prime.sections import CONTEXT_UNAVAILABLE_NOTE
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    worker = replace(await worker_principal(db, grants=["prime"]), task_id=None)
+    await KnowledgeService(db, config.knowledge).create(
+        principal=TRUSTED_LOCAL, project_id="p", idempotency_key="prime-record",
+        snapshot=snapshot(title="Held task", summary="Common retained knowledge"),
+    )
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+
+    with principal_context(worker):
+        config.knowledge.context.enabled = False
+        ordinary = await handler.execute("prime", {"_scope": scope})
+        config.knowledge.context.enabled = True
+        result = await handler.execute("prime", {"_scope": scope})
+
+    assert result["success"], result
+    assert result["context_state"] == "unavailable"
+    assert result["context_error_code"] == "record.forbidden"
+    assert "context_bundle" not in result
+    assert ordinary["success"] and "context_state" not in ordinary
+    # Every ordinary section survives; only the context slot gains the note.
+    note = CONTEXT_UNAVAILABLE_NOTE.format(code="record.forbidden")
+    assert result["body"] == (
+        ordinary["body"].rstrip() + "\n\n## Knowledge context\n\n" + note + "\n"
+    )
+    assert "Completion Protocol" in result["body"]
+    sections = {s["key"]: s for s in result["sections"]}
+    ordinary_sections = {s["key"]: s for s in ordinary["sections"]}
+    assert set(sections) == set(ordinary_sections)
+    assert {k: v for k, v in sections.items() if k != "l2_context"} == {
+        k: v for k, v in ordinary_sections.items() if k != "l2_context"}
+    assert sections["l2_context"]["body"] == note
+    # The note carries the refusal code and nothing about the corpus.
+    assert "record.forbidden" in note and "Common retained knowledge" not in result["body"]
+    async with db.immediate() as conn:
+        assert await conn.scalar(select(func.count()).select_from(knowledge_context_bundles)) == 0
+        assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 0
+
+    granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+    ))
+    with principal_context(granted):
+        delivered = await handler.execute("prime", {"_scope": scope})
+    assert delivered["context_state"] == "prepared"
+    assert "context_error_code" not in delivered
+    assert delivered["body"].endswith(ContextBundle.from_dict(
+        delivered["context_bundle"]).to_markdown())
+    assert "Common retained knowledge" in delivered["body"]
+
+
+async def test_prime_keeps_surfacing_a_non_access_context_failure(command_handler_factory):
+    """Only the access refusals degrade; a stale claim is still an error."""
+    from src.commands.principal import principal_context
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    worker = replace(await worker_principal(db, grants=["prime"]), task_id=None)
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+    async with db.immediate() as conn:
+        # A live session whose task moved on: a failed read, not a refusal.
+        await conn.execute(update(tasks).where(tasks.c.id == "task-worker").values(claim_epoch=2))
+    with principal_context(worker):
+        result = await handler.execute("prime", {"_scope": scope})
+    assert not result["success"]
+    assert result["error_code"] == "record.stale_claim"
+    assert "Completion Protocol" not in str(result)
