@@ -675,7 +675,7 @@ class IntegrationStatusService:
         table = integration_batches
         rows = await self._all(
             conn,
-            select(table.c.id, table.c.repository_id, table.c.target_ref, table.c.intent,
+            select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
                    table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
@@ -715,6 +715,11 @@ class IntegrationStatusService:
                 {"task_id": r["id"], "status": r["status"]}
                 for r in repairs if r["created_by_id"] == row["id"]
             ]
+            visit = self._train_visits(row["project_id"]).get(
+                (row["repository_id"], row["target_ref"])
+            )
+            if visit and visit.get("batch_id") == row["id"]:
+                row["detail"] = visit.get("detail")
         return rows
 
     def _train_visits(self, project_id: str) -> dict[tuple[str, str], dict[str, Any]]:
@@ -786,6 +791,13 @@ class IntegrationStatusService:
         if visit is None or visit.get("batch_id") != ref:
             return blockers + [_blocker(
                 "awaiting_visit", "the train has not visited this batch since start", ref)]
+        if (visit.get("detail") or {}).get("outcome") == "conflict":
+            blockers.append(_blocker("merge_conflict", "the batch does not merge onto its target",
+                                     ref, evidence=visit["detail"]))
+        if (visit.get("repair") or {}).get("outcome") == "unconfirmed":
+            blockers.append(_blocker("repair_target_unconfirmed",
+                                     "the repair starting head is not confirmed on its remote ref",
+                                     ref, evidence=visit["repair"]))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
             blockers.append(_blocker(

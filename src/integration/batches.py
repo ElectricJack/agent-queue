@@ -9,6 +9,7 @@ There are no persisted candidate, promotion or delivery projections here.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -23,6 +24,8 @@ from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.gitops import ZERO, GitOperations, RetainedRepository, branch
 from src.integration.provenance import CompletionIdentity, GitProvenance
+
+logger = logging.getLogger(__name__)
 
 
 def candidate_ref(batch_id: str) -> str:
@@ -300,12 +303,19 @@ class BatchService:
                     return "held"
                 await self.publish(repo, ref, expected_old_oid=expected, new_oid=sha,
                                    authorize=authorize)
-        except (GitError, RuntimeError, ValueError):
-            pass
+        except (GitError, RuntimeError, ValueError) as exc:
+            logger.warning("integration batch %s publication of %s at %s failed: %s",
+                           batch.id, ref, sha, exc)
         actual = await self.gitops.remote(repo, ref)
         if actual == sha:
             return "published"
         return "moved" if (actual or ZERO) != expected else "unknown"
+
+    async def repair_authorized(self, batch, members, head_sha):
+        """Recheck the exact published repair start under the allocator's ref lock."""
+        repo = await self.gitops.repository(batch)
+        return (await self._authorized(batch, members) and
+                await self.gitops.remote(repo, candidate_ref(batch.id)) == head_sha)
 
     async def visit(self, batch: Batch, members: Iterable[BatchMember], snapshot: GitTruthSnapshot):
         """Derive progress from this visit's fetched refs; never from legacy lifecycle."""
@@ -331,6 +341,8 @@ class BatchService:
         try:
             # Historical inclusion settles even a held/aborted intent. It does
             # not authorize another write, and stale progress never blocks it.
+            # A published repair start can be the target itself or only a
+            # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
             if members and all(proof is True for proof in proofs):
@@ -357,6 +369,23 @@ class BatchService:
                 result = await self.gitops.merge_sources(repo, target, members,
                                                         created_at=batch.created_at)
                 if result["outcome"] != "merged":
+                    logger.warning("integration batch %s build %s on %s: %s",
+                                   batch.id, result["outcome"], batch.target_ref, result)
+                    if result["outcome"] == "conflict" and candidate is None:
+                        # A conflict may follow successful member merges. Retain
+                        # their exact head as the repair's start, through the same
+                        # expected-old managed publisher as a complete candidate.
+                        head = result["head"]
+                        transferred = await self._transfer(
+                            batch, repo, ref, head, ZERO,
+                            lambda: self._authorized(batch, members),
+                        )
+                        if transferred != "published":
+                            return BatchObservation(transferred, None, target, detail={
+                                **result, "repair_publication": transferred,
+                                "repair_start_sha": head,
+                            })
+                        candidate = head
                     return BatchObservation(result["outcome"], candidate, target, detail=result)
                 head = result["head"]
                 transferred = await self._transfer(batch, repo, ref, head, candidate or ZERO,
@@ -382,4 +411,6 @@ class BatchService:
                 return BatchObservation("delivered", candidate, candidate, tree)
             return BatchObservation(state, candidate, target, tree)
         except (GitError, OSError, ValueError) as exc:
+            logger.warning("integration batch %s observation failed on %s: %s",
+                           batch.id, batch.target_ref, exc)
             return BatchObservation("unknown", candidate, target, detail={"reason": str(exc)})

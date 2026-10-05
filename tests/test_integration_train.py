@@ -64,11 +64,14 @@ class Service:
     async def visit(self, batch, members, snapshot):
         self.calls += 1
         state = self.states.pop(0)
-        candidate = None if state == "conflict" else CANDIDATE
+        candidate = TARGET_SHA if state == "conflict" else CANDIDATE
         return BatchObservation(state, candidate, TARGET_SHA, detail={"step": self.calls})
 
+    async def repair_authorized(self, batch, members, head_sha):
+        return True
 
-class Conflicting:
+
+class Conflicting(Service):
     """A merge conflict carrying one exact ``merge_sources`` detail."""
 
     def __init__(self, detail, candidate=None):
@@ -206,8 +209,12 @@ async def test_red_candidate_allocates_one_repair_for_the_exact_head():
     visit = await t.visit(ROOT)
     assert visit.state == "repair"
     assert visit.repair["task_id"] == "repair-batch-1"
-    assert repair.calls == [("batch-1", {"target_ref": candidate_ref("batch-1"),
-                                         "head_sha": CANDIDATE, "held": False, "brief": ""})]
+    [(batch_id, args)] = repair.calls
+    assert batch_id == "batch-1"
+    assert (args["target_ref"], args["head_sha"], args["held"]) == (
+        candidate_ref("batch-1"), CANDIDATE, False)
+    assert await args["authorize"]()
+    assert args["brief"] == ""
 
 
 async def test_green_on_refresh_ends_repair_without_an_attempt():
@@ -253,14 +260,9 @@ async def test_conflict_brief_names_the_conflicting_and_remaining_members():
     assert "Do not stop once the conflict is resolved" in brief
 
 
-async def test_conflict_brief_owes_every_member_when_no_partial_head_was_published():
-    """Without the partial head the starting head is the target: nothing is merged."""
-    repair = Repair()
-    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), CONFLICTING_MEMBERS)}),
-              {ROOT.key: lane(Conflicting(CONFLICT))}, repair)
-    await t.visit(ROOT)
-    brief = repair.calls[0][1]["brief"]
-    assert repair.calls[0][1]["head_sha"] == TARGET_SHA
+def test_conflict_brief_owes_every_member_when_start_is_not_the_partial_head():
+    """A published target start carries no members from another partial head."""
+    brief = conflict_brief(CONFLICT, CONFLICTING_MEMBERS, starting_sha=TARGET_SHA)
     assert "Nothing is merged into the starting head yet." in brief
     assert (f"Still to merge onto the starting head, in this order:\n"
             f"  1. t-1 (source {SOURCE})\n  2. t-2 (source {'e' * 40})\n"
@@ -272,6 +274,22 @@ def test_conflict_brief_without_merge_evidence_still_instructs_every_member():
     assert "{" not in brief and "not reported by the merge" in brief
     assert f"  1. t-1 (source {SOURCE})" in brief
     assert f"starting head {TARGET_SHA}" in brief
+
+
+async def test_unpublished_conflict_never_dispatches_repair():
+    class Unpublished(Service):
+        async def visit(self, *args):
+            return BatchObservation("conflict", target_sha=TARGET_SHA,
+                                    detail={"reason": "merge_conflict", "member": "t-1"})
+
+    repair = Repair()
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(Unpublished())}, repair)
+    visit = await t.visit(ROOT)
+    assert visit.state == "unknown"
+    assert visit.detail["repair_publication"] == "unpublished"
+    assert visit.detail["member"] == "t-1"
+    assert repair.calls == []
 
 
 @pytest.fixture
