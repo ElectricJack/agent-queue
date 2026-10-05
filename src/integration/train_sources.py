@@ -219,20 +219,24 @@ class DatabaseBatches:
             reduced=True,
         )
         members: dict[str, BatchMember] = {}
+        delivered: set[str] = set()
         for task_id in ids:
             request, base = requests.get(task_id), bases.get(task_id)
             if request is None or not is_valid_git_oid(base or ""):
                 continue
             evidence = await snapshot.is_delivered(request, source_base=base)
+            if evidence.satisfied:
+                delivered.add(task_id)
+                continue
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
                     or evidence.reason != "source_not_delivered"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
             members[task_id] = BatchMember(task_id, source, base)
-        # A member never lands ahead of pending work it depends on that this
-        # batch does not carry; it waits for a later batch instead.
-        blocked = set(ids) - members.keys()
+        # A member never lands ahead of undelivered work it depends on that
+        # this batch does not carry; it waits for a later batch instead.
+        blocked = set(ids) - members.keys() - delivered
         changed = True
         while changed:
             changed = False

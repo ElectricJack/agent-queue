@@ -593,7 +593,8 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
-        "tests/test_integration_train.py"
+        "tests/test_integration_train.py",
+        "tests/test_integration_train_sources.py"
       ]
     },
     "intelligence-classes": {
@@ -1406,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:d07970cf6db10470a25c17921276291c06a069ce82b251f2f5f99988ca449f9a",
+  "digest": "sha256:5ef08b78a0fe0038f9223e37936d41a7c112345353c07bbbd5bd7d1cc5c6f9c8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8462,12 +8463,38 @@
       "imports": [
         "src.integration.batches",
         "src.integration.checks",
-        "src.integration.train"
+        "src.integration.repair",
+        "src.integration.train",
+        "src.models"
       ],
       "markers": [
         "parametrize"
       ],
       "summary": "The reduced train: per-target level-triggered visits over Git, checks and intent."
+    },
+    "tests/test_integration_train_sources.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.git_truth",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repair",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "The train's durable sources over a real origin; disposable PostgreSQL."
     },
     "tests/test_integration_transfer_commands.py": {
       "areas": [
