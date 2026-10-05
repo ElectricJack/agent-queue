@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import quote
 
 import pytest
 from sqlalchemy import delete, insert, select, update
@@ -29,6 +30,7 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.integration.candidates import AuditPullRequest, CandidateService
 from src.integration.ci import (
+    AuthenticatedGitHubObserver,
     CandidateCISubject,
     CIReceiptPayload,
     CIService,
@@ -318,6 +320,79 @@ class Forge:
         self.closed.append(number)
 
 
+class _ForgeChecksClient:
+    """The GitHub read shape ``AuthenticatedGitHubObserver`` consumes.
+
+    ``jobs`` are ``{"name", "conclusion", "id"}`` triples in one check suite.
+    A run concludes ``failure`` when any of its jobs failed and ``cancelled``
+    otherwise, which is what the forge reports whatever cancelled the others.
+    """
+
+    def __init__(self, trust, sha: str, run: int, jobs: list[dict]):
+        self.checks = {
+            job["name"]: [
+                {
+                    "id": job["id"],
+                    "name": job["name"],
+                    "head_sha": sha,
+                    "status": "completed",
+                    "conclusion": job["conclusion"],
+                    "app": {"id": int(REQUIRED["producer_id"])},
+                    "check_suite": {"id": run},
+                }
+            ]
+            for job in jobs
+        }
+        self.jobs = [
+            {
+                "id": 5000 + job["id"],
+                "name": job["name"],
+                "run_id": run,
+                "run_attempt": 1,
+                "head_sha": sha,
+                "status": "completed",
+                "conclusion": job["conclusion"],
+                "check_run_url": (
+                    f"https://api.github.com/repos/{trust.full_name}/check-runs/{job['id']}"
+                ),
+            }
+            for job in jobs
+        ]
+        self.workflows = [
+            {
+                "id": run,
+                "workflow_id": run + 1000,
+                "run_attempt": 1,
+                "check_suite_id": run,
+                "head_sha": sha,
+                "status": "completed",
+                "conclusion": "failure" if any(
+                    job["conclusion"] == "failure" for job in jobs
+                ) else "cancelled",
+                "event": "push",
+                "repository": {"id": trust.repository_id, "full_name": trust.full_name},
+                "head_repository": {"id": trust.repository_id, "full_name": trust.full_name},
+            }
+        ]
+        self.paths: list[str] = []
+
+    async def paged_items(self, path, *, key, max_pages=20):
+        self.paths.append(path)
+        if key == "jobs":
+            return self.jobs
+        if key == "workflow_runs":
+            return self.workflows
+        return next(
+            (rows for name, rows in self.checks.items() if quote(name, safe="") in path), []
+        )
+
+
+async def _observed(trust, sha: str, run: int, jobs: list[dict]):
+    return await AuthenticatedGitHubObserver(
+        _ForgeChecksClient(trust, sha, run, jobs)
+    ).observe(trust, sha)
+
+
 class CIProducer:
     """The trusted exact-SHA producer behind ``integration_ci_evidence``.
 
@@ -338,6 +413,29 @@ class CIProducer:
         )
 
     def finish(self, sha: str, conclusion: str, run: int) -> None:
+        self.record(sha, conclusion, run, [conclusion if index == 0 else "success"
+                                           for index in range(len(REQUIRED["names"]))])
+
+    async def cancelled_siblings(self, sha: str, run: int) -> None:
+        """One failing required check with every other required job cancelled.
+
+        Mirrors run 37367576038: during a GitHub Actions outage the jobs that
+        never acquired a runner concluded cancelled while ``Tests (default-7/8)``
+        genuinely failed. The observation is built by the real
+        ``AuthenticatedGitHubObserver``, so the run's conclusion precedence is the
+        production one.
+        """
+        jobs = [
+            {
+                "name": name,
+                "conclusion": "failure" if index == 1 else "cancelled",
+                "id": run * 100 + index,
+            }
+            for index, name in enumerate(REQUIRED["names"])
+        ]
+        self.runs[sha] = await _observed(self.trust, sha, run, jobs)
+
+    def record(self, sha: str, conclusion: str, run: int, job_conclusions: list[str]) -> None:
         checks = [
             {
                 "name": name,
@@ -346,7 +444,7 @@ class CIProducer:
                 "producer_app_id": int(REQUIRED["producer_id"]),
                 "producer_id": REQUIRED["producer_id"],
                 "head_sha": sha,
-                "conclusion": conclusion if index == 0 else "success",
+                "conclusion": job_conclusions[index],
             }
             for index, name in enumerate(REQUIRED["names"])
         ]
@@ -377,7 +475,15 @@ class CIProducer:
                 checks=tuple(checks),
                 workflow_runs=(workflow,),
                 workflow_ids={run: run + 1000},
-                conclusion="failure",
+                # The real observer's precedence: a conclusive failure outranks
+                # cancelled jobs of any origin.
+                conclusion=(
+                    "failure"
+                    if "failure" in job_conclusions
+                    else "cancelled"
+                    if "cancelled" in job_conclusions
+                    else "failure"
+                ),
             )
 
     @root_engine_guard("candidate", outcome="stale_subject")
@@ -1583,6 +1689,51 @@ async def test_main_moved_after_build_rebuilds_once_then_red_ci_routes_to_repair
     await train.run_until(
         lambda: train.phase(subject.id, SubjectPhase.REPAIRING), label="red routes to repair"
     )
+
+
+async def test_red_run_with_cancelled_jobs_files_a_repair_stage(train):
+    """Live 2026-10-05 run 37367576038: one failed check, twelve cancelled jobs.
+
+    During a GitHub Actions outage the jobs that never acquired a runner
+    concluded cancelled while ``Tests (default-7/8)`` genuinely failed.
+    Cancellation dominated the failure, the observation was classified infra and
+    the subject waited on ci-infrastructure instead of filing a repair.  The
+    conclusive failure now decides the run and the repair stage is filed.
+    """
+    await train.open()
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    red = await train.subject(subject.id)
+
+    await train.ci.cancelled_siblings(red.head_sha, run=84)
+    observation = train.ci.runs[red.head_sha]
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == "failure"
+
+    async def repair_filed():
+        current = await train.subject(subject.id)
+        return current.phase is SubjectPhase.REPAIRING and current.writer.status.value == "filed"
+
+    await train.run_until(repair_filed, label="red with cancelled jobs routes to repair")
+
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    assert stage["state"] == "active"
+    assert stage["repair_task_id"]
+    assert stage["deadline_at"] is not None
+    # The run is a real attempt, not an infrastructure retry: the reconciler
+    # never waited on ci-infrastructure for it.
+    current = await train.subject(subject.id)
+    assert current.schedule.wait_reason != "ci-infrastructure"
+    results = [
+        (row["payload"].get("result") or {}).get("outcome")
+        for row in await train.journal(subject.id)
+        if row["primitive"] == "ci_observe"
+    ]
+    assert results[-1] == "red"
 
 
 async def delegate_after_its_own_promotion(train, lifecycle="pool"):

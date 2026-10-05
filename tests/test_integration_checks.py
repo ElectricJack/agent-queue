@@ -109,6 +109,18 @@ def test_failure_outranks_unknown_and_pending():
     assert result.state is ChecksState.RED
 
 
+def test_failure_outranks_cancelled_siblings():
+    """A real failure decides the run even when other required jobs were cancelled."""
+    result = evaluate(
+        REQUIRED,
+        head(),
+        [row("unit", "failure"), row("lint", "cancelled")],
+        now=50,
+    )
+    assert result.state is ChecksState.RED
+    assert result.due_at is None
+
+
 def test_required_checks_resolve_from_policy_trust_and_subject_manifest():
     _, policy_trust = github(app=False)
     _, manifest = github(manifest=True)

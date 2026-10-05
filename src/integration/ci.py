@@ -1241,7 +1241,14 @@ class AuthenticatedGitHubObserver:
             conclusions = {check["conclusion"] for check in selected} | {
                 workflow["conclusion"] for workflow in workflow_rows
             }
-            overall = "cancelled" if "cancelled" in conclusions else "failure"
+            # Cancelled jobs do not make a run inconclusive when some required
+            # check or workflow genuinely failed: a real failure dominates, so
+            # the run is RED/repairable rather than infra. Only a run whose
+            # non-success jobs are all cancelled stays inconclusive.
+            overall = (
+                "cancelled" if "cancelled" in conclusions and "failure" not in conclusions
+                else "failure"
+            )
             return FailedCIObservation(
                 checks=tuple(selected),
                 workflow_runs=tuple(workflow_rows),

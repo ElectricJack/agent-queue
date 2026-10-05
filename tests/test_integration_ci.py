@@ -720,6 +720,42 @@ async def test_authenticated_observer_returns_normalized_conclusive_failure():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unit", "postgres", "expected"),
+    [
+        # Cancelled jobs (for example a runner that was never acquired)
+        # coexist with a genuine failure; the failure still decides the run.
+        ("failure", "cancelled", "failure"),
+        ("cancelled", "failure", "failure"),
+        ("failure", "failure", "failure"),
+        ("cancelled", "cancelled", "cancelled"),
+        ("skipped", "cancelled", "cancelled"),
+    ],
+)
+async def test_a_conclusive_failure_outranks_cancelled_siblings(
+    unit, postgres, expected
+):
+    """A red run is RED even when cancellation dominates its check set."""
+    checks = {
+        "unit": [{"id": 11, "name": "unit", "head_sha": SHA, "status": "completed",
+                  "conclusion": unit, "app": {"id": 404},
+                  "check_suite": {"id": 21}}],
+        "postgres": [{"id": 12, "name": "postgres", "head_sha": SHA, "status": "completed",
+                      "conclusion": postgres, "app": {"id": 404},
+                      "check_suite": {"id": 21}}],
+    }
+    workflows = [{"id": 31, "workflow_id": 301, "run_attempt": 2, "check_suite_id": 21,
+                  "head_sha": SHA, "conclusion": "failure" if unit == "failure" else "cancelled"}]
+
+    observation = await AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows)
+    ).observe(trust(), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == expected
+
+
+@pytest.mark.asyncio
 async def test_publish_attestation_uses_canonical_text_and_digest():
     client = FakeGitHubClient({}, [])
     observer = AuthenticatedGitHubObserver(client)

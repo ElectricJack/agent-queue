@@ -11,7 +11,12 @@ import pytest
 from pydantic import ValidationError
 
 from src.git.github_contracts import GitHubCredentialIdentity
-from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
+from src.integration.ci import (
+    FailedCIObservation,
+    IntegrationCITrust,
+    IntegrationTrustManifest,
+    TrustedFixtureObserver,
+)
 from src.integration.ci_adapters import CIAdapters, bind_ci_adapters
 from src.integration.ci_producers import (
     HostedCIProducer,
@@ -213,6 +218,160 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
 
     client.paged_items = AsyncMock(side_effect=paged_items)
     return client, trusted
+
+
+def cancelled_siblings_github(*, conclusions, run_conclusion):
+    """One suite whose distinct required jobs carry ``conclusions`` under a run."""
+    names = [f"job-{index}" for index in range(len(conclusions))]
+    trust = IntegrationCITrust(
+        canonical_repository_id="repo",
+        repository_id=123,
+        full_name="acme/widgets",
+        producer_id="15368",
+        required_checks={"version": "v1", "names": tuple(names)},
+    )
+    client = SimpleNamespace(
+        credential_identity=GitHubCredentialIdentity.existing_login(),
+        checks=[
+            {
+                "id": 11 + index,
+                "name": name,
+                "head_sha": HEAD,
+                "status": "completed",
+                "conclusion": conclusion,
+                "app": {"id": 15368},
+                "check_suite": {"id": 21},
+            }
+            for index, (name, conclusion) in enumerate(
+                zip(names, conclusions, strict=True)
+            )
+        ],
+        jobs=[
+            {
+                "id": 51 + index,
+                "name": name,
+                "run_id": 31,
+                "run_attempt": 1,
+                "head_sha": HEAD,
+                "status": "completed",
+                "conclusion": conclusion,
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
+            }
+            for index, (name, conclusion) in enumerate(
+                zip(names, conclusions, strict=True)
+            )
+        ],
+        workflows=[
+            {
+                "id": 31,
+                "workflow_id": 301,
+                "run_attempt": 1,
+                "check_suite_id": 21,
+                "head_sha": HEAD,
+                "status": "completed",
+                "conclusion": run_conclusion,
+                "event": "push",
+                "repository": {"id": 123, "full_name": "acme/widgets"},
+                "head_repository": {"id": 123, "full_name": "acme/widgets"},
+            }
+        ],
+    )
+
+    async def paged_items(_, *, key):
+        return {
+            "check_runs": client.checks,
+            "workflow_runs": client.workflows,
+            "jobs": client.jobs,
+        }[key]
+
+    client.paged_items = AsyncMock(side_effect=paged_items)
+    return client, trust
+
+
+@pytest.mark.parametrize(
+    ("conclusions", "run_conclusion", "state", "classification"),
+    [
+        # Cancelled jobs (for example a runner never acquired during an
+        # outage) do not make the run inconclusive when a check really failed.
+        (("failure", "cancelled", "cancelled"), "failure", "red", "conclusive"),
+        (("cancelled", "failure"), "failure", "red", "conclusive"),
+        (("failure",), "failure", "red", "conclusive"),
+        # No failure anywhere: still inconclusive and not an attempt.
+        (("cancelled", "cancelled"), "cancelled", "infra", "cancelled"),
+        (("cancelled", "skipped"), "cancelled", "infra", "cancelled"),
+    ],
+)
+async def test_hosted_failure_outranks_cancelled_siblings(
+    conclusions, run_conclusion, state, classification
+):
+    client, trust = cancelled_siblings_github(
+        conclusions=conclusions, run_conclusion=run_conclusion
+    )
+    producer = HostedCIProducer(client, trust)
+    s = subject()
+
+    result = await producer.observe(s, s.head)
+
+    assert isinstance(result, ProducerObservation)
+    assert (result.state, result.classification) == (state, classification)
+    assert result.is_attempt is (classification == "conclusive")
+
+
+@pytest.mark.parametrize(
+    ("conclusions", "state", "classification"),
+    [
+        (("failure", "cancelled"), "red", "conclusive"),
+        (("cancelled", "failure"), "red", "conclusive"),
+        (("cancelled", "cancelled"), "infra", "cancelled"),
+    ],
+)
+async def test_hosted_maps_a_stale_cancelled_overall_conclusion_by_its_checks(
+    conclusions, state, classification
+):
+    """The mapping reads the checks, not only the observation's overall word.
+
+    A `FailedCIObservation` labelled ``cancelled`` whose own check set carries a
+    conclusive failure is still RED: the label is a summary, the checks are the
+    evidence.
+    """
+    client, trust = cancelled_siblings_github(
+        conclusions=conclusions, run_conclusion="cancelled"
+    )
+    names = list(conclusions)
+    observation = FailedCIObservation(
+        checks=tuple(
+            {
+                "name": name,
+                "check_run_id": 11 + index,
+                "check_suite_id": 21,
+                "head_sha": HEAD,
+                "conclusion": conclusion,
+            }
+            for index, (name, conclusion) in enumerate(zip(names, conclusions, strict=True))
+        ),
+        workflow_runs=(
+            {
+                "workflow_run_id": 31,
+                "run_attempt": 1,
+                "check_suite_id": 21,
+                "head_sha": HEAD,
+                "conclusion": "cancelled",
+            },
+        ),
+        workflow_ids={21: 301},
+        conclusion="cancelled",
+    )
+    producer = HostedCIProducer(client, trust)
+    producer.observer = TrustedFixtureObserver(observation)
+    s = subject()
+
+    result = await producer.observe(s, s.head)
+
+    assert isinstance(result, ProducerObservation)
+    assert (result.state, result.classification) == (state, classification)
+    assert result.is_attempt is (classification == "conclusive")
 
 
 @pytest.mark.parametrize("manifest", [False, True])

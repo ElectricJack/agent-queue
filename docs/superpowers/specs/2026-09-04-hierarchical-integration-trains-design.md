@@ -526,7 +526,10 @@ tree was already tested; an unattested emergency or bypass push runs full CI. Th
 does not create the redundant audit run prohibited by this design, while hotfixes remain observable.
 
 Infrastructure failures may be retried without a code change when a deterministic classifier
-identifies them as infrastructure failures. All other red runs enter repair.
+identifies them as infrastructure failures. All other red runs enter repair. That classifier is
+precedence-ordered: a conclusive check or workflow failure dominates cancellation, so a run whose
+other jobs were cancelled — a runner that was never acquired, a fail-fast sibling, a manually
+stopped run — is still red, not infrastructure.
 
 ## 9. Roll-forward repair and escalation
 
@@ -559,9 +562,12 @@ code-repair attempt.
 Repair is event-driven rather than an in-run loop. Candidate push ends the current activation. A
 core exact-SHA check poller records the first conclusive check result and emits
 `integration.ci_completed`; that event starts the next playbook activation, which either promotes,
-creates the next repair task, or advances the repair ladder. A cancelled or superseded run is
-inconclusive and consumes no attempt. Counters live in durable repair-stage rows, so playbook or
-daemon restart cannot reset a budget.
+creates the next repair task, or advances the repair ladder. A run whose required checks carry no
+failure anywhere is inconclusive when it was cancelled or superseded, and consumes no attempt. A run
+that also carries a genuine failure is not such a run: cancellation of any origin (a runner that was
+never acquired, a fail-fast sibling, a manually stopped run) is a consequence or a bystander of that
+failure, so a conclusive failure anywhere in the run dominates cancellation and the run is RED. Counters live in durable repair-stage rows, so playbook or daemon restart cannot
+reset a budget.
 
 Stage deadlines are enforced independently of CI completion. Persist `started_at` and `deadline_at`
 when a stage is activated, and publish a durable timeout event at the deadline. The shipped policy

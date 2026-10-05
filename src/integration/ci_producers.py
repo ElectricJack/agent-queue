@@ -214,13 +214,16 @@ class HostedCIProducer:
                 "workflow_runs": list(observed.workflow_runs),
             }
             identity = "hosted:" + digest(details)
+            # A conclusive failure outranks cancellation from any cause (a
+            # fail-fast sibling, a runner never acquired): cancellation must not
+            # turn a red run into an infra retry.
             classification, state = (
-                ("cancelled", CIState.INFRA)
-                if observed.conclusion == "cancelled"
-                else ("conclusive", CIState.RED)
+                ("conclusive", CIState.RED)
                 if "failure" in checks.values()
                 or "missing" in checks.values()
                 or any(run["conclusion"] == "failure" for run in observed.workflow_runs)
+                else ("cancelled", CIState.INFRA)
+                if observed.conclusion == "cancelled"
                 else ("infra", CIState.INFRA)
             )
         return ProducerObservation(
