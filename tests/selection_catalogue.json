@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:1162a3a0ced8d459814ee6d10063833be85a86cddc35152d10c414de8c41afef",
+  "digest": "sha256:dae6c88bbe1acdf38b619a66ef60ba53489c7196347a1301de0e0a641df7dea1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3062,13 +3062,22 @@
         "src.database.tables",
         "src.doctor.pool_checks",
         "src.event_bus",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.admission",
+        "src.integration.batches",
         "src.integration.development",
+        "src.integration.git_truth",
+        "src.integration.gitops",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.repair",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -8541,8 +8550,10 @@
         "src.cli.auto_commands",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.database.tables",
         "src.integration.batches",
         "src.integration.checks",
+        "src.integration.git_truth",
         "src.integration.repair",
         "src.integration.train",
         "src.integration.train_sources",
@@ -12970,6 +12981,7 @@
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.ownership",
+        "src.integration.repair",
         "src.orchestrator.workspace"
       ],
       "markers": [
