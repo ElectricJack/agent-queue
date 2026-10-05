@@ -14,7 +14,9 @@ interactive offer to launch the Vite dev server instead.
 
 from __future__ import annotations
 
+import gzip
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -40,7 +42,7 @@ from src.daemon_state import (
     release_start_lock,
     start_lock_owner,
     start_lock_state,
-)
+) from shutil import remove_old_files_and_dirs
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
 from src.sessions.env import (
     AQ_MARKER_KEYS,
@@ -50,10 +52,12 @@ from src.sessions.env import (
 
 from .app import cli, console
 
-CONFIG_DIR = os.path.expanduser("~/.agent-queue")
+CONFIG_DIR = os.path.join(os.path.expanduser("~/.agent-queue"), "config")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+MAX_LOG_SIZE_BYTES: int = 256 * 1024 * 1024
+MAX_ROTATED_GENS: int = 3
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
@@ -744,6 +748,10 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
+        
+        # Rotate daemon.log if it exceeds MAX_LOG_SIZE_BYTES before starting
+        _rotate_if_needed(LOG_PATH)
+        
         with open(LOG_PATH, "a") as log_file:
             proc = subprocess.Popen(
                 [bin_path, CONFIG_PATH],
@@ -1217,6 +1225,59 @@ def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bo
     # After the daemon is down: nothing is left to notice the sessions
     # disappearing and try to reconcile them mid-shutdown.
     stop_agent_sessions()
+
+
+# ---------------------------------------------------------------------------
+# Rotation helpers
+# ---------------------------------------------------------------------------
+
+
+def _rotate_if_needed(log_path: str) -> None:
+    """Rotate the log file if it exceeds MAX_LOG_SIZE_BYTES."""
+    try:
+        if not os.path.exists(log_path):
+            return
+        
+        stat = os.stat(log_path)
+        if stat.st_size <= MAX_LOG_SIZE_BYTES:
+            return
+        
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        rotated_path = f"{log_path}.{timestamp}.gz"
+        
+        # Close existing file if open in append mode
+        try:
+            with open(log_path, "r") as f:
+                content = f.read()
+        except (IOError, OSError):
+            content = ""
+        
+        # Rotate to gzipped backup
+        with gzip.open(rotated_path, "wt", encoding="utf-8") as f:
+            f.write(content)
+        
+        # Truncate for fresh log
+        with open(log_path, "w") as f:
+            pass  # Truncate
+        
+        _cleanup_old_rotations(LOG_PATH)
+    except (OSError, IOError) as e:
+        console.print(f"[dim]Failed to rotate log:[/] {e}")
+
+
+def _cleanup_old_rotations(current_log: str) -> None:
+    """Remove rotated files older than MAX_ROTATED_GENS."""
+    match = re.compile(rf"^{re.escape(current_log)}\\.\\d{{14}}\\.gz$")
+    try:
+        for f in os.listdir(os.path.dirname(current_log)):
+            if match.match(f):
+                full_path = os.path.join(os.path.dirname(current_log), f)
+                try:
+                    remove_old_files_and_dirs(full_path)
+                except (OSError, IOError):
+                    continue
+    except OSError:
+        pass
 
 
 @cli.command("restart")
