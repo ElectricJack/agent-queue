@@ -278,7 +278,13 @@ class IntegrationReleaseService:
                 and not project["hierarchical_integration_draining"]
                 and project["hierarchical_integration_desired_mode"] == "train"
             ):
-                if int(schedule["catchup_after_sequence"]) != sequence:
+                # A catch-up recorded under an earlier request is still owed:
+                # once a newer request superseded it (a hand-cleared stall, or a
+                # fresh sweep issued while it lingered) its sequence lags. That
+                # must start the next train, never wedge release forever; only
+                # a catch-up from a request not yet issued is impossible.
+                after = schedule["catchup_after_sequence"]
+                if after is not None and int(after) > sequence:
                     return self._result("invariant_error", batch, operation_id)
                 sequence += 1
                 catchup_request_id = f"integration-sweep:{project_id}:{sequence}"
