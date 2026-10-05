@@ -593,6 +593,7 @@
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
         "tests/test_integration_shadow_report.py",
+        "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
@@ -1401,7 +1402,7 @@
       ]
     }
   },
-  "digest": "sha256:0d85f3c56659ed36b4f96c3e5dc404dc7c2db751dab7f3dc12336d507cd53386",
+  "digest": "sha256:d65e7fd25fd7a3579b7a7880671f0020bc4b6d0de397b625bf10a6d79f71d4a1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8460,6 +8461,17 @@
       ],
       "markers": [],
       "summary": "Shadow-versus-legacy decision comparison: completeness, gates and read-only reads."
+    },
+    "tests/test_integration_size.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
     },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
