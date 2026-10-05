@@ -244,10 +244,33 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert service._development_subject_runtime is orch.development_subject_runtime
     assert service._outbox is orch.integration_outbox
     assert "delegate cleanup" in service._maintenance
+    assert orch.integration_train is None and service._train is None
     assert (
         orch.integration_attestation_resolver.__self__
         is orch.integration_attestation_service
     )
+
+
+async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path):
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("train.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.worktrees.enabled = False
+    config.integration.git_first = "active"
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    await orch.initialize()
+    try:
+        service = orch.integration_service
+        assert service._train is orch.integration_train is not None
+        assert service._subject_runtime is None
+        assert orch.parent_subject_runtime is None
+        assert orch.development_subject_runtime is None
+        assert service._task is not None
+    finally:
+        await _drain_running_tasks(orch)
+        await orch.shutdown()
     original_runtime = orch.playbook_manager
     runtime = MagicMock()
     runtime.accept_integration_event = AsyncMock(return_value=True)

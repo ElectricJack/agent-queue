@@ -615,6 +615,8 @@ class Orchestrator(
         self.record_outbox = None
         self.knowledge_generation_loop = None
         self.integration_service = None
+        # IntegrationTrain | None — the delivery engine when git_first is active.
+        self.integration_train = None
         #: When this process began; refreshed by ``initialize()``.  Integration
         #: seal grace reads it (``stale_schedule.OrphanGrace``).
         self._process_started_at = time.time()
@@ -1908,16 +1910,26 @@ class Orchestrator(
         from src.integration.root_runtime import root_runtime_for
         from src.integration.parent_runtime import parent_runtime_for
         from src.integration.development_runtime import development_runtime_for
+        from src.integration.train_sources import train_for
 
         self.parent_owner_recovery = owner_recovery
-        self.parent_subject_runtime = parent_runtime_for(self, parent_ci)
+        # git_first: active hands every target to the train; the subject
+        # runtimes are never built beside it.
+        self.integration_train = train_for(self)
+        train_active = self.integration_train is not None
+        self.parent_subject_runtime = (
+            None if train_active else parent_runtime_for(self, parent_ci)
+        )
         # A disabled reconciler pauses delivery; it never selects another engine.
-        self.development_subject_runtime = development_runtime_for(self)
+        self.development_subject_runtime = (
+            None if train_active else development_runtime_for(self)
+        )
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
-            subject_runtime=root_runtime_for(self),
+            subject_runtime=None if train_active else root_runtime_for(self),
             parent_subject_runtime=self.parent_subject_runtime,
             development_subject_runtime=self.development_subject_runtime,
+            train=self.integration_train,
             maintenance={
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
