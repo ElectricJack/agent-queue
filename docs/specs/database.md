@@ -4465,3 +4465,35 @@ actuals and the operation id; every other state carries no actuals
 | `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
+
+### Table: `operator_decisions`
+
+Append-only operator instructions attached to a task, integration batch or repair
+operation. Object identity and project ownership are resolved by the command
+handler; the tagged object reference has no database foreign key. Recording a
+release retains the original hold and references its exact decision ID. See
+[durable operator decisions](design/operator-decisions.md).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Decision identity |
+| `project_id` | TEXT | NOT NULL | Server-resolved owning project |
+| `object_kind` | TEXT | NOT NULL | task, batch or operation (`ck_operator_decisions_object_kind`) |
+| `object_id` | TEXT | NOT NULL | Identity within the tagged object kind |
+| `effect` | TEXT | NOT NULL | note, hold or release (`ck_operator_decisions_effect`) |
+| `operator` | TEXT | NOT NULL | Operator identity attested by the recorder |
+| `decision` | TEXT | NOT NULL | Verbatim operator instruction |
+| `source` | TEXT | NOT NULL | chat, discord or cli; validated by the command |
+| `source_ref` | TEXT | NOT NULL | Source message or command reference |
+| `recorded_by` | TEXT | NOT NULL | Authenticated recorder identity |
+| `created_at` | FLOAT | NOT NULL | Server timestamp |
+| `idempotency_key` | TEXT | NOT NULL | Request identity within the project |
+| `releases` | TEXT | nullable, FK operator_decisions.id, UNIQUE | Exact hold released by this instruction |
+
+`uq_operator_decisions_request` makes `(project_id, idempotency_key)` unique;
+`uq_operator_decisions_release` permits one release per hold.
+`ck_operator_decisions_release` requires a non-null `releases` value exactly
+when the effect is release. `ix_operator_decisions_object` indexes
+`(project_id, object_kind, object_id)`. Revision `a00000000077` installs the
+`operator_decisions_immutable` trigger to reject updates and deletes. History
+computes each hold's active state from its release without changing stored rows.

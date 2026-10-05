@@ -56,6 +56,33 @@ def test_every_categorized_command_has_response_model(cmd_name: str) -> None:
     )
 
 
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+def test_decision_response_preserves_provenance_and_hold_state(command: str) -> None:
+    row = {
+        "id": "decision-1",
+        "project_id": "project-1",
+        "object_kind": "batch",
+        "object_id": "batch-1",
+        "effect": "release",
+        "operator": "alice",
+        "decision": "Resume this batch.",
+        "source": "chat",
+        "source_ref": "chat:message-1",
+        "recorded_by": "supervisor-1",
+        "created_at": 1234.5,
+        "idempotency_key": "release-batch-1",
+        "releases": "hold-1",
+    }
+    if command == "decision_list":
+        row["active"] = False
+        raw = {"success": True, "operator_decisions": [row]}
+    else:
+        raw = {"success": True, "decision": row}
+
+    model = get_all_response_models()[command].model_validate(raw)
+    assert model.model_dump(exclude_unset=True) == raw
+
+
 def test_message_model_from_alias_round_trips() -> None:
     """``MessageModel.from_`` must round-trip through the ``"from"`` JSON key.
 

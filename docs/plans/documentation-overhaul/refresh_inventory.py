@@ -507,6 +507,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Source completion, validation, publication and recovery."),
     ("src/integrations/**", "integration", "docs/concepts/integration.md",
      PRODUCTION, "External integration adapters."),
+    ("src/operator_decisions.py", "integration", "docs/specs/design/operator-decisions.md",
+     PRODUCTION, "Shared operator instructions, exact releases and integration hold checks."),
 
     ("src/reviews/**", "tasks", "docs/concepts/tasks.md", PRODUCTION,
      "Document review diffing, notification, persistence and vault copies."),

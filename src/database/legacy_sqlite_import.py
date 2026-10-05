@@ -243,6 +243,9 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Durable operator decisions shipped in PostgreSQL revision 77.
+        # Legacy SQLite files have no object-attached decision history.
+        "operator_decisions",
     }
 )
 

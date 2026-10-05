@@ -192,6 +192,77 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+async def test_generated_decision_client_records_and_reads_hold_release(live_app):
+    """Typed routes and regenerated clients retain decision evidence and hold state."""
+    _import_repo_client()
+    from agent_queue_api_client.api.decision import decision_list, decision_record
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.decision_list_request import DecisionListRequest
+    from agent_queue_api_client.models.decision_list_response import DecisionListResponse
+    from agent_queue_api_client.models.decision_record_request import DecisionRecordRequest
+    from agent_queue_api_client.models.decision_record_response import DecisionRecordResponse
+    from agent_queue_api_client.models.decision_record_response_422 import DecisionRecordResponse422
+    from src.models import Project, Task
+
+    app, db = live_app
+    await db.create_project(Project(id="decisions", name="Decisions"))
+    await db.create_task(Task(
+        id="held-task", project_id="decisions", title="Held task", description="",
+    ))
+    instruction = {
+        "object_kind": "task",
+        "object_id": "held-task",
+        "effect": "hold",
+        "operator": "alice",
+        "decision": "Wait for the fix.",
+        "source": "cli",
+        "source_ref": "cli:instruction-1",
+        "idempotency_key": "instruction-1",
+    }
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        hold = await decision_record.asyncio(
+            client=client, body=DecisionRecordRequest.from_dict(instruction),
+        )
+        assert isinstance(hold, DecisionRecordResponse), hold
+        assert hold.decision.project_id == "decisions"
+        assert hold.decision.recorded_by == "human:local-operator"
+        assert hold.decision.source_ref == instruction["source_ref"]
+        assert hold.decision.decision == instruction["decision"]
+        query = DecisionListRequest.from_dict({"object_kind": "task", "object_id": "held-task"})
+        history = await decision_list.asyncio(client=client, body=query)
+        assert isinstance(history, DecisionListResponse), history
+        assert history.operator_decisions[0].active is True
+
+        release = await decision_record.asyncio(
+            client=client,
+            body=DecisionRecordRequest.from_dict({
+                **instruction, "effect": "release", "releases": hold.decision.id,
+                "idempotency_key": "release-1",
+            }),
+        )
+        assert isinstance(release, DecisionRecordResponse), release
+        assert release.decision.releases == hold.decision.id
+        history = await decision_list.asyncio(client=client, body=query)
+        assert isinstance(history, DecisionListResponse), history
+        assert {row.id for row in history.operator_decisions} == {
+            hold.decision.id, release.decision.id,
+        }
+        assert all(row.active is False for row in history.operator_decisions)
+
+        refused = await decision_record.asyncio(
+            client=client,
+            body=DecisionRecordRequest.from_dict({
+                **instruction, "object_id": "missing", "idempotency_key": "missing",
+            }),
+        )
+        assert isinstance(refused, DecisionRecordResponse422), refused
+        assert "missing" in refused.error
+
+
 async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
     """``graph_reflow_status`` is operator-only and read-only.
 
