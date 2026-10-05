@@ -1412,7 +1412,7 @@
       ]
     }
   },
-  "digest": "sha256:f8a2be13b62257e56acc3f2ecc424ce5c060c16edf28e46f0a701f8190c3fa1d",
+  "digest": "sha256:39ce628c07becf2c353a85783dc3beb9c38a8e230883a8fc15bf7966c9ec68e3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8540,8 +8540,10 @@
         "src.cli.auto_commands",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.database.tables",
         "src.integration.batches",
         "src.integration.checks",
+        "src.integration.git_truth",
         "src.integration.repair",
         "src.integration.train",
         "src.integration.train_sources",
