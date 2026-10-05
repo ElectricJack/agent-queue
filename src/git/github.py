@@ -1577,6 +1577,16 @@ class GitHubClient:
         open_matches = [pull for pull in matches if pull.get("state") == "open"]
         if open_matches:
             matches = open_matches
+        else:
+            # A closed audit PR for an earlier revision of this same batch is
+            # frozen at the old head (GitHub never moves a closed PR's head and
+            # cannot reopen it after a force-push).  After a repair rebuilds the
+            # candidate it is superseded, not a conflict: open a fresh PR.
+            matches = [
+                pull
+                for pull in matches
+                if not self._superseded_closed_audit_pr(pull, batch_id, head_sha, base_branch)
+            ]
         if matches:
             if len(matches) != 1:
                 raise GitHubAccessError("conflict_or_invalid", "audit PR branch was not unique")
@@ -1634,6 +1644,24 @@ class GitHubClient:
                 "conflict_or_invalid", "audit PR target did not match candidate"
             )
         return result
+
+    @staticmethod
+    def _superseded_closed_audit_pr(
+        pull: dict[str, Any], batch_id: str, head_sha: str, base_branch: str
+    ) -> bool:
+        head = pull.get("head")
+        base = pull.get("base")
+        body = str(pull.get("body") or "")
+        return (
+            pull.get("state") == "closed"
+            and not pull.get("merged_at")
+            and isinstance(head, dict)
+            and isinstance(base, dict)
+            and head.get("sha") != head_sha
+            and base.get("ref") == base_branch
+            and f"Root integration batch `{batch_id}`." in body
+            and re.search(r"<!-- aq-integration-audit:[0-9a-f]{64} -->", body) is not None
+        )
 
     @staticmethod
     def _audit_marker(idempotency_key: str) -> str:
