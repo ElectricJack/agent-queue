@@ -407,3 +407,54 @@ async def test_accepted_new_revision_supersedes_historical_preservation(env):
     assert await orch._hierarchy_repair_start(
         str(env.base), origin, fence, repository_url=str(env.origin)
     ) == case.head
+
+
+async def test_rebuilt_stage_resets_branch_carrying_superseded_stage_commits(env):
+    """Base moved during repair: the rebuilt stage owns and resets the branch.
+
+    The prior stage pushed its own commits to the shared repair branch; the
+    candidate was then rebuilt onto a moved base and a new stage froze that
+    rebuild as its start. Admission must lease-reset the branch to the frozen
+    start instead of blocking with ``slot_reset_failed``.
+    """
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    await case.repair.dispatch(case.operation, 1)
+    # The prior stage published its work on the repair branch.
+    git(env.base, "push", "-f", "origin", f"{case.head}:refs/heads/{case.target.branch}")
+    stale_tip = remote_sha(env.origin, case.target.branch)
+    # Rebuild onto a moved base: a commit that does not contain the stage work.
+    rebuilt = git(env.base, "commit-tree", f"{case.partial}^{{tree}}", "-p", case.partial,
+                  "-m", "rebuilt candidate")
+    git(env.base, "push", "origin", f"{rebuilt}:refs/heads/aq/rebuilt-candidate")
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_candidate_revisions).values(
+            batch_id="batch", revision=1, construction_base_sha=case.partial,
+            head_sha=rebuilt, state="testing", created_at=150.0, updated_at=150.0,
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(current_revision=1, lifecycle="testing"))
+        await case.repair.bind_current_batch_subject_on(conn, case.operation, now=150.0)
+    assert (await case.repair.expire(case.operation, 1, now=190.0))["stage"] == 2
+    second = await case.repair.dispatch(case.operation, 2)
+    assert second["outcome"] == "dispatched"
+    assert (await _stage(case, 2))["starting_sha"] == rebuilt
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.db, orch.git = case.db, case.recovery.git
+    origin, fence, role = await orch._hierarchy_origin_and_fence(
+        await case.db.get_task(second["repair_task_id"]), await case.db.get_project("p")
+    )
+    assert role == "repair" and origin["base_sha"] == rebuilt
+    assert stale_tip != rebuilt
+    start = await orch._hierarchy_repair_start(
+        str(env.base), origin, fence, repository_url=str(env.origin)
+    )
+    assert start == rebuilt
+    assert remote_sha(env.origin, case.target.branch) == rebuilt
+    # Re-admission (e.g. a retried claim) is idempotent.
+    assert await orch._hierarchy_repair_start(
+        str(env.base), origin, fence, repository_url=str(env.origin)
+    ) == rebuilt

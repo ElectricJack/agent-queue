@@ -728,11 +728,33 @@ class WorkspaceMixin:
             ):
                 raise GitError("preserved repair tip or canonical branch lineage changed")
             return progress["sha"]
-        if not is_valid_git_oid(head) or await self.git.ais_ancestor(
-            workspace, origin["base_sha"], head, strict=True
-        ) is not True:
+        if not is_valid_git_oid(head):
             raise GitError("repair branch no longer descends from its frozen starting commit")
-        return head
+        if await self.git.ais_ancestor(
+            workspace, origin["base_sha"], head, strict=True
+        ) is True:
+            return head
+        # A new stage froze a fresh start (e.g. the candidate was rebuilt onto
+        # a moved base) while the shared repair branch still carries the
+        # superseded prior stage's commits. This stage owns the branch under
+        # its fence: reset it to the frozen start, leased on the observed tip.
+        base_sha = str(origin["base_sha"])
+        if not is_valid_git_oid(base_sha):
+            raise GitError("repair branch no longer descends from its frozen starting commit")
+        try:
+            await self.git._arun(["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=workspace)
+        except GitError:
+            await self.git._arun(["fetch", "--no-tags", "origin", base_sha], cwd=workspace)
+        await self.git._apush_oid(
+            workspace, base_sha, branch,
+            force_with_lease=True, expected_old_oid=head,
+            repository_url=repository_url or None,
+        )
+        logger.warning(
+            "repair stage reset %s from superseded tip %s to frozen start %s",
+            branch, head, base_sha,
+        )
+        return base_sha
 
     @guard_workspace("attachment")
     async def _prepare_exact_origin_workspace(
