@@ -4131,23 +4131,47 @@ integration_check_evidence = Table(
     Column("conclusion", Text, nullable=False),
     Column("classification", Text, nullable=False),
     Column("observed_at", Float, nullable=False),
-    UniqueConstraint(
+    # Exact-commit cache (src/integration/checks.py): one row per repository,
+    # SHA, required check and trusted producer (``producer_id``), overwritten
+    # by each refresh with the latest attempt. Legacy run-attempt rows bound to
+    # a batch or parent generation leave these null.
+    Column("repository_id", Text, nullable=True),
+    Column("sha", Text, nullable=True),
+    Column("check_name", Text, nullable=True),
+    Column("run_url", Text, nullable=True),
+    Column("due_at", Float, nullable=True),
+    Index(
+        "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",
         "run_id",
         "attempt",
         "required_check_version",
-        name="uq_integration_check_evidence_producer_run_attempt_checks",
+        unique=True,
+        postgresql_where=text("sha IS NULL"),
+    ),
+    Index(
+        "uq_integration_check_evidence_commit_check",
+        "repository_id",
+        "sha",
+        "check_name",
+        "producer_id",
+        unique=True,
+        postgresql_where=text("sha IS NOT NULL"),
     ),
     CheckConstraint("attempt >= 0", name="ck_integration_check_evidence_attempt"),
     CheckConstraint(
         "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
-        "AND parent_generation IS NULL AND parent_head_sha IS NULL) OR "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND sha IS NULL) OR "
         "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
-        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL)",
+        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL AND sha IS NULL) OR "
+        "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NULL "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND repository_id IS NOT NULL "
+        "AND sha IS NOT NULL AND check_name IS NOT NULL)",
         name="ck_integration_check_evidence_subject",
     ),
     CheckConstraint(
-        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
+        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive', "
+        "'missing', 'unavailable')",
         name="ck_integration_check_evidence_conclusion",
     ),
 )
