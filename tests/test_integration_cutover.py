@@ -48,9 +48,9 @@ ACTIVE_MODULES = (
 
 #: The stage-2 revisions, in chain order from the pre-cutover head.
 STAGE_TWO_REVISIONS = (
-    "a00000000072_integration_ref_leases",
-    "a00000000073_git_batch_inputs",
-    "a00000000074_integration_check_evidence_commit_cache",
+    "a00000000073_integration_ref_leases",
+    "a00000000074_git_batch_inputs",
+    "a00000000075_integration_check_evidence_commit_cache",
 )
 
 ROOT = Path(__file__).resolve().parents[1]
