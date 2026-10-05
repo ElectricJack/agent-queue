@@ -583,6 +583,7 @@
         "tests/test_integration_parent_subjects.py",
         "tests/test_integration_reconciler.py",
         "tests/test_integration_records_and_gates.py",
+        "tests/test_integration_replay.py",
         "tests/test_integration_root_adapters.py",
         "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
@@ -1410,7 +1411,7 @@
       ]
     }
   },
-  "digest": "sha256:002fa4b872a251ce115aad425bf7d415855af4fc94035e740a371144104851e0",
+  "digest": "sha256:bab245dacd2eca356dbb07aa52ffad4dd71cf19e59c6e7432670ca3b5f5fd912",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8135,6 +8136,24 @@
         "parametrize"
       ],
       "summary": "Natural deadline/drain/restart handoff with real PostgreSQL and Git origins."
+    },
+    "tests/test_integration_replay.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.source_trailer"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded replay and deterministic crash checks before the git-first cutover."
     },
     "tests/test_integration_review_evidence.py": {
       "areas": [
