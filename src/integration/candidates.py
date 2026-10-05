@@ -60,6 +60,7 @@ from src.integration.source_ancestry import (
     describe,
     prove_member_identity,
 )
+from src.integration.source_trailer import source_identity, with_source_trailers
 
 _CANDIDATE_MUTATION_PURPOSES = frozenset(
     {"candidate_partial", "candidate_final", "repair_resolution", "repair_handoff"}
@@ -4077,10 +4078,15 @@ class CandidateService:
         if parent_repair:
             commits = ",".join(parent_repair["accepted_lineage"]["repair_commit_shas"])
             repair = f"\nAccepted-repair-commits: {commits}"
-        return (
+        # The member's whole reviewed source, applied in full (by the natural
+        # merge or by an accepted repair), is the identity this merge records.
+        message = (
             f"Integrate {member['task_id']}\n\nBatch: {state['batch']['id']}\n"
             f"Reviewed-head: {member['reviewed_head_sha']}\n"
             f"Review-evidence: {member['review_evidence_id']}{repair}{trailers}"
+        )
+        return with_source_trailers(
+            message, [source_identity(member["task_id"], member["reviewed_head_sha"])]
         )
 
     @staticmethod

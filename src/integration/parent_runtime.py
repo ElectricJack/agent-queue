@@ -27,6 +27,7 @@ from src.integration.parent_subjects import (
 )
 from src.integration.reconciler import IntegrationReconciler, VisitTransition
 from src.integration.root_runtime import PinnedRootPolicy
+from src.integration.shadow import diagnostics_for
 from src.integration.subjects import (
     JournalMode,
     MemberRef,
@@ -347,6 +348,7 @@ class ParentSubjectRuntime:
         active=False,
         clock=time.time,
         page_size=20,
+        diagnostics=None,
     ):
         self.db, self.loader, self.clock = db, loader, clock
         self.adapters, self.cursor, self.page_size = adapters, "", page_size
@@ -360,6 +362,7 @@ class ParentSubjectRuntime:
                 mode=mode,
                 kinds=(SubjectKind.PARENT_EPISODE,),
                 clock=clock,
+                diagnostics=diagnostics,
             )
             for enabled, mode in ((active, JournalMode.ACTIVE),)
             if enabled
@@ -448,6 +451,8 @@ def parent_runtime_for(orchestrator, parent_ci):
         orchestrator._load_playbook_artifact,
         shadow=False,
         active=config.reconciler_active,
+        diagnostics=diagnostics_for(config, orchestrator.db, orchestrator.git,
+                                    reader=observer.reader),
     )
     runtime.subscribe(orchestrator.bus)
     return runtime

@@ -903,6 +903,7 @@ class ClaimQueryMixin:
                     )
                     .where(
                         integration_branch_owners.c.session_id == session_id,
+                        integration_branch_owners.c.fence.is_(None),
                         integration_branch_owners.c.handoff_state.in_(
                             ("attached", "handoff_pending")
                         ),
@@ -1021,6 +1022,10 @@ class ClaimQueryMixin:
                 end_reason=end_reason or needs_attention or context,
                 conn=conn,
             )
+        if task_id:
+            from src.integration.lock import release_session_leases_on
+
+            await release_session_leases_on(self, conn, session_id, task_id)
         if agent_id:
             # Clear the task lock unconditionally — even a session that held no
             # task (e.g. released mid-``claiming``) must not leave a stale
@@ -1319,6 +1324,7 @@ class ClaimQueryMixin:
                     .join(workspaces, integration_branch_owners.c.workspace_id == workspaces.c.id)
                     .where(
                         integration_branch_owners.c.session_id == session_id,
+                        integration_branch_owners.c.fence.is_(None),
                         integration_branch_owners.c.handoff_state.in_(
                             ("attached", "handoff_pending")
                         ),

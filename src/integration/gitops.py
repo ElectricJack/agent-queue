@@ -27,6 +27,7 @@ from src.integration.migration_heads import declaration
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError, StaleFence
 from src.integration.regeneration import RegenerationFailure, regenerated_tree
+from src.integration.source_trailer import source_identity, with_source_trailers
 from src.integration.subjects import (
     AncestryArgs,
     MaterializeRefArgs,
@@ -701,6 +702,12 @@ class GitOperations:
                                 )
                         stamp = f"@{int(subject.created_at)} +0000"
                         identity_args = self.git.resolve_commit_identity().config_args()
+                        # The member's whole head, merged in full, is the exact
+                        # source identity this merge records.
+                        message = with_source_trailers(
+                            f"Integrate {member.task_id} ({member.head_sha})",
+                            [source_identity(member.task_id, member.head_sha)],
+                        )
                         head = await self.run(
                             repo,
                             *identity_args,
@@ -711,7 +718,7 @@ class GitOperations:
                             "-p",
                             member.head_sha,
                             "-m",
-                            f"Integrate {member.task_id} ({member.head_sha})",
+                            message,
                             env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
                         )
                     await self.authority(subject)

@@ -354,11 +354,15 @@ class WriterPrimitives:
         owner_recovery: OwnerRecovery | None = None,
         routing_policy: Callable[[Task], bool] | None = None,
         clock: Callable[[], float] = time.time,
+        managed_leases: bool = False,
     ) -> None:
         self.db = db
         self.recovery = owner_recovery
         self.routing_policy = routing_policy
         self.clock = clock
+        # Shadow continues to use legacy execution. The active git-first
+        # adapter selects this port, without project-level write authority.
+        self.managed_leases = managed_leases
         self.ownership = ExpiringBranchOwnership(db, clock=clock)
 
     def bind(self, ports: PrimitivePorts) -> None:
@@ -541,26 +545,12 @@ class WriterPrimitives:
             return PrimitiveOutcome(primitive=p, outcome="filed", detail=payload)
 
     async def _owner_on(self, conn, subject):
-        branch = subject.target_ref.removeprefix("refs/heads/")
-        rows = (
-            (
-                await conn.execute(
-                    select(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id == subject.repository_id,
-                        integration_branch_owners.c.ref.in_((branch, f"refs/heads/{branch}")),
-                    )
-                    .order_by(integration_branch_owners.c.ref)
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .all()
+        from src.integration.lock import BranchLock
+
+        # Acquisition, mutation and adapters must take advisory then row lock.
+        return await BranchLock(self.db, clock=self.clock).lock_on(
+            conn, BranchKey(repository_id=subject.repository_id, branch=subject.target_ref)
         )
-        active = [dict(row) for row in rows if row["handoff_state"] != "released"]
-        if len(active) > 1:
-            raise BranchBusy("multiple spellings of the ref have an owner")
-        return active[0] if active else (dict(rows[0]) if rows else None)
 
     async def lease(self, subject: Subject, args: WriterLeaseArgs) -> PrimitiveOutcome:
         p = Primitive.WRITER_LEASE
@@ -584,6 +574,33 @@ class WriterPrimitives:
             except BranchBusy as exc:
                 return PrimitiveOutcome(primitive=p, outcome="busy", detail={"holder": str(exc)})
             transfer = False
+            managed_lease = self.managed_leases or (
+                owner is not None and owner.get("fence") is not None
+            )
+            if managed_lease:
+                # Handoff/session/workspace state is not lease eligibility.
+                # Leave subject policy/claim admission in this adapter; the
+                # per-ref lock is the only managed write authority.
+                if owner and owner.get("holder") and owner["expires_at"] > self.clock():
+                    if owner["holder"] != args.owner_task_id:
+                        return PrimitiveOutcome(
+                            primitive=p, outcome="busy", detail={"holder": owner["holder"]}
+                        )
+                    if current.writer.fence_token != owner["fence"]:
+                        return PrimitiveOutcome(primitive=p, outcome="stale")
+                    return PrimitiveOutcome(
+                        primitive=p,
+                        outcome="leased",
+                        detail={
+                            "fence": BranchOwnership._fence(owner).model_dump(mode="json"),
+                            "expires_at": owner["expires_at"],
+                        },
+                    )
+                # An expired grant cannot be refreshed by replaying its old
+                # primitive. A fresh ordinary task acquires a fresh fence.
+                if current.writer.fence_token is not None:
+                    return PrimitiveOutcome(primitive=p, outcome="stale")
+                owner = None
             if owner and owner["handoff_state"] != "released":
                 if owner["owner_id"] != args.owner_task_id:
                     # A detached domain reservation belongs to this subject,
@@ -591,10 +608,13 @@ class WriterPrimitives:
                     # after checking it has no process or workspace holder.
                     domain_ids = {current.id, current.task_id, current.batch_id} - {None}
                     if current.parent_episode_id:
-                        operation_id = await conn.scalar(select(integration_repair_operations.c.id).where(
-                            integration_repair_operations.c.parent_task_id == current.task_id,
-                            integration_repair_operations.c.episode_id == current.parent_episode_id,
-                        ))
+                        operation_id = await conn.scalar(
+                            select(integration_repair_operations.c.id).where(
+                                integration_repair_operations.c.parent_task_id == current.task_id,
+                                integration_repair_operations.c.episode_id
+                                == current.parent_episode_id,
+                            )
+                        )
                         if operation_id:
                             domain_ids.add(operation_id)
                     transfer = (
@@ -687,9 +707,22 @@ class WriterPrimitives:
                         role,
                     )
                 else:
-                    fence = await self.ownership.acquire(
-                        target, args.owner_task_id, role, conn=conn
-                    )
+                    if managed_lease:
+                        from src.integration.lock import BranchLock
+
+                        fence = await BranchLock(self.db, clock=self.clock).acquire(
+                            target,
+                            args.owner_task_id,
+                            role=role,
+                            conn=conn,
+                            ttl_seconds=min(
+                                args.ttl_seconds, current.budget.deadline_at - self.clock()
+                            ),
+                        )
+                    else:
+                        fence = await self.ownership.acquire(
+                            target, args.owner_task_id, role, conn=conn
+                        )
             except BranchBusy:
                 return PrimitiveOutcome(
                     primitive=p, outcome="busy", detail={"holder": "racing_owner"}
@@ -769,6 +802,11 @@ class WriterPrimitives:
                 owner = await self._owner_on(conn, current)
             except BranchBusy as exc:
                 return PrimitiveOutcome.unknown(p, str(exc))
+            if self.managed_leases or (owner is not None and owner.get("fence") is not None):
+                # This primitive is a legacy process/workspace recovery saga.
+                # Active callers release exact lease identities through lock.py;
+                # expiry already frees the ref without asserting process death.
+                return PrimitiveOutcome.unknown(p, "managed_ref_uses_lease_release")
             token = current.writer.fence_token
             if token is None and args.fence_token is None:
                 # Filing is blocked until its first lease. A never-leased,
