@@ -120,19 +120,6 @@ class RepairAllocator(Protocol):
         """File (or find) the ordinary repair task for a batch on its target."""
 
 
-@dataclass(frozen=True)
-class TrainLane:
-    """The per-target mechanism: one batch service and one checks cache.
-
-    ``snapshot`` fetches the target once per visit. ``generation`` names the
-    candidate's revision for exact-head checks (the batch's repair count).
-    """
-
-    snapshot: Callable[[], Awaitable[GitTruthSnapshot]]
-    service: BatchService
-    checks: ExactChecks
-
-
 def candidate_head(batch: Batch, candidate_sha: str) -> HeadIdentity:
     """The exact head whose checks gate a batch's publication."""
     return HeadIdentity(
@@ -154,6 +141,56 @@ def exact_gate(checks: ExactChecks) -> Callable[[Batch, str, str], Awaitable[boo
         return (await checks.read(candidate_head(batch, candidate_sha))).green
 
     return gate
+
+
+class CandidateChecks:
+    """The exact-head checks of one lane's candidates.
+
+    ``resolve`` builds the checks cache for one candidate, always outside every
+    lock: hosted trust may read the candidate's tree. The batch gate runs inside
+    the publisher's fence lock, so it reads only a candidate this lane already
+    resolved, and an unresolved candidate is not green.
+    """
+
+    def __init__(
+        self, resolve: Callable[[Batch, str], Awaitable[ExactChecks]], *, limit: int = 64,
+    ) -> None:
+        self.resolve, self.limit = resolve, limit
+        self._resolved: dict[tuple[str, str], ExactChecks] = {}
+
+    @classmethod
+    def fixed(cls, checks: ExactChecks) -> CandidateChecks:
+        async def resolve(batch: Batch, candidate_sha: str) -> ExactChecks:
+            return checks
+
+        return cls(resolve)
+
+    async def for_candidate(self, batch: Batch, candidate_sha: str) -> ExactChecks:
+        checks = await self.resolve(batch, candidate_sha)
+        self._resolved.pop((batch.id, candidate_sha), None)
+        self._resolved[(batch.id, candidate_sha)] = checks
+        while len(self._resolved) > self.limit:
+            self._resolved.pop(next(iter(self._resolved)))
+        return checks
+
+    async def gate(self, batch: Batch, candidate_sha: str, tree_sha: str) -> bool:
+        checks = self._resolved.get((batch.id, candidate_sha))
+        if checks is None:
+            return False
+        return await exact_gate(checks)(batch, candidate_sha, tree_sha)
+
+
+@dataclass(frozen=True)
+class TrainLane:
+    """The per-target mechanism: one batch service and its candidates' checks.
+
+    ``snapshot`` fetches the target once per visit. The service's gate should be
+    ``checks.gate`` so publication reads the verdict this visit refreshed.
+    """
+
+    snapshot: Callable[[], Awaitable[GitTruthSnapshot]]
+    service: BatchService
+    checks: CandidateChecks
 
 
 @dataclass
@@ -270,7 +307,8 @@ class IntegrationTrain:
             # held, moved, source_moved, unknown: the next visit observes again.
             return self._visit(target, observation.state, batch, observation)
         head = candidate_head(batch, observation.candidate_sha)
-        result = await self._checks(lane.checks, head)
+        checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
+        result = await self._checks(checks, head)
         if result.green:
             # The gate now reads green; publish within this visit.
             published = await lane.service.visit(batch, members, snapshot)

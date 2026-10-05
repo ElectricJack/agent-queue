@@ -10,6 +10,7 @@ import pytest
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
 from src.integration.checks import ChecksState
 from src.integration.train import (
+    CandidateChecks,
     IntegrationTrain,
     TrainLane,
     TrainTarget,
@@ -113,7 +114,8 @@ def lane(service, checks=None, fetch=None):
             await fetch()
         return snapshot()
 
-    return TrainLane(snapshot=snap, service=service, checks=checks or Checks())
+    return TrainLane(snapshot=snap, service=service,
+                     checks=CandidateChecks.fixed(checks or Checks()))
 
 
 def test_target_rejects_unknown_kind_and_missing_fields():
@@ -209,6 +211,23 @@ async def test_gate_reads_only_the_cached_verdict():
     assert checks.requests == [] and checks.refreshes == []
     assert checks.reads == [candidate_head(batch(attempts=3), CANDIDATE)]
     assert checks.reads[0].generation == 3
+
+
+async def test_candidate_gate_refuses_a_candidate_this_lane_never_resolved():
+    checks = Checks(ChecksState.GREEN)
+    resolved = []
+
+    async def resolve(b, sha):
+        resolved.append((b.id, sha))
+        return checks
+
+    candidates = CandidateChecks(resolve)
+    assert not await candidates.gate(batch(), CANDIDATE, "d" * 40)
+    assert checks.reads == [] and resolved == []
+    assert await candidates.for_candidate(batch(), CANDIDATE) is checks
+    assert await candidates.gate(batch(), CANDIDATE, "d" * 40)
+    assert not await candidates.gate(batch("batch-2"), CANDIDATE, "d" * 40)
+    assert resolved == [("batch-1", CANDIDATE)]
 
 
 async def test_slow_target_never_stalls_another():
