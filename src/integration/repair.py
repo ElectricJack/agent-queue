@@ -14,7 +14,7 @@ import json
 import logging
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -74,6 +74,14 @@ def ordinary_repair_id(batch_id: str, attempt: int) -> str:
     return "repair-" + hashlib.sha256(f"{batch_id}:{attempt}".encode()).hexdigest()
 
 
+class UnpublishedRepairTarget(GitError):
+    """A confirmed missing ordinary repair ref is a train defect, not a slot failure."""
+
+    def __init__(self, target_ref: str):
+        self.target_ref = target_ref
+        super().__init__(f"integration train defect: unpublished repair target {target_ref}")
+
+
 class OrdinaryRepairService:
     """Allocate once under the batch/target locks, through CommandHandler.
 
@@ -94,6 +102,7 @@ class OrdinaryRepairService:
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
         intelligence_class: str | None = None, priority: int = 100,
         brief: str = "", ttl_seconds: float = 480,
+        authorize: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -170,6 +179,19 @@ class OrdinaryRepairService:
                                   lease_expired=not live_lease)
             if live_lease:
                 return answer("busy")
+            # The train must prove a published exact start before a task can
+            # become claimable. Hold batch intent and ref acquisition locks
+            # across this bounded observation and the ordinary filing.
+            from src.integration.lock import CRITICAL_SECTION_SECONDS
+
+            async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
+                confirmed = authorize is not None and await authorize()
+            if not confirmed:
+                logger.warning("integration batch %s repair not dispatched: published start "
+                               "%s on %s is unconfirmed", batch_id, head_sha, target_ref)
+                return {**answer("unconfirmed"), "success": False,
+                        "reason": "repair_target_unconfirmed", "target_ref": target_ref,
+                        "starting_sha": head_sha}
             attempt += 1
             task_id = ordinary_repair_id(batch_id, attempt)
             repair_input = {"batch_id": batch_id, "attempt": attempt,

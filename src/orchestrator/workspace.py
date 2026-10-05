@@ -736,6 +736,17 @@ class WorkspaceMixin:
         branch = fence.target.branch.removeprefix("refs/heads/")
         tracking = f"refs/remotes/origin/{branch}"
         await self.git.afetch_origin(workspace, repository_url=repository_url)
+        if origin.get("ordinary_repair"):
+            from src.git.manager import RemoteRefState
+            from src.integration.repair import UnpublishedRepairTarget
+
+            observed = await self.git.als_remote_ref(
+                workspace, branch, repository_url=repository_url,
+            )
+            if observed.state is RemoteRefState.ABSENT:
+                raise UnpublishedRepairTarget(fence.target.branch)
+            if observed.state is RemoteRefState.ERROR:
+                raise GitError(f"ordinary repair target observation failed: {observed.error}")
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
         if origin.get("ordinary_repair"):
             if not is_valid_git_oid(head):

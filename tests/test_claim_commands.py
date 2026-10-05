@@ -161,6 +161,140 @@ def scoped(handler, sid):
     return handler
 
 
+@pytest.mark.parametrize("delete_ref", [None, "reserved", "attached"])
+async def test_conflicting_batch_publishes_before_real_repair_claim(
+    handler, db, tmp_path, caplog, monkeypatch, delete_ref,
+):
+    from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref
+    from src.integration.git_truth import GitTruth
+    from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
+    from src.integration.repair import OrdinaryRepairService
+    from src.integration.status import IntegrationStatusService
+    from src.integration.train import BatchSelection, CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+    from src.integration.train_sources import LeasedPublish, _never_trusted
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.lock import BranchLock
+    from tests.test_delivery_consumers import Origin
+    from tests.test_integration_gitops import LocalGit, commit, git
+
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "HEAD")
+    first = commit(origin.clone, {"base.txt": "first\n"}, base=base)
+    second = commit(origin.clone, {"base.txt": "second\n"}, base=base)
+    await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
+                                   source_type=RepoSourceType.CLONE, url=origin.url))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            integration_repository_id="repo", repo_url=origin.url)
+    frozen = Batch("conflicting", PROJECT_ID, "repo", "refs/heads/main", created_at=1700000000)
+    members = (BatchMember("first", first, base), BatchMember("second", second, base, order=1))
+    store = BatchStore(db)
+    await store.freeze(frozen, members, trees={
+        m.task_id: git(origin.clone, "rev-parse", f"{m.source_sha}^{{tree}}") for m in members
+    })
+    transport = LocalGit(tmp_path / "origin.git")
+    retained = RetainedRepository("repo", origin.clone, GitHubRepositoryBinding(123, "test/repo"), "main")
+
+    async def repository(batch):
+        return retained
+
+    async def eligible(batch, members):
+        return True
+
+    async def gate(batch, sha, tree):
+        return False
+
+    service = BatchService(store, GitOperations(
+        db, git=transport, repository=repository,
+        authority=SubjectGitAuthority(db, trusted_green=_never_trusted),
+    ), publish=LeasedPublish(db, transport), eligible=eligible, gate=gate)
+    target = TrainTarget(PROJECT_ID, "repo", "refs/heads/main")
+
+    async def snapshot():
+        return await GitTruth(transport).snapshot(
+            str(origin.clone), project_id=PROJECT_ID, repository_id="repo",
+            repository_url=origin.url, target_ref=target.target_ref,
+        )
+
+    async def no_checks(batch, sha):
+        raise AssertionError("a conflicting build must not request candidate checks")
+
+    async def lane_for(target):
+        return TrainLane(snapshot, service, CandidateChecks(no_checks))
+
+    repair = OrdinaryRepairService(db)
+    allocate = repair.allocate
+
+    async def published_before_filing(batch_id, **args):
+        # This assertion runs before any ordinary task or worker lease exists.
+        assert git(origin.url, "rev-parse", args["target_ref"]) == args["head_sha"]
+        assert (await store.get(batch_id)).repair_attempt_count == 0
+        return await allocate(batch_id, **args)
+
+    repair.allocate = published_before_filing
+    train = IntegrationTrain(
+        targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
+        batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(frozen, members))),
+        lane_for=lane_for, repair=repair,
+    )
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    assert visit["state"] == "repair", visit
+    assert visit["detail"]["member"] == "second"
+    assert visit["detail"]["reason"] == "merge_conflict"
+    assert visit["detail"]["files"] == ["base.txt"]
+    assert "conflicting build conflict" in caplog.text
+    ref = candidate_ref(frozen.id)
+    task_id = visit["repair"]["task_id"]
+    original = await repair.input(task_id)
+    assert original["starting_sha"] == visit["candidate_sha"]
+    assert original["starting_sha"] != base  # preserve the successfully merged first member
+    git(origin.clone, "merge-base", "--is-ancestor", first, original["starting_sha"])
+    status = await IntegrationStatusService(db, git_first="active", train=train).train_status(PROJECT_ID)
+    assert status["batches"][0]["detail"] == visit["detail"]
+    assert any(b["code"] == "merge_conflict" and b["evidence"]["member"] == "second"
+               for b in status["blockers"])
+
+    await db.update_task(task_id, status=TaskStatus.READY, profile_id="worker",
+                         intelligence_class="standard-medium", route_source=route_source_for("worker"))
+    sid, wd = await pool_session(db, tmp_path)
+    git(wd, "clone", origin.url, ".")
+    handler.orchestrator.git = transport
+    del handler.orchestrator._worktree_slots  # exercise real checkout preparation
+    h = scoped(handler, sid)
+    if delete_ref == "attached":
+        # A failed earlier preparation can retain its attachment and epoch.
+        # The later missing-ref diagnosis must still avoid slot retry policy.
+        with monkeypatch.context() as patch:
+            patch.setattr(handler.orchestrator._worktree_slots(), "reset_slot_for_task",
+                          AsyncMock(side_effect=RuntimeError("checkout unavailable")))
+            patch.setattr(handler.orchestrator, "arelease_integration_writer_for_retry",
+                          AsyncMock(return_value=False))
+            failed = await h._cmd_task_claim({"next": True})
+            assert failed["result"] == "prepare_failed"
+            assert (await db.get_session(sid)).claim_phase == "preparing"
+    if delete_ref:
+        git(origin.clone, "push", "origin", f":{ref}")
+    result = await h._cmd_task_claim({"next": True})
+    if delete_ref:
+        assert result["result"] == "prepare_failed", result
+        assert "train defect: unpublished repair target" in result["reason"]
+        assert (await db.get_task(task_id)).status == TaskStatus.BLOCKED
+        assert await db.get_task_meta(task_id, "needs_attention") == "repair_target_unpublished"
+        assert await db.get_task_meta(task_id, "slot_reset_failure") is None
+        assert await db.get_task_meta(task_id, "claim_prepare_backoff_attempts") is None
+        assert (await db.get_session(sid)).claim_phase is None
+        assert not (wd / ".aq" / "claim.json").exists()
+        assert (await BranchLock(db).get(BranchKey(repository_id="repo", branch=ref))).holder is None
+    else:
+        assert result["result"] == "claimed", result
+        assert git(wd, "rev-parse", "HEAD") == original["starting_sha"]
+        assert git(wd, "branch", "--show-current") == ref.removeprefix("refs/heads/")
+        claim = json.loads((wd / ".aq" / "claim.json").read_text())
+        assert claim["task_id"] == task_id
+        assert (await db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
+
+
 class _CheckpointGit:
     """Just enough Git for ``resolve_workspace_checkpoint``: clean, pushed."""
 

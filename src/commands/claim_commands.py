@@ -1055,6 +1055,32 @@ class ClaimCommandsMixin:
         except Exception as exc:
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
+            from src.integration.repair import UnpublishedRepairTarget
+
+            if isinstance(exc, UnpublishedRepairTarget):
+                from src.integration.lock import BranchLock
+
+                # The remote observation precedes checkout mutation. Release
+                # only our current managed grant, including a retained prior
+                # attachment. Never erase a binding if the fence moved.
+                if await BranchLock(self.db).release(fence):
+                    await self.db.release_claim(
+                        session.id, task_status=TaskStatus.BLOCKED,
+                        context="integration_train_defect", now=time.time(),
+                        result="prepare_failed", needs_attention="repair_target_unpublished",
+                    )
+                else:
+                    await self.db.set_task_meta(
+                        task.id, "needs_attention", "repair_target_unpublished"
+                    )
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
+                    "reason": str(exc), "defect": "repair_target_unpublished",
+                    "target_ref": exc.target_ref,
+                })
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
             if hierarchy_attached:
                 # The attachment happened before slot reset / claim-file
                 # preparation.  Detach it *before* release_claim erases the

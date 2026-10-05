@@ -7429,7 +7429,7 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
 
     env = ordinary_env
     results = await asyncio.gather(*(env.service.allocate(
-        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        "ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
         intelligence_class="deep-high", priority=290,
     ) for _ in range(8)))
     assert [r["outcome"] for r in results].count("filed") == 1
@@ -7440,7 +7440,7 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
     assert original == {"batch_id": "ordinary", "attempt": 1, "repository_id": "repo",
                         "target_ref": env.ref, "starting_sha": STARTING_SHA}
     for _ in range(5):
-        replay = await restarted.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40)
+        replay = await restarted.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha="c" * 40)
         assert (replay["outcome"], replay["attempt_count"], replay["task_id"]) == (
             "exists", 1, task_id)
     task = await env.db.get_task(task_id)
@@ -7454,7 +7454,7 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
 
 async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(ordinary_env):
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                        ttl_seconds=10)
     await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
     env.now += 10
@@ -7462,18 +7462,30 @@ async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(or
         await conn.execute(update(integration_batches).where(integration_batches.c.id == "ordinary")
                            .values(repair_attempt_count=100))
     results = await asyncio.gather(*(env.service.allocate(
-        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+        "ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha="c" * 40,
     ) for _ in range(4)))
     assert [r["outcome"] for r in results].count("filed") == 1
     assert {r["attempt_count"] for r in results} == {101}
     assert (await env.store.get("ordinary")).repair_attempt_count == 101
 
 
+@pytest.mark.parametrize("authorize", [None, AsyncMock(return_value=False)])
+async def test_ordinary_repair_refuses_unconfirmed_publication(ordinary_env, authorize):
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref,
+                                       head_sha=STARTING_SHA, authorize=authorize)
+    assert (result["success"], result["outcome"]) == (False, "unconfirmed")
+    assert (await env.store.get("ordinary")).repair_attempt_count == 0
+    assert await env.locks.get(env.target) is None
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks))).first()
+
+
 @pytest.mark.parametrize("constraint,outcome", [("held", "held"),
                                                  ("review_rejected", "rejected")])
 async def test_ordinary_repair_green_preserves_binding_constraints(ordinary_env, constraint, outcome):
     env = ordinary_env
-    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                        green_sha=STARTING_SHA, **{constraint: True})
     assert (result["outcome"], result["attempt_count"]) == (outcome, 0)
 
@@ -7487,10 +7499,10 @@ async def test_ordinary_repair_green_beats_counter_and_expired_attached_writer(o
         await conn.execute(update(integration_batches).values(repair_attempt_count=500))
         await conn.execute(update(integration_branch_owners).values(
             handoff_state="handoff_pending", session_id="dead", workspace_id="lost"))
-    assert (await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    assert (await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                      green_sha=STARTING_SHA))["outcome"] == "busy"
     env.now += 10
-    green = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    green = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                        green_sha=STARTING_SHA)
     assert (green["outcome"], green["attempt_count"]) == ("green", 500)
     transport = AsyncMock()
@@ -7507,9 +7519,10 @@ async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
     from src.orchestrator.workspace import WorkspaceMixin
+    from src.git.manager import RemoteRefResult, RemoteRefState
 
     env = ordinary_env
-    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA)
     await env.db.update_task(result["task_id"], status=TaskStatus.READY)
     task = await env.db.get_task(result["task_id"])
     async with env.db._engine.connect() as conn:
@@ -7519,6 +7532,7 @@ async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin
         assert not (await conn.execute(select(task_branch_origins))).first()
     stub = SimpleNamespace(db=env.db, git=SimpleNamespace(
         _arun=AsyncMock(return_value="c" * 40), afetch_origin=AsyncMock(),
+        als_remote_ref=AsyncMock(return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="c" * 40)),
         ais_ancestor=AsyncMock(side_effect=AssertionError("moved head needs no old proof")),
     ))
     origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
@@ -7562,7 +7576,7 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     ref = candidate_ref("ordinary")
     git(checkout, "push", "origin", f"HEAD:{ref}")
     service = OrdinaryRepairService(handler.db)
-    result = await service.allocate("ordinary", target_ref=ref, head_sha=starting)
+    result = await service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=ref, head_sha=starting)
     task_id = result["task_id"]
     git(checkout, "checkout", "-b", ref.removeprefix("refs/heads/"))
     with patch.dict("os.environ", GitIdentity("Tester", "tester@example.test").env()):
@@ -7628,7 +7642,7 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
 
     env = ordinary_env
     env.now = time.time()
-    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA)
     task_id = result["task_id"]
     plugin = GitPlugin.__new__(GitPlugin)
     plugin._db = SimpleNamespace(_db=env.db)
@@ -7659,16 +7673,16 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
 
 async def test_ordinary_repair_restart_does_not_renew_expired_running_writer(ordinary_env):
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                        ttl_seconds=10)
     await env.db.update_task(first["task_id"], status=TaskStatus.IN_PROGRESS)
     expired = await env.locks.get(env.target)
     env.now += 10
-    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40)
+    replay = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha="c" * 40)
     assert (replay["outcome"], replay["attempt_count"], replay["task_id"], replay["lease_expired"]) == (
         "exists", 1, first["task_id"], True)
     assert await env.locks.get(env.target) == expired
-    epic = await env.service.allocate("ordinary", target_ref="refs/heads/aq/epic", head_sha="c" * 40)
+    epic = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref="refs/heads/aq/epic", head_sha="c" * 40)
     assert epic["outcome"] == "exists" and epic["target_changed"]
     assert await env.locks.get(BranchKey(repository_id="repo", branch="aq/epic")) is None
 
@@ -7676,12 +7690,12 @@ async def test_ordinary_repair_restart_does_not_renew_expired_running_writer(ord
 @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED, TaskStatus.FAILED])
 async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ordinary_env, status):
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
                                        ttl_seconds=10)
     await env.db.update_task(first["task_id"], status=status, retry_count=0)
     env.now += 10
     results = await asyncio.gather(*(env.service.allocate(
-        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+        "ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha="c" * 40,
     ) for _ in range(4)))
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}

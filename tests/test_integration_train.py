@@ -44,8 +44,11 @@ class Service:
     async def visit(self, batch, members, snapshot):
         self.calls += 1
         state = self.states.pop(0)
-        candidate = None if state == "conflict" else CANDIDATE
+        candidate = TARGET_SHA if state == "conflict" else CANDIDATE
         return BatchObservation(state, candidate, TARGET_SHA, detail={"step": self.calls})
+
+    async def repair_authorized(self, batch, members, head_sha):
+        return True
 
 
 class Checks:
@@ -174,8 +177,11 @@ async def test_red_candidate_allocates_one_repair_for_the_exact_head():
     visit = await t.visit(ROOT)
     assert visit.state == "repair"
     assert visit.repair["task_id"] == "repair-batch-1"
-    assert repair.calls == [("batch-1", {"target_ref": candidate_ref("batch-1"),
-                                         "head_sha": CANDIDATE, "held": False})]
+    [(batch_id, args)] = repair.calls
+    assert batch_id == "batch-1"
+    assert (args["target_ref"], args["head_sha"], args["held"]) == (
+        candidate_ref("batch-1"), CANDIDATE, False)
+    assert await args["authorize"]()
 
 
 async def test_green_on_refresh_ends_repair_without_an_attempt():
@@ -196,6 +202,22 @@ async def test_merge_conflict_files_repair_against_the_target_head():
     assert visit.state == "repair"
     assert repair.calls[0][1]["head_sha"] == TARGET_SHA
     assert repair.calls[0][1]["target_ref"] == candidate_ref("batch-1")
+
+
+async def test_unpublished_conflict_never_dispatches_repair():
+    class Unpublished(Service):
+        async def visit(self, *args):
+            return BatchObservation("conflict", target_sha=TARGET_SHA,
+                                    detail={"reason": "merge_conflict", "member": "t-1"})
+
+    repair = Repair()
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(Unpublished())}, repair)
+    visit = await t.visit(ROOT)
+    assert visit.state == "unknown"
+    assert visit.detail["repair_publication"] == "unpublished"
+    assert visit.detail["member"] == "t-1"
+    assert repair.calls == []
 
 
 @pytest.fixture
