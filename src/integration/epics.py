@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import literal, select
 
@@ -209,6 +209,30 @@ class EpicGraphReader:
         return EpicGraph(project["id"], repository["id"], repository["url"], default_ref,
                          epic_id, tuple(sorted(nodes, key=lambda node: node.task_id)), dependencies,
                          () if project["status"] == "ACTIVE" else ("project_paused",))
+
+
+def exact_head_checks(
+    exact_for: Callable[[str, EpicPolicy], Any],
+) -> Callable[[str, str, EpicPolicy], Awaitable[HeadChecks]]:
+    """Adapt the shared exact-commit cache (``src.integration.checks``) to epics.
+
+    *exact_for* returns the ``ExactChecks`` reader for a repository and policy.
+    The cached verdict is read without contacting a provider, so the reported
+    names and trust are those the cache holds; a mismatch with the policy is
+    reported by the evaluator as ``checks_scope_changed``.
+    """
+    from src.integration.subjects import HeadIdentity
+
+    async def read(repository_id: str, head_sha: str, policy: EpicPolicy) -> HeadChecks:
+        exact = exact_for(repository_id, policy)
+        result = await exact.read(HeadIdentity(
+            repository_id=repository_id, ref="refs/heads/epic-readiness",
+            sha=head_sha, generation=0,
+        ))
+        return HeadChecks(repository_id, head_sha, tuple(result.required.names),
+                          result.required.producer_id, result.state.value)
+
+    return read
 
 
 class EpicReadinessEvaluator:
