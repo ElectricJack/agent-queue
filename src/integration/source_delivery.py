@@ -253,18 +253,31 @@ async def delivered_queued_repairs(db, observer, *, project_id: str) -> dict[str
 
 
 async def delivered_repair_sources_on(db, conn, records, *, git_delivered, repository_id):
-    """Exact repair ancestors already delivered by the shared Git snapshot.
+    """Exact repair ancestors already delivered by Git or a root receipt.
 
     A task-id proof cannot satisfy an observation for another generation.
-    A receipt cannot stand in for fresh Git evidence.
+    Receipts can also answer for an archived original, but must name its head
+    and the repository's current default target.
     """
+    from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
+    from src.database.tables import repos, task_delivery_receipts
     from src.integration.review_evidence import ReviewEvidenceProducer
 
+    receipts = set((await conn.execute(select(
+        task_delivery_receipts.c.source_task_id, task_delivery_receipts.c.reviewed_head_sha,
+    ).select_from(task_delivery_receipts.join(
+        repos, repos.c.id == task_delivery_receipts.c.repository_id,
+    )).where(
+        task_delivery_receipts.c.source_task_id.in_({row["task_id"] for row in records}),
+        *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
+    ))).all())
     producer = ReviewEvidenceProducer(db, None)
     satisfied = set()
     for row in records:
         key = (row["task_id"], row["source_base"], row["source_head"], row["generation"])
-        if row["task_id"] in git_delivered:
+        if (row["task_id"], row["source_head"]) in receipts:
+            satisfied.add(key)
+        elif row["task_id"] in git_delivered:
             source = await producer._pull_request_source_on(conn, row["task_id"])
             if source is not None and source_identity(row["task_id"], source) == (
                 row["task_id"], repository_id, *key[1:],
