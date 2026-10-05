@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { projectNavigation, workspaceHref } from "./projectNavigation";
+import { PROJECT_TABS, TASK_TABS, projectNavigation, workspaceHref } from "./projectNavigation";
 
 describe("project workspace destinations", () => {
-  it.each(["graph", "tasks", "overview", "sessions", "workspaces", "playbooks", "config"])(
+  it.each(["graph", "tasks-knowledge", "overview", "sessions", "workspaces", "playbooks", "config"])(
     "retains the current %s tab and exact filter query when switching projects", (tab) => {
       const current = projectNavigation(`/projects/first/${tab}`);
       expect(current.isWorkspace).toBe(true);
@@ -17,7 +17,7 @@ describe("project workspace destinations", () => {
   });
 
   it("allows All projects on Tasks but requires a project for resources", () => {
-    expect(workspaceHref(null, "tasks", "?q=x")).toBe("/command-center/tasks?q=x");
+    expect(workspaceHref(null, "tasks-knowledge", "?q=x")).toBe("/command-center/tasks-knowledge?q=x");
     expect(workspaceHref(null, "config", "?q=x")).toBe("/command-center/graph?q=x");
   });
 
@@ -32,5 +32,19 @@ describe("project workspace destinations", () => {
     const href = workspaceHref("name with space", "graph");
     expect(href).toBe("/projects/name%20with%20space/graph");
     expect(projectNavigation(href).projectId).toBe("name with space");
+  });
+});
+
+describe("combined task and knowledge navigation", () => {
+  it("exposes exactly one combined tab and no retired tabs", () => {
+    const tabs = [...TASK_TABS, ...PROJECT_TABS];
+    expect(tabs.filter((item) => item.label === "Tasks & Knowledge")).toHaveLength(1);
+    for (const retired of ["tasks", "knowledge", "records"]) expect(tabs.map((item) => item.tab)).not.toContain(retired);
+  });
+  it.each(["tasks", "knowledge", "records"])("maps the retired %s tab", (tab) => {
+    expect(projectNavigation(`/projects/p/${tab}`).tab).toBe("tasks-knowledge");
+  });
+  it("keeps a full knowledge page associated with the combined workspace", () => {
+    expect(projectNavigation("/projects/p/knowledge/k1").tab).toBe("tasks-knowledge");
   });
 });

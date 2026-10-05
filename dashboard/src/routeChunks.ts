@@ -11,4 +11,5 @@ export const loadRecords = () => import("./pages/records/RecordsRoute");
 export function preloadWorkspaceViews(): void {
   void loadWorkspaceGraph();
   void loadWorkspaceTasks();
+  void loadRecords();
 }

@@ -38,6 +38,7 @@ vi.mock("../../../api/graphLayout", () => ({
   fetchRunningTarget: mocks.running,
   locate: mocks.locate,
 }));
+vi.mock("../../../api/knowledge", () => ({ useKnowledgeCapabilities: () => ({ data: { available: false } }) }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
 vi.mock("../useGraphLive", () => ({ useGraphLive: mocks.live }));
 vi.mock("../useGraphHierarchy", async (importOriginal) => ({
@@ -47,17 +48,17 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
   GraphStateProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-function Probe() {
+function Probe({ onCreated }: { onCreated?: (taskId: string) => void }) {
   const workspace = useTaskWorkspace();
   const location = useLocation();
   const { density } = useGraphState();
-  return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
+  return <><TaskToolbar onCreated={onCreated} /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
     <output data-testid="query">{location.search}</output>
     <output data-testid="density">{density}</output></>;
 }
-function mount(path = "/projects/alpha/graph") {
+function mount(path = "/projects/alpha/graph", onCreated?: (taskId: string) => void) {
   return render(<MemoryRouter initialEntries={[path]}><ShortcutsProvider><Routes>
-    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
+    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe onCreated={onCreated} /></TaskWorkspaceProvider>} />
     <Route path="command-center/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
   </Routes></ShortcutsProvider></MemoryRouter>);
 }
@@ -186,6 +187,18 @@ describe("shared Command Center task controls", () => {
     expect(screen.getByRole("searchbox", { name: "Search tasks" })).toHaveValue("");
     expect(screen.getByRole("combobox", { name: "Task status" })).toHaveValue("");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("lets the combined workspace own navigation after task creation", async () => {
+    const onCreated = vi.fn();
+    mocks.create.mockImplementationOnce((_body, options) => options.onSuccess({ created: "new-task" }));
+    mount("/projects/alpha/tasks-knowledge?kind=task", onCreated);
+    await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "New work");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "fast-low");
+    fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
+    expect(onCreated).toHaveBeenCalledWith("new-task");
+    expect(mocks.open).not.toHaveBeenCalled();
   });
 
   it("reports creation errors and leaves the draft available", async () => {

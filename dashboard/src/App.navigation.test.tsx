@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Outlet, useLocation, useParams, useNavigate } from "react-router-dom";
 import { useShellPaneStore } from "./panes/store";
@@ -33,7 +33,10 @@ vi.mock("./api/hooks", () => ({
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
   useTask: (id: string) => ({ data: { id, title: `Task ${id}` }, isError: false, refetch: vi.fn() }),
 }));
-vi.mock("./api/reviews", () => ({ useWaitingReviewCount: () => 0 }));
+vi.mock("./api/reviews", () => ({
+  useWaitingReviewCount: () => 0,
+  useReviews: () => ({ data: { reviews: [] } }),
+}));
 vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {}, useRawEventSubscription: () => {} }));
 vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
@@ -57,13 +60,13 @@ vi.mock("./components/ConnectionBanner", async (importOriginal) => {
   return { default: () => <><Banner /><PaneState /></> };
 });
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
-vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Command Center tasks" /> }));
+vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Tasks & Knowledge" /> }));
 vi.mock("./pages/command-center/TaskWorkspace", () => ({
   TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   useTaskWorkspace: () => capabilities,
 }));
 vi.mock("./pages/knowledge/KnowledgeRoute", () => ({ default: () => <WorkspaceProbe title="Knowledge records" /> }));
-vi.mock("./pages/records/RecordsRoute", () => ({ default: () => <WorkspaceProbe title="All records" /> }));
+vi.mock("./pages/records/RecordsRoute", () => ({ default: () => <WorkspaceProbe title="Tasks & Knowledge" /> }));
 vi.mock("./pages/command-center/TaskToolbar", () => ({ default: () => <div role="toolbar" aria-label="Task controls" /> }));
 vi.mock("./pages/project/Overview", () => ({ default: () => <WorkspaceProbe title="Project overview" /> }));
 vi.mock("./pages/project/Workspaces", () => ({ default: () => <WorkspaceProbe title="Project workspaces" /> }));
@@ -143,20 +146,22 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
-  it("keeps Knowledge and All records hidden before operator activation", async () => {
+  it("keeps the combined tab available before knowledge activation", async () => {
     renderApp("/projects/p1/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
     const tabs = screen.getByRole("navigation", { name: "Command Center views" });
-    expect(tabs).not.toHaveTextContent("Knowledge");
+    expect(tabs).toHaveTextContent("Tasks & Knowledge");
+    expect(within(tabs).queryByRole("link", { name: "Tasks" })).toBeNull();
+    expect(within(tabs).queryByRole("link", { name: "Knowledge" })).toBeNull();
     expect(tabs).not.toHaveTextContent("All records");
   });
 
   it("opens the opt-in All records route and preserves its URL selection", async () => {
     capabilities.knowledgeAvailable = true;
     renderApp("/projects/p1/records?kind=all&recordKind=knowledge&record=finding&revision=exact&view=graph");
-    await screen.findByRole("heading", { name: "All records" });
-    expect(screen.getByRole("link", { name: "All records" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Knowledge" })).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByRole("link", { name: "Tasks & Knowledge" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Knowledge" })).toBeNull();
     expect(screen.getByLabelText("Current location")).toHaveTextContent("record=finding&revision=exact&view=graph");
     expect(screen.queryByRole("toolbar", { name: "Task controls" })).toBeNull();
   });
@@ -182,29 +187,29 @@ describe("Dashboard navigation", () => {
     renderApp("/agents");
     await screen.findByRole("heading", { name: "Agent flock" });
     await userEvent.click(screen.getByRole("button", { name: "Return from session history" }));
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=kept");
-    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"taskId":"task-p1"');
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=kept");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("task=task-p1");
     await userEvent.click(screen.getByRole("button", { name: "Close task pane" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
   });
 
   it.each([
     ["/system", "/projects/p1/graph"],
-    ["/tasks", "/projects/p1/tasks"],
+    ["/tasks", "/projects/p1/tasks-knowledge"],
     ["/playbooks", "/settings/playbooks"],
     ["/system/playbooks", "/settings/playbooks"],
     ["/system/profiles", "/settings/profiles"],
     ["/projects/p1/profiles", "/projects/p1/config"],
     ["/system/config", "/settings/config"],
     ["/system/intelligence-classes", "/settings/intelligence-classes"],
-    ["/work", "/projects/p1/tasks"],
-    ["/work/tasks", "/projects/p1/tasks"],
+    ["/work", "/projects/p1/tasks-knowledge"],
+    ["/work/tasks", "/projects/p1/tasks-knowledge"],
     ["/work/agents", "/agents"],
     ["/work/sessions", "/agents"],
   ])("redirects legacy route %s to %s while preserving filters", async (from, to) => {
     renderApp(from + "?q=needle&status=READY");
-    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY"));
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY" + (to.endsWith("tasks-knowledge") ? "&kind=task" : "")));
   });
 
   it("keeps profile overrides under Config rather than a separate project tab", async () => {
@@ -229,17 +234,17 @@ describe("Dashboard navigation", () => {
     ["/work/gates", "No open gates."],
   ])("routes legacy %s to tasks and opens the requested activity tab", async (path, content) => {
     renderApp(path + "?q=needle");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=needle");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=needle&kind=task");
     expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer");
     expect(await screen.findByText(content)).toBeInTheDocument();
   });
 
   it("requires a project for bare Command Center routes and preserves filters", async () => {
-    renderApp("/projects/p1/tasks?q=needle&status=READY");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    renderApp("/projects/p1/tasks-knowledge?q=needle&status=READY");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent(
-      "/projects/p1/tasks?q=needle&status=READY",
+      "/projects/p1/tasks-knowledge?q=needle&status=READY",
     );
     expect(screen.queryByRole("link", { name: "All projects" })).not.toBeInTheDocument();
   });
@@ -277,7 +282,7 @@ describe("Dashboard navigation", () => {
     renderApp("/command-center/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
     expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/projects/p1/graph");
-    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/projects/p1/tasks");
+    expect(screen.getByRole("link", { name: "Tasks & Knowledge" })).toHaveAttribute("href", "/projects/p1/tasks-knowledge");
     expect(screen.queryByRole("link", { name: "Agents" })).not.toBeInTheDocument();
   });
 
@@ -317,6 +322,12 @@ describe("Dashboard navigation", () => {
 
 
 describe("Shared project workspace navigation", () => {
+  it.each(["task=t1", "record=k1&recordKind=knowledge&revision=old"])("drops selection %s when switching projects and keeps filters", async (selection) => {
+    renderApp(`/projects/p1/tasks-knowledge?q=needle&status=READY&${selection}`);
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    await userEvent.click(screen.getByRole("link", { name: "Second project" }));
+    expect(screen.getByLabelText("Current location").textContent).toBe("/projects/p2/tasks-knowledge?q=needle&status=READY");
+  });
   it("uses the same Graph/Tasks tabs and controls for the selected sidebar project", async () => {
     renderApp("/projects/p1/graph?q=needle&status=READY&completed=1");
     await screen.findByRole("heading", { name: "Command Center graph" });
@@ -325,12 +336,12 @@ describe("Shared project workspace navigation", () => {
     expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("toolbar", { name: "Task controls" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Chat" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("link", { name: "Tasks" }));
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=needle&status=READY&completed=1");
+    await userEvent.click(screen.getByRole("link", { name: "Tasks & Knowledge" }));
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=needle&status=READY&completed=1");
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Workspace project")).toHaveTextContent("p2");
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/tasks?q=needle&status=READY&completed=1");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/tasks-knowledge?q=needle&status=READY&completed=1");
   });
 
   it("keeps resource tabs scoped and returns to the selected project tab", async () => {
@@ -371,8 +382,8 @@ describe("Shared project workspace navigation", () => {
     renderApp("/projects/p1/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
     await userEvent.click(screen.getByRole("button", { name: "Open task pane" }));
-    await userEvent.click(screen.getByRole("link", { name: "Tasks" }));
-    expect(screen.getByLabelText("Current pane")).toHaveTextContent("task-p1");
+    await userEvent.click(screen.getByRole("link", { name: "Tasks & Knowledge" }));
+    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
     await userEvent.click(screen.getByRole("button", { name: "Open settings pane" }));
@@ -417,8 +428,8 @@ describe("Roaming shell preferences", () => {
   });
 
   it("follows the user's last project to another dashboard", async () => {
-    const first = renderApp("/projects/p2/tasks");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    const first = renderApp("/projects/p2/tasks-knowledge");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
     await waitFor(() =>
       expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p2" }));
     first.unmount();
@@ -451,8 +462,8 @@ describe("Roaming shell preferences", () => {
 
   it("reopens the activity drawer on the tab the user last left open", async () => {
     server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
-    renderApp("/projects/p1/tasks");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    renderApp("/projects/p1/tasks-knowledge");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
     await waitFor(() => expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer"));
     expect(await screen.findByText("Waiting for events…")).toBeInTheDocument();
   });
@@ -460,7 +471,7 @@ describe("Roaming shell preferences", () => {
   it("lets a one-shot ?openDrawer= command win over the saved tab, then saves it", async () => {
     server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
     renderApp("/system/gates");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
     expect(await screen.findByText("No open gates.")).toBeInTheDocument();
     await waitFor(() =>
       expect(server.document("shell_preferences").value).toMatchObject({
@@ -540,3 +551,19 @@ describe("focus routes", () => {
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
   });
 });
+
+ describe("retired project tabs", () => {
+  it.each(["tasks", "knowledge", "records"])("redirects %s with its filters and selection", async (tab) => {
+    renderApp(`/projects/p1/${tab}?q=needle&record=finding&revision=exact&status=READY`);
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    const location = screen.getByLabelText("Current location").textContent!;
+    expect(location.startsWith("/projects/p1/tasks-knowledge?")).toBe(true);
+    const params = new URLSearchParams(location.split("?")[1]);
+    expect(params.get("q")).toBe("needle");
+    expect(params.get("status")).toBe("READY");
+    expect(params.get("record")).toBe("finding");
+    expect(params.get("revision")).toBe("exact");
+    if (tab === "knowledge") expect(params.get("recordKind")).toBe("knowledge");
+    if (tab !== "records") expect(params.get("kind")).toBe(tab === "tasks" ? "task" : "knowledge");
+  });
+ });
