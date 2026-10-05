@@ -258,6 +258,10 @@ class GitOperations:
     is called as ``exclusion(repository_id, subject)``: a repository the
     reconciler engine owns admits no unnamed root mutation, so the fence has to
     carry the exact subject the primitive acts for.
+    ``repository`` is subject-scoped for the same reason: the retained clone a
+    primitive acts in is the one carrying *that* subject's own pinned settings,
+    so it is resolved through the subject rather than through a bare repository
+    id a caller could answer from anything else.
     Authority and journal ports are mandatory; tests may inject real-Git ports.
     """
 
@@ -266,7 +270,7 @@ class GitOperations:
         db,
         *,
         git: GitManager,
-        repository: Callable[[str], Awaitable[RetainedRepository]],
+        repository: Callable[[Subject], Awaitable[RetainedRepository]],
         authority: SubjectGitAuthority,
         journal: GitJournal | None = None,
         exclusion=None,
@@ -291,7 +295,7 @@ class GitOperations:
         rid = repository_id or subject.repository_id
         if rid != subject.repository_id:
             raise StaleFence("request names another repository")
-        repo = await self.repository(rid)
+        repo = await self.repository(subject)
         if repo.repository_id != rid:
             raise StaleFence("retained repository binding mismatch")
         common = Path(await self.run(repo, "rev-parse", "--git-common-dir"))
