@@ -23,6 +23,11 @@ from src.sessions.env import SCRATCH_DB_SENTINEL
 
 logger = logging.getLogger(__name__)
 
+#: The regeneration command a repository is assumed to ship, matching the
+#: legacy candidate, promotion and train defaults. A repository may configure
+#: another one; a merge never runs an empty command.
+DEFAULT_REGENERATE_COMMAND = "scripts/regenerate-generated.sh"
+
 #: Default timeout (seconds) applied to the regenerator subprocess.
 REGENERATION_TIMEOUT_SECONDS = 600
 
@@ -53,13 +58,27 @@ class GeneratedMergeConflict(RuntimeError):
         super().__init__(reason or result.stdout or result.stderr or "merge conflict")
 
 
+class MissingRegenerator(RegenerationFailure):
+    """No regeneration command is configured, so an artifact cannot be rebuilt.
+
+    A configuration gap, never a member's content: the caller reports it as its
+    own blocker instead of parking a member as a conflict.
+    """
+
+    def __init__(self, reason: str | None = None) -> None:
+        super().__init__(
+            reason or "no regenerate command is configured for this repository", retryable=False
+        )
+
+
 async def merge_generated_tree(
     git: GitManager,
     store: Path,
     merge_args: list[str],
     *,
-    command: str = "scripts/regenerate-generated.sh",
+    command: str | None = DEFAULT_REGENERATE_COMMAND,
     timeout_seconds: int = REGENERATION_TIMEOUT_SECONDS,
+    regenerate: bool = True,
 ) -> str:
     """Merge exact inputs and rebuild overlapping generated artifacts.
 
@@ -68,6 +87,11 @@ async def merge_generated_tree(
     base by redoing the merge in a checkout. Restore generated conflicts from
     the current side, then regenerate against all merged sources. Clean text
     merges also need rebuilding when both sides changed a generated artifact.
+
+    ``command`` must name a command line: an empty one is a configuration gap
+    (:class:`MissingRegenerator`), never a silent regeneration. ``regenerate``
+    is the caller's policy; with it off, an overlapping generated artifact is
+    an ordinary conflict.
     """
     merged = await git.arun_git_result(merge_args, cwd=str(store))
     if merged.returncode not in {0, 1}:
@@ -118,11 +142,23 @@ async def merge_generated_tree(
         raise GeneratedMergeConflict(merged)
     if not generated:
         return tree
+    if not regenerate:
+        # The caller declined regeneration, so an overlapping generated
+        # artifact is an ordinary conflict; no member is blamed for content.
+        raise GeneratedMergeConflict(
+            merged, "generated artifacts overlap and regeneration is disabled"
+        )
+    if not shlex.split(command or ""):
+        raise MissingRegenerator(f"no regenerate command is configured ({command!r})")
     try:
         return await regenerated_tree(
             git, store, tree, command=command, timeout_seconds=timeout_seconds,
             restore_from=current, restore_paths=tuple(sorted(conflicts)),
         )
+    except MissingRegenerator:
+        # A configuration gap is never a member's conflict, however the merge
+        # resolved; the caller reports it as its own blocker.
+        raise
     except RegenerationFailure as exc:
         if exc.retryable and not merged.returncode:
             # A clean merge has no conflict to record; an infrastructure
@@ -215,9 +251,9 @@ async def _run(
                 restored.stderr or "could not restore generated conflicts", retryable=True
             )
 
-    argv = shlex.split(command)
+    argv = shlex.split(command or "")
     if not argv:
-        raise RegenerationFailure(f"empty regenerator command: {command!r}")
+        raise MissingRegenerator(f"no regenerate command is configured ({command!r})")
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,

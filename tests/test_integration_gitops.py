@@ -11,7 +11,7 @@ from sqlalchemy import insert, update
 from src.database import Database
 from src.database.tables import integration_branch_owners, integration_subjects, playbook_artifacts
 from src.git.github_contracts import GitHubRepositoryBinding
-from src.git.manager import GitError, GitManager
+from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.cleanup import SubjectCleanup, SubjectCleanupItem
 from src.integration.development import DevelopmentBusy, publisher_exclusion
 from src.integration.gitops import (
@@ -388,6 +388,69 @@ async def test_generated_conflict_rebuilds_merged_sources_and_rejects_stray_writ
     result = await ops.merge_members(s, merge_args(s, common, a, b))
     assert result.outcome == "conflict", result
     assert "non-generated" in result.detail["reason"]
+
+
+async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup):
+    """A repository with no regenerate command is a project configuration gap.
+
+    The member's content is fine, so the merge must not park it: the batch
+    merge answers ``no_regenerator`` and the closed subject primitive answers
+    ``unknown``, which no decision table routes to repair.
+    """
+    db, ops, s, _, repo, base, *_ = setup
+    common = commit(
+        repo.store,
+        {".gitattributes": "generated.txt merge=aq-generated\n", "generated.txt": "base\n"},
+        base=base,
+    )
+    git(repo.store, "push", "origin", f"{common}:main")
+    a = commit(repo.store, {"generated.txt": "ours\n", "a.txt": "a\n"}, base=common)
+    b = commit(repo.store, {"generated.txt": "theirs\n", "b.txt": "b\n"}, base=common)
+    unconfigured = replace(repo, regenerate=None)
+
+    async def resolver(_):
+        return unconfigured
+
+    ops.repository = resolver
+    merged = await ops.merge_sources(unconfigured, common,
+                                      merge_args(s, common, a, b).members,
+                                      created_at=NOW)
+    assert merged["outcome"] == "no_regenerator", merged
+    # The first member merged on its own; the second is the one whose generated
+    # overlap cannot be rebuilt, and its own source is named.
+    assert [member["member"] for member in merged["members"]] == ["t0"]
+    assert merged["member"] == "t1"
+    assert is_valid_git_oid(merged["head"])
+
+    result = await ops.merge_members(s, merge_args(s, common, a, b))
+    assert result.is_unknown and "regenerate" in result.reason
+    # Neither answer changed the remote target, and no journal row was written.
+    assert git(repo.store, "rev-parse", "origin/main") == common
+    assert await journal_rows(db) == []
+
+
+async def test_declined_regeneration_keeps_the_generated_conflict(setup):
+    """``regenerate_generated: false`` is a policy choice, not a gap.
+
+    The generated overlap is then an ordinary conflict with its own evidence,
+    because the policy — not the configuration — refused the rebuild.
+    """
+    _db, ops, s, _, repo, base, *_ = setup
+    common = commit(
+        repo.store,
+        {".gitattributes": "generated.txt merge=aq-generated\n", "generated.txt": "base\n"},
+        base=base,
+    )
+    git(repo.store, "push", "origin", f"{common}:main")
+    a = commit(repo.store, {"generated.txt": "ours\n", "a.txt": "a\n"}, base=common)
+    b = commit(repo.store, {"generated.txt": "theirs\n", "b.txt": "b\n"}, base=common)
+    result = await ops.merge_sources(
+        repo, common, merge_args(s, common, a, b).members, created_at=NOW,
+        regenerate_generated=False,
+    )
+    assert result["outcome"] == "conflict", result
+    assert result["files"] == ["generated.txt"]
+    assert "regeneration is disabled" in result["reason"]
 
 
 async def test_ambiguous_publish_reads_back_and_replays_without_second_push(setup):
