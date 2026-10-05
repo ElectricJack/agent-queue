@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.event_bus import EventBus
+from src.logging_config import CorrelationContext
 from src.integration.subjects import (
     Decision,
     GateArgs,
@@ -168,6 +169,7 @@ class IntegrationReconciler:
         backoff_seconds: float = 5.0,
         backoff_ceiling_seconds: float = 300.0,
         shadow_interval_seconds: float = 60.0,
+        diagnostics: Callable[[Subject, SubjectFacts], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if page_size <= 0 or not kinds:
@@ -184,6 +186,7 @@ class IntegrationReconciler:
             raise ValueError("reconciler timeouts and intervals must be positive")
         self._db = db
         self._observer = observer
+        self._diagnostics = diagnostics
         self._policy = CompiledPolicyAdapter(policy) if hasattr(policy, "evaluate") else policy
         self._ports = ports
         self._mode = JournalMode(mode)
@@ -296,6 +299,21 @@ class IntegrationReconciler:
                 facts.kind,
             ) != (subject.id, subject.version, subject.kind):
                 raise ValueError("observer returned another subject or version")
+            if self._diagnostics is not None and subject.engine is SubjectEngine.RECONCILER:
+                try:
+                    await self._bounded(self._diagnostics(subject, facts))
+                except Exception as exc:
+                    # Diagnostic failure must not change the authoritative policy.
+                    evidence = {
+                        "subject_id": subject.id, "subject_version": subject.version,
+                        "classification": "unknown", "reason": type(exc).__name__,
+                        "family": "observation", "authoritative": "subject_protocol",
+                    }
+                    with CorrelationContext(git_first=evidence):
+                        logger.warning(
+                            "integration git-first diagnostic unavailable",
+                            extra={"git_first": evidence},
+                        )
             proposed = await self._bounded(self._policy.decide(subject, facts))
             self._validate_decision(subject, facts, proposed)
             decision = proposed

@@ -1401,7 +1401,7 @@
       ]
     }
   },
-  "digest": "sha256:41ded66c779dd98d3f11766bde044ce614149c6dcbc5b8b1e6d4c7c5c520f0ee",
+  "digest": "sha256:0d85f3c56659ed36b4f96c3e5dc404dc7c2db751dab7f3dc12336d507cd53386",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8129,6 +8129,7 @@
         "src.database.tables",
         "src.event_bus",
         "src.integration.reconciler",
+        "src.integration.shadow",
         "src.integration.subjects"
       ],
       "markers": [
@@ -8332,7 +8333,10 @@
         "src.integration.engine",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.observe",
         "src.integration.ownership",
+        "src.integration.parent_adapters",
+        "src.integration.parent_subjects",
         "src.integration.promotion",
         "src.integration.release",
         "src.integration.repair",
@@ -8341,6 +8345,7 @@
         "src.integration.root_runtime",
         "src.integration.scheduler",
         "src.integration.service",
+        "src.integration.shadow",
         "src.integration.subjects",
         "src.models",
         "src.orchestrator",
@@ -8348,7 +8353,9 @@
         "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train."
     },
     "tests/test_integration_schedule.py": {
