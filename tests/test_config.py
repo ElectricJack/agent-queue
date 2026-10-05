@@ -9,6 +9,31 @@ def config_dir(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize("value", ["shadow", "active"])
+def test_git_first_selector_loads_without_activating_ownership(config_dir, value):
+    from src.config import IntegrationConfig
+
+    assert IntegrationConfig().git_first == "shadow"
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "integration": {"git_first": value},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.integration.git_first == value
+    assert not config.integration.reconciler_active
+    assert not config.integration.reconciler_shadow
+    assert config.integration.validate() == []
+
+
+@pytest.mark.parametrize("value", [None, False, "legacy", "", [], {}])
+def test_git_first_selector_rejects_other_modes(value):
+    from src.config import IntegrationConfig
+
+    assert any(error.field == "git_first" for error in IntegrationConfig(git_first=value).validate())
+
+
 class TestConfigLoading:
     def test_load_minimal_config(self, config_dir):
         config_file = config_dir / "config.yaml"

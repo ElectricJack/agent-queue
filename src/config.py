@@ -2588,6 +2588,11 @@ class IntegrationConfig:
     #: is off, so the reconciler can never be handed a project it may only
     #: mirror (``aq integration development-engine-transfer``).
     reconciler_active: bool = True
+    #: Temporary protocol selector for already reconciler-owned subjects.
+    #: Shadow compares Git facts without changing the authoritative subject protocol.
+    #: Active is consumed by the reduced protocol as its guards land; neither
+    #: value installs a loop or transfers root ownership.
+    git_first: str = "shadow"
 
     #: Consecutive identical unsuccessful evaluations after which the
     #: development publisher ends a skipped candidate's attempt as stalled:
@@ -2617,6 +2622,8 @@ class IntegrationConfig:
         for name in ("reconciler_shadow", "reconciler_active"):
             if not isinstance(getattr(self, name), bool):
                 errors.append(ConfigError("integration", name, "must be a boolean"))
+        if self.git_first not in ("shadow", "active"):
+            errors.append(ConfigError("integration", "git_first", "must be shadow or active"))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -5352,6 +5359,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             reconciler_shadow=integ.get("reconciler_shadow", False),
             reconciler_active=integ.get("reconciler_active", True),
+            git_first=integ.get("git_first", "shadow"),
             owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
             # Passed through as written so ``validate()`` names a bad value.
             publisher_stall_after=integ.get("publisher_stall_after", 5),

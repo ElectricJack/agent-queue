@@ -1070,6 +1070,7 @@ class DevelopmentSubjectRuntime:
         policy: Callable[[str], Awaitable[PinnedDevelopmentPolicy]] | None = None,
         active: bool = False,
         shadow: bool = False,
+        diagnostics=None,
         page_size: int = 20,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -1081,7 +1082,7 @@ class DevelopmentSubjectRuntime:
 
         scoped_db = ScopedIntegrationDB(db, (DEVELOPMENT_MODE,))
         self.loops = [
-            adapter.reconciler(mode=mode, subject_db=scoped_db)
+            adapter.reconciler(mode=mode, subject_db=scoped_db, diagnostics=diagnostics)
             for enabled, mode in ((active, JournalMode.ACTIVE),)
             if enabled
         ]
@@ -1285,6 +1286,7 @@ def development_runtime_for(orchestrator):
         IntegrationObserver,
     )
     from src.playbooks.integration_policy import IntegrationPolicyFacts
+    from src.integration.shadow import diagnostics_for
 
     primitives = orchestrator.development_integration
     app = getattr(orchestrator, "integration_app_client", None)
@@ -1353,6 +1355,7 @@ def development_runtime_for(orchestrator):
         policy=policy_for,
         active=config.reconciler_active,
         shadow=False,
+        diagnostics=diagnostics_for(config, orchestrator.db, orchestrator.git),
     )
 
 
