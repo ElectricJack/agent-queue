@@ -1400,7 +1400,7 @@
       ]
     }
   },
-  "digest": "sha256:0a5dfb6b109efc5c0aa1cf86d584e6f6c0be02631a51d87244e2838e6c97c0c7",
+  "digest": "sha256:d28cd02ad4d0267b3704fdd1b04723abdcd5c33831398443b73b7be43f3e9686",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2837,8 +2837,6 @@
         "src.commands.task_commands",
         "src.database",
         "src.database.tables",
-        "src.doctor.integration_checks",
-        "src.doctor.models",
         "src.integration.canonical_reservation",
         "src.models",
         "src.profiles.capabilities"
@@ -7182,13 +7180,10 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.claim_file",
         "src.commands.principal",
         "src.database.tables",
-        "src.integration.accepted_repair",
         "src.integration.ci",
         "src.integration.main_promotion",
-        "src.integration.repair",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -13156,7 +13151,6 @@
         "src.integration.candidates",
         "src.integration.main_promotion",
         "src.integration.release",
-        "src.integration.scheduler",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
