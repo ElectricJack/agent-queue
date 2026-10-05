@@ -2608,6 +2608,8 @@ class PlaybookEngine:
             attempt.lifecycle = _TERMINAL_LIFECYCLE.get(
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
             )
+            if attempt.lifecycle is RunLifecycle.FAILED and not attempt.error:
+                attempt.error = snapshot.error
             attempt.next_step_id = None
             return await finish(self._commit(attempt, artifact_ref, repository))
         if result.control is StepControl.GOTO:

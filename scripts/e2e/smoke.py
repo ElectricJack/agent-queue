@@ -600,6 +600,33 @@ class Worker:
         )
 
 
+def claim_fixture(worker: Worker, task_id: str, *, what: str) -> dict:
+    """Bound transient empty claims without hiding a wrong task or session failure."""
+    last_claim = None
+
+    def claim():
+        nonlocal last_claim
+        last_claim = worker.claim_next()
+        # READY and routed does not imply available to this single attempt:
+        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
+        # Releasing that lock emits no task.ready event, so retry explicitly.
+        if last_claim.get("result") == "no_ready_work":
+            return None
+        check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
+        check(worker.task_id == task_id, f"{what}: expected fixture {task_id}, held {worker.task_id}")
+        return last_claim
+
+    def diagnostic():
+        task = task_show(task_id)
+        keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
+        fixture_state = {key: task.get(key) for key in keys}
+        return f"last_claim={last_claim}; fixture={fixture_state}"
+
+    return wait_for(
+        claim, what=what, timeout=CONVERGE_TIMEOUT, diagnostic=diagnostic,
+    )
+
+
 def fresh_workers(
     count: int,
     *,
@@ -1078,30 +1105,7 @@ def s5_fence_and_scope(state: dict) -> str:
     """A token is an identity, not a key to the daemon."""
     holder, intruder = fresh_workers(2)
     fixture = create_task("S5 task for the holder", profile=POOL_PROFILE)
-    last_claim = None
-
-    def claim_holder():
-        nonlocal last_claim
-        last_claim = holder.claim_next()
-        # READY and routed does not imply available to this single attempt:
-        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
-        # Releasing that lock emits no task.ready event, so retry explicitly.
-        if last_claim.get("result") == "no_ready_work":
-            return None
-        check(last_claim.get("result") == "claimed", f"S5 needs a held task: {last_claim}")
-        check(holder.task_id == fixture, f"S5 expected fixture {fixture}, held {holder.task_id}")
-        return last_claim
-
-    def claim_diagnostic():
-        task = task_show(fixture)
-        keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
-        fixture_state = {key: task.get(key) for key in keys}
-        return f"last_claim={last_claim}; fixture={fixture_state}"
-
-    wait_for(
-        claim_holder, what=f"S5 holder to claim fixture {fixture}",
-        timeout=CONVERGE_TIMEOUT, diagnostic=claim_diagnostic,
-    )
+    claim_fixture(holder, fixture, what=f"S5 holder to claim fixture {fixture}")
     held, epoch = holder.task_id, holder.claim_epoch
 
     # A second, *different* pool session's token must not touch it.
@@ -2663,15 +2667,7 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     worker = fresh_workers(1)[0]
     started_at = time.time()
     task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
-
-    def ready_task() -> dict | None:
-        task = task_show(task_id)
-        return task if task["status"] == "READY" else None
-
-    wait_for(ready_task, what="the S18 task to reach the claim frontier")
-    claimed = worker.claim_next()
-    check(claimed.get("result") == "claimed", f"S18 claim: {claimed}")
-    check(worker.task_id == task_id, f"S18 claimed {worker.task_id}, expected {task_id}")
+    claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
 
     failed = worker.aq(
         "task",

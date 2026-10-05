@@ -532,6 +532,107 @@ def test_s5_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s5_surfaces
         assert detail in str(error.value)
 
 
+@pytest.fixture
+def s18_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    worker = smoke.Worker(session_id="triage-worker", token="triage-token")
+    responses = [{"result": "claimed", "task": {"id": "triage-task"}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        return {"success": True}
+
+    def fake_api(command, args):
+        if command == "list_playbook_runs":
+            return {"runs": [{"run_id": "triage-run"}]}
+        if command == "inspect_playbook_run":
+            return {"run": {
+                "run_id": "triage-run", "event": {"task_id": "triage-task"},
+                "lifecycle": "completed",
+            }}
+        if command == "message_list":
+            assert args["to_id"] == f"supervisor-{smoke.PROJECT}"
+            return {"messages": [{"id": "triage-notice", "body": "Failed triage-task"}]}
+        raise AssertionError(command)
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", fake_api)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: [worker])
+    monkeypatch.setattr(smoke, "create_task", lambda *_args, **_kwargs: "triage-task")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id,
+        "status": "BLOCKED" if any(args[:2] == ("task", "close") for args, _ in calls)
+        else "READY",
+        "profile_id": smoke.POOL_PROFILE, "route_source": "router", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        time=lambda: 100.0,
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s18_retries_empty_claims_then_verifies_failure_triage(s18_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s18_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s18_supervisor_failure_triage({})
+
+    assert "triage run triage-run" in result and "notice triage-notice" in result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    close_args, close_kwargs = next((args, kwargs) for args, kwargs in calls
+                                   if args[:2] == ("task", "close"))
+    for flag, expected in (("--outcome", "fail"), ("--failure-class", "hard"),
+                           ("--work-outcome", "abandoned"), ("--claim-epoch", "7")):
+        assert close_args[close_args.index(flag) + 1] == expected
+    assert close_kwargs["token"] == "triage-token"
+    assert any(args[:2] == ("session", "drain-ack") for args, _ in calls)
+    assert any(args[:2] == ("task", "delete") for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s18_does_not_retry_other_claim_failures(s18_surfaces, result):
+    smoke, responses, calls, clock = s18_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s18_supervisor_failure_triage({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s18_rejects_a_claim_of_a_different_task(s18_surfaces):
+    smoke, responses, calls, _clock = s18_surfaces
+    responses[0]["task"]["id"] = "leftover-task"
+
+    with pytest.raises(smoke.Failure, match="triage-task.*leftover-task"):
+        smoke.s18_supervisor_failure_triage({})
+
+    assert len(calls) == 1
+
+
+def test_s18_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s18_surfaces):
+    smoke, responses, calls, clock = s18_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "triage-worker"}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s18_supervisor_failure_triage({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("triage-task", "no_ready_work", "triage-worker", "READY", "router"):
+        assert detail in str(error.value)
+
+
 def test_cli_subprocesses_replace_only_db_sentinels_with_disposable_resources(monkeypatch):
     smoke = _load_smoke()
     monkeypatch.setenv("AQ_E2E_HOME", "/tmp/aq-e2e-owned")

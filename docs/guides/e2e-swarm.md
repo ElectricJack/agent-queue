@@ -134,6 +134,15 @@ include their predicate cost and may overlap CLI time. The
 [measurement and lifecycle audit](../reports/2026-09-30-e2e-shared-fixtures.md)
 records comparable before/after results and the remaining startup coverage.
 
+Scenarios S5 and S18 wait for their exact fixture to be claimed, rather than
+assuming a `READY` task is available to one claim attempt. PostgreSQL's
+`SKIP LOCKED` can temporarily return `no_ready_work` while another transaction
+holds the task row. These scenarios retry that result within the convergence
+budget; other claim outcomes and a claim of a different task fail immediately.
+Timeouts report the last claim response and the fixture's current route and
+status. S18 still requires the terminal failure, completed triage playbook and
+durable supervisor notice after claiming its fixture.
+
 A clean run:
 
 ```

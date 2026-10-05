@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
 
-from src.commands.contracts.models import CommandResult
+from src.commands.contracts.models import CommandResult, OutcomeClass
 from src.commands.contracts.registry import CommandRegistration, UnknownContract
 from src.playbooks.definition import CommandStep
 from src.playbooks.executors.base import (
@@ -157,6 +157,8 @@ def _consume(
     receipt_inputs, receipt_result = project_step_receipt(
         resolved_inputs, dumped, contract=execution, run_id=ctx.run_id
     )
+    # Only a contract-projected error may become durable diagnostics; the
+    # adapter summary can contain unclassified data and is never a fallback.
     return ExecutorResult(
         control=StepControl.ADVANCE,
         outcome=result.outcome,
@@ -165,6 +167,9 @@ def _consume(
         receipt_inputs=receipt_inputs,
         receipt_result=receipt_result,
         operation=operation,
+        diagnostics=(str(receipt_result["error"]),)
+        if (result.classification(registration.contract) is OutcomeClass.FAILURE
+            and receipt_result.get("error")) else (),
     )
 
 

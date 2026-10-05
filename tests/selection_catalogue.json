@@ -1407,7 +1407,7 @@
       ]
     }
   },
-  "digest": "sha256:47963178683e2b04c5e16471d4aff4c409c21a886200bd402b609e9b12d6172f",
+  "digest": "sha256:83d9494af94ceb48d5e57e121293ee17b6617b6a65f5ecec674d16ecb915b577",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10679,6 +10679,7 @@
         "src.commands.principal",
         "src.database.tables",
         "src.deliverables",
+        "src.doctor.stall_checks",
         "src.event_bus",
         "src.integration.development",
         "src.models",

@@ -511,6 +511,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
         _subject_unknown_findings(ctx, active, now),
+        _object_bootstrap_findings(ctx, active, now),
     )
     findings = (
         [item for group in groups for item in group]
@@ -1022,3 +1023,39 @@ async def _subject_unknown_findings(ctx, active, now):
             ).order_by(j.c.recorded_at.desc(), j.c.seq.desc()).limit(10000)
         )).mappings().all()
     return _unknown_subject_streaks(rows, now)
+
+
+async def _object_bootstrap_findings(ctx, active, now):
+    """A failed start with an old, still-open bootstrap gate needs intervention."""
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    from src.database.tables import gates, object_loops, task_metadata, tasks
+
+    if not getattr(ctx.db, "_engine", None):
+        return []
+    refusal = cast(task_metadata.c.value, JSONB)
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(tasks.c.id.label("task_id"), tasks.c.project_id,
+                   task_metadata.c.value, gates.c.id.label("gate_id"), gates.c.created_at)
+            .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+            .join(gates, and_(gates.c.project_id == tasks.c.project_id,
+                             gates.c.await_id == "object:" + refusal["object_id"].astext
+                             + ":started"))
+            .where(tasks.c.project_id.in_(active),
+                   tasks.c.status.not_in(["COMPLETED", "FAILED", "BLOCKED"]),
+                   task_metadata.c.key == "object_start_refusal",
+                   gates.c.status == "open", gates.c.created_at < now - 15 * 60,
+                   ~select(object_loops.c.object_id).where(
+                       object_loops.c.epic_task_id == tasks.c.id).exists())
+        )).mappings().all()
+    return [
+        _finding("object_bootstrap_stalled", row["project_id"],
+                 f"{row['task_id']} bootstrap gate open for "
+                 f"{int((now - row['created_at']) / 60)}m with failing starts: "
+                 f"{json.loads(row['value'])['error']}",
+                 task_id=row["task_id"], gate_id=row["gate_id"],
+                 refusal=json.loads(row["value"]))
+        for row in rows
+    ]
