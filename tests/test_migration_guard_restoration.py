@@ -34,6 +34,8 @@ _POST_BASELINE_TRIGGERS: set[tuple[str, str]] = {
     ("integration_subject_journal_append_only", "integration_subject_journal"),
     # a00000000058_parent_subject_episode
     ("integration_subject_parent_episode_pinned", "integration_subjects"),
+    # a00000000074_git_batch_inputs
+    ("trg_integration_git_batch_intent", "integration_batches"),
 }
 
 
