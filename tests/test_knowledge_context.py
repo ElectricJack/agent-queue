@@ -1,5 +1,6 @@
 """Shared selection, access rechecks, exact pins and conservative budgets."""
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -443,4 +444,129 @@ async def test_prime_keeps_surfacing_a_non_access_context_failure(command_handle
         result = await handler.execute("prime", {"_scope": scope})
     assert not result["success"]
     assert result["error_code"] == "record.stale_claim"
+    assert "Completion Protocol" not in str(result)
+
+
+async def test_prime_degradation_logs_one_warning_naming_the_missing_grant(
+    command_handler_factory, caplog,
+):
+    """A degraded prime is invisible in the body, so the log is the whole signal.
+
+    Template drift between an installed worker profile and the shipped grants
+    costs the worker its knowledge context with nothing on stdout to show for
+    it. Exactly one WARNING, naming the refusal code, the identity, and the
+    ``aq_commands`` to add -- and no record content, which is the same
+    boundary the code-only note in the document keeps.
+    """
+    from src.commands.principal import principal_context
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    worker = replace(await worker_principal(db, grants=["prime"]), task_id=None)
+    await KnowledgeService(db, config.knowledge).create(
+        principal=TRUSTED_LOCAL, project_id="p", idempotency_key="prime-record",
+        snapshot=snapshot(title="Held task", summary="Common retained knowledge"),
+    )
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+
+    with (caplog.at_level(logging.WARNING, logger="src.commands.surface_commands"),
+          principal_context(worker)):
+        result = await handler.execute("prime", {"_scope": scope})
+
+    assert result["context_state"] == "unavailable"
+    logged = [r for r in caplog.records if r.name == "src.commands.surface_commands"]
+    assert len(logged) == 1, [r.getMessage() for r in logged]
+    message = logged[0].getMessage()
+    assert logged[0].levelno == logging.WARNING
+    # Everything an operator needs to find the grant, and nothing else.
+    assert "record.forbidden" in message
+    assert f"task={worker.task_id or 'task-worker'}" in message
+    assert "project=p" in message
+    assert f"profile={worker.profile_id}" in message
+    assert "knowledge_show" in message and "knowledge_search" in message
+    # The refusal the document reports, and no corpus content in the log.
+    assert "Common retained knowledge" not in message
+    assert "prime-record" not in message
+
+    # A prepared prime logs nothing: the warning is about the degradation.
+    granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+    ))
+    caplog.clear()
+    with (caplog.at_level(logging.WARNING, logger="src.commands.surface_commands"),
+          principal_context(granted)):
+        served = await handler.execute("prime", {"_scope": scope})
+    assert served["context_state"] == "prepared"
+    assert not [r for r in caplog.records if r.name == "src.commands.surface_commands"]
+
+
+def test_context_bundle_commands_names_only_the_grants_a_bundle_actually_needs():
+    """The log line's grant list must not drift from the checks it describes.
+
+    ``prepare_on`` refuses ``knowledge_search`` only when a query is supplied
+    and the discovery budget is non-zero, so a no-query or zero-budget caller
+    needs ``knowledge_show`` alone. The helper is the single source both read.
+    """
+    from src.knowledge.budget import ContextBudget
+    from src.knowledge.context import context_bundle_commands
+
+    config = AppConfig()
+    config.knowledge = knowledge_config()
+    config.memory.enabled = True
+    assert context_bundle_commands(config, "incident") == (
+        "knowledge_show", "knowledge_search")
+    # No query, so lexical discovery is never reached.
+    assert context_bundle_commands(config, "") == ("knowledge_show",)
+    config.knowledge.context.discovery_max_items = 0
+    assert ContextBudget.from_config(config).discovery_items == 0
+    assert context_bundle_commands(config, "incident") == ("knowledge_show",)
+
+
+async def test_prime_keeps_surfacing_a_missing_attempt_rather_than_degrading(
+    command_handler_factory,
+):
+    """``context.execution_unavailable`` is a fence, not a missing grant.
+
+    A legitimately-claimed pool worker cannot reach it: ``record_holder``
+    writes the holder row and its ``task_session_attempt`` in the claim
+    transaction, so "running, holding an IN_PROGRESS task at the current
+    epoch, no live attempt" is unreachable by construction (the attempt is
+    finished only by the release paths that also clear ``task_id``). What
+    *can* reach it is a caller whose session row and task row agree but whose
+    attempt was ended underneath it -- a stale or hand-repaired claim, i.e. a
+    real fence failure that prime must not paper over. This test pins both
+    halves: the code is reproduced deliberately, and prime still fails on it
+    rather than degrading to a silently context-free document.
+    """
+    from src.commands.principal import principal_context
+    from src.database.tables import task_session_attempts
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.knowledge = knowledge_config()
+    config.knowledge.context.enabled = config.memory.enabled = True
+    worker = replace(await worker_principal(db, grants=[
+        "prime", "knowledge_show", "knowledge_search",
+    ]), task_id=None)
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+
+    # The holder rows still agree: running, holding the IN_PROGRESS task, at
+    # the current claim epoch. Only the attempt is gone.
+    async with db.immediate() as conn:
+        assert (await conn.execute(select(func.count()).select_from(
+            task_session_attempts).where(task_session_attempts.c.ended_at.is_(None),
+        ))).scalar_one() == 1
+        await conn.execute(update(task_session_attempts).values(
+            ended_at=1.0, state="stopped"))
+
+    with principal_context(worker):
+        result = await handler.execute("prime", {"_scope": scope})
+
+    assert not result["success"]
+    assert result["error_code"] == "context.execution_unavailable"
+    assert "context_state" not in result
     assert "Completion Protocol" not in str(result)

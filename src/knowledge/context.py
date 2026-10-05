@@ -56,6 +56,25 @@ def context_enabled(config):
 ACCESS_REFUSAL_CODES = frozenset({"record.forbidden", "knowledge.disabled"})
 
 
+def context_bundle_commands(config, query=""):
+    """The ``aq_commands`` a project-scoped bundle costs the calling profile.
+
+    Derived from the two grant checks :meth:`ContextService.prepare_on` makes
+    rather than restated, so a caller that is refused a read can be told which
+    grant is missing without a second copy of the rules drifting. Reading any
+    scope always needs ``knowledge_show``; lexical discovery additionally needs
+    ``knowledge_search``, and only when the request actually reaches it (a
+    query to search with and a non-zero discovery budget).
+
+    Names only — an operator reads this to find the missing grant, so it never
+    carries record content.
+    """
+    commands = ["knowledge_show"]
+    if query and ContextBudget.from_config(config).discovery_items:
+        commands.append("knowledge_search")
+    return tuple(commands)
+
+
 @dataclass(frozen=True)
 class BootstrapPrincipal:
     """Daemon-only prelaunch identity; never accepted from command arguments."""

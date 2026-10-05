@@ -43,8 +43,24 @@ of failing: `prime` returns its full ordinary body with
 `context_state: unavailable`, `context_error_code`, no bundle and one sentence
 in the context section naming the code alone. The grant check is not bypassed
 and no knowledge content reaches a principal that may not read it; the CLI
-receives no bundle, so it records no delivery receipt. Every other refusal,
-including a stale claim or an over-budget prompt, still surfaces as an error.
+receives no bundle, so it records no delivery receipt. A degraded read is
+invisible in the body by construction, so the daemon log carries one WARNING
+naming the refusal code, the task, the project, the profile and the
+`aq_commands` a bundle costs that profile (`knowledge_show`, plus
+`knowledge_search` where the request reaches lexical discovery) — identities
+and grants only, never record content. Every other refusal, including a stale
+claim or an over-budget prompt, still surfaces as an error.
+`context.execution_unavailable` is one of those, deliberately. It means the
+caller's session row, task row and claim epoch agree but its
+`task_session_attempt` is not open, and a legitimately-claimed pool worker
+cannot reach that state: `record_holder` writes the holder row and the attempt
+in the same claim transaction, and every path that finishes an attempt
+(release, displacement, handoff recovery, session reassignment) clears or
+replaces the hold in the same transaction. What can reach it is a stale,
+displaced or hand-repaired claim — a fence failure, which prime surfaces
+rather than degrading to a silently context-free document. Its sibling
+`context.execution_changed` (the owner or capability fingerprint moved since
+preparation) is a delivery-path fence and is likewise not an access refusal.
 The K09 CLI/hook adapter calls `knowledge_context_deliver` only after successful
 transport output, with bundle ID, rendered knowledge SHA-256, transport,
 idempotency key and current claim epoch. Preparation and `failed`/`unknown`
