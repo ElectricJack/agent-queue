@@ -911,8 +911,9 @@ async def test_repair_chain_admission_preserves_cleanup_coverage_and_source_bloc
     assert await case["producer"].snapshot_authorized(
         "final-repair", reviewed_sha=third, policy_generation=0)
     assert {item["task_id"] for item in await members()} == {"e1", "repair-source", "final-repair"}
-    # Explicit gates and stale source identities bind every repair, including
-    # a second green repair whose own authorization evidence already exists.
+    # Explicit gates and stale source identities bind the repair lineage.
+    # A repair's hold or stale source-CI observation does not block the
+    # original source's current review from admission.
     if source_blocker == "rejected":
         await case["producer"].snapshot_from_pull_request(
             "e1", verdict="rejected", reviewer_login="reviewer", reviewed_sha=case["first"])
@@ -929,7 +930,8 @@ async def test_repair_chain_admission_preserves_cleanup_coverage_and_source_bloc
             else:
                 await conn.execute(update(integration_source_ci).where(
                     integration_source_ci.c.task_id == "e1").values(policy_generation=1))
-    assert await members() == []
+    expected = {"e1"} if source_blocker in {"repair_hold", "policy"} else set()
+    assert {item["task_id"] for item in await members()} == expected
     # Revocation invalidates authorization and CI tied to the older policy generation.
     async with db.immediate() as conn:
         assert await db.cas_project_integration_control_on(
