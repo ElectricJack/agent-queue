@@ -122,6 +122,19 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
     }
 
 
+def names_only_the_confirmed_head(recorded, head_sha):
+    """An unchanged close names no commits, or only the head it confirmed.
+
+    A worker whose ``aq git push`` found nothing to push records the confirmed
+    branch head itself, so the same starting OID ``dossier.branch_sha`` already
+    pinned. Any other SHA, more than one entry, or the head plus anything else
+    is authored work and is not an unchanged close.
+    """
+    if not isinstance(recorded, list):
+        return False
+    return recorded == [] or recorded == [head_sha]
+
+
 async def delegate_proof_on(
     conn, db, operation, stage, *, project_id, head_sha, confirm_stopped=None
 ):
@@ -170,11 +183,12 @@ async def delegate_proof_on(
         .mappings()
         .one_or_none()
     )
+    recorded = json.loads(completion["commits"]) if completion is not None else None
     if (
         completion is None
         or completion["outcome"] != "pass"
         or completion["branch"] != task["branch_name"]
-        or json.loads(completion["commits"]) != []
+        or not names_only_the_confirmed_head(recorded, head_sha)
     ):
         raise ValueError("latest repair completion is not an unchanged PASS")
     audits = (
