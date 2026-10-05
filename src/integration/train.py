@@ -159,13 +159,15 @@ class CandidateChecks:
     ``resolve`` builds the checks cache for one candidate, always outside every
     lock: hosted trust may read the candidate's tree. The batch gate runs inside
     the publisher's fence lock, so it reads only a candidate this lane already
-    resolved, and an unresolved candidate is not green.
+    resolved, and an unresolved candidate is not green. ``advisory`` checks
+    still run to a verdict, but a red one publishes instead of filing a repair.
     """
 
     def __init__(
         self, resolve: Callable[[Batch, str], Awaitable[ExactChecks]], *, limit: int = 64,
+        advisory: bool = False,
     ) -> None:
-        self.resolve, self.limit = resolve, limit
+        self.resolve, self.limit, self.advisory = resolve, limit, advisory
         self._resolved: dict[tuple[str, str], ExactChecks] = {}
 
     @classmethod
@@ -183,11 +185,15 @@ class CandidateChecks:
             self._resolved.pop(next(iter(self._resolved)))
         return checks
 
+    def passes(self, result: ChecksResult) -> bool:
+        """Whether a verdict lets publication proceed."""
+        return result.green or (self.advisory and result.state == ChecksState.RED)
+
     async def gate(self, batch: Batch, candidate_sha: str, tree_sha: str) -> bool:
         checks = self._resolved.get((batch.id, candidate_sha))
         if checks is None:
             return False
-        return await exact_gate(checks)(batch, candidate_sha, tree_sha)
+        return self.passes(await checks.read(candidate_head(batch, candidate_sha)))
 
 
 @dataclass(frozen=True)
@@ -319,8 +325,8 @@ class IntegrationTrain:
         head = candidate_head(batch, observation.candidate_sha)
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = await self._checks(checks, head)
-        if result.green:
-            # The gate now reads green; publish within this visit.
+        if lane.checks.passes(result):
+            # The gate now reads this verdict; publish within this visit.
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":
                 await self.batches.settle(batch, published)

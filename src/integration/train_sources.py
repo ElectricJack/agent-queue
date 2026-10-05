@@ -370,7 +370,9 @@ class DaemonLanes:
                                          candidate_sha)
             return await self._hosted(policy, binding, target, batch, candidate_sha)
 
-        checks = CandidateChecks(resolve)
+        checks = CandidateChecks(
+            resolve, advisory=local and settings.validation == "advisory"
+        )
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=checks.gate)
 
