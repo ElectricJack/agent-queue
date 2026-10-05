@@ -14,10 +14,13 @@ import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { InlinePriority, InlineStatus, RowActions } from "./TaskRowActions";
 import { useTaskSelection } from "./useTaskSelection";
 
-export default function CommandCenterTasks() {
+export default function CommandCenterTasks({ selection }: {
+  selection?: ReturnType<typeof useTaskSelection>;
+}) {
   const { projectId, filters, setStatus, clearFilters } = useTaskWorkspace();
   const { rows: filtered, statusCounts, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
-  const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
+  const paneSelection = useTaskSelection();
+  const { selectedTaskId, selectTask, clearTask } = selection ?? paneSelection;
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
   // Below 768 px the rows are touch cards (mobile dashboard §3 gap 6): the
   // table needs 620 px. Inline editing and row menus stay on the desktop

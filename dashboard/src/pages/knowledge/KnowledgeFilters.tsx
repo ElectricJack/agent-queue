@@ -14,6 +14,7 @@ export interface KnowledgeFiltersProps {
   filters: KnowledgeListFilters;
   onChange: (filters: KnowledgeListFilters) => void;
   searchLabel?: string;
+  compact?: boolean;
 }
 
 const SELECT = "rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-200";
@@ -23,24 +24,11 @@ const SELECT = "rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm tex
  * the owner decides where the state lives (this slice's `Knowledge` keeps it
  * in memory, K10 writes it to the URL with `knowledgeUrlState.ts`).
  */
-export default function KnowledgeFilters({ filters, onChange, searchLabel = "Search knowledge" }: KnowledgeFiltersProps) {
+export default function KnowledgeFilters({ filters, onChange, searchLabel = "Search knowledge", compact = false }: KnowledgeFiltersProps) {
   const id = useId();
   const set = <K extends keyof KnowledgeListFilters>(key: K, value: KnowledgeListFilters[K]) =>
     onChange({ ...filters, [key]: value });
-  return (
-    <form role="search" aria-label="Filter knowledge" onSubmit={(event) => event.preventDefault()} className="space-y-2">
-      <div>
-        <label htmlFor={`${id}-q`} className="sr-only">{searchLabel}</label>
-        <input
-          id={`${id}-q`}
-          type="search"
-          value={filters.query}
-          onChange={(event) => set("query", event.target.value)}
-          placeholder="Search title, summary, tags…"
-          className="w-full rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-200 placeholder:text-gray-500"
-        />
-      </div>
-      <div className="flex flex-wrap items-end gap-2 text-xs text-gray-400">
+  const facets = <div className="flex flex-wrap items-end gap-2 text-xs text-gray-400">
         <label className="flex flex-col gap-0.5">
           Category
           <select className={SELECT} value={filters.category} onChange={(event) => set("category", event.target.value as "" | KnowledgeCategory)}>
@@ -72,7 +60,24 @@ export default function KnowledgeFilters({ filters, onChange, searchLabel = "Sea
             Clear filters
           </button>
         )}
+      </div>;
+  return (
+    <form role="search" aria-label="Filter knowledge" onSubmit={(event) => event.preventDefault()} className="space-y-2">
+      <div>
+        <label htmlFor={`${id}-q`} className="sr-only">{searchLabel}</label>
+        <input
+          id={`${id}-q`}
+          type="search"
+          value={filters.query}
+          onChange={(event) => set("query", event.target.value)}
+          placeholder="Search title, summary, tags…"
+          className={`w-full rounded border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-gray-200 placeholder:text-gray-500 ${compact ? "h-11" : ""}`}
+        />
       </div>
+      {compact ? <details>
+        <summary className="min-h-11 cursor-pointer rounded px-2 py-3 text-sm text-gray-300">Filters{hasActiveKnowledgeFilters(filters) ? " (active)" : ""}</summary>
+        {facets}
+      </details> : facets}
     </form>
   );
 }

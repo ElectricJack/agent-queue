@@ -57,7 +57,7 @@ function RouteState() {
   })}</output>;
 }
 
-function harness(initialEntry = "/projects/current/tasks?q=work") {
+function harness(initialEntry = "/projects/current/tasks-knowledge?q=work") {
   const qc = new QueryClient();
   return render(
     <QueryClientProvider client={qc}>
@@ -112,14 +112,14 @@ describe("Palette", () => {
     }
   });
 
-  test.each(["/projects/current/tasks?q=work", "/settings/profiles"])("task selection retains %s and closes the active pane", async (origin) => {
+  test.each(["/projects/current/tasks-knowledge?q=work", "/settings/profiles"])("task selection retains %s and closes the active pane", async (origin) => {
     data.tasks = [{ id: "task / 1", title: "Build release", project_id: "current" }];
     harness(origin);
     const user = await openWithPrefix("#");
     await user.click(screen.getByText("Build release"));
 
     expect(screen.getByTestId("route-state")).toHaveTextContent(JSON.stringify({
-      path: "/tasks/task%20%2F%201",
+      path: `/projects/current/tasks-knowledge?${origin.startsWith("/projects/") ? "q=work&" : ""}task=task+%2F+1`,
       from: origin,
     }));
     expect(screen.getByTestId("pane-state")).toHaveTextContent("closed");
@@ -132,7 +132,7 @@ describe("Palette", () => {
     await user.click(screen.getByText("Target project"));
 
     expect(screen.getByTestId("route-state")).toHaveTextContent(JSON.stringify({
-      path: "/projects/target%20%2F%20project/tasks?q=work",
+      path: "/projects/target%20%2F%20project/tasks-knowledge?q=work",
     }));
     expect(screen.getByTestId("pane-state")).toHaveTextContent("open");
   });

@@ -53,7 +53,6 @@ vi.mock("../RightSurface", () => ({ default: () => <PaneProbe /> }));
 vi.mock("../palette/Palette", () => ({ Palette: () => null }));
 vi.mock("../hotkeys/CheatSheetModal", () => ({ default: () => null }));
 vi.mock("../../pages/command-center/Graph", () => ({ default: () => <h1>Command Center graph</h1> }));
-vi.mock("../../pages/command-center/Tasks", () => ({ default: () => <h1>Command Center tasks</h1> }));
 vi.mock("../../pages/command-center/TaskWorkspace", () => ({
   TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   useTaskWorkspace: () => ({ knowledgeAvailable: false }),
@@ -131,10 +130,11 @@ const SESSION_PANE = 'session-peek {"sessionId":"session-1"}';
 const RUN_PANE = 'playbook-run-inspector {"runId":"run-1"}';
 
 describe("dashboard back / forward", () => {
+  // Graph keeps shell-pane history; Tasks & Knowledge owns its URL-addressed detail frame.
   it("returns from an agent terminal to the task pane it was opened from, and Forward reopens it", async () => {
     const user = userEvent.setup();
-    renderApp("/projects/p1/tasks");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
     expect(backButton()).toBeDisabled();
     expect(forwardButton()).toBeDisabled();
 
@@ -145,12 +145,12 @@ describe("dashboard back / forward", () => {
     expect(pane()).toHaveTextContent("closed");
     // The route commits before the history provider's effect updates the trail.
     await waitFor(() => expect(backButton()).toHaveAttribute(
-      "title", "Back to First project · Tasks — Task task-p1 (Alt+←)",
+      "title", "Back to First project · Graph — Task task-p1 (Alt+←)",
     ));
 
     await user.click(backButton());
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(where()).toHaveTextContent("/projects/p1/tasks");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(where()).toHaveTextContent("/projects/p1/graph");
     expect(pane()).toHaveTextContent(TASK_PANE);
     expect(forwardButton()).toHaveAttribute("title", "Forward to Agents: worker-1 (Alt+→)");
 
@@ -243,19 +243,19 @@ describe("dashboard back / forward", () => {
 
   it("brings back a task pane that a project switch closed", async () => {
     const user = userEvent.setup();
-    renderApp("/projects/p1/tasks");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
     await user.click(screen.getByRole("button", { name: "Open task pane" }));
     await user.click(screen.getByRole("link", { name: "Second project" }));
-    await waitFor(() => expect(where()).toHaveTextContent("/projects/p2/tasks"));
+    await waitFor(() => expect(where()).toHaveTextContent("/projects/p2/graph"));
     expect(pane()).toHaveTextContent("closed");
 
     await user.click(backButton());
-    await waitFor(() => expect(where()).toHaveTextContent("/projects/p1/tasks"));
+    await waitFor(() => expect(where()).toHaveTextContent("/projects/p1/graph"));
     expect(pane()).toHaveTextContent(TASK_PANE);
 
     await user.click(forwardButton());
-    await waitFor(() => expect(where()).toHaveTextContent("/projects/p2/tasks"));
+    await waitFor(() => expect(where()).toHaveTextContent("/projects/p2/graph"));
     expect(pane()).toHaveTextContent("closed");
   });
 
@@ -270,7 +270,7 @@ describe("dashboard back / forward", () => {
       },
     };
     server.write("shell_preferences", prefs);
-    renderApp("/projects/p1/tasks");
+    renderApp("/projects/p1/graph");
     await waitFor(() => expect(pane()).toHaveTextContent(TASK_PANE));
     expect(backButton()).toBeDisabled();
 
@@ -282,9 +282,9 @@ describe("dashboard back / forward", () => {
 
   it("keeps each entry's pane in the browser's history, so the browser's Back restores it after a reload", async () => {
     const user = userEvent.setup();
-    window.history.replaceState(null, "", "/projects/p1/tasks");
+    window.history.replaceState(null, "", "/projects/p1/graph");
     const first = renderBrowserApp();
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    await screen.findByRole("heading", { name: "Command Center graph" });
     await user.click(screen.getByRole("button", { name: "Open task pane" }));
     await user.click(await screen.findByRole("button", { name: "Open agent terminal" }));
     await screen.findByRole("heading", { name: "Agent flock" });
@@ -298,9 +298,9 @@ describe("dashboard back / forward", () => {
 
     // The browser's own Back (toolbar, mouse button 4, swipe) is the same POP.
     window.history.back();
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    await screen.findByRole("heading", { name: "Command Center graph" });
     await waitFor(() => expect(pane()).toHaveTextContent(TASK_PANE));
-    expect(where()).toHaveTextContent("/projects/p1/tasks");
+    expect(where()).toHaveTextContent("/projects/p1/graph");
     expect(forwardButton()).toBeEnabled();
   });
 });
@@ -356,7 +356,9 @@ describe("viewTitle", () => {
     pane: (view: string) => (view === "task-detail" ? "Task" : undefined),
   };
   it.each([
-    [{ pathname: "/projects/p1/tasks", search: "", pane: null }, "First project · Tasks"],
+    [{ pathname: "/projects/p1/graph", search: "", pane: null }, "First project · Graph"],
+    [{ pathname: "/projects/p1/tasks", search: "", pane: null }, "First project · Tasks & Knowledge"],
+    [{ pathname: "/projects/p1/tasks-knowledge", search: "", pane: null }, "First project · Tasks & Knowledge"],
     [{ pathname: "/projects/p9/graph", search: "", pane: null }, "p9 · Graph"],
     [{ pathname: "/agents", search: "?agent=a&agent=pool%3Aworker-standard%40inst", pane: null }, "Agents: a, pool worker-standard"],
     [{ pathname: "/agents", search: "", pane: null }, "Agent flock"],

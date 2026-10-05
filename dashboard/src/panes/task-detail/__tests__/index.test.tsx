@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
+import TaskDetailBody from "../TaskDetailBody";
 import { rememberTaskPreview } from "../preview";
 import type { Task } from "../../../api/hooks";
 import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
@@ -206,6 +207,22 @@ describe("TaskDetailPane — screenshot attachments", () => {
 });
 
 describe("TaskDetailPane — header, description, actions", () => {
+  it("lets URL-owned detail leave without closing its selection history", () => {
+    const leave = vi.fn();
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, status: "IN_PROGRESS" } });
+    mockUseAgentFlock.mockReturnValue({ data: [{
+      id: "agent-1", name: "Solar Eagle", current_task_id: "t1", current_project_id: "demo",
+      session_id: "session-1", session_state: "running", session_provider: "tmux",
+    }] });
+    renderWithRouter(<TaskDetailBody taskId="t1" onOpenTask={vi.fn()} onClose={mockClose} onLeave={leave} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open agent terminal" }));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      { pathname: "/agents", search: "agent=agent-1" },
+      { state: { agentSelection: "replace", terminalFocus: "agent-1" } },
+    );
+    expect(leave).toHaveBeenCalledOnce();
+    expect(mockClose).not.toHaveBeenCalled();
+  });
   it("jumps from a selected task to its current worker and closes the pane", () => {
     mockUseTask.mockReturnValue({ data: { ...fixtureTask, status: "IN_PROGRESS" } });
     mockUseAgentFlock.mockReturnValue({ data: [{

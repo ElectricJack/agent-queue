@@ -129,7 +129,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         onSuccess: () => {
           closeModal();
           onDeleted?.();
-          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
+          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks-knowledge");
           if (destination !== location.pathname + location.search) navigate(destination);
         },
         onError: (error) => {

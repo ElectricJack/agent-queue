@@ -228,7 +228,7 @@ export default function ProjectOverview() {
                 <ExclamationTriangleIcon className="h-4 w-4" />
                 <span>
                   {failed} task{failed === 1 ? "" : "s"} failed —{" "}
-                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="underline hover:text-red-300">
+                  <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="underline hover:text-red-300">
                     review
                   </Link>
                 </span>
@@ -241,7 +241,7 @@ export default function ProjectOverview() {
         <section className="lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase text-gray-500">Active tasks</h2>
-            <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-xs text-indigo-400 hover:underline">
+            <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="text-xs text-indigo-400 hover:underline">
               View all →
             </Link>
           </div>
@@ -272,8 +272,8 @@ export default function ProjectOverview() {
               {activeTasks.length > 8 && (
                 <p className="text-xs text-gray-500">
                   +{activeTasks.length - 8} more · see{" "}
-                  <Link to={workspaceHref(projectId, "tasks", location.search)} className="text-indigo-400 hover:underline">
-                    Tasks tab
+                  <Link to={workspaceHref(projectId, "tasks-knowledge", location.search)} className="text-indigo-400 hover:underline">
+                    Tasks & Knowledge tab
                   </Link>
                 </p>
               )}
